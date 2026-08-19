@@ -1,0 +1,182 @@
+---
+slug: "client-server-model"
+title: "Client-Server Model & the Full Request Lifecycle"
+section: "system-design"
+module: "fundamentals"
+order: 2
+difficulty: "beginner"
+readingTime: 13
+prerequisites: ["what-is-system-design"]
+tags: ["fundamentals", "networking", "http"]
+englishDefinition: "The client-server model is an architecture where client applications send requests for services or resources to centralized server applications over a network, and the server processes the request and returns a response. The full request lifecycle is the sequence of steps — DNS resolution, TCP/TLS handshake, HTTP request/response, server-side processing, and client-side rendering — that happens between a client initiating a request and receiving usable data back."
+interviewFrequency: "high"
+companies: ["Amazon", "Microsoft", "Paytm", "Zomato"]
+---
+
+<SimpleDefinition>
+
+The client-server model is an architecture where client applications send requests for services or resources to centralized server applications over a network, and the server processes the request and returns a response. The full request lifecycle is the sequence of steps — DNS resolution, TCP/TLS handshake, HTTP request/response, server-side processing, and client-side rendering — that happens between a client initiating a request and receiving usable data back.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh topic itna "basic" lagta hai ki log skip kar dete hain — aur exactly isi wajah se interview mein sabse zyada fumble yahin hota hai. "Type a URL in the browser, batao kya hota hai" — yeh sawaal har doosre interview mein aata hai, chahe .NET background ho ya kuch bhi, kyunki yeh ek **layered systems thinking** test karta hai. Chalo poora chain todte hain, step by step, aur har step pe yeh bhi samjhenge ki woh system design decisions ko kaise affect karta hai.
+
+### Client-server vs peer-to-peer
+
+Pehle basic distinction: client-server model mein roles fixed hote hain — client request bhejta hai, server serve karta hai. Yeh centralized hai, isliye manage karna easy hai (ek jagah update karo, sab clients ko naya behavior mil jaata hai), lekin server ek **bottleneck aur single point of failure** bhi ban sakta hai agar redundancy na ho. Peer-to-peer (jaise BitTorrent) mein har node client bhi hai aur server bhi — koi central authority nahi. P2P scale achha karta hai kyunki load distribute hota hai, lekin consistency aur control maintain karna mushkil hai. 99% interview problems (aur real backend systems) client-server pe based hote hain, isliye yahi focus karenge.
+
+### Poora request lifecycle — ek ek step
+
+Jab tum browser mein `https://www.example.com` type karte ho, yeh chain chalta hai:
+
+1. **Browser cache check** — Browser pehle apna khud ka DNS cache aur HTTP cache check karta hai. Agar recently visit kiya hai aur cache valid hai, kuch bhi network pe jaaye bina response mil sakta hai.
+2. **DNS resolution** — `example.com` ek human-readable naam hai, lekin network ko IP address chahiye. Browser DNS resolver se pucchta hai — pehle OS cache, phir ISP ka recursive resolver, phir zaroorat pade to root servers → TLD servers → authoritative nameserver tak jaata hai. Yeh chain slow lag sakti hai, isliye DNS caching (aur DNS TTL tuning) production systems mein important hai.
+3. **TCP handshake** — IP mil gaya, ab client server ke saath TCP connection banata hai — the famous **3-way handshake**: SYN → SYN-ACK → ACK. Isme ek full round trip (RTT) lagta hai before koi actual data bhej sakte ho.
+4. **TLS handshake** — HTTPS hai to ek aur handshake hota hai — TLS — jisme client aur server encryption keys negotiate karte hain aur server ka certificate verify hota hai. TLS 1.2 mein yeh 2 RTT leta tha, TLS 1.3 ne isse 1 RTT (aur resumption ke case mein 0-RTT) tak optimize kar diya hai. Yeh interview mein bolne layak fact hai — dikhata hai tumhe protocol-level detail pata hai.
+5. **HTTP request bhejna** — Ab actual HTTP request jaata hai — method, headers, body. Agar keep-alive ya HTTP/2 multiplexing use ho raha hai, to yehi TCP connection agle requests ke liye reuse ho sakta hai — naya handshake nahi karna padta har baar. Yeh production performance ke liye bahut critical hai.
+6. **Server-side processing** — Server pe request pehle shayad ek load balancer se guzarti hai, phir ek application server (jaise tumhara .NET Core Web API) tak pahunchti hai, jo shayad ek database query karta hai, cache check karta hai, ya kisi doosre microservice ko call karta hai. Yahan response ka latency largely determine hota hai — network round trips itni matter nahi karte jitna yeh backend processing time.
+7. **HTTP response wapas aana** — Server status code (200, 404, 500...), headers, aur body ke saath response bhejta hai.
+8. **Client-side rendering** — Browser ko HTML mila to woh parse karega, CSS/JS ke liye aur requests bhejega (yeh sab bhi apna mini lifecycle follow karte hain), DOM banayega, render karega.
+
+### Yeh sab kyun matter karta hai system design ke liye
+
+Interview mein yeh sirf trivia nahi hai — har step ek **optimization opportunity** hai jo aage ke modules mein deeply explore hoga:
+
+- DNS lookup slow hai? → DNS caching, shorter TTLs vs longer TTLs ka trade-off (baad mein CDN module mein aayega).
+- Har request pe naya TCP+TLS handshake ho raha hai? → Connection pooling, keep-alive, HTTP/2 se fix hota hai.
+- Server processing slow hai? → Yahi se caching, load balancing, database indexing jaisi cheezon ki zaroorat aati hai — jo aage ke modules ka core content hai.
+
+Jab interviewer bolta hai "walk me through what happens", woh yeh nahi test kar raha ki tumhe DNS ka RFC yaad hai. Woh dekh raha hai ki tumhe pata hai **latency kahan-kahan add hoti hai**, kyunki yehi foundation hai baaki poora system design (caching, CDN, load balancing) samajhne ke liye.
+
+### Stateless vs stateful servers
+
+Ek aur cheez jo is topic se directly nikalti hai — server **stateless** hona chahiye ya **stateful**? Stateless server har request ko independently handle karta hai, koi client-specific data server ki memory mein store nahi karta (session data client ke paas — jaise JWT token — ya ek shared store jaise Redis mein rehta hai). Stateful server client ki state apne memory mein rakhta hai (jaise traditional session-based auth server-side session store ke saath, tightly coupled ek specific server instance se).
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Koi bhi server instance kisi bhi request ko handle kar sakta hai — load balancing simple ho jaati hai",
+    "Server crash ho jaaye to koi user data loss nahi (state kahin aur stored hai)",
+    "Horizontal scaling trivial hai — bas naye instances spin up karo",
+  ]}
+  cons={[
+    "Har request mein thoda extra data bhejna padta hai (jaise JWT token har baar)",
+    "Agar state ek external store (Redis) mein hai, to woh store khud ek naya dependency/bottleneck ban jaata hai",
+    "Kuch use-cases (jaise real-time gaming state) ke liye stateful design zyada natural aur fast hota hai",
+  ]}
+/>
+
+<Callout type="tip">
+
+Rule of thumb jo interview mein bolne layak hai: **default stateless design karo**, sirf tabhi stateful jao jab koi specific requirement (ultra-low-latency real-time state, jaise multiplayer game server) usko force kare. 90%+ web/mobile backend systems (including most fintech and e-commerce APIs) stateless HTTP servers pe hi chalte hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Paytm / UPI">
+
+Jab tum Paytm se UPI payment karte ho, tumhara app ek HTTPS request Paytm ke server ko bhejta hai — poora upar wala lifecycle (DNS, TCP, TLS, HTTP) chalta hai. Lekin yahan se request NPCI (National Payments Corporation of India) ke switch tak jaati hai, jo tumhare bank aur receiver ke bank dono se baat karta hai — matlab ek single "client request" ke peeche multiple client-server hops chain mein chal rahe hote hain. Isi wajah se UPI transactions mein latency **request lifecycle ki depth** pe directly depend karta hai — jitne zyada hops, utna zyada cumulative RTT.
+
+</RealWorld>
+
+<RealWorld company="Zomato">
+
+Zomato jaisi apps mein order-tracking screen har few seconds mein backend se latest delivery-partner location poochti hai. Agar har baar naya TCP+TLS handshake hota, to battery aur latency dono kharab hote. Isi wajah se yeh apps HTTP keep-alive connections ya WebSockets use karte hain — ek connection khula rakhte hain aur usi pe repeated updates bhejte hain, taaki handshake cost baar-baar na lage. Yeh WebSockets module mein aage detail mein aayega.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- DNS lookup (cold, uncached) — 20-120 ms depending on resolver hop count
+- TCP 3-way handshake — 1 RTT (India 4G RTT to nearby server ~ 30-80 ms)
+- TLS 1.2 handshake — 2 RTT extra; TLS 1.3 — 1 RTT (0-RTT on resumption)
+- Total "connection setup" cost before first byte of data — often 100-250 ms on mobile networks in India
+- Typical Time To First Byte (TTFB) target for a well-optimized API — under 200 ms
+- HTTP/2 multiplexed streams per TCP connection — typically 100+ concurrent streams vs 6 parallel connections in HTTP/1.1
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic question: **"What happens when you type a URL into your browser and press Enter?"** Interviewer testing kar raha hai networking fundamentals aur ability to explain a multi-layer process clearly and in order — this is often an early, "warm-up" question before the real design problem, and doing it well sets tone for the rest of the interview.
+
+Model answer shape: Start top-down — "Browser checks cache first, then resolves DNS, then opens a TCP connection, then (for HTTPS) negotiates TLS, then sends the HTTP request, server processes it (possibly through a load balancer, app server, and database), sends the response back, and the browser renders it." Then **add one layer of depth** unprompted — mention TLS 1.3's 1-RTT improvement, or that HTTP/2 multiplexes requests over one connection. That one extra detail is what separates a "textbook" answer from a "I've actually thought about this" answer.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+DNS resolution ko completely skip kar dena jab lifecycle explain karte ho — jaise seedha "browser server ko request bhejta hai" bol dena, IP resolution ka step hi miss kar dena.
+
+</Mistake>
+
+<Mistake>
+
+TCP aur UDP mein confuse ho jaana — yeh na pata hona ki HTTP TCP pe chalta hai (reliable, ordered) jabki kuch real-time use-cases (video streaming, gaming) UDP prefer karte hain speed ke liye reliability trade karke.
+
+</Mistake>
+
+<Mistake>
+
+TLS handshake ko completely ignore karna jab HTTPS ki baat ho rahi ho — yeh dikhata hai ki candidate ne security/encryption layer ke performance cost ke baare mein kabhi socha nahi.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki server hamesha ek single machine hai — real production systems mein request load balancer, multiple app servers, caches, aur databases ke through guzarti hai, ek monolithic "the server" nahi hota.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client (Browser)
+    participant D as DNS Resolver
+    participant S as Server
+    participant DB as Database
+
+    C->>D: Resolve example.com
+    D-->>C: IP address
+    C->>S: TCP SYN
+    S-->>C: SYN-ACK
+    C->>S: ACK (connection established)
+    C->>S: TLS ClientHello
+    S-->>C: TLS ServerHello + cert
+    C->>S: HTTP GET /orders
+    S->>DB: Query order data
+    DB-->>S: Result set
+    S-->>C: HTTP 200 + JSON body
+    Note over C: Browser parses & renders response
+`}
+  caption="Every hop here adds latency — DNS, TCP, and TLS all happen before the server even sees the HTTP request."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Client-server = centralized roles (easy to manage, but a scaling/failure bottleneck); P2P = distributed (scales well, hard to keep consistent)
+- Full lifecycle: browser cache → DNS → TCP handshake → TLS handshake → HTTP request → server processing → HTTP response → render
+- TCP handshake = 1 RTT; TLS 1.3 = 1 RTT (0-RTT on resume); TLS 1.2 = 2 RTT — always mention TLS 1.3's improvement in interviews
+- Keep-alive / HTTP/2 multiplexing avoids repeating the handshake cost on every request
+- Default to stateless servers — trivial horizontal scaling, no data loss on crash
+- Go stateful only when a specific requirement demands it (e.g., real-time multiplayer state)
+- "Type a URL, what happens?" is a warm-up question — nail the structure, then add one extra depth detail unprompted
+- Real production "server" = load balancer + app servers + caches + database, never a single machine
+
+</QuickRevision>
