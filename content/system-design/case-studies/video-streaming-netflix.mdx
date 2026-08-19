@@ -1,0 +1,257 @@
+---
+slug: "video-streaming-netflix"
+title: "Design Netflix / Hotstar Video Streaming"
+section: "system-design"
+module: "case-studies"
+order: 5
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["cdn"]
+tags: ["case-study", "streaming", "cdn"]
+englishDefinition: "A video streaming system ingests, processes, stores, and delivers video content to hundreds of millions of concurrent viewers globally, adapting playback quality to each viewer's live network conditions. It must support both video-on-demand catalogs and live events at massive, extremely spiky scale — such as a cricket final on Hotstar where tens of millions of viewers arrive within minutes of a fixed start time."
+interviewFrequency: "high"
+companies: ["Netflix", "Hotstar"]
+---
+
+<SimpleDefinition>
+
+A video streaming system ingests, processes, stores, and delivers video content to hundreds of millions of concurrent viewers globally, adapting playback quality to each viewer's live network conditions. It must support both video-on-demand catalogs and live events at massive, extremely spiky scale — such as a cricket final on Hotstar where tens of millions of viewers arrive within minutes of a fixed start time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh case study interview mein pasand ki jaati hai kyunki yeh ek saath teen cheezein test karti hai — distributed batch processing (transcoding), a genuinely clever client-driven protocol (adaptive bitrate streaming), aur CDN economics at planet scale. Chalo poora design end-to-end banate hain, jaise ek real interview mein banate.
+
+### Requirements Clarification
+
+Functional requirements pehle clarify karo:
+
+- Content team master video files upload karta hai (movies, shows, live broadcast feed).
+- System un files ko multiple resolutions aur bitrates mein transcode karta hai.
+- Users video-on-demand (VOD) content browse aur play kar sakte hain — mobile, web, smart TV, set-top box, sab devices pe.
+- Playback quality automatically viewer ke current network ke hisaab se adapt honi chahiye, user ko manually quality select nahi karni padegi.
+- Playback resume support hona chahiye (chhod ke gaye the wahin se shuru).
+- LIVE events bhi support karne hain — Hotstar ka IPL cricket streaming isi design ka sabse hard version hai.
+
+Non-functional requirements — yeh utni hi important hain:
+
+- Startup latency low honi chahiye — play button dabate hi 2 second ke andar video shuru ho jaana chahiye.
+- Playback ke beech buffering/stalling nahi honi chahiye, chahe network condition badalta rahe.
+- Extremely high availability — cricket final ke beech stream girna sirf annoying nahi, business-critical failure hai (Hotstar ka revenue us ek match pe depend karta hai).
+- Massive global scale — Netflix jaisi service ke liye hundreds of millions subscribers, aur Hotstar jaise live event ke liye tens of millions concurrent viewers ek hi minute mein arrive karte hain.
+- Cost efficiency — bandwidth egress hi sabse bada recurring cost hai is system ka, isliye CDN caching efficiency directly bottom line pe asar daalti hai.
+- Durability — source master file kabhi lost nahi honi chahiye, baaki sab renditions usi se dobara generate ho sakti hain.
+
+Interviewer ko explicitly bata do ki scope kya hai: recommendation engine, billing, search — yeh sab is design se bahar hain. Focus hai ingest se lekar transcode, store, deliver, aur adaptive playback tak ka pipeline, plus live ka special case.
+
+### Back-of-Envelope Estimation
+
+Numbers lagate hain taaki scale ka andaza aaye.
+
+**Concurrency aur bandwidth:** Hotstar ne publicly bola hai ki IPL final jaise match mein 25 million+ concurrent viewers aa sakte hain. Ek mostly-mobile Indian audience ke liye average bitrate (kuch log 240p pe poor network se dekh rahe, kuch 1080p pe WiFi se) lelo roughly 2 Mbps weighted average. Total simultaneous egress bandwidth = 25,000,000 x 2 Mbps = 50,000,000 Mbps = **50 Tbps**. Yeh number itna bada hai ki ek single datacenter ka uplink bhi isse handle nahi kar sakta — isi wajah se yeh traffic ek centralized origin se serve karna literally impossible hai, aur CDN (ISP ke andar edge nodes) ka use mandatory ban jaata hai, koi optional optimization nahi.
+
+**Request rate:** Agar har segment roughly 6 second ka hai, to har active client har 6 second mein ek naya segment fetch karta hai. 25,000,000 / 6 approx **4.2 million segment-fetch requests per second** peak pe. Agar CDN cache hit ratio 99%+ hai, to origin ko sirf roughly 1% hi absorb karna padta hai — approx 42,000 req/sec. Yeh bhi bada hai, lekin ek bilkul different (aur solvable) problem hai 4.2M/sec ke comparison mein — yehi origin shield layer ka kaam hai.
+
+**Storage:** Netflix-scale catalog maan lo roughly 15,000 hours unique content ka hai. Har hour content, poori bitrate ladder (240p se 4K tak, 8-10 renditions) plus multiple audio tracks ke saath transcode hone ke baad roughly 5-8 GB combined encoded output banata hai (video compression efficient hai, yeh raw master se bahut chhota hai). 15,000 x approx 6 GB/hour approx **90 TB** ek copy ke liye. Source masters (jo bahut bade hote hain, 50-100 GB/hour) plus geo-redundant replication (3x) add karo to total kuch sau TB se low petabytes tak jaata hai — lekin storage yahan hard problem nahi hai, **bandwidth hai**.
+
+**Transcoding time:** 1 hour ka 4K source, agar ek machine serially poori bitrate ladder encode kare, to kayi ghante lag sakte hain. Isliye production pipelines source ko chhote chunks mein todte hain (kuch second ke) aur unhe parallel workers ke fleet pe transcode karte hain — 1-hour video ka wall-clock encode time kuch ghanton se ghatke chand minute tak aa jaata hai.
+
+### High-Level Design
+
+Do alag pipelines sochne se cheezein clear ho jaati hain — ek offline/async **ingest aur processing pipeline**, aur ek online real-time **delivery/playback pipeline**.
+
+**Ingest & processing pipeline (VOD):**
+
+1. Content team raw master upload karta hai — ingest service format validate karke original ko durable blob storage mein save karta hai (yeh source of truth hai, hamesha rakha jaata hai).
+2. Ek transcoding job queue mein daala jaata hai — **yeh explicitly async, batch job hai, synchronous nahi**. Kisi user ko live wait nahi karna padta VOD content available hone ke liye, isliye latency yahan matter nahi karti utni jitni throughput aur correctness.
+3. Chunked parallel transcoding farm job pick karta hai, source ko chunks mein todta hai, har chunk ko poori bitrate ladder mein encode karta hai — multiple resolutions x bitrates ka combination, jise **bitrate ladder** kehte hain (jaise 240p at 400 kbps, 360p at 800 kbps, 480p at 1.2 Mbps, 720p at 2.5 Mbps, 1080p at 5 Mbps, 4K at 15 Mbps).
+4. Packager har rendition ke encoded chunks ko segment files mein stitch karta hai, aur ek manifest generate karta hai (HLS ke liye `.m3u8`, DASH ke liye `.mpd`) jo available renditions aur segment URLs list karta hai.
+5. Optional DRM encryption step — content protection ke liye keys ek license server manage karta hai.
+6. Final segments aur manifest origin storage mein push hote hain.
+7. CDN in segments ko pull karta hai (ya popular content ke liye pre-warm bhi kiya ja sakta hai) — ab yeh serve karne ke liye ready hai.
+
+**Delivery/playback pipeline:**
+
+1. Client app ek title ke liye manifest request karta hai.
+2. Player manifest parse karta hai, available quality renditions dekhta hai.
+3. Pehla segment fetch hota hai — typically ek conservative/low bitrate se shuru hota hai taaki startup fast lage.
+4. Bulk of subsequent segment requests seedha nearest CDN edge se serve hote hain (cached, kyunki segments immutable static files hain ek baar produce hone ke baad).
+5. Client continuously apna achieved throughput aur buffer health measure karta hai, agle segment ke liye bitrate adjust karta hai — yeh ABR hai, neeche detail mein.
+6. Rare CDN cache miss ho to edge origin shield se fetch karta hai, jo origin se sirf ek baar fetch karke saare edges ko serve karta hai — origin ko stampede se bachata hai.
+
+Live path (Hotstar sports) is se differ karta hai — ingest continuous hota hai ek broadcast feed se, transcoding near-real-time honi chahiye ek tight pipeline mein, packager continuously naye segments ek sliding-window manifest mein append karta hai. Delivery side largely same rehta hai — CDN-based fan-out.
+
+</Hinglish>
+
+<Diagram
+  chart={`
+flowchart TD
+    U["Content Upload<br/>(raw master file)"] --> ING[Ingest Service]
+    ING --> STORE[(Durable Origin Storage)]
+    ING --> Q[Transcode Job Queue]
+    Q --> TF["Chunked Parallel<br/>Transcoding Farm"]
+    TF --> PKG["Packager<br/>(segments + manifest)"]
+    PKG --> DRM["DRM Encryption<br/>(optional)"]
+    DRM --> ORIGIN[(Origin: Segments + Manifests)]
+    ORIGIN --> SHIELD["Origin Shield<br/>(absorbs cache-miss stampede)"]
+    SHIELD --> EDGE1["CDN Edge PoP<br/>(near viewers)"]
+    EDGE1 --> CLIENT["Client Player<br/>(ABR logic)"]
+
+    LIVE["Live Broadcast Feed"] --> LTF["Real-time Transcoder"]
+    LTF --> LPKG["Live Packager<br/>(sliding window manifest)"]
+    LPKG --> ORIGIN
+    style U fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style CLIENT fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="VOD content is transcoded once and cached forever at the edge; live content is transcoded continuously and pushed through the same CDN fan-out."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Video Processing Pipeline — Transcoding as an Async Batch Job
+
+Sabse common beginner mistake yeh sochna hai ki transcoding request-time pe ho sakti hai — jaise koi user play dabaye aur server real-time mein us moment quality generate kare. Yeh galat hai: transcoding CPU-heavy aur slow hai (ek 4K movie ki poori bitrate ladder banane mein compute-minutes se ghante lag sakte hain), isliye yeh **hamesha ek async, offline batch pipeline hoti hai** jo upload ke turant baad chalti hai, playback request se pehle hi complete ho chuki hoti hai. Speed ke liye source ko chhote chunks mein split karke parallel encode kiya jaata hai, phir results reassemble hote hain — isse wall-clock time dramatically kam ho jaata hai.
+
+#### 2. Adaptive Bitrate Streaming (ABR) — sabse important concept
+
+Yeh poore topic ka core hai. Video ek single continuous stream nahi hai jaisa naam se lagta hai — actually yeh chhote-chhote independent segments hote hain, typically 2 se 10 second ke, aur har segment **multiple quality levels** mein available hota hai (240p se 4K tak). Yeh HLS (HTTP Live Streaming) ya DASH (Dynamic Adaptive Streaming over HTTP) protocol ka core idea hai.
+
+Player ek manifest file download karta hai jo bataata hai — "yeh title in renditions mein available hai, aur har rendition ke segments in URLs pe milenge." Ab client continuously apna khud ka available bandwidth measure karta hai (pichhle segment ko download karne mein kitna time laga, kitne bytes mile) aur apne playback buffer ka health dekhta hai (kitna video already downloaded but abhi play nahi hua). In dono signals ke basis pe player agla segment kaunsi quality mein fetch karna hai, khud decide karta hai — koi server-side decision nahi hai yeh, poori tarah **client-driven** hai.
+
+Agar bandwidth achha hai aur buffer healthy hai, player upgrade karta hai agli higher quality pe. Agar bandwidth gir raha hai ya buffer khali ho raha hai, player downgrade karta hai taaki buffering na ho — kyunki ek chhoti si quality drop ek freeze/stall se hamesha better UX hai. Kyunki har segment apne aap mein independently decodable hai (keyframe se shuru hota hai), yeh switching **mid-video, seamlessly** ho sakti hai — user ko kabhi pata bhi nahi chalta ki quality badal gayi.
+
+Ek aur practical trick: player pehla segment jaan-boojh kar low bitrate pe fetch karta hai (chahe network achha ho), taaki startup latency kam se kam ho — is technique ko "fast start" kehte hain, aur uske baad quickly ramp up karta hai jaisa bandwidth confirm hota hai.
+
+#### 3. CDN as the Delivery Backbone
+
+Ek baar transcode ho jaane ke baad, video segments **immutable static files** hain — yehi CDN caching ke liye perfect use-case hai (yeh directly CDN module se connect karta hai). Netflix aur Hotstar ka bulk of engineering effort aur cost actual CDN strategy mein hi hai, not the app logic. Multi-tier setup common hai: edge PoPs (users ke sabse paas, aksar directly ISP ke andar), regional caches, aur ek **origin shield** layer jo edge aur true origin ke beech baithta hai. Jab ek naya popular title release hota hai aur lakhon requests same time pe same content maangte hain, origin shield un sabko coalesce karke origin ko sirf ek baar hit karta hai — baaki sab requests wahin se serve hoti hain. Bina isske, ek hot release "thundering herd" se origin ko crash kar sakta hai.
+
+Netflix isse ek step aage le jaata hai apne **Open Connect** program se — apne khud ke CDN appliances directly ISPs ke datacenters ke andar deploy karta hai, taaki video ISP boundary cross kiye bina hi user tak pahunche.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Live streaming ka sabse bada trap yeh samajhna hai ki yeh VOD ka hi ek "real-time version" hai. Actually yeh fundamentally harder problem hai — VOD mein tumhare paas pre-processing aur pre-caching ka luxury hota hai; live mein content generate hi ab ho raha hai, aur poori spike ek predictable, fixed moment (match start) pe aati hai jahan retry ka koi mauka nahi milta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Hotstar">
+
+Hotstar (ab JioHotstar/Disney+ Hotstar) India ka sabse famous large-scale live streaming case study hai. IPL final jaise match ke liye unhone publicly discuss kiya hai ki concurrent viewership 25 million se upar jaata hai, aur ODI World Cup finals jaise events mein yeh aur bhi zyada tha. Yeh scale VOD se fundamentally different problem hai: content pehle se transcode ya cache nahi kiya ja sakta kyunki woh live generate ho raha hai. Toss ke waqt hi lakhon users ek saath app kholte hain — spike minutes mein 0 se peak tak jaata hai, predictable time pe (match start), lekin exact magnitude uncertain rehta hai. Isliye Hotstar apne CDN edge capacity aur transcoding pipeline ko match se pehle hi **aggressively pre-scale** karta hai based on predicted demand (team ranking, historic viewership, promotional reach) — reactive autoscaling itni fast nahi ho sakti ki minutes ke andar 10x-20x traffic surge ko catch kar sake. Yeh ek genuinely unique challenge hai jo Netflix-style VOD companies ko itni acute form mein face nahi karna padta.
+
+</RealWorld>
+
+<RealWorld company="Netflix">
+
+Netflix apne encoding pipeline mein **per-title encoding** karta hai — matlab har title ke liye alag bitrate ladder optimize karta hai based on content complexity, generic ladder use nahi karta sab titles ke liye. Ek simple cartoon (flat colors, kam motion) same visual quality ke liye kaafi kam bitrate pe encode ho sakta hai compared to ek fast-action movie (lots of motion, detail). Isse bandwidth cost significantly kam hota hai bina quality compromise kiye — yeh ek achha example hai ki kaise ek "boring" backend optimization directly cost aur user experience dono pe measurable impact daalta hai at Netflix's scale.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Hotstar peak concurrent viewers (IPL final / major cricket events) — publicly discussed as 25 million+
+- Estimated peak egress bandwidth at that concurrency (approx 2 Mbps average per stream) — approx 50 Tbps
+- Typical HLS/DASH segment duration — 2-10 seconds (commonly ~6 seconds)
+- Target startup latency (play tap to first frame) — under ~2 seconds
+- Typical bitrate ladder — roughly 6-10 renditions from 240p to 4K
+- CDN cache hit ratio target for popular VOD content — 99%+ (origin sees roughly 1% of requests)
+- 1 hour of 4K source transcoded serially — can take multiple hours; chunked parallel transcoding brings this down to a few minutes
+- Netflix-scale catalog (~15,000 hours) transcoded storage footprint — roughly tens to ~90 TB per full copy, before geo-replication
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar do directions mein push karta hai: pehla, "batao ABR kaam kaise karta hai" — yahan sirf "quality adjust hoti hai" kehna kaafi nahi hai, tumhe segments, manifest, aur client-side measurement ka mechanism explain karna chahiye. Doosra, "VOD design ko live ke liye kaise badloge?" — yeh check karta hai ki tumhe pata hai pre-caching ka luxury live mein nahi milta, aur predictable-but-massive spike ke liye proactive pre-scaling chahiye, reactive autoscaling kaafi nahi hai. Ek strong signal hai jab tum khud bolte ho "origin ko direct serve nahi karunga, CDN ke bina yeh design impossible hai scale pe" — bina interviewer ke poochhe.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Yeh sochna ki video streaming ek persistent socket connection pe live-streamed continuous data hai — actually yeh chhote-chhote independent HTTP-fetched segment files hain, ek "stream" nahi.
+
+</Mistake>
+
+<Mistake>
+
+Transcoding ko synchronous, request-time operation samajhna — kisi user ka play button dabana kabhi bhi transcoding trigger nahi karta, yeh hamesha upload ke baad async batch job hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+Live aur VOD ko same problem treat karna — live mein pre-transcode aur pre-cache karne ka mauka hi nahi milta, aur traffic spike predictable time pe achanak aata hai, jabki VOD demand gradually build hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+CDN ko optional optimization samajhna instead of a mandatory architectural requirement — is scale pe origin se directly serve karna bandwidth-wise literally impossible hai, yeh koi "nice to have" nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Origin shield ka concept bhool jaana — bina isske, ek popular naya release lakhon simultaneous cache-miss requests se origin ko crash kar sakta hai (thundering herd problem).
+
+</Mistake>
+
+## Common Follow-Up Questions
+
+<Hinglish>
+
+### Follow-Up Questions
+
+- DRM/content protection kaise design karoge taaki piracy roki ja sake bina legitimate playback latency badhaye?
+- Live streaming ka glass-to-glass latency (broadcast se viewer ki screen tak) kaise kam karoge — low-latency HLS/DASH chunked transfer encoding jaisi techniques?
+- Multiple audio tracks aur subtitles ko manifest/packaging design mein kaise fit karoge?
+- Encoding cost optimize karne ke liye AV1 jaisa naya, zyada efficient par zyada compute-heavy codec kab worth hai — compute cost vs bandwidth savings ka trade-off kaise evaluate karoge?
+- CDN pre-warming ke liye ek naya release "hit hoga ya nahi" predict karne wala system kaise design karoge?
+- Agar ek CDN edge region completely down ho jaaye during a live match, failover kaise design karoge bina viewers ko dikhne wale gap ke?
+
+</Hinglish>
+
+## Bottlenecks & Failure Modes
+
+<Hinglish>
+
+### Bottlenecks & Failure Modes
+
+- **Thundering herd on cache miss** — ek naya hot title release hote hi lakhon simultaneous first-fetch requests origin ko hit kar sakti hain. Fix: origin shield layer jo requests ko coalesce kare, sirf ek origin fetch kare aur baaki sabko wahi response de.
+- **CDN edge overload during flash spikes** — live event start hote hi traffic seconds mein 10x-20x ho sakta hai. Fix: reactive autoscaling kaafi nahi hai, proactive pre-scaling chahiye based on predicted demand before the event starts.
+- **Transcoding backlog** — agar bahut saare uploads ek saath queue mein aa jaayein, naya content available hone mein delay ho sakta hai. Fix: priority queues (urgent releases pehle) aur autoscaling transcode farm.
+- **Single origin region failure** — agar origin storage ka ek region down ho jaaye, poora catalog unavailable ho sakta hai. Fix: multi-region origin replication.
+- **ABR algorithm misjudging bandwidth** — agar bandwidth estimation noisy hai (jaise ek temporary network blip), player quality baar-baar upar-neeche switch kar sakta hai — yeh visually annoying hai. Fix: smoothing/hysteresis in the ABR decision logic, na ki har single measurement pe react karna.
+- **Live encoding pipeline failure mid-match** — yeh sabse critical hai kyunki live content dobara generate nahi ho sakta. Fix: redundant parallel encoding paths with automatic failover — kabhi bhi single point of failure na ho live ingest se packaging tak.
+- **Regional ISP peering congestion** — ek national event ke dauraan agar ek specific ISP ka peering link saturate ho jaaye, us ISP ke sab users ko buffering ka experience hota hai chahe CDN capacity overall fine ho. Fix: multiple peering paths aur ISP-level embedded caches (jaisa Netflix Open Connect karta hai).
+
+</Hinglish>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Do pipelines: ingest/processing (async, offline transcoding) aur delivery/playback (real-time, CDN-driven)
+- Transcoding hamesha async batch job hai — kabhi request-time pe synchronous nahi hoti, aur chunked parallelism se fast ho jaati hai
+- ABR = video segmented into short chunks (2-10s), multiple quality levels per chunk, client khud bandwidth aur buffer measure karke agla segment ki quality decide karta hai — poori tarah client-driven
+- Segments immutable static files hain post-transcode — perfect CDN caching use-case, yehi majority cost/architecture hai
+- Origin shield thundering herd se origin ko bachata hai — ek popular release ke lakhon cache-miss requests ko coalesce karta hai
+- Live streaming VOD se fundamentally harder hai — pre-cache/pre-transcode ka mauka nahi milta, predictable-but-massive spike hota hai
+- Hotstar IPL final: 25 million+ concurrent viewers, requires proactive massive pre-scaling before match start, not reactive autoscaling
+- Bandwidth, not storage, is the real cost/scale bottleneck in video streaming
+
+</QuickRevision>

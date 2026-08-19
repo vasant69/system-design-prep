@@ -1,0 +1,192 @@
+---
+slug: "cache-eviction-invalidation"
+title: "Cache Eviction & Invalidation"
+section: "system-design"
+module: "scalability-basics"
+order: 3
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["caching"]
+tags: ["caching", "performance"]
+englishDefinition: "Cache eviction is the process of removing entries from a cache when it's full, according to a policy such as LRU or LFU, to make room for new data. Cache invalidation is the separate process of removing or updating entries because the underlying source-of-truth data has changed, so the cache doesn't keep serving data that's now wrong. They are often confused, but a cache can be full with zero stale data, or have plenty of free space and still be serving stale data."
+interviewFrequency: "high"
+companies: ["Netflix", "Twitter", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Cache eviction is the process of removing entries from a cache when it's full, according to a policy such as LRU or LFU, to make room for new data. Cache invalidation is the separate process of removing or updating entries because the underlying source-of-truth data has changed, so the cache doesn't keep serving data that's now wrong. They are often confused, but a cache can be full with zero stale data, or have plenty of free space and still be serving stale data.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Phil Karlton ki famous line hai: "There are only two hard things in Computer Science: cache invalidation and naming things." Yeh joke nahi hai — dono genuinely underrated-hard problems hain, aur is topic mein hum dekhenge kyun. Pehli cheez jo clear karni hai: **eviction** aur **invalidation** do alag problems hain, aur interview mein inko mix kar dena ek common red flag hai.
+
+**Eviction** ka sawaal yeh hai: "cache full hai, naya entry daalna hai, kisko nikalu?" — yeh purely capacity management hai, data ki correctness se koi lena dena nahi. **Invalidation** ka sawaal yeh hai: "underlying data change ho gaya, cache mein purana copy hai, isse kaise hataun ya update karun?" — yeh correctness ka sawaal hai. Ek cache **full aur bilkul fresh** ho sakta hai (eviction problem nahi, invalidation problem nahi), ya **khaali jagah ke saath stale data serve** kar sakta hai (invalidation problem hai, eviction ka nahi). Dono independent axes hain.
+
+### Eviction policies — asli implementation depth ke saath
+
+- **LRU (Least Recently Used)** — Sabse popular policy: jo entry sabse lambe time se access nahi hui, use pehle evict karo. Isko O(1) get/put ke saath implement karne ka classic tareeka hai: ek **doubly linked list** (jisme most-recently-used head pe hai aur least-recently-used tail pe) plus ek **hashmap** (key se linked-list node tak direct pointer). Jab bhi koi key access hoti hai (get ya put), uska node linked list mein constant time mein remove karke head pe move kar diya jaata hai (doubly linked list isliye — remove O(1) hai agar node ka reference already pata ho). Jab eviction chahiye, bas tail wala node hata do — woh guaranteed least-recently-used hai. Hashmap se lookup O(1), linked list move/remove O(1) — poora operation O(1) hai.
+
+```text
+LRU structure:
+  hashmap: key -> node reference
+  doubly linked list: head (most recent) <-> ... <-> tail (least recent)
+
+get(key):
+  node = hashmap[key]
+  move node to head
+  return node.value
+
+put(key, value):
+  if key exists: update value, move node to head
+  else:
+    if cache full: remove tail node, delete from hashmap
+    create new node at head, add to hashmap
+```
+
+- **LFU (Least Frequently Used)** — Access **count** track karta hai, jo entry sabse kam access hui hai overall use evict karta hai. Problem yeh hai ki LFU "stuck favoring old popular items" ho sakta hai — ek item jo pehle bahut popular tha (high count accumulate kar chuka hai) lekin ab access hi nahi ho raha, phir bhi apne purane high count ki wajah se cache mein tika reh sakta hai, jabki genuinely trending naye items evict ho jaate hain kyunki unka count abhi low hai. Isko fix karne ke liye **aging** chahiye — counts ko periodically decay karo (jaise time ke saath count ko half kar do), taaki purani popularity progressively kam weight rakhe aur recent trends reflect ho sakein.
+- **TTL-based expiry** — Har entry ek fixed time ke baad automatically expire ho jaata hai, chahe woh access ho raha ho ya nahi. TTL choose karna khud ek trade-off hai: **bahut chhota TTL** — frequent re-fetch, low hit ratio, origin/database pe zyada load. **Bahut bada TTL** — high hit ratio lekin stale data zyada der tak serve hone ka risk. Sahi TTL data ki "change frequency" aur "staleness tolerance" dono pe depend karta hai — jaise product price shayad 5 minute TTL le sakta hai, lekin ek static "About Us" page ghanton ka TTL le sakta hai.
+
+### Invalidation strategies
+
+- **TTL** — Simplest approach, upar cover kiya — bas time ke baad expire karo. Passive, guaranteed eventually-consistent, lekin worst-case staleness window utni hi lambi jitna TTL.
+- **Explicit invalidation on write** — Jab bhi underlying data update hota hai, application code explicitly cache se us key ko delete ya update kar deta hai usi transaction ke part ke roop mein. Zyada precise (staleness window minimal), lekin implementation complexity zyada hai — har write path pe yeh discipline chahiye, aur distributed systems mein multiple cache nodes ko consistently invalidate karna khud ek coordination problem hai.
+- **Versioned / keyed cache keys** — Cache key mein khud ek version number ya hash embed karo (jaise `user:42:v3` ya `product:99:hash_abc123`). Jab underlying data change hoti hai, version badal jaata hai, isliye naya key automatically ek fresh cache miss create karta hai — purana version wala entry bas naturally unused ho jaata hai aur normal eviction se clean ho jaata hai. Yeh explicit delete ki zaroorat hi khatam kar deta hai, lekin har naya version ek naya cache slot leta hai jab tak purana evict na ho.
+
+### Thundering herd problem — poori detail mein
+
+Yeh ek classic failure scenario hai jo interview mein depth test karta hai. Imagine ek bahut popular cache key (jaise homepage ka trending-products list) TTL expire ho jaata hai. Us exact moment pe agar hazaaron concurrent requests aa rahi hain, sab ko cache miss milta hai **simultaneously** — aur sab ke sab ek saath database (ya expensive computation) ko hit karte hain us same data ko recompute karne ke liye. Database jo normally sirf ek request handle karta (kyunki baaki sab cache se serve ho rahe the), achanak hazaaron identical duplicate queries se overwhelm ho jaata hai — worst case database crash ya cascading timeout.
+
+Real mitigations:
+
+1. **Request coalescing / single-flight** — Jab ek key ka cache miss ho, sirf **ek** request ko actually database tak jaane do; baaki saare concurrent requests usi in-flight computation ka result wait karke share kar lein, apni khud ki duplicate query mat chalayein. Isse N requests ke liye database sirf 1 baar hit hota hai, N baar nahi.
+2. **Staggered / jittered TTLs** — Agar bahut saari keys ka TTL exactly same time pe set kiya gaya hai (jaise ek bulk cache warm-up ke baad), sab ek saath expire ho jaayengi — ek synchronized thundering herd create karke. Fix: har key ke TTL mein thoda random jitter add karo (jaise base TTL plus/minus kuch random seconds), taaki expiry times spread ho jaayein.
+3. **Probabilistic early expiration** — Har request pe, expiry time ke kareeb aane par, ek probability ke basis pe **proactively** refresh trigger karo (expiry se pehle hi), jitna zyada expiry ke kareeb utni zyada probability. Isse refresh gradually hota hai, ek hi moment pe sab ek saath expire hone ke bajaye.
+4. **Stale-while-revalidate** — Jab cache entry expire ho jaaye, turant purana (stale) data serve kar do requester ko (thoda stale better hai kuch na hone se), aur **background** mein ek fresh value fetch karo aur cache update kar do. Agla request naya fresh data paayega. Isse user-facing latency kabhi spike nahi hota, aur database pe bhi sirf ek background refresh load padta hai, N concurrent duplicate loads nahi.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Thundering herd sirf theoretical problem nahi hai — ek genuinely popular key (jaise homepage data) ka TTL expiry production database ko seconds mein overwhelm kar sakta hai agar mitigation na ho. Yeh interview mein "cache expire hone ke baad kya hoga agar traffic bahut high ho" jaise follow-up mein directly poocha jaata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Netflix">
+
+Netflix jaisi systems mein EVCache jaisa cache layer probabilistic early expiration aur staggered TTLs use karta hai taaki millions of concurrent users ke recommendation/personalization data ka cache expiry ek hi moment pe cluster na ho jaaye — jo warna backend services par massive simultaneous load create kar sakta hai.
+
+</RealWorld>
+
+<RealWorld company="Twitter">
+
+Twitter (X) jaisi high-fanout system mein ek celebrity ka tweet cache invalidate hote hi lakhon followers ke timeline reads simultaneously miss ho sakte hain. Request coalescing yahan critical hai — agar 10,000 concurrent requests ek hi tweet ka data maang rahe hain aur cache miss hai, sirf ek request database tak jaani chahiye, baaki 9,999 usi result ka wait karein.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Sale event ke shuruaat pe (jaise flash sale ka pehla second) product-listing cache keys aksar ek saath expire ho jaate hain agar unhe ek hi batch job ne warm kiya tha same timestamp ke saath. Isse bachne ke liye jittered TTLs use karna zaroori hai — warna sale start hote hi database ek synchronized traffic spike se crash ho sakta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- LRU get/put with hashmap plus doubly linked list — O(1) time complexity for both operations
+- Typical TTL jitter range in production — base TTL plus/minus 10-20% randomized
+- Thundering herd on a popular key can multiply database load from 1 query to thousands within the same second of expiry
+- Stale-while-revalidate window commonly configured — serve stale for a few seconds while background refresh completes
+- LFU aging/decay interval — often every few minutes to hours depending on traffic pattern
+- Single-flight/request coalescing can reduce duplicate backend load by orders of magnitude (thousands of concurrent misses collapsed to 1 origin call)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic follow-up after any caching answer: **"What happens when a popular key expires under heavy load?"** This is the thundering herd test, and it's one of the sharpest ways an interviewer separates candidates who've only read about caching from those who've reasoned through it. A weak answer just says "we set a TTL." A strong answer walks through the failure mode explicitly — thousands of simultaneous cache misses hitting the database at once — and then names at least two concrete mitigations: request coalescing to collapse duplicate queries into one, and either jittered TTLs or stale-while-revalidate to avoid synchronized expiry. Also expect a direct question distinguishing eviction from invalidation — conflating the two is an immediate signal of surface-level understanding.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Eviction aur invalidation ko same problem samajh lena — "cache full ho gaya to LRU evict karega, bas isi se staleness bhi handle ho jaayegi" bolna, jabki eviction ka correctness/staleness se koi relation nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+LFU use karte time aging/decay implement na karna — jiski wajah se purane popular items forever cache mein atke reh jaate hain jabki naye trending items evict hote rehte hain.
+
+</Mistake>
+
+<Mistake>
+
+Sab cache keys ka TTL exactly same rakhna (jaise ek bulk warm-up ke time), jo unintentionally sabko ek saath expire karwa deta hai aur khud thundering herd create kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Thundering herd ka sirf "TTL set kar denge" jawab dena bina request coalescing, jitter, ya stale-while-revalidate jaisa concrete mitigation mention kiye — yeh depth ki kami dikhata hai.
+
+</Mistake>
+
+<Mistake>
+
+Explicit invalidation on write implement karte time sirf ek cache node ko update karna, distributed cache cluster ke baaki nodes ko bhool jaana — jisse kuch nodes fresh data serve karte hain aur baaki stale, ek inconsistent cache cluster create hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant R1 as Request 1
+    participant R2 as Request 2
+    participant Rn as Request N (thousands)
+    participant C as Cache
+    participant DB as Database
+
+    Note over C: Popular key TTL expires
+    R1->>C: GET key
+    C-->>R1: MISS
+    R2->>C: GET key
+    C-->>R2: MISS
+    Rn->>C: GET key
+    C-->>Rn: MISS
+    Note over R1,Rn: Without coalescing: all N requests hit DB directly
+    R1->>DB: Query (duplicate 1)
+    R2->>DB: Query (duplicate 2)
+    Rn->>DB: Query (duplicate N)
+    Note over DB: DB overwhelmed by N simultaneous identical queries
+`}
+  caption="Thundering herd: a single popular key's expiry fans out into N duplicate database queries without request coalescing."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Eviction = capacity problem (cache full, remove per policy); invalidation = correctness problem (data changed, remove/update stale entry) - two distinct problems
+- LRU: doubly linked list plus hashmap gives O(1) get/put; evict from the tail
+- LFU: tracks access count, but needs aging/decay or it gets stuck favoring old popular items
+- TTL trade-off: too short = low hit rate, more origin load; too long = stale data served longer
+- Invalidation strategies: TTL (passive), explicit invalidation on write (precise but coordination-heavy), versioned/keyed cache keys (new version = automatic miss)
+- Thundering herd: many requests miss a popular expired key simultaneously, all hammer the DB at once
+- Mitigations: request coalescing/single-flight, jittered TTLs, probabilistic early expiration, stale-while-revalidate
+- "Cache invalidation and naming things" - Phil Karlton's line is a good framing device, not just a joke, to open this topic in an interview
+
+</QuickRevision>

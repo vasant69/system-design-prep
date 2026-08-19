@@ -1,0 +1,196 @@
+---
+slug: "failure-handling-patterns"
+title: "Failure Handling: Retries, Backoff, Circuit Breaker, Bulkhead"
+section: "system-design"
+module: "reliability-ops"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["availability-sla-slo-sli"]
+tags: ["reliability", "microservices"]
+englishDefinition: "Retries, exponential backoff, circuit breakers, and bulkheads are a cluster of complementary resilience patterns for surviving partial failures in distributed systems. A retry re-attempts a failed operation; exponential backoff increases the delay between retries so a struggling dependency isn't hammered further; a circuit breaker stops calling a failing dependency entirely for a cooldown period instead of retrying forever; a bulkhead isolates resources per dependency so one failing dependency cannot exhaust resources needed by others."
+interviewFrequency: "very-high"
+companies: ["Netflix", "Amazon", "Uber"]
+---
+
+<SimpleDefinition>
+
+Retries, exponential backoff, circuit breakers, and bulkheads are a cluster of complementary resilience patterns for surviving partial failures in distributed systems. A retry re-attempts a failed operation; exponential backoff increases the delay between retries so a struggling dependency isn't hammered further; a circuit breaker stops calling a failing dependency entirely for a cooldown period instead of retrying forever; a bulkhead isolates resources per dependency so one failing dependency cannot exhaust resources needed by others.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Microservices world mein ek hard truth hai jo har senior engineer jaanta hai: **kisi na kisi dependency ka koi na koi hissa hamesha thoda broken hota hai**. Ek network blip, ek slow database query, ek downstream service jo deploy ho raha hai — partial failure koi edge case nahi hai, yeh **default state** hai jab tumhare paas dus-bees services ek dusre ko call kar rahi hon. Is topic ka poora point yeh hai ki tumhara system in chhoti chhoti failures ko gracefully absorb kare, unhe total outage mein escalate hone diye bina.
+
+### Naive retry — jab "solution" khud problem ban jaata hai
+
+Pehla instinct sabka same hota hai: "call fail hui? bas dobara try karo." Lekin naive retry — bina kisi delay ya limit ke turant dobara call karna — actually cheezein **worse** bana sakta hai.
+
+Socho: ek downstream service already struggling hai, thoda slow chal raha hai load ki wajah se. Ab har client jo usse call kar raha tha, unki calls fail hone lagti hain, aur **sab ek saath turant retry karte hain**. Yeh downstream service pe **extra** load daal deta hai — exactly jab woh already struggling tha. Result: ek service jo sirf **thoda** slow tha, ab poori tarah **crash** ho jaata hai load ki wajah se. Isko **retry storm** kehte hain — aur yeh distributed systems mein cascading failures ka ek sabse common root cause hai. Ek chhota partial outage, naive retries ki wajah se, **total outage** ban jaata hai.
+
+### Exponential backoff — delay badhate jao
+
+Iska fix hai **exponential backoff**: har retry ke beech ka delay exponentially badhao instead of turant retry karna. Jaise: pehli retry 1 second baad, dusri 2 seconds baad, teesri 4 seconds baad, chauthi 8 seconds baad — power of 2 se badhta jaata hai. Isse do fayde hain:
+
+1. Struggling service ko **recover hone ka time** milta hai, kyunki retries immediately nahi aa rahe.
+2. Agar failure genuinely transient thi (jaise ek chhota network blip), retry succeed ho jaayega without adding much extra load.
+
+Usually ek **max retry count** (jaise 3-5 attempts) aur ek **max delay cap** bhi set hota hai — infinite retries bhi apna khud ka problem hai (client indefinitely wait karta rahega).
+
+### Jitter — woh non-obvious detail jo interview mein alag karta hai
+
+Yahan ek subtle lekin bahut important detail hai jo bahut log miss karte hain: agar **hazaaron clients** simultaneously fail hote hain (jaise ek downstream service ek second ke liye poori tarah down ho gaya), aur sabke paas **same exponential backoff schedule** hai (sab 1s, phir 2s, phir 4s pe retry karenge), to woh sab **synchronized waves** mein retry karenge — pehli retry wave sab ek saath 1 second pe aayegi, phir dusri wave sab ek saath 2 seconds pe. Yeh effectively wahi retry storm problem hai, bas thoda delayed.
+
+Fix hai **jitter** — delay mein thodi si **randomness** add karna. Instead of exactly "2 seconds," delay ho "1.5 se 2.5 seconds ke beech random." Ab sab clients alag-alag time pe retry karte hain, load naturally spread ho jaata hai time ke across, aur downstream service ko ek single massive spike ke bajaye ek smooth, manageable trickle of retries milta hai. Yeh detail chhoti lagti hai lekin production incidents mein bahut baar difference banati hai — AWS ki official retry guidance bhi explicitly "exponential backoff **with** jitter" recommend karti hai, sirf plain exponential backoff nahi.
+
+### Circuit breaker — retry karna hi band kar do
+
+Backoff aur jitter tab kaam karte hain jab failure **transient** ho (thodi der mein theek ho jaayegi). Lekin agar ek dependency **genuinely down** hai (jaise 5 minutes se poora crash hai), to retry karte rehna — chahe delay ke saath bhi — sirf **waste** hai: latency add karta hai (client har call pe retries ka wait kar raha hai), aur dependency pe load bhi daalta rehta hai jab woh recover karne ki koshish kar raha ho.
+
+Circuit breaker pattern isko solve karta hai — ek electrical circuit breaker jaisa hi concept: agar problem detect ho jaaye, **circuit tod do**, current (requests) flow karna band kar do, jab tak safe na ho. Teen states hote hain:
+
+- **Closed** — normal state. Requests dependency tak jaate hain, jaisa normally hota. Agar failures ek threshold cross kar jaayein (jaise last 10 requests mein se 50%+ fail), circuit **Open** ho jaata hai.
+- **Open** — dependency failing maana jaata hai. Ab naye requests dependency tak bheje hi **nahi** jaate — woh **immediately, fail-fast** error return karte hain, without even attempting the call. Yeh dono ko bachaata hai: caller ko lambe timeout ka wait nahi karna padta, aur struggling dependency ko additional load nahi milta jab woh recover karne ki koshish kar raha ho. Ek cooldown timer (jaise 30 seconds) ke baad, circuit **Half-Open** ho jaata hai.
+- **Half-Open** — ek **test request** dependency ko bheja jaata hai (sirf ek, baaki sab still fail-fast). Agar woh test request succeed karta hai, dependency recover ho chuka maana jaata hai aur circuit wapas **Closed** ho jaata hai — normal traffic resume. Agar test request bhi fail hota hai, circuit wapas **Open** ho jaata hai, cooldown timer restart.
+
+Yeh cycle system ko dependency ki health ko continuously, safely probe karne deta hai bina usse overwhelm kiye.
+
+### Bulkhead — ek leak se poora jahaaz na doobe
+
+Circuit breaker ek **specific** dependency ke calls ko protect karta hai, lekin ek aur risk hai: agar sab dependencies **same shared resource pool** (jaise ek common thread pool ya connection pool) use kar rahe hain, to **ek slow dependency poore pool ko exhaust kar sakta hai** — matlab uska slowness doosre, completely healthy dependencies ke calls ko bhi block kar dega, kyunki koi thread/connection available hi nahi bacha unke liye.
+
+**Bulkhead pattern** — naam ship building se aaya hai. Ships mein hull ko multiple watertight **compartments** mein divide kiya jaata hai — agar ek compartment mein leak ho jaaye, sirf woh compartment paani se bharta hai, poora jahaaz nahi doobta, kyunki compartments ek dusre se isolated hain. Same idea software mein: **har downstream dependency ke liye alag, dedicated thread pool ya connection pool rakho.** Agar Dependency A slow ho jaata hai aur uska thread pool poora exhaust ho jaata hai, Dependency B (jo healthy hai) ka apna alag pool hai, uske calls unaffected chalte rehte hain.
+
+Bulkhead ke bina, ek single slow dependency **poore system ko** down kar sakta hai, chahe baaki sab dependencies healthy hon — sirf isliye kyunki shared resource pool khatam ho gaya.
+
+### Sab patterns saath mein kaise kaam karte hain
+
+Production mein yeh sab layers ek saath use hote hain: **bulkhead** har dependency ko apna isolated resource pool deta hai; us pool ke andar, calls **retry with exponential backoff + jitter** try karte hain transient failures ke liye; aur agar failures persist karti hain, **circuit breaker** open ho jaata hai us specific dependency ke liye taaki retries hi band ho jaayein jab tak recovery confirm na ho. Yeh chaaron patterns ek dusre ko complement karte hain — koi ek akela poori resilience nahi deta.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Retries transient failures (network blip, momentary overload) ko silently recover kar dete hain — user ko kabhi pata bhi nahi chalta kuch fail hua tha",
+    "Circuit breaker + bulkhead ek genuinely down dependency ko poore system ko neeche girne se rokte hain",
+  ]}
+  cons={[
+    "Bahut aggressive retrying (bina backoff/jitter/limit ke) khud ek retry storm bankar outage ko worse bana sakta hai",
+    "Non-idempotent operations (jaise 'charge card') ko blindly retry karna duplicate side-effects create kar sakta hai — retry safe tabhi hai jab operation idempotent ho ya retry logic deduplication handle kare",
+  ]}
+/>
+
+<Callout type="trap">
+
+Sirf retry add karna "resilience" nahi hai. Bina exponential backoff aur jitter ke retries, ek struggling dependency ko turant crash kar sakte hain — retry ek double-edged tool hai, carefully tune karna padta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Netflix">
+
+Netflix ne **Hystrix** library banayi thi (2011-2018 ke around widely used, ab largely superseded by resilience4j aur service mesh-level solutions jaise Envoy/Istio, lekin historically yeh circuit breaker pattern ka **canonical, industry-reference implementation** thi). Hystrix explicitly circuit breaker + bulkhead (per-dependency thread pool isolation) dono ek saath implement karta tha, kyunki Netflix ka scale itna bada tha ki ek single slow dependency (jaise ek recommendation service) poore streaming experience ko down kar sakta tha agar isolate na kiya jaaye.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+AWS SDKs (jaise DynamoDB, S3 clients) built-in exponential backoff with jitter implement karte hain by default — AWS ki official architecture guidance explicitly warn karti hai ki plain exponential backoff (bina jitter ke) bhi thundering herd problem create kar sakta hai jab bahut saare clients ek saath retry karte hain. Yeh itna important pattern hai ki AWS apne khud ke SDKs mein isse default bana chuka hai, developer ko manually implement nahi karna padta.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ka dispatch system (driver-rider matching) dusre services — pricing, ETA calculation, fraud check — ko real-time call karta hai. Agar fraud-check service slow ho jaaye, circuit breaker usse fail-fast kar deta hai after threshold, taaki poora trip-booking flow us ek slow dependency ki wajah se block na ho — worst case, ek degraded experience (jaise fraud check skip/fallback) diya jaata hai, lekin poora booking flow down nahi hota.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical exponential backoff sequence — 1s, 2s, 4s, 8s, 16s (capped at some max, e.g. 30-60s)
+- Typical max retry attempts before giving up — 3 to 5
+- Jitter range commonly applied — randomize delay within roughly 50%-100% of the computed backoff value
+- Typical circuit breaker failure threshold — circuit opens after 50%+ error rate over a rolling window of ~10-20 requests
+- Typical circuit breaker cooldown before Half-Open — 5-30 seconds depending on dependency criticality
+- Hystrix default settings (historical reference) — 1000ms timeout per call, ~10 threads per dependency thread pool
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common prompt: **"Service A calls Service B, and Service B starts timing out under load — how do you handle this?"** Interviewer testing kar raha hai ki tumhara pehla instinct sirf "retry karo" hai (weak answer) ya tumhe pata hai naive retry cheezein worse bana sakta hai (strong answer).
+
+Model answer shape: Start with the problem — "agar sab clients turant retry karte hain, B pe load aur badh jaayega, cascading failure ho sakta hai." Phir solution layer by layer build karo: "retries exponential backoff ke saath honi chahiye, aur jitter bhi taaki retries synchronized waves mein na aayein." Phir add karo: "agar B genuinely down hai, hume retry karte rehna band karna chahiye — circuit breaker pattern: threshold cross hone pe circuit open, fail-fast, phir periodically ek test request se check karo recovery." End mein bulkhead mention karo unprompted: "aur B ke calls ke liye alag thread/connection pool hona chahiye, taaki B ka slowness Service C jaisi healthy dependencies ke calls ko block na kare." Yeh full-stack answer — retry se leke isolation tak — depth dikhata hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Retry ko bina exponential backoff ke implement karna — turant, fixed-interval retries ek struggling dependency ko aur zyada overload kar sakti hain, isse retry storm trigger ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Jitter completely skip kar dena — sirf exponential backoff kaafi nahi hai agar hazaaron clients same schedule follow kar rahe hain, woh sab synchronized waves mein retry karke effectively wahi problem create karte hain jitter ke bina.
+
+</Mistake>
+
+<Mistake>
+
+Non-idempotent operations (jaise payment charge, order creation) ko blindly retry karna bina idempotency key ya deduplication logic ke — isse duplicate charges ya duplicate orders ban sakte hain jab original request actually succeed ho chuki thi lekin response client tak nahi pahuncha.
+
+</Mistake>
+
+<Mistake>
+
+Circuit breaker ko sirf "Open" tak treat karna aur Half-Open state ka concept miss kar dena — bina periodic test requests ke, circuit hamesha Open hi rahega chahe dependency kab ka recover ho chuka ho, jab tak koi manually intervene na kare.
+
+</Mistake>
+
+<Mistake>
+
+Saari downstream calls ke liye ek hi shared thread pool ya connection pool use karna (bulkhead na hona) — ek slow dependency poora pool exhaust kar sakta hai, jisse healthy dependencies ke calls bhi starve ho jaate hain, sirf resource contention ki wajah se.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Closed: request succeeds
+    Closed --> Open: failure rate crosses threshold
+    Open --> HalfOpen: cooldown timer expires
+    HalfOpen --> Closed: test request succeeds
+    HalfOpen --> Open: test request fails
+    Open --> Open: requests fail fast, no call attempted
+`}
+  caption="Closed lets traffic through normally, Open fails fast without even calling the dependency, and Half-Open sends one probe request to decide whether to recover."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Partial failure is the default state in microservices — some dependency is always a little broken
+- Naive retry without limits can turn a partial outage into a full outage (retry storm)
+- Exponential backoff: increase delay between retries (1s, 2s, 4s, 8s...) so the struggling service gets breathing room
+- Jitter: randomize the delay so thousands of clients don't retry in synchronized waves — a non-obvious but critical detail
+- Circuit breaker states: Closed (normal) to Open (fail fast, no calls made) to Half-Open (one test request) to Closed or back to Open
+- Bulkhead: dedicate separate thread/connection pools per dependency so one slow dependency can't starve calls to healthy ones
+- Netflix Hystrix — historically the canonical circuit breaker + bulkhead implementation, now largely superseded by resilience4j / service mesh
+- Combine all four: bulkhead isolates resources, retries+backoff+jitter handle transient failures, circuit breaker stops wasted effort on real outages
+
+</QuickRevision>

@@ -1,0 +1,173 @@
+---
+slug: "consistency-models"
+title: "Consistency Models"
+section: "system-design"
+module: "distributed-systems"
+order: 3
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["cap-theorem"]
+tags: ["distributed-systems", "consistency"]
+englishDefinition: "Consistency models define the spectrum of guarantees a distributed system can offer about when and in what order writes become visible to reads, ranging from strong consistency (linearizability) to eventual consistency. In between sit practical middle-ground models like read-your-writes and causal consistency, each trading off latency and availability differently."
+interviewFrequency: "high"
+companies: ["Amazon", "WhatsApp", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Consistency models define the spectrum of guarantees a distributed system can offer about when and in what order writes become visible to reads, ranging from strong consistency (linearizability) to eventual consistency. In between sit practical middle-ground models like read-your-writes and causal consistency, each trading off latency and availability differently.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+CAP theorem tumhe batata hai "Consistency vs Availability during a partition" — lekin "Consistency" khud ek single, binary cheez nahi hai. Yeh ek **spectrum** hai, aur real systems is spectrum pe alag-alag jagah baithte hain depending on use-case. Interview mein sirf "hum strong consistency use karenge" ya "eventual consistency use karenge" bolna kaafi nahi hai — tumhe pata hona chahiye ki beech mein bhi kaafi practical options hain, aur konsa kab use hota hai.
+
+### Strong consistency (linearizability)
+
+Yeh sabse strict guarantee hai: **har read ko sabse latest committed write ka result milega**, jaise poore system mein data ka sirf ek hi copy ho (chahe underlying replicas kitni bhi ho). Ek write commit hone ke turant baad, agar koi bhi client, kahin se bhi, read kare — usse woh naya write hi dikhega, kabhi purana nahi.
+
+Concrete scenario: **seat booking / inventory decrement**. Socho ek concert ki last seat bachi hai, aur do users simultaneously "book" click karte hain. Agar system strongly consistent hai, to exactly ek booking succeed hogi aur doosre ko turant "seat unavailable" dikhega — koi bhi read us decision ke baad purana ("seat available") state kabhi nahi dikhayega. Yeh guarantee expensive hai — usually requires coordination (jaise quorum writes/reads, ya ek single leader se saari writes route karna), jo latency badhata hai. Lekin kuch use-cases mein yeh non-negotiable hai — galat inventory count ka matlab hai do logon ko same seat bech dena.
+
+### Eventual consistency
+
+Doosra extreme: system guarantee deta hai ki agar koi naya write na aaye, **eventually** saare replicas same state pe converge ho jaayenge — lekin **kab** yeh guarantee nahi karta. Beech mein reads stale data dikha sakte hain.
+
+Concrete scenario: **like count on a social media post**. Tum ek Instagram post pe like karte ho, aur count turant globally sabko sync nahi hota — kisi doosre user ko shayad 2-3 second baad naya count dikhega, ya kabhi kabhi thoda off count bhi dikh sakta hai (99 vs 100) jab tak sab replicas sync na ho jaayein. Yeh bilkul fine hai — like count ek business-critical number nahi hai jahan exact real-time accuracy zaroori ho. Iske badle mein system fast aur highly available rehta hai.
+
+### Read-your-writes consistency
+
+Yeh ek bahut practical **middle ground** hai jo real products mein bohot common hai: guarantee yeh hai ki **ek user apne khud ke writes turant dekh paayega**, chahe baaki users ko woh write thoda der se dikhe.
+
+Concrete scenario: **WhatsApp status post karna**. Tum apna status update karte ho — turant apne app mein dikh jaata hai ki status live hai, kyunki tumhara client us specific write ko turant reflect karta hai (ya to same replica se serve hota hai jisne write liya, ya client apna khud ka pending write locally track karta hai). Lekin tumhare kisi friend ka app abhi tak replica sync nahi hua ho to unko woh status 1-2 second baad dikhega. Tumhare liye system "strongly consistent" feel hota hai, unke liye "eventually consistent" — yehi is model ka trick hai. Iska implementation trick hai: user ke requests ko consistently usi replica pe route karna jisne unka write liya (sticky session/routing), ya ek short-lived "recent writes" cache client-side/session-side maintain karna.
+
+### Causal consistency
+
+Yeh ek subtler, powerful guarantee hai: agar do writes **causally related** hain (ek doosre pe depend karte hain), to sab clients unhe **same order mein** dekhenge. Lekin agar do writes **unrelated** hain, unka order alag clients ko alag dikh sakta hai — aur woh chalta hai.
+
+Concrete scenario: **WhatsApp group chat mein question aur uska reply**. Socho A poochta hai "kal party attend kar rahe ho?" aur B reply karta hai "haan zaroor!" — yeh do writes causally related hain (reply, question ke baad aaya, usi pe depend karta hai). Har group member ko **question pehle, reply baad mein** hi dikhna chahiye — kabhi ulta nahi, warna context hi galat lagega ("haan zaroor!" bina context ke confusing hai). Lekin agar isi waqt C ek unrelated message bhejta hai ("mausam kaisa hai aaj?"), uska order A-B ke conversation ke relative kuch bhi ho sakta hai different members ko — usse koi logical problem nahi hoti, kyunki woh causally unrelated hai. Causal consistency exactly yeh guarantee deta hai: **causal order preserve karo, baaki flexible rehne do** — jo strong consistency se sasta hai (poori global ordering nahi chahiye) lekin eventual consistency se zyada meaningful hai (context kabhi tootega nahi).
+
+### Spectrum ko yaad rakhne ka tareeka
+
+Strong se eventual tak jaate hue, tum **guarantee kam karte jaate ho, lekin latency/availability gain karte jaate ho**:
+
+```text
+Strong (linearizable) > Causal > Read-your-writes > Eventual
+     [most guarantee,          [least guarantee,
+      most latency cost]        least latency cost]
+```
+
+Interview mein sabse strong signal yeh hai ki tum ek hi model sab jagah use karne ka propose na karo — balki system ke **har feature** ke liye sochke bolo "yahan strong chahiye kyunki X, yahan eventual chalega kyunki Y."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Ek achha interview one-liner: "Main puri app ke liye ek hi consistency model nahi choose karunga — payment/inventory jaise critical paths ke liye strong consistency, likes/views jaise counters ke liye eventual, aur user-facing 'apna data turant dikhna chahiye' cases (jaise apna hi post/status) ke liye read-your-writes."
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="WhatsApp">
+
+WhatsApp status aur message delivery read-your-writes aur causal consistency dono ka mix use karta hai — tumhe apna bheja hua message turant dikhta hai (read-your-writes), aur ek conversation thread mein messages ka order preserve rehta hai relative to replies (causal) — lekin do independent chats ke messages ka global order kisi ko matter nahi karta.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+DynamoDB by default eventual consistency deta hai reads pe (fast, cheap), lekin explicitly "strongly consistent read" option bhi deta hai jab application ko zaroorat ho (jaise order placement ke turant baad order status check karna) — yeh dikhata hai ki ek hi database engine ke andar bhi tumhe per-query consistency choose karne ki flexibility milti hai.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Flipkart jaise e-commerce platform pe checkout ke waqt inventory count strong consistency maangta hai (do users ko last item na bech diya jaaye), lekin product review count ya "people also bought" recommendations eventual consistency pe chal sakte hain bina kisi business impact ke.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Strongly consistent read (e.g. DynamoDB) — roughly 2x the cost and higher latency vs eventually consistent read on the same system
+- Typical eventual consistency convergence window in a healthy multi-region setup — under 1 second, but can stretch to several seconds under load or network issues
+- Read-your-writes implementation via sticky routing — adds near-zero extra latency since it's just consistent routing, not extra coordination
+- Causal consistency metadata overhead (vector clocks / version vectors) — grows with number of nodes/actors tracked, a real implementation cost as system scales
+- Linearizable writes requiring leader/quorum coordination — commonly adds single-digit to double-digit milliseconds vs a local, uncoordinated write
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common framing: **"What consistency guarantee would you use for [feature X]?"** — asked after a candidate has already picked a database or replication strategy. Interviewer testing kar raha hai ki tum consistency ko binary (strong vs eventual) treat karte ho ya tumhe pata hai beech mein practical options bhi hain.
+
+Model answer shape: pehle identify karo feature ka criticality — "yeh feature agar stale data dikhaye to actual business/user harm hota hai kya?" Agar haan (payment, inventory, booking) → strong consistency, cost justified hai. Agar user apna khud ka data dekh raha hai turant (apni post, apna profile update) → read-your-writes, cheap aur sufficient. Agar order matter karta hai but sirf related events ke beech (chat thread, comment thread) → causal. Agar bilkul koi real-time correctness requirement nahi (view counts, like counts, analytics) → eventual, sabse fast/cheap. Har feature ko is lens se individually evaluate karna hi senior-level signal hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Consistency ko sirf ek binary choice samajhna — "strong ya eventual" — jabki read-your-writes aur causal jaise practical middle-ground models real products mein bahut common hain.
+
+</Mistake>
+
+<Mistake>
+
+Poore system ke liye ek hi consistency model propose karna, bina yeh consider kiye ki different features ki different criticality hoti hai — jaise payment ke liye eventual consistency propose kar dena kyunki "eventual consistency scalable hoti hai."
+
+</Mistake>
+
+<Mistake>
+
+Read-your-writes consistency ko eventual consistency samajh lena — dono alag hain. Read-your-writes specifically guarantee deta hai user apna khud ka write turant dekhega, jabki pure eventual consistency mein woh guarantee bhi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Causal consistency ko strong consistency jitna expensive samajh lena — asal mein causal consistency sirf **related** events ka order preserve karta hai, poori global ordering nahi maangta, isliye woh strong consistency se kaafi sasta hota hai implement karna.
+
+</Mistake>
+
+<Mistake>
+
+Concrete example diye bina sirf definitions rat ke bolna — interviewer ko "seat booking = strong, like count = eventual" jaise real scenarios chahiye, sirf theoretical naam nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Strong / Linearizable<br/>every read = latest write<br/>e.g. seat booking"] --> B["Causal<br/>related writes stay ordered<br/>e.g. chat question + reply"]
+    B --> C["Read-your-writes<br/>you see your own writes instantly<br/>e.g. WhatsApp status"]
+    C --> D["Eventual<br/>converges eventually, order not guaranteed<br/>e.g. like count"]
+    style A fill:#1e293b,stroke:#f87171,color:#e2e8f0
+    style D fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Guarantee strength decreases left to right; latency and availability improve left to right. Pick per-feature, not once for the whole system."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Consistency is a spectrum, not a binary strong-vs-eventual choice
+- Strong/linearizable: every read sees the latest write instantly — expensive, needed for seat booking / inventory decrement
+- Eventual: replicas converge "eventually", reads can be stale — fine for like counts, view counts
+- Read-your-writes: you always see your own writes instantly, even if others lag — e.g. your own WhatsApp status
+- Causal: causally related writes (question + reply) stay in order for everyone; unrelated writes can reorder freely
+- Guarantee strength and cost move together: strong > causal > read-your-writes > eventual in strictness and cost
+- Real apps mix models per feature — payment strong, likes eventual, "my own post" read-your-writes
+- DynamoDB lets you choose per-query (eventually consistent vs strongly consistent reads) on the same table
+
+</QuickRevision>

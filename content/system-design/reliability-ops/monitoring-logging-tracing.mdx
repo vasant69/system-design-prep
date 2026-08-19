@@ -1,0 +1,172 @@
+---
+slug: "monitoring-logging-tracing"
+title: "Monitoring, Logging & Distributed Tracing"
+section: "system-design"
+module: "reliability-ops"
+order: 3
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["failure-handling-patterns"]
+tags: ["observability", "ops"]
+englishDefinition: "Logging, metrics, and distributed tracing are the three pillars of observability. Logging captures discrete, timestamped, detailed event records describing what happened. Metrics aggregate numeric time-series data showing how much or how often something happened, such as CPU percentage, request rate, or error rate. Distributed tracing follows a single request's full path across multiple services, showing exactly where time was spent along the way."
+interviewFrequency: "high"
+companies: ["Uber", "Netflix", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Logging, metrics, and distributed tracing are the three pillars of observability. Logging captures discrete, timestamped, detailed event records describing what happened. Metrics aggregate numeric time-series data showing how much or how often something happened, such as CPU percentage, request rate, or error rate. Distributed tracing follows a single request's full path across multiple services, showing exactly where time was spent along the way.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Observability ko log "monitoring" ka hi fancy naam samajh lete hain, lekin yeh galat hai. Monitoring/metrics sirf **ek** pillar hai — poora observability teen alag tools ka combination hai, aur har tool ek **different sawaal** answer karta hai. Interview mein yeh differentiate kar pana hi asli test hai.
+
+### Teen tools, teen alag sawaal
+
+Yeh sabse practical tareeka hai in teeno ko yaad rakhne ka — har ek ek specific question answer karta hai jo doosre nahi kar sakte:
+
+- **"Kya system abhi healthy hai?"** — iska jawab **metrics/monitoring** deta hai. Dashboards, alerts. CPU%, memory%, request rate, error rate, p99 latency — yeh sab aggregated numbers hain jo tumhe ek **glance mein overall health** batate hain. Yeh sabse pehla layer hai jo tum dekhte ho jab kuch alert fire hota hai.
+- **"Is ek specific failed request mein exactly kya hua?"** — iska jawab **logs** dete hain. Metrics tumhe bata sakte hain "error rate 5% se 15% ho gaya," lekin yeh nahi batate ki **konsa specific request** fail hua aur **kyun**. Logs discrete events hote hain, timestamp ke saath — "user 12345 ka checkout request fail hua kyunki payment gateway ne timeout diya" jaisi detail sirf logs mein milti hai.
+- **"12 microservices mein se, jinhe yeh request touch kar raha tha, konsa actually slow hai?"** — yeh sawaal na metrics na sirf logs se answer ho sakta hai scale pe. Ek single request agar 12 services se guzarta hai, aur total latency 2 seconds hai, to slow konsa hai — Service 3? Service 8? Ek database call jo Service 5 ke andar hai? Har service ke apne logs alag jagah hote hain, unhe manually correlate karna at scale practically impossible hai. **Yehi exact reason hai distributed tracing exist karta hai** — yeh ek single request ki poori journey ko visualize karta hai, service-by-service, showing exactly kahan time gaya.
+
+Yeh teesra point interview mein bolne layak hai — bahut log tracing ko "extra nice-to-have" samajhte hain, lekin reality mein, ek complex microservices system mein, tracing ke bina **root cause identify karna** almost impossible ho jaata hai jab latency ka culprit ek deep, nested call chain mein kahin chhupa ho.
+
+### Trace aur span — actual model
+
+Distributed tracing ka mental model samajhna zaroori hai:
+
+- **Trace** — ek **poori request ki journey** hai, start (client ne request bheja) se end (final response client ko mila) tak, chahe woh journey kitne bhi services cross kare.
+- **Span** — trace ke andar ek **individual unit of work** hai — jaise "Service A ne Service B ko call kiya," ya "Service B ne database query run kiya." Har span ka apna start time, end time, aur duration hota hai.
+- Spans ka ek **parent-child relationship** hota hai, jo ek **tree structure** banata hai. Jaise: root span = "API Gateway received request," uska child span = "Order Service processed it," uska child span = "Order Service called Inventory Service," aur so on. Is tree ko visualize karke turant dikhta hai ki total latency mein sabse bada chunk kahan gaya.
+- Isko sab services ke across "stitch" karne ke liye ek **trace ID** hota hai — jab request pehli service mein enter karta hai, ek unique trace ID generate hota hai, aur yeh ID **har downstream call ke headers mein propagate** hota hai (jaise `X-Trace-Id` jaisa header). Har service jo request ko touch karta hai, apna span usi trace ID ke against report karta hai. Backend tracing system in sab spans ko trace ID se collect karke ek single tree mein assemble kar deta hai.
+
+Bina trace ID propagation ke, tracing kaam hi nahi karega — yeh implementation detail hai jo har service ko cooperate karna padta hai (incoming headers se trace ID read karo, outgoing calls mein forward karo). Yeh exactly wahi cheez hai jo service mesh tools (jaise Istio) aur tracing libraries (OpenTelemetry) automate karne ki koshish karte hain, taaki har team manually yeh na likhe.
+
+### Alerting philosophy — symptoms pe alert karo, causes pe nahi
+
+Yeh ek subtle lekin bahut important design decision hai jab tum monitoring set up karte ho: **alert symptoms pe karo, causes pe nahi.**
+
+Symptom = user-facing impact — jaise "error rate 5% se upar hai," "p99 latency 2 seconds se zyada hai," "checkout success rate gir gaya." Cause = ek specific internal reason — jaise "CPU 90% hai," "ek specific database connection pool exhaust ho gaya," "ek specific pod crash loop mein hai."
+
+Agar tum sirf causes pe alert karte ho, tumhare paas **dus alag alerts** honge har ek possible internal failure mode ke liye — aur jab actual incident hota hai, saare dus fire hote hain ek saath, on-call engineer ko **alert fatigue** ho jaata hai (itne saare alerts ki woh important signal ko noise mein miss kar dete hain). Symptom-based alerting (jaise "user-facing error rate elevated hai") ek single, high-signal alert deta hai jo directly business impact reflect karta hai — phir engineer **dashboards aur traces** use karke root cause dig karta hai, jab woh already alert ho chuka ho ki kuch user-impacting ho raha hai.
+
+Alert fatigue ek genuinely serious operational risk hai — agar on-call team ko roz 50 low-value alerts milte hain jinme se 45 false positives ya non-actionable hote hain, woh eventually sab alerts ko ignore karna shuru kar dete hain, including genuinely critical wale. Isliye achhi observability practice mein **kam, high-signal alerts** hote hain, symptom-focused, actionable, aur directly tied to user/business impact — na ki har chhoti internal metric pe ek alert.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Rule of thumb: agar tumhara alert "CPU 80% se upar hai" hai, poocho — "kya isse **user** ko kuch farq padta hai?" Agar CPU high hai lekin latency aur error rate normal hain, shayad yeh alert-worthy nahi hai, sirf ek dashboard metric hai jo tum investigate karoge jab symptom-level alert fire ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Uber">
+
+Uber ka trip-booking flow dus se zyada microservices touch karta hai — pricing, ETA, driver matching, fraud check, payments. Jab ek trip request slow hota hai, distributed tracing (Uber ne apna khud ka Jaeger tracing system build/open-source kiya hai) exactly dikhata hai konsa hop slow tha — bina tracing ke, engineers ko manually dus alag services ke logs correlate karne padte, jo real-time incident response mein practically impossible hai.
+
+</RealWorld>
+
+<RealWorld company="Netflix">
+
+Netflix ka streaming infrastructure massive scale pe metrics collect karta hai (per-region, per-device-type request rates aur error rates) taaki playback failures ko region ya device-specific patterns se turant correlate kiya ja sake. Unka alerting explicitly symptom-based hai — jaise "playback start failure rate elevated in region X" — jo phir teams ko specific dashboards aur traces ki taraf le jaata hai root cause dhoondhne ke liye.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Flipkart jaisi e-commerce platform pe Big Billion Days jaisi sale ke din, checkout flow ka ek single request payment gateway, inventory service, aur pricing service — teeno ko touch karta hai. Agar checkout slow hone lage, distributed tracing turant dikha deta hai ki teeno mein se konsa actual bottleneck hai — iske bina, sale-day debugging sirf guesswork ban jaata.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical log retention in production systems — 15-30 days hot storage, longer in cold/archive storage for compliance
+- Distributed tracing sampling rate at high scale — often 1-10% of requests traced (100% tracing every request is often too expensive at very high RPS)
+- Typical metrics scrape interval (Prometheus-style) — every 10-15 seconds
+- A request touching 10-15 microservices can generate 10-15+ spans in a single trace tree
+- Alert fatigue threshold (rule of thumb) — if an on-call rotation gets more than a handful of pages per shift, most are likely non-actionable noise
+- Typical target for p99 latency dashboards in interview-context APIs — under 200-300 ms
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common prompt: **"How would you debug a slow request in a system with 10+ microservices?"** — a very common follow-up after any microservices design question. Interviewer testing kar raha hai ki tumhe pata hai logs aur metrics akele is sawaal ko answer nahi kar sakte at scale.
+
+Model answer shape: Start with the three pillars and what each answers — "metrics dashboards mujhe batayenge ki system overall unhealthy hai, logs mujhe ek specific failed request ka detail denge, lekin **which of the 12 services is actually slow** — yeh sirf distributed tracing answer kar sakta hai." Phir trace/span model explain karo — trace ID propagate hota hai headers ke through, har service apna span report karta hai, sab spans ek tree mein assemble hote hain, aur woh tree turant dikhata hai kahan time gaya. End mein alerting philosophy mention karo unprompted — "symptom-based alerts (error rate, latency) use karunga, cause-based nahi, taaki alert fatigue avoid ho."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Metrics aur logs ko interchangeable samajhna — "hume error rate 5% dikh raha hai" bolna kaafi samajhna jab actually specific failed request ka root cause dhoondhne ke liye logs (ya trace) chahiye hote hain, sirf ek aggregated number kaafi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Yeh sochna ki logs akele "kaunsi service slow hai" jaisa sawaal answer kar sakte hain at scale — jab 10+ services involved hon, alag-alag services ke logs manually correlate karna practically impossible hai, isliye tracing zaroori hai.
+
+</Mistake>
+
+<Mistake>
+
+Trace ID propagation ko implementation detail samajh ke ignore kar dena — agar har service downstream calls mein trace ID forward nahi karta, tracing tree tootta hai aur trace incomplete/useless ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Har chhoti internal metric (CPU, memory, individual pod restarts) pe alert laga dena — isse alert fatigue hota hai, aur on-call team eventually saare alerts ko ignore karna shuru kar deti hai, including genuinely critical ones.
+
+</Mistake>
+
+<Mistake>
+
+100% requests trace karne ki koshish karna high-scale system mein bina sampling consider kiye — full tracing har request pe significant overhead aur storage cost add karta hai; production systems usually ek sampling rate (jaise 1-10%) use karte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q1["Is system healthy right now?"] --> M["Metrics / Dashboards + Alerts<br/>CPU%, error rate, request rate"]
+    Q2["What happened in this one<br/>failed request?"] --> L["Logs<br/>discrete, timestamped events"]
+    Q3["Which of the 12 services<br/>this request touched is slow?"] --> T["Distributed Tracing<br/>trace = full journey, spans = each hop"]
+    T --> S1["Span: API Gateway"]
+    S1 --> S2["Span: Order Service"]
+    S2 --> S3["Span: Inventory Service (slow!)"]
+    S2 --> S4["Span: Payment Service"]
+    style S3 fill:#3f1d1d,stroke:#f87171,color:#fca5a5
+`}
+  caption="Each of the three pillars answers a different question — tracing is the only one that can pinpoint which specific hop in a multi-service request was slow."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Three pillars: metrics (is it healthy now), logs (what happened in this one request), tracing (which of many services is slow)
+- Tracing exists specifically because logs/metrics alone can't answer "which of 12 services is slow" at scale
+- Trace = one request's full journey; span = one unit of work within it; spans form a parent-child tree
+- Trace ID propagates via headers across every service boundary so spans can be stitched back together
+- Alert on symptoms (elevated error rate, high latency) not causes (high CPU) — ties alerts directly to user impact
+- Too many low-value alerts causes alert fatigue — teams start ignoring alerts, including critical ones
+- Real tools: Prometheus + Grafana (metrics), ELK / Loki (logs), Jaeger / Zipkin (tracing)
+- High-scale systems usually sample traces (e.g. 1-10% of requests) rather than tracing every single one
+
+</QuickRevision>

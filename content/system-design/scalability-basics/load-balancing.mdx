@@ -1,0 +1,189 @@
+---
+slug: "load-balancing"
+title: "Load Balancing"
+section: "system-design"
+module: "scalability-basics"
+order: 1
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["vertical-vs-horizontal-scaling"]
+tags: ["scalability", "networking", "high-availability"]
+englishDefinition: "Load balancing is the practice of distributing incoming traffic across multiple backend servers so that no single server is overwhelmed, throughput is maximized, and latency stays low. A load balancer sits in front of a pool of servers, decides which one handles each request or connection, and continuously checks server health so traffic never goes to a server that can't serve it."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Flipkart", "Uber"]
+---
+
+<SimpleDefinition>
+
+Load balancing is the practice of distributing incoming traffic across multiple backend servers so that no single server is overwhelmed, throughput is maximized, and latency stays low. A load balancer sits in front of a pool of servers, decides which one handles each request or connection, and continuously checks server health so traffic never goes to a server that can't serve it.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Load balancer ko log "traffic ko baant do" tak simplify kar dete hain, lekin interview mein yeh sabse zyada follow-up sawaal generate karne wala topic hai — kyunki har layer pe decisions hain: kis layer pe balance karein, kaunsa algorithm use karein, health check kaise design karein, aur load balancer khud fail ho jaaye to kya hoga. Chalo har piece ko todte hain.
+
+### L4 vs L7 load balancing
+
+**L4 (transport layer)** load balancer TCP/UDP level pe kaam karta hai — yeh sirf IP address aur port dekhta hai, packet ke andar kya hai (HTTP headers, URL path, cookies) usse matlab nahi. Isliye yeh **fast** hai aur CPU-light hai — bas connection ko forward kar deta hai kisi backend server tak, packet ko parse kiye bina. Downside: yeh "dumb" hai — content-based routing (jaise `/api/orders` ko ek service pe aur `/api/search` ko doosre pe bhejna) L4 pe possible nahi hai.
+
+**L7 (application layer)** load balancer HTTP request ko actually parse karta hai — URL path, headers, cookies, query params sab dekh sakta hai. Isliye yeh smart routing kar sakta hai: `/checkout` ko ek microservice pe, `/images` ko CDN-backed pool pe, mobile user-agent ko ek alag backend pe. Cost yeh hai ki har request parse karna padta hai, isliye L7 CPU-heavier hai aur thoda extra latency add karta hai compared to L4. Real production systems mein L7 zyada common hai kyunki modern architectures (microservices, API gateways) ko content-based routing chahiye hi hoti hai — lekin agar tumhe raw TCP throughput chahiye (jaise ek database proxy ke liye), L4 better fit hai.
+
+### Load balancing algorithms
+
+Yeh interview mein sabse zyada poocha jaane wala part hai — kaunsa algorithm kab use karna hai:
+
+- **Round robin** — Requests ko servers ke beech cyclic order mein baant do (1, 2, 3, 1, 2, 3...). Simple hai, lekin agar servers ki capacity alag-alag hai (ek chhota, ek bada instance) to yeh unfair distribution deta hai.
+- **Weighted round robin** — Har server ko ek weight do based on capacity (jaise ek 8-core machine ko weight 2, ek 4-core ko weight 1) — zyada capacity wale server ko proportionally zyada requests milte hain. Heterogeneous fleets ke liye zaroori hai.
+- **Least connections** — Naya request usi server ko jaaye jiske paas abhi sabse kam active connections hain. Yeh tab better hai jab requests ka processing time bahut vary karta ho (kuch requests fast, kuch slow) — round robin is case mein ek slow-request-heavy server ko bhi blindly equal traffic de deta, jo unfair overload create karta.
+- **IP hash / consistent hashing** — Client IP (ya kisi aur key) ko hash karke usi server pe consistently route karo — yeh **sticky sessions** ke liye zaroori hai jab server-side session state store hota hai (stateful design). Consistent hashing specifically important hai kyunki agar tum ek server add/remove karte ho, sirf usse related keys hi remap hoti hain — poora mapping reshuffle nahi hota. Yeh caching module mein consistent hashing ke saath repeat hoga.
+- **Random** — Surprisingly competitive at scale. Jab bahut saare concurrent requests aur bahut saare servers hote hain, pure random distribution statistically round-robin ke kaafi kareeb converge kar jaata hai, aur isko implement karna trivial hai (no shared state to track "jo next hai"). Google ke "power of two random choices" jaisa research yeh dikhata hai ki agar tum 2 random servers pick karke unme se kam-loaded wala choose karo, yeh least-connections ke bahut kareeb result deta hai bina full state tracking ke overhead ke.
+
+### Health checks — active vs passive
+
+Load balancer ko pata hona chahiye kaunsa backend server "healthy" hai — warna woh dead ya overloaded server ko traffic bhejta rahega.
+
+- **Active health checks** — LB periodically khud ek health-check endpoint (jaise `/health`) ko ping karta hai har server pe, aur agar N consecutive failures aa jaayein, us server ko pool se hata deta hai.
+- **Passive health checks** — LB actual production traffic ke response codes/timeouts observe karta hai — agar ek server baar-baar 500s ya timeouts de raha hai, usse temporarily hata deta hai bina alag se ping kiye.
+
+Real risk yahan hai: agar health check misconfigured ho (jaise bahut lenient threshold, ya health-check endpoint khud heavy hai aur slow response deta hai), to ek bad deploy ke case mein LB un broken instances ko healthy samajhta rahega aur unhe traffic bhejta rahega — matlab users ko errors milte rahenge jab tak koi manually intervene na kare. Isliye health check interval, timeout, aur failure threshold tune karna production-critical decision hai — bahut aggressive (jaise 1 failure = out) flapping cause karta hai (server thoda slow hua aur turant pool se bahar), bahut lenient bad deploys ko masked rakhta hai.
+
+### Load balancer khud ek single point of failure hai
+
+Yeh woh part hai jo beginners miss karte hain — agar tumhare paas sirf **ek** load balancer hai, to woh khud SPOF (single point of failure) ban gaya, chahe backend pool mein 100 servers hon. Solutions:
+
+1. **DNS round robin to multiple LBs** — DNS mein multiple LB IPs register karo, clients unme se rotate karke connect karte hain. Simple, lekin DNS caching/TTL ki wajah se failover slow ho sakta hai.
+2. **Floating/virtual IP with keepalived-style failover** — Do LB instances (active + standby) ek shared virtual IP share karte hain. Active LB fail hone pe (heartbeat miss detect hote hi), standby turant usi virtual IP ko le leta hai — clients ko kuch change nahi karna padta, failover seconds mein hota hai.
+3. **Cloud-managed LBs** — AWS ELB/ALB, GCP Load Balancer jaise managed services khud multi-AZ redundant hote hain — provider yeh guarantee deta hai ki LB layer khud highly available hai, tumhe apna failover manage nahi karna padta. Yeh production mein sabse common approach hai kyunki operational burden provider uthata hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "L4: bahut fast, low CPU overhead, raw TCP/UDP throughput ke liye best",
+    "L7: content-based smart routing, microservices/API gateway patterns ke liye zaroori",
+  ]}
+  cons={[
+    "L4: koi content-based routing possible nahi, sirf IP/port level decision",
+    "L7: har request parse karna padta hai — extra CPU aur thoda extra latency",
+  ]}
+/>
+
+<Callout type="tip">
+
+Interview mein "random" algorithm ko underestimate mat karo — bade fleets mein (sainkdon servers, hazaaron requests/sec) pure random distribution statistically round-robin jaisa hi balanced result deta hai, aur "power of two choices" (2 random servers pick karke kam-loaded wala choose karna) least-connections ke bahut kareeb converge karta hai bina state-tracking overhead ke.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+AWS Elastic Load Balancer (ALB for L7, NLB for L4) khud multi-AZ redundant hai — ek single ALB "node" nahi hota, balki ek fleet jo automatically scale karti hai traffic ke saath aur ek Availability Zone fail hone pe doosri AZ mein traffic route kar deti hai bina manual intervention ke.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Big Billion Days jaisi sale ke din traffic normal se 20-50x tak spike karta hai. Flipkart ka LB layer weighted routing aur aggressive health checks use karta hai taaki jo backend instances slow ho rahe hain (jaise database connection pool exhaust hone ki wajah se) unhe turant traffic milna kam ho jaaye, warna cascading failure ho sakta hai — ek slow server zyada requests leta rahega aur aur slow ho jaayega.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ka dispatch system geo-aware routing use karta hai — driver-rider matching requests ko geographically nearest data center/backend pool tak route kiya jaata hai, jo ek L7-style content-based (yahan geo-based) routing decision hai, plain round robin nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- L4 load balancer overhead — typically under 1 ms added latency
+- L7 load balancer overhead — roughly 1-5 ms added latency (parsing cost)
+- Typical active health check interval — every 5-10 seconds, with 2-3 consecutive failures before marking unhealthy
+- A single modern L4 LB node can handle hundreds of thousands of concurrent connections
+- DNS TTL for LB failover — often set to 30-60 seconds to balance caching efficiency vs failover speed
+- Virtual IP (keepalived-style) failover time — typically under 3 seconds
+- AWS ALB — scales automatically, no fixed upper request limit published, capacity units billed instead
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic prompt: **"How would you scale a single server that's getting overwhelmed?"** — load balancing is almost always the first correct answer, and the interviewer immediately drills into "okay, but the load balancer itself is now a single point of failure — what do you do?" That follow-up is the real test. A weak answer stops at "add a load balancer." A strong answer adds: which layer (L4/L7) makes sense for this specific traffic pattern, which algorithm fits the workload (sticky sessions need IP hash, variable request cost needs least connections), how health checks are configured, and how the LB layer itself is made redundant (DNS round robin, virtual IP failover, or a managed cloud LB). Mentioning "power of two choices" or consistent hashing unprompted is a strong signal of real depth, not textbook memorization.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Load balancer add karne ke baad bhool jaana ki woh khud ek single point of failure hai — sirf ek LB instance deploy kar dena aur redundancy plan hi na banana.
+
+</Mistake>
+
+<Mistake>
+
+L4 aur L7 mein confuse ho jaana — yeh bolna ki load balancer "URL dekh ke route karta hai" bina yeh clarify kiye ki yeh sirf L7 pe true hai, L4 pe LB ko HTTP path ka pata hi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Round robin ko har situation ke liye "default correct answer" maan lena — heterogeneous server capacity ya highly variable request cost wale scenarios mein round robin actually unfair load distribution create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Health check ko sirf "on/off" switch samajhna — threshold, interval, aur timeout tune na karna, jiski wajah se ek bad deploy production mein lambe samay tak errors serve karta reh sakta hai without being caught.
+
+</Mistake>
+
+<Mistake>
+
+Sticky sessions chahiye hone par IP hash use karna bina yeh soche ki NAT ke peeche multiple users same IP se aa sakte hain (jaise corporate network), jisse load distribution skewed ho jaata hai — is case mein cookie-based session affinity better hoti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C[Client Request] --> LB[Load Balancer]
+    LB -->|health check OK| S1[Server 1]
+    LB -->|health check OK| S2[Server 2]
+    LB -.->|health check FAILED, skip| S3[Server 3 - unhealthy]
+    LB -->|health check OK| S4[Server 4]
+    S1 --> R[Response back to Client]
+    S2 --> R
+    S4 --> R
+    HC[Health Check Loop] -.every 5-10s.-> S1
+    HC -.every 5-10s.-> S2
+    HC -.every 5-10s.-> S3
+    HC -.every 5-10s.-> S4
+    style S3 fill:#3f1d1d,stroke:#f87171,color:#fca5a5
+`}
+  caption="The load balancer routes only to servers that pass health checks — Server 3 is quietly skipped until it recovers."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- L4 = fast, dumb, routes by IP/port only; L7 = smart, parses HTTP, can route by path/header/cookie, costs more CPU
+- Algorithms: round robin (simple, unfair for heterogeneous capacity), weighted round robin (fixes that), least connections (best for variable request cost), IP hash/consistent hashing (needed for sticky sessions), random (surprisingly competitive at scale)
+- Active health checks = LB pings a health endpoint; passive = LB watches real traffic responses
+- Misconfigured health checks (too lenient) can let a bad deploy keep serving errors undetected
+- The load balancer itself is a SPOF unless made redundant
+- Fix the SPOF via DNS round robin across LBs, floating/virtual IP with keepalived-style failover, or a cloud-managed LB (AWS ELB) that's inherently multi-AZ
+- "Power of two random choices" gets near-least-connections quality without tracking full state
+- Always pair the LB answer with "and here's how I'd make the LB layer itself highly available"
+
+</QuickRevision>

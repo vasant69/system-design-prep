@@ -1,0 +1,191 @@
+---
+slug: "rest-vs-graphql-vs-grpc"
+title: "REST vs GraphQL vs gRPC"
+section: "system-design"
+module: "communication-async"
+order: 1
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["client-server-model"]
+tags: ["api-design", "networking"]
+englishDefinition: "REST is a resource-oriented API style built on standard HTTP verbs (GET, POST, PUT, DELETE) operating on URLs that represent resources. GraphQL is a query language and runtime that lets clients request exactly the fields they need, in exactly the shape they need, in a single request. gRPC is a high-performance remote procedure call framework built on HTTP/2 and Protocol Buffers, optimized for fast, strongly-typed service-to-service communication."
+interviewFrequency: "high"
+companies: ["Netflix", "Uber", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+REST is a resource-oriented API style built on standard HTTP verbs (GET, POST, PUT, DELETE) operating on URLs that represent resources. GraphQL is a query language and runtime that lets clients request exactly the fields they need, in exactly the shape they need, in a single request. gRPC is a high-performance remote procedure call framework built on HTTP/2 and Protocol Buffers, optimized for fast, strongly-typed service-to-service communication.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh teeno options nahi hain jinme se ek "best" chuna jaaye — yeh teen alag tools hain, teen alag problems ke liye. Interview mein log yahi galti karte hain: "GraphQL better hai REST se" bol dete hain bina yeh samjhe ki har ek kis specific dard ko solve karta hai. Chalo pehle REST ka asli problem samajhte hain, phir dekhte hain GraphQL aur gRPC usko kaise (ya kyun nahi) solve karte hain.
+
+### REST ka core problem — over-fetching aur under-fetching
+
+REST mein har URL ek resource hai — `/users/123`, `/users/123/posts`. Server jab `/users/123` ka response deta hai, woh **poora** user object bhejta hai — naam, email, address, preferences, created-at, sab kuch — chahe tumhare mobile app ko sirf naam chahiye ho. Yeh hai **over-fetching**: zyada data mila jitna chahiye tha, bandwidth aur parsing time waste hua, especially mobile pe jahan network slow hota hai.
+
+Doosri taraf hai **under-fetching**: socho tumhe ek screen banani hai jo user ka naam, uske recent posts, aur un posts pe comments dikhaye. REST mein yeh teen alag resources hain, matlab teen alag API calls — `GET /users/123`, `GET /users/123/posts`, `GET /posts/{id}/comments` (har post ke liye alag call bhi ho sakti hai). Yeh **3+ round trips** ban gaye ek hi screen render karne ke liye. Mobile network pe jahan ek round trip 100-300ms le sakta hai, yeh screen load karne mein seconds lag sakte hain.
+
+### GraphQL — ek query, exact shape
+
+GraphQL isi problem ko directly solve karta hai. Client ek single query bhejta hai jisme woh **bata deta hai** ki usse exactly kya chahiye:
+
+```
+query {
+  user(id: 123) {
+    name
+    posts {
+      title
+      comments { text author }
+    }
+  }
+}
+```
+
+Server iska response bilkul isi shape mein deta hai — na kam, na zyada, aur sirf **ek** network round trip mein. Yeh mobile apps ke liye especially powerful hai jahan alag-alag screens ko user object ke alag-alag subsets chahiye hote hain — GraphQL se backend team ko har screen ke liye naya endpoint banana nahi padta.
+
+Lekin GraphQL "free lunch" nahi hai — iski apni real costs hain jo interview mein bolna zaroori hai:
+
+1. **Caching mushkil ho jaati hai** — REST mein `GET /users/123` ek predictable URL hai, isliye CDN aur HTTP-level caching (browser cache, reverse proxy cache) trivially kaam karte hain. GraphQL mein har query technically **alag** ho sakti hai (different fields select ho rahe hain), aur zyaadatar GraphQL requests `POST` pe jaate hain ek single endpoint (`/graphql`) pe — isliye standard HTTP caching kaam nahi karta. Application-level caching (Apollo cache, persisted queries) implement karni padti hai separately.
+2. **N+1 query problem backend pe** — agar tum naively resolve karo `user.posts.comments`, to har post ke liye alag database query fire ho sakti hai — 1 query users ke liye, N queries posts ke liye har user ka, phir N aur queries comments ke liye. Isko solve karne ke liye **DataLoader** pattern (batching + caching within a single request) use karna padta hai, jo extra complexity hai.
+3. **Server setup zyada complex** — schema define karna, resolvers likhna, query complexity/depth limit lagana (warna ek malicious deeply-nested query se database ko dhaka pahucha sakte ho) — yeh sab REST ke comparison mein zyada moving parts hain.
+
+### gRPC — internal service-to-service ke liye speed
+
+gRPC ek bilkul alag problem solve karta hai — yeh public-facing client-server API ke liye nahi, balki **internal microservice-to-microservice** communication ke liye bana hai, jahan performance sabse zyada matter karta hai.
+
+Do cheezein gRPC ko fast banati hain:
+
+- **Protocol Buffers (Protobuf)** — data binary format mein serialize hota hai, JSON ke text format ke comparison mein bahut chhota aur fast-to-parse hota hai. `.proto` file mein tum contract strongly define karte ho (field names, types), aur dono taraf (client, server) usi se code-generate hota hai — matlab type mismatches compile time pe pakde jaate hain, runtime pe nahi.
+- **HTTP/2 multiplexing** — ek hi TCP connection pe multiple requests parallel chal sakte hain bina head-of-line blocking ke, plus gRPC streaming support karta hai (client streaming, server streaming, bidirectional streaming) jo REST/JSON mein natively possible nahi hai.
+
+Lekin gRPC public browser-facing APIs ke liye achha fit **nahi** hai:
+
+- Browsers historically gRPC ko directly support nahi karte the (grpc-web ek workaround hai, but adds a proxy layer) — HTTP/2 ke kuch low-level framing browser fetch/XHR APIs se directly access nahi ho paate.
+- Binary Protobuf format human-readable nahi hai — agar tum Postman se ek quick test karna chaho ya browser dev tools mein request dekhna chaho jaisa REST/JSON mein trivial hai, gRPC mein woh debugging experience kaafi kharab hai.
+- Public API consumers (third-party developers) ke liye REST/JSON ka familiarity aur tooling ecosystem (Postman, curl, browser fetch) bahut better developer experience deta hai.
+
+### Decision framework
+
+Interview mein yeh crisp bolna important hai:
+
+- **Public API for third-party developers** → REST. Familiarity, wide tooling support, HTTP caching easily works, har language mein trivial client bana sakte ho.
+- **Mobile app with complex, nested, varying data needs across screens** → GraphQL. Ek query, exact shape, kam round trips — mobile ke liye bandwidth aur latency dono save hoti hai.
+- **Internal microservice mesh, high-throughput, low-latency service-to-service calls** → gRPC. Strongly-typed contracts, binary speed, streaming support.
+
+Real systems aksar **teeno ko mix** karte hain — public REST API frontend ke liye, GraphQL ek BFF (backend-for-frontend) layer mein complex mobile screens ke liye, aur internal services ke beech gRPC. Yeh polyglot approach hi zyada common hai bade systems mein, ek single "winner" chunna hi galat framing hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "GraphQL: ek request mein exact data shape, mobile bandwidth aur latency dono bachta hai",
+    "gRPC: binary Protobuf + HTTP/2 se bahut fast, strongly-typed contracts compile-time errors pakadte hain",
+    "REST: simple, cacheable, universal tooling, easiest for third-party developers",
+  ]}
+  cons={[
+    "GraphQL: caching hard, N+1 query risk, server setup complex",
+    "gRPC: browser support historically weak, binary format debug karna mushkil",
+    "REST: over-fetching/under-fetching, nested data ke liye multiple round trips",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Netflix">
+
+Netflix apne internal microservices ke beech gRPC extensively use karta hai — jab ek request user ke liye recommendations laani ho, to woh dozens of internal services ko call karta hai (viewing history, ratings, content catalog, etc.) millisecond-level latency budget ke andar. Binary Protobuf serialization aur HTTP/2 multiplexing yahan directly latency ko kam karte hain, jo customer-facing response time pe compound effect daalta hai.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ka backend hazaaron microservices ka mesh hai — driver location, trip matching, pricing, payments — sab alag services. In services ke beech internal communication ke liye gRPC-style RPC frameworks common hain kyunki high request volume (per-second location updates) ko low-latency, strongly-typed contracts ke saath handle karna zaroori hai. Public-facing rider/driver app APIs alag se REST/GraphQL-ish layers use karte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Protobuf serialized payload — typically 3-10x smaller than equivalent JSON
+- gRPC call overhead (internal, same datacenter) — often under 1ms serialization time vs several ms for JSON parsing at scale
+- REST nested-data screen — can need 3+ sequential round trips (~100-300ms each on mobile) vs GraphQL's single round trip
+- GraphQL query depth limit (common production setting) — typically capped at 5-10 levels to prevent abuse
+- HTTP/2 concurrent streams per connection — 100+, vs 6 parallel connections typical in HTTP/1.1 REST clients
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common framing: **"Would you use REST, GraphQL, or gRPC for this system?"** — interviewer testing kar raha hai ki tum blindly ek tool pakad ke nahi baithe ho, balki use-case ke hisaab se reasoning kar rahe ho. Weak answer: "GraphQL kyunki flexible hai." Strong answer: "Yeh depends kis consumer ke liye API hai — agar yeh third-party developers ke liye public API hai to REST, kyunki tooling aur caching simple hai. Agar yeh mobile app hai jisme complex nested screens hain to GraphQL consider karunga, lekin caching aur N+1 problem ka mitigation bhi bataunga. Agar yeh internal service-to-service hai jahan latency critical hai, gRPC — Protobuf ki speed aur strong typing ke liye."
+
+Follow-up jo aksar aata hai: "GraphQL mein caching kaise karoge?" — yahan bolna chahiye persisted queries, ya application-level cache (Apollo/Relay normalized cache), kyunki plain HTTP caching kaam nahi karta jab sab kuch ek `/graphql` POST endpoint pe ja raha ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+GraphQL ko "REST se strictly better" bol dena — yeh dikhata hai candidate ne trade-offs (caching difficulty, N+1 problem, server complexity) socha hi nahi.
+
+</Mistake>
+
+<Mistake>
+
+gRPC ko public browser-facing API ke liye suggest karna — browser support aur human-readability ke issues ignore kar dena.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki GraphQL automatically fast hai kyunki "ek hi request" hai — backend resolvers agar naively likhe hain (N+1 problem), to GraphQL query REST ke multiple calls se bhi slow ho sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+REST ko "purana/outdated" keh dena — real large systems mein REST aaj bhi public APIs ke liye dominant hai kyunki universal tooling aur caching simplicity ka koi substitute nahi hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Client["Mobile Client"] -->|"REST: 3 round trips"| U["GET /users/123"]
+    Client -->|"REST"| P["GET /users/123/posts"]
+    Client -->|"REST"| C["GET /posts/id/comments"]
+
+    Client2["Mobile Client"] -->|"GraphQL: 1 round trip"| G["POST /graphql query"]
+    G --> Resolver["Resolvers fetch user + posts + comments"]
+
+    SvcA["Service A"] -->|"gRPC: binary + HTTP/2"| SvcB["Service B"]
+    SvcB -->|"gRPC"| SvcC["Service C"]
+`}
+  caption="REST needs multiple round trips for nested data; GraphQL collapses it to one; gRPC optimizes the internal service-to-service hops."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- REST = resource-oriented, simple, cacheable, but over-fetching/under-fetching on nested data
+- GraphQL = client asks exact shape in one request, solves over/under-fetching, but caching is hard and N+1 is a real backend risk
+- gRPC = binary Protobuf + HTTP/2, super fast for internal service-to-service, but poor browser support and not human-readable
+- Public third-party API → REST; complex mobile screens → GraphQL; internal microservice mesh → gRPC
+- Netflix and Uber use gRPC heavily internally for low-latency service mesh calls
+- GraphQL N+1 problem solved via DataLoader-style batching
+- Real systems mix all three — not a single "winner" choice
+- Always tie the choice back to who the API consumer is, not which tech sounds newer
+
+</QuickRevision>

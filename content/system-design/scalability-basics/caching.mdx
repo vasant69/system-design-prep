@@ -1,0 +1,186 @@
+---
+slug: "caching"
+title: "Caching"
+section: "system-design"
+module: "scalability-basics"
+order: 2
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["latency-throughput-bandwidth"]
+tags: ["scalability", "performance", "caching"]
+englishDefinition: "Caching is the practice of storing a copy of frequently-accessed or expensive-to-compute data in a faster-access layer, so that repeated requests can be served from that layer instead of recomputing or refetching from the original, slower source of truth. This reduces latency for the requester and reduces load on the primary data source."
+interviewFrequency: "very-high"
+companies: ["Netflix", "Hotstar", "Zomato", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Caching is the practice of storing a copy of frequently-accessed or expensive-to-compute data in a faster-access layer, so that repeated requests can be served from that layer instead of recomputing or refetching from the original, slower source of truth. This reduces latency for the requester and reduces load on the primary data source.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Caching system design ka sabse "free lunch" lagne wala optimization hai — "bas Redis laga do, sab fast ho jaayega" — lekin yehi mindset interview mein sabse zyada nuke karta hai candidates ko. Caching **real** hai, powerful hai, lekin har layer pe naye trade-offs laata hai: kahan cache karein, kaise likhein, kab evict karein, aur sabse important — kab caching **galat** choice hai. Chalo poori depth mein jaate hain.
+
+### Cache hierarchy — kahan-kahan cache hota hai
+
+Ek single request ke path mein cache multiple jagah exist kar sakta hai, aur har layer ka apna purpose hai:
+
+1. **Client/browser cache** — Browser khud HTTP responses ko `Cache-Control` headers ke basis pe store karta hai. Static assets (JS, CSS, images) yahan cache hone se ek repeat visitor ke liye network round trip hi nahi lagta. Sabse fast possible cache hit, kyunki request server tak jaata hi nahi.
+2. **CDN (edge cache)** — Client ke geographically kareeb ek edge server pe content cache hota hai. Origin server tak request jaata hi nahi agar CDN pe hit ho jaaye. (Yeh apna alag topic hai — CDN module mein detail mein aayega.)
+3. **Application-level cache (Redis/Memcached)** — App server aur database ke beech ek dedicated in-memory store. Yahan tum explicitly decide karte ho kya cache karna hai (jaise "user profile", "product listing", "computed recommendation score") aur kitni der ke liye. Yeh sabse flexible layer hai kyunki application logic control karta hai.
+4. **Database query cache / buffer pool** — Database khud bhi recently-accessed pages ko memory (buffer pool) mein rakhta hai taaki disk I/O na lagana pade repeat queries ke liye. Yeh application ko dikhta bhi nahi, database internally manage karta hai.
+
+Request jitna "upar" (client ke kareeb) cache hit hota hai, utna hi fast aur utna hi zyada load origin se bachta hai. Isliye production systems layered caching design karte hain — pehle browser check karo, phir CDN, phir app cache, tabhi database tak jaao.
+
+### Write strategies — real depth ke saath
+
+Yeh part interviewer sabse zyada test karta hai kyunki isme genuine trade-offs hain, koi "best" answer nahi:
+
+- **Write-through** — Data cache aur database dono mein synchronously likha jaata hai, ek hi operation ke part ke roop mein. Guarantee yeh hai ki cache **kabhi** stale nahi hota database se — dono hamesha consistent rehte hain. Trade-off: har write dono jagah likhne ka wait karta hai, isliye write latency badh jaati hai. Use-case: financial/inventory data jaha stale read acceptable nahi hai.
+- **Write-back / write-behind** — Data pehle sirf cache mein likha jaata hai (fast!), aur database mein asynchronously, thodi der baad ya batch mein flush hota hai. Write latency bahut kam hai kyunki caller ko database write ka wait nahi karna padta. Bada risk: agar cache crash ho jaaye flush hone se pehle, woh data **permanently lose** ho sakta hai. Use-case: high write-throughput systems jaha thoda data loss risk acceptable hai lekin write speed critical hai (jaise analytics counters, view counts).
+- **Write-around** — Data seedha database mein likha jaata hai, cache ko bypass karke. Cache sirf reads pe populate hota hai (lazy loading / cache-aside pattern). Yeh un cases ke liye best hai jaha write hone wala data turant dobara read hone ki possibility kam hai — warna woh pehla read hamesha ek cache miss hoga (cold read penalty), kyunki abhi-abhi likha gaya data cache mein hai hi nahi.
+
+Interview mein agar tum sirf "write-through use karenge" bol do bina yeh justify kiye ki tumhare specific use-case mein consistency latency se zyada important kyun hai — woh weak answer hai. Har baar batao **kyun** yeh strategy fit baithti hai us specific data ke liye.
+
+### Cache hit ratio — woh ek metric jo matter karta hai
+
+Cache hit ratio = (cache hits) divided by (total requests). Yeh **the** metric hai jo batata hai tumhara caching layer kitna effective hai. Agar hit ratio low hai (jaise 40-50%), matlab zyadatar requests phir bhi origin/database tak ja rahe hain — cache ka fayda kam mil raha hai, aur ho sakta hai cache maintain karne ka overhead (extra infra, invalidation complexity) fayde se zyada ho. High-traffic read-heavy systems mein production target usually 90%+ hota hai. Agar hit ratio drop ho raha hai, common causes hain: TTL bahut chhota, cache size bahut chhota (evictions zyada ho rahi), ya access pattern hi aisa hai jisme repeat access kam hai (jaise ek-baar-dekha content).
+
+### Kab caching WRONG choice hai
+
+Yeh part interview mein sabse zyada differentiate karta hai — senior candidates yeh bolte hain ki caching **hamesha** sahi nahi hota:
+
+- **Highly volatile data** — Agar data har second badal raha hai (jaise live stock price, real-time bidding), caching se fayda bahut kam hai kyunki cache turant stale ho jaayega, aur invalidation overhead khud ek bottleneck ban sakta hai.
+- **Strict consistency requirements** — Financial transactions, inventory counts jaha stale read se galat business decision ho sakta hai (jaise ek out-of-stock item ko in-stock dikha dena aur double-sell ho jaana) — yahan ya to write-through use karo bahut short TTL ke saath, ya caching hi skip karo us specific field ke liye aur seedha database se authoritative read lo.
+- **Low repeat-access data** — Agar ek data item sirf ek baar access hota hai (jaise ek unique one-time report), use cache karna waste hai — cache slot occupy karega, memory lega, lekin hit kabhi nahi milega.
+
+Rule of thumb jo bolne layak hai: caching tab helpful hai jab data **read-heavy** ho, **repeat access** ho, aur **thoda staleness tolerate** ho sake. Teeno conditions miss ho rahi hon to caching se zyada complexity milegi, benefit nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Write-through: hamesha consistent, cache kabhi stale nahi",
+    "Write-back: bahut fast writes, high write-throughput systems ke liye ideal",
+  ]}
+  cons={[
+    "Write-through: har write dono jagah (cache + DB) likhne ka wait, higher write latency",
+    "Write-back: cache crash pe unflushed data permanently lose ho sakta hai",
+  ]}
+/>
+
+<Callout type="trap">
+
+"Cache laga do, sab fast ho jaayega" ek trap hai. Agar data volatile hai ya strict consistency chahiye, caching latency to kam kar sakta hai lekin correctness ka risk badha deta hai — aur ek galat business decision (double-sell, wrong balance) latency bachane se zyada mehnga padta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Netflix">
+
+Netflix apna EVCache (Memcached-based, in-house built) layer use karta hai personalization aur recommendation data ke liye — yeh data thoda stale ho to bhi acceptable hai (write-around/cache-aside pattern ke saath), lekin latency bahut critical hai kyunki homepage load pe hazaaron cache lookups ek saath hote hain.
+
+</RealWorld>
+
+<RealWorld company="Hotstar">
+
+IPL match ke dauraan Hotstar par live scorecard aur viewer-count jaisa data application-level cache mein rakha jaata hai chhote TTL (jaise 1-2 second) ke saath — yeh full consistency nahi deta (thoda stale ho sakta hai) lekin database ko crores of concurrent requests se bachaata hai, jo warna live match ke peak minute mein pura database hi le doobta.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Product listing pages (category browse, search results) heavily cached hote hain kyunki yeh read-heavy hai aur thoda stale price/stock dikhana (kuch seconds tak) generally acceptable hai — lekin actual checkout ke time inventory/price ka final authoritative check seedha database se hota hai, cache se nahi, taaki overselling na ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- In-memory cache (Redis/Memcached) read latency — typically 0.5-2 ms vs a database query at 10-100+ ms
+- Target cache hit ratio for a well-tuned read-heavy production system — 90%+
+- Below ~50-60% hit ratio, caching layer's operational overhead often isn't worth it
+- Typical Redis single-node throughput — 100,000+ ops/sec for simple GET/SET
+- Write-back flush interval in common designs — a few hundred ms to a few seconds, tuned against data-loss tolerance
+- CPU/memory cost of a cache miss cascading to DB — can be 10-50x the latency of a cache hit
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic prompt: **"How would you reduce load on this database?"** — caching is almost always part of the answer, but the interviewer is really testing whether you can reason about *which* write strategy and *which* layer fits the specific data. A weak answer is "add Redis in front of the DB." A strong answer specifies: what's being cached, expected hit ratio and why, which write strategy (through/back/around) fits the consistency needs of that specific field, and — critically — explicitly calling out what should **not** be cached (e.g., "inventory count at checkout time reads straight from the DB, not the cache, because overselling is worse than latency here"). That last point, unprompted, is what separates candidates who've internalized the trade-off from those repeating a keyword.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har cheez ko cache kar dena bina yeh check kiye ki data actually read-heavy hai ya repeat-access hai — low-value data cache karna sirf memory/complexity add karta hai, hit ratio ko fayda nahi.
+
+</Mistake>
+
+<Mistake>
+
+Write strategy choose karte time consistency requirement ko ignore karna — jaise inventory/payment jaisa data write-back se likhna, jahan ek crash se silent data loss business-critical galti ban sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Cache hit ratio ko kabhi measure hi na karna — bina metric ke yeh pata nahi chalta ki cache layer actually fayda de raha hai ya sirf extra operational complexity add kar raha hai.
+
+</Mistake>
+
+<Mistake>
+
+Highly volatile data (real-time price, live counters) ko lambe TTL ke saath cache kar dena — isse consistently stale data serve hota hai aur users ko galat information dikhti hai.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki caching hamesha correct solution hai — strict-consistency use cases mein bhi caching push kar dena, jab actually seedha database read (ya bahut short-TTL write-through) sahi answer hota.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    U[User Request] --> BC["Browser Cache"]
+    BC -->|miss| CDN["CDN Edge Cache"]
+    CDN -->|miss| AC["App Cache: Redis/Memcached"]
+    AC -->|hit| RESP1[Fast Response]
+    AC -->|miss| DB["Database + Buffer Pool"]
+    DB --> AC
+    AC --> RESP2[Response, cache now warm]
+    BC -->|hit| RESP0[Fastest: served from browser]
+    CDN -->|hit| RESPC[Fast: served from edge]
+`}
+  caption="Each layer is checked before falling through to the next — a hit anywhere upstream saves the full round trip to the database."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Cache hierarchy: browser cache to CDN to app cache (Redis/Memcached) to DB buffer pool - each layer hit saves the trip to the next
+- Write-through: consistent, slower writes; write-back: fast writes, risk of data loss on crash; write-around: good for write-once-rarely-read-again data
+- Cache hit ratio is THE metric - target 90%+ for read-heavy systems, below 50-60% caching often isn't worth the complexity
+- Caching helps when data is read-heavy, repeat-access, and staleness-tolerant - all three, not just one
+- Caching is the WRONG choice for highly volatile data or strict-consistency fields (inventory at checkout, payment balances)
+- Always name what should NOT be cached, not just what should - that's the senior-level signal
+- In-memory cache reads are ~10-100x faster than a DB round trip
+- Justify write-strategy choice by the specific data's consistency need, never by default habit
+
+</QuickRevision>

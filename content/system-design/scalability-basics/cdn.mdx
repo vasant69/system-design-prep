@@ -1,0 +1,180 @@
+---
+slug: "cdn"
+title: "Content Delivery Network (CDN)"
+section: "system-design"
+module: "scalability-basics"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["caching"]
+tags: ["caching", "networking", "performance"]
+englishDefinition: "A CDN (Content Delivery Network) is a geographically distributed network of edge servers, called Points of Presence, that cache and serve content physically close to end users. By serving from a nearby edge location instead of a single distant origin server, a CDN reduces latency for users and reduces load on the origin."
+interviewFrequency: "high"
+companies: ["Hotstar", "Netflix", "JioCinema"]
+---
+
+<SimpleDefinition>
+
+A CDN (Content Delivery Network) is a geographically distributed network of edge servers, called Points of Presence, that cache and serve content physically close to end users. By serving from a nearby edge location instead of a single distant origin server, a CDN reduces latency for users and reduces load on the origin.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Caching topic mein humne "CDN" ko cache hierarchy ka ek layer bola tha — ab isi ko poori depth mein khodenge, kyunki CDN sirf "ek aur cache" nahi hai, yeh ek poora **geographically distributed system** hai apne khud ke routing, freshness-negotiation, aur origin-protection mechanisms ke saath.
+
+### CDN actually kaam kaise karta hai
+
+Ek CDN provider (jaise Cloudflare, Akamai, AWS CloudFront) duniya bhar mein sainkdon **PoPs (Points of Presence)** — edge data centers — maintain karta hai, jo end users ke geographically kareeb hote hain. Jab user content maangta hai (jaise Mumbai se), uski request nearest PoP tak route hoti hai, na ki seedha origin server (jo shayad US mein ho) tak.
+
+Yeh routing kaise decide hota hai? Zyadatar CDNs **anycast routing** use karte hain — ek hi IP address duniya bhar ke multiple PoPs pe announce kiya jaata hai, aur underlying network (BGP routing) automatically user ki request ko network-topologically nearest PoP tak bhej deta hai, bina application layer ko kuch decide karna pade. Yeh elegant hai kyunki latency-based routing internet ke routing layer pe hi solve ho jaata hai.
+
+CDN ke do broad models hain:
+
+- **Pull CDN** — Edge server content pehli baar tab fetch karta hai jab pehla request aata hai (cache miss se origin tak jaakar), aur usse cache kar leta hai future requests ke liye. Simple setup — bas origin bata do, CDN khud pull karega jab zaroorat ho. Trade-off: **first** request har naye PoP ke liye slow hoti hai (cold cache), kyunki origin tak jaana padta hai.
+- **Push CDN** — Content ko proactively origin se saare (ya relevant) edge PoPs tak pehle se push/upload kar diya jaata hai, request aane se pehle hi. Yeh cold-start latency avoid karta hai lekin operational overhead zyada hai — tumhe khud decide karna padta hai kya push karna hai, kab, kahan. Large static libraries ya bahut predictable content (jaise ek video ka pre-release) ke liye push zyada common hai.
+
+### Kya CDN pe daalna chahiye, kya nahi
+
+**CDN pe achha fit**: static assets — JS, CSS, images, fonts — jo sabhi users ke liye same hote hain aur rarely change hote hain. **Video segments** (streaming ke chunks) bhi classic CDN use-case hain, kyunki woh bhi immutable hote hain ek baar encode hone ke baad.
+
+**CDN pe bura fit**: highly dynamic, per-user personalized data — jaise ek user ka live shopping cart, ya real-time notification feed. Yeh data har user ke liye alag hai aur har second badal sakta hai, isliye edge pe cache karne ka fayda kam hai (hit ratio bahut low hoga, aur invalidation nightmare ban jaayega).
+
+Lekin yahan ek important nuance hai jo modern interviews mein test hota hai: CDNs ab sirf static caching tak limited nahi rahe. **Edge compute** (jaise Cloudflare Workers, AWS Lambda@Edge) increasingly common ho raha hai — kuch dynamic logic (auth check, A/B test routing, personalization headers set karna) ab edge pe hi run ho sakta hai, origin tak jaaye bina. Yeh poori tarah "dynamic data CDN pe nahi jaata" wale simple rule ko blur kar raha hai — lekin core principle same hai: jo cheez cacheable hai ya jise edge pe compute karna origin round-trip se cheaper hai, woh CDN/edge pe jaati hai; jo genuinely per-request unique aur uncacheable hai, woh origin tak hi jaati hai.
+
+### Cache-Control headers — origin CDN ko freshness kaise bataata hai
+
+Origin server HTTP response headers ke through CDN (aur browser) ko batata hai content kitni der cache ho sakta hai:
+
+- `Cache-Control: max-age=3600` — content 1 hour tak fresh maana jaayega, is se pehle CDN dobara origin se check nahi karega.
+- `Cache-Control: no-cache` — CDN cache to kar sakta hai, lekin har baar serve karne se pehle origin se revalidate (ek conditional request, jaise `If-None-Match` ETag ke saath) karna padega.
+- `Cache-Control: no-store` — bilkul cache mat karo, har request origin tak jaani chahiye. Highly sensitive ya per-user data ke liye.
+- `ETag` / `Last-Modified` — content ka version-identifier ya last-change-timestamp, jisse CDN efficiently check kar sakta hai "kya content actually badla hai" bina poora content dobara download kiye — agar nahi badla, origin `304 Not Modified` bhej deta hai, bandwidth bachta hai.
+
+Yeh headers hi poore CDN caching contract ki backbone hain — agar origin galat headers bhejta hai (jaise koi bhi cache header hi na ho), CDN ya to over-cache karega (stale data lambe time tak) ya under-cache karega (har request origin tak jaayega, CDN ka fayda hi khatam).
+
+### Cache miss path aur origin shielding
+
+Jab ek PoP pe cache miss hota hai, woh request origin tak jaati hai. Problem yeh hai: agar ek naya PoP cold hai (jaise ek naya region activate hua, ya cache abhi-abhi flush hua), aur us PoP pe achanak bahut saare simultaneous requests aa jaayein same content ke liye — sab ek saath origin ko hit kar sakte hain, essentially wahi **thundering herd** problem jo caching module mein cover hua tha, lekin ab origin server ke level pe.
+
+**Origin shielding** iska solution hai: ek dedicated intermediate layer (ek "shield" PoP, usually ek hi consistently-chosen location) sabhi edge PoPs ke cache-miss requests ko consolidate karta hai before hitting origin. Matlab agar 50 alag PoPs ka cache ek saath miss ho, woh sab pehle shield tak jaate hain, aur shield khud origin se sirf ek baar fetch karta hai (agar uska khud ka cache bhi miss hai) — origin ko 50 baar nahi, effectively 1 baar hit hota hai. Yeh request coalescing ka hi ek distributed-system-level version hai.
+
+### Video streaming CDN pe kyun itna depend karta hai
+
+Video streaming CDN ka sabse demanding use-case hai kyunki: (a) video files bahut bade hain (bandwidth-heavy), (b) concurrent viewership massive spike kar sakta hai (live events), aur (c) latency/buffering directly user experience kharab karta hai. Video ko chhote segments (jaise 2-10 second chunks, HLS/DASH protocols ke through) mein todke CDN pe cache kiya jaata hai — har segment independently cacheable hai, isliye ek user jahan bhi stream pause/seek kare, sirf zaroori segments fetch hote hain, poori file nahi.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein CDN discuss karte time origin shielding zaroor mention karo agar "cold start" ya "naya region launch" jaisa follow-up aaye — yeh dikhata hai tumhe pata hai ki CDN khud bhi apni thundering-herd problem se origin ko bachaane ke liye ek extra layer rakhta hai, sirf "edge caching" bol dena kaafi nahi hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Hotstar">
+
+IPL final jaisa match jab crores of concurrent viewers ek saath stream karte hain, Hotstar ka CDN layer video segments ko edge PoPs par cache karta hai taaki origin servers directly crores of connections handle na karein — origin sirf shield layer se limited requests handle karta hai. Yeh Hotstar ka famous "largest live streaming event" scale claim ka technical backbone hai — bina heavy CDN caching ke yeh scale possible hi nahi hota.
+
+</RealWorld>
+
+<RealWorld company="Netflix">
+
+Netflix apna khud ka CDN, Open Connect, banaya hai — jisme woh apne caching appliances (servers) directly ISPs ke data centers ke andar install karte hain. Isse video traffic ISP ke internal network se hi serve ho jaata hai, bahar internet backbone tak jaana hi nahi padta — latency aur bandwidth cost dono minimize hote hain at massive scale.
+
+</RealWorld>
+
+<RealWorld company="JioCinema">
+
+JioCinema ne IPL streaming rights ke dauraan India mein record-breaking concurrent viewership handle kiya — isme multi-CDN strategy (ek se zyada CDN providers ek saath use karna) critical thi, taaki agar ek CDN provider ka koi PoP struggle kare, traffic doosre provider ke PoP pe seamlessly shift ho sake, single-CDN dependency na ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- CDN edge latency to a nearby PoP — often 5-30 ms vs 100-300+ ms to a distant origin
+- A major CDN provider's PoP count — typically 200-300+ globally distributed locations
+- Origin load reduction with a well-configured CDN — often 80-95% of static/video traffic never reaches origin
+- Video segment size in adaptive streaming (HLS/DASH) — commonly 2-10 seconds per chunk
+- Cache hit ratio target at the edge for static assets — 90%+
+- Hotstar/JioCinema class live events — tens of millions of concurrent viewers during peak IPL moments
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic prompt: **"Design a video streaming service"** or **"How would you serve static assets to a global user base?"** — CDN is the expected answer, but the interviewer probes deeper: how does routing to the nearest PoP actually work (anycast), what happens on a cache miss especially during a cold region launch (origin shielding), and how does the origin communicate freshness (Cache-Control headers). A common trap question: "What about per-user dynamic content — does that go on the CDN too?" The strong answer acknowledges the classic split (static/video yes, per-user dynamic no) but also mentions that edge compute is blurring this line for cacheable-but-personalized logic like auth checks or A/B routing.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+CDN ko sirf "ek aur cache layer" bol dena bina yeh explain kiye ki yeh geographically distributed hai aur anycast/latency-based routing use karta hai — depth missing reh jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Highly dynamic per-user data (jaise live cart, personal notifications) ko bhi CDN pe cache karne ki koshish karna, jisse hit ratio bahut low rehta hai aur invalidation complexity bina fayde ke badh jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Origin server pe Cache-Control headers set hi na karna ya galat set karna — jisse CDN ya to bahut lambe samay tak stale data serve karta hai, ya har request origin tak forward kar deta hai (CDN ka fayda hi khatam).
+
+</Mistake>
+
+<Mistake>
+
+Cold cache / naya region launch scenario ignore karna — yeh na sochna ki naye PoP pe pehle hi burst of requests origin ko thundering-herd jaisi situation mein daal sakta hai bina origin shielding ke.
+
+</Mistake>
+
+<Mistake>
+
+Sirf ek hi CDN provider pe fully dependent ho jaana bina fallback plan ke — agar woh provider ka koi region down ho jaaye, poora traffic uss region ke liye affected ho sakta hai; large-scale live events multi-CDN strategy use karte hain isi risk ko mitigate karne ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    U1[User - Mumbai] --> P1[Nearby PoP - Mumbai Edge]
+    U2[User - Delhi] --> P2[Nearby PoP - Delhi Edge]
+    P1 -->|cache hit| U1
+    P2 -->|cache miss| SH[Origin Shield Layer]
+    P1 -.->|cache miss too| SH
+    SH -->|shield cache hit, or fetch once| O[Origin Server]
+    O --> SH
+    SH --> P2
+    SH -.-> P1
+`}
+  caption="Multiple PoPs miss can be consolidated by an origin shield, so the origin sees far fewer requests than the total edge traffic."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- CDN = geographically distributed edge PoPs that cache/serve content close to users, reducing latency and origin load
+- Anycast routing sends a user's request to the nearest PoP automatically at the network layer
+- Pull CDN: fetches on first request (simple, cold-start penalty); push CDN: proactively uploaded (no cold-start, more setup work)
+- Belongs on CDN: static assets, video segments; doesn't: highly dynamic per-user data - though edge compute is blurring this line
+- Cache-Control headers (max-age, no-cache, no-store, ETag) are how origin tells the CDN how fresh content is
+- Origin shielding consolidates cache misses from many PoPs into far fewer origin requests - prevents a mini thundering herd on cold starts
+- Video streaming depends on CDN because files are huge, viewership spikes massively, and buffering directly hurts UX
+- Multi-CDN strategy avoids single-provider dependency for extreme-scale live events (Hotstar/JioCinema IPL streaming)
+
+</QuickRevision>

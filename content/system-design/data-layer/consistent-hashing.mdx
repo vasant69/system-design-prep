@@ -1,0 +1,184 @@
+---
+slug: "consistent-hashing"
+title: "Consistent Hashing"
+section: "system-design"
+module: "data-layer"
+order: 5
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["sharding-partitioning", "load-balancing"]
+tags: ["databases", "distributed-systems", "scalability"]
+englishDefinition: "Consistent hashing is a hashing technique that maps both data keys and server nodes onto a conceptual ring, a circular hash space, so a key belongs to whichever node is the first one encountered going clockwise from the key's position. Because only the small range of keys adjacent to a changed node needs to move when a node is added or removed, it avoids the near-total remapping that naive hash-mod-N partitioning causes."
+interviewFrequency: "high"
+companies: ["Amazon", "Netflix", "Uber"]
+---
+
+<SimpleDefinition>
+
+Consistent hashing is a hashing technique that maps both data keys and server nodes onto a conceptual ring, a circular hash space, so a key belongs to whichever node is the first one encountered going clockwise from the key's position. Because only the small range of keys adjacent to a changed node needs to move when a node is added or removed, it avoids the near-total remapping that naive hash-mod-N partitioning causes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic (sharding) mein humne dekha ki naive `hash(key) % N` scheme mein ek node add ya remove karne se **almost saara data** reshuffle karna padta hai. Consistent hashing exactly isi problem ko fix karne ke liye design hui thi — chalo ise step by step, math ke saath samjhते hain, kyunki yeh topic tabhi click karta hai jab tum ek concrete example khud trace karo.
+
+### Pehle problem ko concretely dekho
+
+`hash(key) % N` mein N badalte hi almost har key ka result change ho jaata hai — kyunki modulo operation N pe directly dependent hai. 4 se 5 shards jaane pe roughly 80% keys ka target shard badal jaata hai. Yeh production mein unacceptable hai — matlab ek chhota scale-up event bhi ek massive, risky data migration trigger karta hai.
+
+### Ring concept — step by step
+
+Consistent hashing ka core idea: hash output ko ek **number line** ki tarah nahi, ek **circle (ring)** ki tarah socho jo apne aap mein wrap around karta hai (jaise 0 se 100 tak jaake wapas 0 pe aa jaata hai).
+
+1. **Nodes ko ring pe place karo** — har server/node ke ID (jaise IP address ya hostname) ko hash karo, aur us hash value ko ring pe ek position de do.
+2. **Keys ko bhi ring pe place karo** — har data key ko bhi usi hash function se hash karo, aur usko bhi ring pe ek position mil jaata hai.
+3. **Key kis node ki hai, yeh rule se decide hota hai** — key ke position se **clockwise chalo** jab tak pehla node na mile, wahi node us key ko own karta hai.
+
+### Worked example — 4 nodes, 5 keys
+
+Chalo ek chhota hash space lete hain 0 se 100 (asli systems mein yeh typically 32-bit ya 160-bit space hota hai, but concept same rehta hai). 4 nodes hain:
+
+```text
+N1 -> hash 10
+N2 -> hash 35
+N3 -> hash 60
+N4 -> hash 85
+```
+
+5 keys hain:
+
+```text
+K1 -> hash 5   => clockwise se pehla node >= 5  is N1 (10)  => K1 -> N1
+K2 -> hash 20  => clockwise se pehla node >= 20 is N2 (35)  => K2 -> N2
+K3 -> hash 40  => clockwise se pehla node >= 40 is N3 (60)  => K3 -> N3
+K4 -> hash 70  => clockwise se pehla node >= 70 is N4 (85)  => K4 -> N4
+K5 -> hash 95  => koi node >= 95 nahi hai, wrap around karo => K5 -> N1 (10)
+```
+
+Ab socho **N3 (hash 60) crash ho jaata hai ya remove ho jaata hai**. Kya hota hai? Sirf woh keys jo N3 ko point kar rahi thi unhe naya node dhoondhna padega — sirf **K3**. K3 ke liye clockwise se agla node ab N4 (85) hai, isliye K3 -> N4 ho jaata hai. **K1, K2, K4, K5 — inme se koi bhi affected nahi hua**, unka assignment bilkul same raha. Compare karo naive `mod N` se, jahan N badalte hi almost saari 5 keys ka result change ho jaata — yahan sirf **1 out of 5** keys move hui. Yeh hi consistent hashing ka poora point hai: node add/remove sirf **local, adjacent** impact daalta hai, global reshuffle nahi.
+
+### Load imbalance problem — plain consistent hashing ka issue
+
+Ab ek genuine limitation: agar tumhare paas sirf **thode se nodes** hain (jaise upar wala example, 4 nodes), aur unke hash positions **random** hain, to ring pe unka coverage bahut uneven ho sakta hai. Socho agar N1, N2, aur N3 sab ek dusre ke paas cluster ho jaate (jaise hash 10, 15, 20 pe) aur N4 akela bahut door ho (hash 90 pe) — to N4 ko ring ka ek **bahut bada arc** (20 se 90 tak, matlab 70% hash space) own karna padega, jabki N1/N2/N3 milke sirf 30% share karenge. Iska matlab N4 par disproportionately zyada keys aa jaayengi — load balance nahi hai, sirf remapping efficient hai.
+
+### Virtual nodes (vnodes) — is imbalance ka fix
+
+Solution hai **virtual nodes**: har physical node ko ring pe ek jagah rakhne ke bajaye, use **kai jagah** (jaise 100-200 points) rakho — har physical node ke liye multiple hash values generate karo (jaise `hash(node_id + "-0")`, `hash(node_id + "-1")`, ..., `hash(node_id + "-150")`), aur har ek ko ring pe ek separate virtual node ki tarah place karo. Ab ek physical node ka total "territory" in sab chhote-chhote arcs ka sum hai, jo spread hua hai poore ring mein, statistically averaging out ho jaata hai (law of large numbers ki wajah se) — chahe hash function thoda uneven ho, kaafi virtual points ke saath har physical node ka total share roughly equal ho jaata hai.
+
+Virtual nodes ka ek doosra bada fayda bhi hai: jab ek physical node **remove** hota hai, uske virtual points poore ring mein scattered the, isliye uska load ek single neighboring node pe dump nahi hota — woh load **kai alag nodes mein spread** ho jaata hai. Yeh rebalancing ko aur bhi smooth banata hai — na sirf kam data move hota hai, balki jo move hota hai woh evenly kai destinations mein distribute hota hai, ek node ko overwhelm nahi karta.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein consistent hashing explain karte waqt yeh do-line structure use karo: pehle naive `mod N` ki problem concretely bolo (ek number se dikhao kitna data move hota hai), phir ring + clockwise-assignment rule bolo, phir turant virtual nodes ka mention karo load balance ke liye. Yeh teeno cheezein bolna full-marks answer hai — sirf ring concept bolna adhoora lagta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Amazon ka Dynamo paper (2007) — jisne baad mein DynamoDB ko inspire kiya — consistent hashing ko production distributed key-value stores mein popularize kiya. Dynamo specifically virtual nodes use karta tha taaki heterogeneous hardware (kuch machines dusri se zyada powerful) ko bhi handle kiya ja sake — ek powerful machine ko zyada virtual nodes de do, woh automatically zyada load le legi, weak machine ko kam virtual nodes.
+
+</RealWorld>
+
+<RealWorld company="Netflix">
+
+Netflix ka EVCache (unka Memcached-based distributed caching layer, jo streaming metadata aur user data cache karta hai) consistent hashing use karta hai cache nodes ke across keys distribute karne ke liye. Jab caching cluster ko scale up ya down karna ho (jaise traffic pattern change hone pe), consistent hashing ki wajah se sirf ek chhota fraction cache keys "cold" hoti hain (unka node change hua), poora cache cold nahi hota — jo ek naive resharding scheme mein hota, aur poora cache miss storm create kar deta backend databases pe.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ka internal system Ringpop application-level consistent hashing ka use karta hai request routing ke liye — kaunsa service instance kis request ko handle karega, yeh ring-based assignment se decide hota hai, taaki jab instances scale up/down hon (jo Uber jaisi elastic-traffic company mein bahut common hai — peak hours mein zyada instances, off-peak mein kam), routing disruption minimal rahe.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Naive `hash % N`: changing node count remaps roughly (N-1)/N of all keys; consistent hashing: only roughly 1/N of keys remap on a single node add/remove
+- Typical virtual nodes per physical node in production systems (e.g., Dynamo-style designs) — commonly 100-200+
+- Real hash functions used for the ring — commonly 32-bit (e.g., MurmurHash) or 160-bit (SHA-1), giving an astronomically large position space versus this article's simplified 0-100 example
+- With too few virtual nodes (or none), load imbalance across nodes on a small cluster can be significant — one node holding several times the average share is common without vnodes
+- Cache-miss storm avoided: on a resize event, consistent hashing typically invalidates only ~1/N of cached keys instead of nearly all of them
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+This is one of the most reliable "let's go deeper" follow-ups after any sharding or distributed-caching discussion: "How would you handle adding/removing a node without remapping everything?" Interviewer testing kar raha hai ki tum sirf naam-drop nahi kar rahe ("hum consistent hashing use karenge") — balki mechanism actually samajhte ho.
+
+Model answer shape: state the naive problem first with a number ("naive mod-N remaps most of the data on resize"), then explain the ring and clockwise-assignment rule, then **walk through what happens on node removal** with a tiny concrete example if the interviewer wants depth, and finally proactively mention virtual nodes for load balance ("plain consistent hashing with few nodes can still be unevenly loaded, so production systems use 100+ virtual nodes per physical node"). That last unprompted detail is usually what separates a strong answer from a memorized one.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sirf "consistent hashing" naam bol dena bina ring concept ya clockwise-assignment rule explain kiye — interviewer ko lagta hai term memorize kiya hai, mechanism nahi samjha.
+
+</Mistake>
+
+<Mistake>
+
+Yeh sochna ki consistent hashing zero data movement guarantee karta hai — asal mein woh **minimal** movement guarantee karta hai (roughly 1/N of keys), zero nahi.
+
+</Mistake>
+
+<Mistake>
+
+Virtual nodes ka concept skip kar dena — sirf basic ring bata dena jaise woh automatically load-balanced hai, jabki thode nodes ke saath plain ring genuinely uneven ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Consistent hashing ko sirf databases tak limited samajhna — yeh caching layers (Memcached/Redis clusters), CDN request routing, aur load balancer server-selection mein bhi equally use hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Ring["Hash ring 0-100, clockwise assignment"]
+    direction LR
+    N1["N1 (hash 10)"] --> N2["N2 (hash 35)"]
+    N2 --> N3["N3 (hash 60)"]
+    N3 --> N4["N4 (hash 85)"]
+    N4 -.wraps around.-> N1
+    end
+    K1["K1 (hash 5)"] -.-> N1
+    K2["K2 (hash 20)"] -.-> N2
+    K3["K3 (hash 40)"] -.if N3 removed, moves to N4.-> N3
+    K4["K4 (hash 70)"] -.-> N4
+    K5["K5 (hash 95, wraps)"] -.-> N1
+    style N3 fill:#7f1d1d,stroke:#f87171,color:#e2e8f0
+`}
+  caption="Each key is owned by the first node clockwise from its hash. Removing N3 only remaps K3 (which moves to N4) — K1, K2, K4, and K5 are completely untouched."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Naive hash % N remaps ~(N-1)/N of keys on any node count change — consistent hashing fixes this
+- Ring = circular hash space; nodes and keys both hashed onto it; a key belongs to the first node clockwise from its position
+- Node add/remove only affects keys between the changed node and its previous neighbor — roughly 1/N of keys move
+- Worked example: removing 1 node out of 4 remapped only 1 out of 5 keys, not all of them
+- Plain consistent hashing with few nodes can still be unevenly loaded — random hash placement creates uneven ring coverage
+- Virtual nodes (100-200+ per physical node) fix load imbalance by spreading each physical node's territory across many small ring arcs
+- Virtual nodes also spread a removed node's load across many neighbors instead of dumping it on one
+- Used beyond databases too — distributed caches (EVCache), CDN routing, and request routing (Ringpop) all rely on it
+
+</QuickRevision>

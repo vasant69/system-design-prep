@@ -1,0 +1,188 @@
+---
+slug: "sharding-partitioning"
+title: "Sharding & Partitioning"
+section: "system-design"
+module: "data-layer"
+order: 4
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["replication"]
+tags: ["databases", "scalability"]
+englishDefinition: "Partitioning is the general practice of splitting a large dataset into smaller, more manageable pieces, which can even happen within a single database server. Sharding is a specific form of partitioning where those pieces are distributed across multiple separate servers, so no single node holds the entire dataset. This enables horizontal write scaling beyond what replication alone provides, since replication copies the whole dataset onto every node while sharding spreads distinct slices of it across nodes."
+interviewFrequency: "very-high"
+companies: ["Instagram", "Uber", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Partitioning is the general practice of splitting a large dataset into smaller, more manageable pieces, which can even happen within a single database server. Sharding is a specific form of partitioning where those pieces are distributed across multiple separate servers, so no single node holds the entire dataset. This enables horizontal write scaling beyond what replication alone provides, since replication copies the whole dataset onto every node while sharding spreads distinct slices of it across nodes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Replication solve karta hai read scaling aur availability — lekin ek problem replication solve nahi karta: **write** scaling. Agar tumhare paas ek leader hai jo saari writes accept karta hai, chahe kitne bhi followers add kar lo, us leader ka disk aur CPU ek din bhar jaayega. Jab **ek single machine** poora dataset store hi nahi kar sakti, ya poori write load handle nahi kar sakti, sharding chahiye hota hai.
+
+### Partitioning vs sharding — distinction jo log miss karte hain
+
+Yeh do terms interchangeably use hoti hain, lekin technically alag hain. **Partitioning** ek general concept hai — data ko chhote logical pieces mein todna, jo **ek hi server ke andar** bhi ho sakta hai (jaise ek bade table ko date-range ke hisaab se partitions mein todna, purane data ko cold storage partition mein rakhna, sab ek hi machine pe). **Sharding** partitioning ka ek specific form hai jahan yeh pieces **alag-alag physical servers** pe distribute hote hain — matlab sharding hamesha horizontal scale-out ke context mein hoti hai. Interview mein yeh distinction bolna depth dikhata hai — bahut log dono ko same treat karte hain.
+
+### Sharding strategies — teen main approaches
+
+**1. Range-based sharding** — data ko key ke range ke hisaab se shards mein todte hain (jaise `user_id 1-1000000` shard 1 pe, `1000001-2000000` shard 2 pe). Simple hai, aur range queries efficient rehti hain (agar tumhe `user_id 500-600` chahiye, sab ek hi shard pe milega). Lekin isme **hotspot** ka real risk hai: agar data naturally cluster karta hai — jaise order data date se partition kiya gaya hai aur aaj ke saare orders "today" ke range mein aa rahe hain — to us din ka poora write traffic **ek** shard pe concentrate ho jaata hai, baaki shards idle baithe rehte hain.
+
+**2. Hash-based sharding** — key ko ek hash function se guzaarte hain (jaise `hash(user_id) % N`), aur result decide karta hai kaunsa shard. Yeh data ko **evenly distribute** karta hai kyunki hash function ka output roughly uniform hota hai, hotspot ka risk kam hai. Lekin trade-off yeh hai ki range queries ab expensive ho jaati hain — agar tumhe "user_id 500 se 600 tak" chahiye, yeh keys ab **alag-alag shards** pe scattered hain (hash unrelated hai numeric closeness se), isliye query ko har shard se poochna padta hai aur results merge karne padte hain.
+
+**3. Directory-based sharding** — ek separate **lookup service** rakhte hain jo batata hai "yeh key kis shard pe hai" — ek mapping table/service. Yeh sabse **flexible** hai kyunki tum kisi bhi key ko kisi bhi shard pe rakh sakte ho, aur rebalancing ke waqt sirf mapping update karni hai, data zaroori nahi turant move ho. Lekin isme ek naya problem aata hai: yeh lookup service khud ek **naya single point of failure aur bottleneck** ban jaata hai — har query pehle isse pooche, phir actual shard se data laaye, matlab ek extra network hop aur ek naya component jo down ho sakta hai.
+
+### Hotspot problem — celebrity/viral users
+
+Hash-based sharding "even distribution" ka assume karta hai — lekin yeh assumption real-world traffic patterns mein toot jaata hai. Socho ek Bollywood celebrity ka Instagram account ek normal user ke comparison mein 100x zyada likes, comments, aur follower-activity generate karta hai. Agar sharding scheme sirf `user_id` pe hash-based hai, is celebrity ka saara data (aur uske access se related load) ek hi shard pe concentrate ho jaata hai — baaki shards normal load pe hain, lekin yeh ek shard overloaded hai. Yeh classic **hotspot** hai, aur even distribution ka assumption sirf "average case" mein sahi hota hai, "worst case" (viral content, celebrity accounts, flash sales) mein nahi. Real systems is problem ko additional techniques se solve karte hain — jaise hot keys ko further split karna, ya unke liye ek dedicated caching layer laga dena taaki shard khud us load ko na jhele.
+
+### Resharding — asli dard yahin hai
+
+Yeh section interview mein sabse zyada depth deta hai. Socho tumne naive `hash(key) % N` scheme use kiya, N=4 shards ke saath. Ab traffic badh gaya aur tumhe ek 5th shard add karna hai. Problem: `hash(key) % 4` aur `hash(key) % 5` ka result **almost kabhi match nahi karega** same key ke liye. Matlab **poore dataset ka lagbhag 80% data** ab galat shard pe hai — usse migrate karna padega. Yeh ek massive, risky, downtime-prone operation hai production mein: tumhe naye scheme ke hisaab se data ko re-distribute karna padta hai, aur is process ke dauraan reads/writes ko consistently handle karna extremely tricky hai.
+
+Yeh exact problem hai jo **consistent hashing** ko motivate karta hai (agla topic) — ek technique jahan node add/remove karne pe sirf ek **chhota fraction** of keys remap hoti hain, poora dataset nahi. Naive `mod N` approach interview mein bolna theek hai as a starting point, lekin turant yeh bolna ki "isi wajah se production systems consistent hashing use karte hain" ek strong signal hai.
+
+### Cross-shard queries aur joins — ek real cost, hand-wave mat karo
+
+Jab data ek single database mein hota hai, joins aur multi-row transactions trivial hote hain. Sharding ke baad yeh **genuinely hard** ho jaata hai:
+
+- **Cross-shard joins** — agar `orders` table shard A pe hai (by `user_id`) aur `products` table shard B pe hai (by `product_id`), ek query jo dono ko join karti hai ab application layer mein manually do queries chalake, results ko memory mein merge karna padega — database khud yeh nahi kar sakta across separate physical servers.
+- **Cross-shard transactions** — agar ek operation do shards pe atomically update karna chahta hai (jaise ek wallet transfer jahan sender aur receiver alag shards pe hain), simple ACID transaction kaam nahi karega — distributed transaction protocols (two-phase commit) ya saga pattern jaisi complex machinery chahiye hogi, jo apna khud ka latency aur failure-mode overhead laati hai.
+- **Aggregate queries** — "total orders today across all users" jaisi query ab har shard se count leke sum karni padegi (scatter-gather), single `COUNT(*)` se kaam nahi chalega.
+
+Interview mein iska honest answer yeh hai ki sharding scale deta hai lekin query flexibility ka price pe — is trade-off ko explicitly bolna hi correct approach hai, "sharding se sab kuch solve ho jaata hai" bolna nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Horizontal write scaling — no single node needs to hold or write the entire dataset",
+    "Smaller working set per shard means better cache locality and faster per-shard queries",
+    "Failure isolation — one shard going down doesn't necessarily take the whole system down",
+  ]}
+  cons={[
+    "Cross-shard joins and transactions become application-layer problems, not database-guaranteed",
+    "Resharding (adding/removing shards) with a naive scheme can require moving most of the data",
+    "Hotspots on specific keys (celebrity users, viral content) can overload one shard while others sit idle",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Instagram">
+
+Instagram ke early scaling story mein unhone Postgres ko shard kiya by `user_id` — har photo ka ID generate hone ke waqt hi encode kar deta hai ki woh kis shard pe hai (shard ID ko ID ke andar embed karke), taaki lookup ke liye ek directory service ki zaroorat na pade. Yeh ek elegant hybrid tha range aur directory-based ideas ka — koi separate lookup service ka bottleneck nahi, lekin flexible enough ki logical shards ko physical machines ke across move kiya ja sake bina application code change kiye.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ka trip aur location data geographically aur volume dono mein bahut skewed hai — kuch cities (Mumbai, Bangalore, San Francisco) dusri cities se orders of magnitude zyada trips generate karti hain. Naive uniform hash-based sharding yahan hotspot create kar degi kyunki high-volume cities ka data disproportionately ek ya kuch shards pe land karega agar city ek natural grouping factor hai — isliye real systems sharding key ko carefully choose karte hain (jaise city ke bajaye trip ID ya composite keys use karke) taaki load genuinely spread ho.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Flipkart jaisi e-commerce platform pe order data ka natural sharding key `user_id` ya `order_id` ho sakta hai. Agar range-based sharding "order date" pe kiya jaaye (jo intuitive lagta hai reporting ke liye), Big Billion Days jaisi sale ke din poora write traffic ek hi "today" shard pe concentrate ho jaayega — classic hotspot. Isi wajah se production e-commerce systems typically hash-based ya user-based sharding prefer karte hain writes ke liye, aur date-range partitioning sirf read-side analytics ke liye use karte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Adding one shard to a naive `hash(key) % N` scheme (N to N+1) can require remapping roughly (N-1)/N of all keys — e.g., going from 4 to 5 shards can move ~80% of the dataset
+- A celebrity/viral account can drive 50-100x the read/write load of a typical user's shard partition
+- Cross-shard scatter-gather aggregate queries scale roughly linearly with shard count in worst case latency (must wait for the slowest shard to respond)
+- Instagram's original sharded Postgres setup (circa 2011-2012) ran thousands of logical shards across a much smaller number of physical database servers
+- Distributed (cross-shard) transactions via two-phase commit typically add multiple extra network round trips compared to a single-node transaction
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+This almost always shows up as: "Your single database can't handle the write load anymore — what do you do?" Interviewer testing kar raha hai ki tum seedha "shard kar do" bol ke ruk to nahi jaate — woh dekhna chahte hain ki tum shard key choice justify kar sakte ho, hotspot risk identify kar sakte ho, aur resharding pain ko honestly discuss kar sakte ho.
+
+Model answer shape: "Main pehle dekhunga ki write load evenly distributed hai ya kisi specific key pe skewed hai. Uske hisaab se main hash-based sharding choose karunga even distribution ke liye, lekin celebrity/hotspot keys ke liye alag handling rakhunga — jaise unhe further split karna ya cache layer lagana. Resharding ke liye main naive mod-N ke bajaye consistent hashing consider karunga, taaki node add/remove karne pe poora dataset reshuffle na ho." Yeh answer specifically dikhata hai tumhe hotspot aur resharding dono ka pata hai — yeh depth signal hai jo bahut candidates miss karte hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Partitioning aur sharding ko exactly same treat karna — sharding specifically multiple physical servers ke across distribution hai, partitioning ek broader concept hai jo single server ke andar bhi ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Range-based sharding choose kar lena bina yeh socho ki naturally-clustering keys (jaise timestamp/date) ek hi shard pe massive hotspot create kar denge.
+
+</Mistake>
+
+<Mistake>
+
+Hash-based sharding ko "even distribution guarantee" maan lena — celebrity/viral keys jaisi real-world skew ko ignore karna, jo hash-based scheme mein bhi hotspot create kar sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+Resharding ko trivial samajh lena — yeh na realize karna ki naive `hash % N` scheme mein ek shard add karne se almost saara data reshuffle karna padta hai.
+
+</Mistake>
+
+<Mistake>
+
+Cross-shard joins aur transactions ko hand-wave kar dena ("application layer handle kar lega") bina yeh acknowledge kiye ki yeh genuinely extra latency, complexity, aur failure modes laata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Before["4 shards, hash(key) % 4"]
+    direction LR
+    A1["Shard 0"] 
+    A2["Shard 1"]
+    A3["Shard 2"]
+    A4["Shard 3"]
+    end
+    Before -->|"Add shard 4:<br/>now hash(key) % 5"| After
+    subgraph After["5 shards, almost every key's<br/>modulo result changes"]
+    direction LR
+    B1["Shard 0"]
+    B2["Shard 1"]
+    B3["Shard 2"]
+    B4["Shard 3"]
+    B5["Shard 4"]
+    end
+    style After fill:#1e293b,stroke:#f87171,color:#e2e8f0
+`}
+  caption="Naive hash-mod-N sharding: adding one shard changes almost every key's target, forcing a massive data migration. This is exactly the problem consistent hashing solves."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Partitioning = general concept, can be within one server; sharding = partitioning across separate physical servers
+- Range-based sharding = simple, good for range queries, but risks hotspots when keys cluster (e.g., all today's orders)
+- Hash-based sharding = even distribution on average, but range queries now need scatter-gather across shards
+- Directory-based sharding = flexible remapping, but the lookup service becomes a new single point of failure
+- Hotspots happen even with hash-based sharding when real-world traffic is skewed (celebrity accounts, viral content)
+- Naive `hash(key) % N` resharding moves roughly (N-1)/N of all data when adding one shard — this motivates consistent hashing
+- Cross-shard joins, transactions, and aggregates are a real cost — they become application-layer, scatter-gather problems
+- Choose the shard key based on the actual write/access pattern, not just what looks intuitive for reporting
+
+</QuickRevision>

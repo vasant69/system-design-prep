@@ -1,0 +1,246 @@
+---
+slug: "url-shortener"
+title: "Design a URL Shortener"
+section: "system-design"
+module: "case-studies"
+order: 1
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["load-balancing", "database-indexing", "consistent-hashing"]
+tags: ["case-study", "system-design-interview"]
+englishDefinition: "A URL shortener is a service that accepts a long URL and generates a short, unique alias which redirects to the original URL when visited. At the scale interviewers care about — billions of stored mappings and a read-to-write ratio that can exceed 100 to 1 — the hard problems are generating collision-free short codes without a single point of contention, and serving redirects with very low latency under a massively read-heavy load."
+interviewFrequency: "very-high"
+companies: ["Bitly", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+A URL shortener is a service that accepts a long URL and generates a short, unique alias which redirects to the original URL when visited. At the scale interviewers care about — billions of stored mappings and a read-to-write ratio that can exceed 100 to 1 — the hard problems are generating collision-free short codes without a single point of contention, and serving redirects with very low latency under a massively read-heavy load.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh question "easy" lagta hai isiliye interviewers ise bohot pucchte hain — aur exactly isi wajah se log isko halke mein lekar gadbad kar dete hain. Surface pe yeh ek CRUD app jaisa dikhta hai: long URL do, short URL wapas lo. Lekin depth teen jagah chhupi hai — encoding strategy kaise design karoge bina ek single bottleneck banaye, caching kaise karoge jab reads writes se 100x zyada hon, aur ek chhota sa detail jo log bilkul miss karte hain — redirect ka status code (301 ya 302) tumhari analytics ko permanently tod sakta hai. Chalo poora RADIO framework follow karte hue is problem ko interview jaisa hi solve karte hain.
+
+### Requirements Clarification
+
+Functional requirements jo clarify karne chahiye:
+
+- User ek long URL submit kare, system ek unique short URL (jaise `short.ly/aZ9kLm`) return kare.
+- User short URL visit kare to woh original long URL pe redirect ho jaaye.
+- Custom alias support — user apna khud ka short code choose kar sake (jaise `short.ly/myevent`), optional feature but interviewer often isse poochta hai.
+- Links ke liye expiration/TTL support — kuch shortened links time ke baad expire ho jaayein.
+- Basic click analytics — kitni baar link click hua (bonus scope, depends on time).
+
+Non-functional requirements jo bolne chahiye:
+
+- **High availability** — redirect hi is system ki poori value proposition hai; agar redirect service down hai, poora product bekaar hai. Availability ko consistency se zyada priority denge (AP system, CAP theorem ke terms mein).
+- **Low latency reads** — redirect ek user-facing critical path hai, target sub-100ms.
+- **Uniqueness** — do alag long URLs ko kabhi same short code nahi milna chahiye.
+- **Scale** — billions of URLs stored, read:write ratio 100:1 ya usse zyada.
+- Short codes guessable/sequential nahi hone chahiye — thoda security/privacy angle bhi hai.
+
+Yeh sawaal poochna zaroori hai kyunki "custom alias" aur "analytics" jaisi features design ko significantly change karte hain — bina clarify kiye seedha diagram banana red flag hai.
+
+### Back-of-Envelope Estimation
+
+Chalo real numbers nikaalte hain, kyunki yeh interview mein credibility banata hai.
+
+- Assume 100 million new short URLs create hote hain **per month**. Roughly 3.3 million/day, matlab average ~40 writes/second. Peak traffic (marketing campaigns, product launches) ko 5x factor doon to peak writes ~200/sec.
+- Read:write ratio 100:1 maan lo. To reads: 3.3 million * 100 = 330 million redirects/day, matlab average ~3800 reads/second, peak (10x) ~38,000 reads/second.
+- **Storage**: har record mein short code (~7 bytes), long URL (average ~100-300 bytes, cap at 2KB), aur metadata (created date, expiry, click count, owner id) — total roughly 500 bytes per record. 5 saal ke liye store karna hai: 100M/month * 60 months = 6 billion URLs. 6 billion * 500 bytes = ~3TB. Yeh ek manageable number hai, ek distributed key-value store easily handle kar leta hai.
+- **Short code length**: base62 alphabet use karenge (a-z, A-Z, 0-9 = 62 characters). 6 billion URLs ke liye kitne characters chahiye? 62 ka power 6 = ~56.8 billion combinations — yeh 6 billion se kaafi zyada hai, matlab 6 characters technically enough hain. Interview mein safety margin ke liye log 7 characters choose karte hain (62^7 ≈ 3.5 trillion), taaki future growth ke liye buffer rahe.
+- **Cache sizing**: Pareto principle assume karo — 20% hot URLs 80% traffic generate karte hain. Agar daily active unique short codes ~1 million hain, aur har entry ~600 bytes hai (URL + metadata), to cache size ~600MB — yeh ek single Redis node/small cluster mein comfortably fit ho jaata hai.
+
+Yeh numbers dikhate hain ki yeh system **write-light, read-heavy** hai — is realization se hi caching-first design decision aata hai.
+
+### High-Level Design
+
+Do core APIs:
+
+- `POST /shorten` with body containing the long URL (and optional custom alias) — returns the short URL.
+- `GET /{shortCode}` — server responds with an HTTP redirect to the original long URL.
+
+Components:
+
+1. **Load balancer** — incoming traffic ko stateless app servers ke beech distribute karta hai.
+2. **Application servers** (stateless) — dono write aur read requests handle karte hain, koi local state nahi.
+3. **Key Generation / encoding logic** — write path pe naya short code generate karta hai (deep dive mein detail).
+4. **Cache layer (Redis)** — read path ka pehla stop, hot short-code se long-URL mappings yahan store hoti hain.
+5. **Database** — persistent store, short code as primary key, long URL aur metadata as value.
+6. **Optional: CDN / edge layer** — bahut hot redirects ko edge pe bhi cache kiya ja sakta hai taaki origin tak jaana hi na pade.
+
+Write flow: client `POST /shorten` bhejta hai → app server ek unique short code generate karta hai (encoding strategy — deep dive) → DB mein `shortCode -> longURL` mapping insert karta hai → cache ko bhi warm kar sakta hai → response mein short URL return.
+
+Read flow: client `GET /{shortCode}` hit karta hai → app server cache check karta hai → cache hit ho to seedha redirect response bhej deta hai → cache miss ho to DB se fetch karta hai, cache populate karta hai, phir redirect bhejta hai.
+
+**Database choice**: access pattern bahut simple hai — primary key (short code) se ek single value lookup, koi complex joins ya multi-row transactions nahi (analytics ko chhod ke, jo async ho sakta hai). Yeh classic key-value access pattern hai, isliye ek NoSQL store (DynamoDB, Cassandra) yahan SQL se better fit hai — horizontal partitioning trivial hai (short code pe hash-partition karo), aur schema flexibility (jaise naye metadata fields add karna) bina migration ke aasan hai. SQL bhi kaam kar sakta hai chhoti scale pe, lekin billions of rows aur simple key lookup pattern NoSQL ke sweet spot mein aata hai.
+
+### Deep Dive: Encoding Strategy
+
+Yeh is system ka sabse interview-critical hissa hai — teen approaches compare karte hain.
+
+**1. Auto-incrementing counter + base62 encode.** Ek global counter hai (jaise DB sequence), har naye URL ke liye counter increment hota hai, phir uss integer ko base62 mein encode kar dete hain (jaise ID 125 → "cb"). Simple aur guaranteed unique hai — koi collision possible nahi. Lekin do bade problems hain: (a) ek single counter **write bottleneck aur single point of failure** ban jaata hai jab writes distributed servers se aa rahe hon — sabko same counter increment karna padta hai, jo contention create karta hai; (b) sequential IDs **guessable** hote hain — koi bhi counter ko increment karke tumhare saare URLs scrape kar sakta hai, aur business ko yeh bhi pata chal jaata hai ki tumne kitne URLs generate kiye (competitive intelligence leak). Fix: distributed ID generation jaise Twitter ka Snowflake pattern (worker-id + timestamp + local sequence) use karo taaki koi single counter na ho, lekin isse complexity badhti hai.
+
+**2. Hash-based (MD5/SHA256 of long URL, truncate, base62 encode).** Long URL ka hash lo, usse truncate karke 6-8 characters ka short code bana lo. Stateless generation hai — koi coordination service nahi chahiye. Bonus: same long URL baar-baar submit ho to same short code mil sakta hai (dedup). Lekin **collision risk** hai — truncated hash mein birthday paradox ki wajah se do different long URLs same short code generate kar sakte hain. Isliye check-and-retry logic chahiye: DB mein query karo ki yeh short code already kisi doosre long URL ke liye used to hai kya — agar haan aur long URL match nahi karta, to salt add karke hash phir se generate karo, retry karo. Yeh retry loop tail latency add karta hai, jo high-scale system mein annoying hai.
+
+**3. Pre-generated key pool (Key Generation Service — KGS).** Yeh production-realistic aur interview mein sabse impressive jawab hai. Ek separate background service pehle se hi random unique 7-character base62 strings generate karta hai aur "unused keys" table mein store karta hai. Jab koi app server naya short URL banana chahta hai, woh KGS se ek **batch/range of keys** (jaise 1000 keys ek saath) atomically claim kar leta hai aur apne local memory mein rakhta hai — har naye request pe local pool se ek key nikaal ke deta hai, bina baar-baar KGS ya DB ko hit kiye. Jab local batch khatam ho jaaye, agla batch claim kar leta hai. Fayde: koi runtime collision nahi (keys pehle se hi unique generate hui hain), koi shared counter bottleneck nahi (har server apna local batch use kar raha hai), aur short codes random hain isliye guessable nahi. Cost: ek extra infra piece (KGS) build aur highly-available rakhna padta hai, aur agar ek server crash ho jaaye apne claimed-but-unused batch ke saath, woh keys waste ho jaati hain (acceptable trade-off — key space itna bada hai ki thoda wastage matter nahi karta).
+
+Interview mein recommend yeh karo: **pre-generated key pool with batch claiming** — kyunki yeh dono problems solve karta hai (sequential guessability aur collision-retry latency) bina ek naya runtime bottleneck banaye.
+
+### Deep Dive: Caching for a Read-Heavy System
+
+100:1 (ya zyada) read:write ratio ka matlab hai caching optional nahi hai, zaroorat hai. **Cache-aside pattern** use karo: read request aaye to pehle Redis check karo — hit ho to seedha redirect kar do; miss ho to DB se fetch karo, Redis mein populate karo (TTL ke saath), phir redirect karo. LRU eviction policy se automatically cold data cache se nikal jaata hai, hot data reh jaata hai.
+
+Ek genuinely tricky detail jo bahut kam log bolte hain: **301 vs 302 redirect status code**. 301 (Moved Permanently) browsers aur intermediate proxies/CDNs dwara **cache** kar liya jaata hai — pehli visit ke baad, browser dobara tumhare server ko hit hi nahi karega, seedha apne local cache se redirect kar dega. Yeh server load kam karta hai, lekin iska matlab hai tum **subsequent clicks count hi nahi kar paoge** — analytics blind ho jaati hai. 302 (Found / temporary redirect) browser cache nahi karta, matlab har click tumhare redirect service ko hit karta hai — poori click analytics milti hai, lekin server load zyada hota hai. Production URL shorteners (Bitly jaise) jaanbujh kar **302 choose karte hain** kyunki analytics unka core value hai, aur extra load ko caching layer se absorb kar lete hain instead of sacrificing visibility.
+
+**Custom alias** ka edge case: do users same custom alias simultaneously request kar sakte hain (race condition). Isko solve karne ke liye atomic "insert-if-not-exists" semantics chahiye — jaise DynamoDB ka conditional write, ya SQL mein short_code column pe unique constraint jo doosri insert ko fail kar de. Bhi ek reserved-words list rakhni chahiye (admin, api jaise generic aliases block karne ke liye).
+
+### Bottlenecks & Failure Modes
+
+- **KGS ya counter service down** — agar key generation service unavailable ho jaaye to naye short URLs create nahi ho sakte (existing redirects unaffected rehte hain kyunki woh read path hai). Mitigation: KGS ko highly available replicas ke saath deploy karo, aur app servers apne paas ek local batch already claimed rakhte hain isliye short outage bhi unnoticed reh sakta hai.
+- **Viral link / hot key problem** — koi ek short URL achanak bahut viral ho jaaye (marketing campaign, breaking news) to woh ek single cache key/DB partition pe disproportionate load daal sakta hai. Mitigation: cache replicas, aur bahut hot keys ke liye edge/CDN-level caching.
+- **Cache stampede** — jab ek popular key ka TTL expire hota hai aur simultaneously hazaaron requests aa jaati hain, sab ek saath DB ko hit karte hain. Mitigation: jittered/randomized TTLs taaki saare keys ek saath expire na hon, aur request coalescing (sirf ek request DB ko hit kare, baaki wait karke cached result use karein).
+- **Malicious use** — koi phishing ya malware URLs ko shorten kar ke asli destination chhupa sakta hai (open redirect abuse). Mitigation: URL validation, real-time malware/blacklist checking API integration, per-user/IP rate limiting to prevent mass abuse.
+- **Expired link cleanup** — TTL waale links ko delete karna hai. Lazy deletion (read time pe check karo, expired ho to 404/410 return karo) + ek periodic background sweep job dono combine karna best hai — sirf background job pe depend karoge to expired links thodi der tak serve hoti reh sakti hain.
+
+### Follow-Up Questions
+
+Interviewer yeh aage pooch sakta hai:
+
+- "Click analytics kaise design karoge without slowing down the redirect path?" — Answer: redirect ke response ke baad, ek async event (queue/Kafka jaisa) publish karo jo background mein aggregate hota hai; redirect path ko kabhi block mat karo analytics ke liye.
+- "Same long URL do baar submit ho to same short code doge ya alag?" — Trade-off discuss karo: hash-based approach naturally dedupe kar sakta hai, lekin key-pool approach ke liye ek extra reverse-lookup index (`longURLHash -> shortCode`) chahiye hoga, jo extra storage aur write cost add karta hai.
+- "Multiple data centers/regions mein globally low-latency writes kaise doge?" — Geo-partitioned key ranges: har region apna khud ka slice of key space own kare (jaise consistent hashing se), taaki cross-region coordination na karni pade har write pe.
+- "Billions se trillions URLs tak scale karna ho to kya badlega?" — Resharding strategy discuss karo, consistent hashing use karke naye partitions add karo bina poora data migrate kiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "No runtime collisions — keys pehle se hi guaranteed unique generate hote hain",
+    "Har app server apna local batch use karta hai, isliye koi shared counter bottleneck nahi",
+    "Random keys guessable/sequential nahi hote — koi scraping se saare URLs enumerate nahi kar sakta",
+  ]}
+  cons={[
+    "Ek extra infra component (Key Generation Service) build aur operate karna padta hai",
+    "Server crash hone par claimed-but-unused batch ki thodi keys waste ho jaati hain",
+    "Pre-generation ke liye extra storage chahiye un keys ko rakhne ke liye jo abhi assign nahi hui",
+  ]}
+/>
+
+<Callout type="trap">
+
+301 redirect "better practice" lagta hai kyunki HTTP spec mein "permanent" hai, lekin URL shortener ke liye yeh ek trap hai — browser use permanently cache kar leta hai, matlab tumhara server dusri baar se click count kabhi nahi dekhega. Analytics chahiye to 302 hi sahi choice hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Bitly">
+
+Bitly billions of shortened links serve karta hai aur unka core architecture bhi exactly isi pattern pe based hai — ek fast key-value store redirects ke liye, aggressive caching, aur async analytics pipeline jo redirect latency ko affect nahi karta. Unka redirect endpoint sub-10ms latency target karta hai kyunki har extra millisecond marketing campaigns ke click-through rate ko impact karta hai.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Indian e-commerce aur fintech companies (Flipkart, Paytm jaisी) SMS aur WhatsApp promotions mein short links heavily use karte hain kyunki SMS ka character limit tight hota hai. Yahan custom aliases aur campaign-level click analytics business-critical hote hain — marketing team ko pata hona chahiye kaunsa channel actually conversions la raha hai, isliye yeh companies bhi 301 ke bajaye 302-style tracked redirects prefer karti hain.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon apne internal short-link service (jaise `amzn.to`) ka use product links, referral links, aur internal tooling ke liye karta hai. Scale itni badi hai ki unka key generation aur redirect path completely decoupled services hain — key generation ek batch-based background process hai, redirect service ek alag, aggressively cached, horizontally scaled read path hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Assumed new URL creation rate — ~100M/month → ~40 writes/sec average, ~200/sec peak
+- Read:write ratio — 100:1 or higher → ~3800 reads/sec average, ~38,000/sec peak
+- Total storage over 5 years (6B URLs at ~500 bytes each) — approximately 3TB
+- Short code length needed for 6B+ URLs in base62 — 6 characters technically sufficient (62^6 ≈ 56.8B); 7 characters used in practice for safety margin
+- Target redirect latency — under 100ms, ideally under 10-20ms with cache hit
+- Hot-key cache size (top 20% URLs, Pareto assumption) — roughly 600MB for 1M daily active short codes
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer is topic ko isliye pucchta hai kyunki yeh "simple CRUD" aur "real distributed system thinking" ke beech ka farak test karta hai. Weak candidates seedha "database mein shortCode aur longURL store karenge" bolke ruk jaate hain. Strong candidates encoding strategy ko teen options mein compare karte hain (counter vs hash vs key-pool), read-heavy nature ko explicitly identify karke caching design karte hain, aur 301 vs 302 jaisa non-obvious detail khud proactively laate hain. Model answer shape: requirements clarify karo → back-of-envelope numbers nikaalo (yeh dikhata hai tumhe scale ka sense hai) → high-level design draw karo → encoding strategy pe deep dive karo with trade-offs → caching strategy explain karo → bottlenecks aur unke mitigations discuss karo. Agar tum khud se 301/302 ka detail bolte ho bina pooche, interviewer ko turant lagta hai tumne is problem ko production mein socha hai, sirf padha nahi hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Seedha auto-incrementing counter + base62 encoding propose kar dena bina yeh mention kiye ki single counter distributed system mein bottleneck aur SPOF ban sakta hai, aur sequential IDs guessable hote hain.
+
+</Mistake>
+
+<Mistake>
+
+301 redirect choose kar lena "yeh permanent hai isliye correct hai" soch ke, bina yeh realize kiye ki browser-side caching ki wajah se subsequent clicks count hi nahi honge.
+
+</Mistake>
+
+<Mistake>
+
+Caching layer ko completely bhool jaana ya sirf "hum Redis use karenge" bol dena bina cache-aside pattern, TTL strategy, ya hot-key/stampede problem explain kiye.
+
+</Mistake>
+
+<Mistake>
+
+Custom alias feature discuss karte waqt race condition (do users same alias simultaneously request karein) ka edge case miss kar dena.
+
+</Mistake>
+
+<Mistake>
+
+Abuse/security angle completely ignore karna — yeh na sochna ki koi is service ko phishing links banane ke liye misuse kar sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C[Client] --> LB[Load Balancer]
+    LB --> AS[Stateless App Servers]
+    AS -->|Write path: POST /shorten| KGS[Key Generation Service<br/>pre-generated key pool]
+    KGS --> DB[(Database<br/>shortCode -> longURL)]
+    AS -->|Read path: GET /code| Cache[(Redis Cache)]
+    Cache -->|hit| AS
+    Cache -->|miss| DB
+    DB -->|populate| Cache
+    AS --> Redirect[302 Redirect to long URL]
+    style KGS fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style Cache fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Write path claims pre-generated keys in batches to avoid contention; read path is cache-first because reads outnumber writes by 100:1 or more."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Core APIs: `POST /shorten` (write) and `GET /{shortCode}` (read, redirect) — reads outnumber writes 100:1+
+- Three encoding strategies: counter+base62 (SPOF + guessable), hash-based (collision risk, needs retry), pre-generated key pool (production favorite — batch-claimed, no collision, no SPOF)
+- 7-character base62 codes comfortably cover billions of URLs (62^7 ≈ 3.5 trillion)
+- Cache-aside pattern on the read path — cache hit means near-zero DB load
+- 301 gets browser-cached (kills click analytics); 302 hits your server every time (full analytics, more load) — most production shorteners pick 302
+- NoSQL key-value store fits well — simple primary-key lookup, trivial horizontal partitioning
+- Custom alias needs atomic insert-if-not-exists to avoid race conditions
+- Watch for hot-key/viral-link overload, cache stampede on TTL expiry, and malicious/phishing abuse
+
+</QuickRevision>

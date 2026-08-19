@@ -1,0 +1,200 @@
+---
+slug: "distributed-transactions-2pc-saga"
+title: "Distributed Transactions, 2PC & Saga Pattern"
+section: "system-design"
+module: "distributed-systems"
+order: 5
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["acid-vs-base", "cap-theorem"]
+tags: ["distributed-systems", "transactions", "microservices"]
+englishDefinition: "A distributed transaction is an operation that must atomically succeed or fail across multiple independent services or databases. ACID transactions don't naturally extend across service or network boundaries, so distributed transactions require explicit coordination protocols like Two-Phase Commit (2PC) or the Saga pattern to achieve an equivalent all-or-nothing outcome."
+interviewFrequency: "high"
+companies: ["Paytm", "Amazon", "Uber"]
+---
+
+<SimpleDefinition>
+
+A distributed transaction is an operation that must atomically succeed or fail across multiple independent services or databases. ACID transactions don't naturally extend across service or network boundaries, so distributed transactions require explicit coordination protocols like Two-Phase Commit (2PC) or the Saga pattern to achieve an equivalent all-or-nothing outcome.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Single database mein transaction easy hai — `BEGIN TRANSACTION`, kuch operations, `COMMIT` ya `ROLLBACK`, database khud guarantee deta hai atomicity (ACID ka A). Lekin microservices world mein, ek "logical transaction" often **multiple independent services/databases** ko span karta hai — jaise ek e-commerce order jisme payment service, inventory service, aur shipping service teeno involve hote hain, teeno ka apna alag database hai. Ab sawaal: agar payment succeed ho gaya lekin inventory reservation fail ho gayi, poora operation kaise "undo" ho? Koi single database transaction yeh handle nahi kar sakta kyunki teeno services independent hain, alag machines pe, alag failure modes ke saath. Isi problem ko solve karne ke liye do major approaches hain: **Two-Phase Commit (2PC)** aur **Saga pattern**.
+
+Running example poore topic mein: **e-commerce order flow — Payment → Inventory → Shipping**.
+
+### Two-Phase Commit (2PC) — mechanics
+
+2PC ek **coordinator** based protocol hai jo strong atomicity try karta hai across multiple participants (databases/services), do phases mein:
+
+**Phase 1 — Prepare**: Coordinator har participant (Payment, Inventory, Shipping) ko poochta hai: **"Can you commit?"** Har participant apna operation perform karta hai locally, resources ko **lock** kar leta hai (jaise inventory count ko lock karna taaki koi aur usi item ko simultaneously book na kar sake), aur vote karta hai **yes** (main commit kar sakta hoon) ya **no** (main fail ho gaya, commit nahi kar sakta). Is stage pe koi bhi actual permanent commit nahi hota — sab kuch "ready but pending" state mein hai.
+
+**Phase 2 — Commit**: Agar **sab** participants ne "yes" vote kiya, coordinator sabko bolta hai **"commit karo"** — har participant apna local change permanent kar deta hai aur locks release kar deta hai. Agar **kisi ek ne bhi** "no" vote kiya (ya timeout ho gaya), coordinator sabko bolta hai **"abort karo"** — sab apne pending changes rollback kar dete hain.
+
+### 2PC ki real weaknesses
+
+Yeh sunne mein clean lagta hai, lekin practice mein 2PC ki serious problems hain:
+
+1. **Coordinator single point of failure, aur blocking protocol**: Socho coordinator ne sab se "yes" vote le liya (phase 1 complete), lekin **commit message bhejne se pehle hi coordinator crash ho jaata hai**. Ab har participant apne resources **locked** rakhe hue hai, wait kar raha hai coordinator se final instruction ka — aur coordinator wapas nahi aa raha. Yeh participants **indefinitely stuck** reh sakte hain, resources lock rehte hain, koi aur transaction us data ko touch nahi kar sakta. Isi wajah se 2PC ko **"blocking protocol"** kehte hain.
+2. **Scalability aur availability hurt hoti hai**: Har participant ko locks hold karne padte hain jab tak poora 2-phase process complete na ho — jitne zyada participants, utna zyada time locks held rehte hain, jitni zyada contention. High-throughput systems (jaise payment processing scale pe) ke liye yeh acceptable nahi hota.
+3. **Network partition mein completely fail ho sakta hai**: Agar coordinator aur ek participant ke beech partition ho jaaye phase 2 ke during, us participant ko pata hi nahi chalega commit karna hai ya abort — woh bhi stuck ho jaata hai.
+
+Yehi wajah hai ki 2PC modern large-scale microservices systems mein rarely use hota hai — yeh strong consistency deta hai, lekin availability/scalability ki heavy cost pe.
+
+### Saga pattern — practical microservices alternative
+
+Saga is problem ko fundamentally different approach se solve karta hai: instead of ek single atomic transaction try karne ke, Saga ek **sequence of independent local transactions** hai, jahan har step apna kaam complete karta hai (commit kar deta hai, locks turant release ho jaate hain), aur ek event publish karta hai jo agla step trigger karta hai.
+
+Order flow example: Payment service charge karta hai aur commit kar deta hai → event publish → Inventory service reserve karta hai aur commit kar deta hai → event publish → Shipping service schedule karta hai.
+
+**Agar koi step fail ho jaaye** (jaise Shipping fail ho gayi kyunki address invalid hai), Saga **rollback nahi karta** (kyunki pichle steps already committed ho chuke hain, unhe technically undo nahi kiya ja sakta database-transaction-level pe) — balki har previous step ke liye ek explicit **compensating transaction** trigger karta hai, jo ek intentional "undo action" hai, business logic level pe. Jaise: Inventory reservation cancel karo (stock wapas add karo), aur Payment refund karo. Yeh database rollback nahi hai — yeh ek **naya forward operation** hai jo effect ko reverse karta hai.
+
+### Choreography vs Orchestration
+
+Saga ko implement karne ke do tareeke hain:
+
+**Choreography**: Koi central controller nahi hota. Har service apne kaam ke baad ek event publish karta hai (jaise "PaymentCompleted"), aur baaki services independently us event ko **subscribe** karke react karte hain (Inventory service "PaymentCompleted" sunta hai aur reservation shuru karta hai). Compensating transactions bhi isi tarah trigger hote hain — "InventoryReservationFailed" event sunke Payment service khud refund kar deta hai.
+- **Pros**: simple hai chhote saga ke liye, koi single point of failure/bottleneck nahi, services loosely coupled.
+- **Cons**: jaise jaise steps badhte hain, poora flow **kahin bhi ek jagah likha hua nahi hota** — kaunsa service kaunse event pe react karta hai, yeh samajhna mushkil ho jaata hai ("who's listening to what" debugging nightmare), aur cyclic dependencies ka risk badhta hai.
+
+**Orchestration**: Ek central **saga orchestrator** service explicitly har step ko command karta hai — "Payment, ab charge karo" → wait for response → "Inventory, ab reserve karo" → wait for response, etc. Agar koi step fail ho, orchestrator hi decide karta hai kaunsi compensating transactions trigger karni hain aur kis order mein.
+- **Pros**: poora flow ek jagah explicit hai (easy to understand, debug, aur monitor), business logic centralized hai.
+- **Cons**: orchestrator khud ek naya component hai jo build/maintain karna padta hai, aur agar poorly designed ho to woh khud ek bottleneck/single point of failure ban sakta hai (though usually stateless/replicated banaya jaata hai isliye 2PC coordinator jaisa hard blocking issue nahi hota).
+
+Real systems mein bade, complex flows ke liye **orchestration** zyada preferred hota hai kyunki debuggability aur explicit control zyada matter karte hain jaise jaise steps badhte hain.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "2PC: strong atomicity guarantee — agar sab succeed nahi ho sakta to koi bhi partial state visible nahi hoti",
+    "Saga: har step independently fast commit karta hai, locks turant release hote hain — high throughput ke liye scalable",
+    "Saga: services loosely coupled reh sakte hain, failure isolated hota hai ek service tak",
+  ]}
+  cons={[
+    "2PC: coordinator crash ke case mein participants indefinitely locked/stuck reh sakte hain — blocking protocol",
+    "Saga: intermediate inconsistent states temporarily visible ho sakti hain (jaise payment ho gaya but order abhi 'confirmed' nahi) — eventual consistency accept karni padti hai",
+    "Saga: compensating transactions design karna extra engineering effort hai, aur kuch operations genuinely undo nahi ho sakte (jaise email bhej diya)",
+  ]}
+/>
+
+<Callout type="trap">
+
+Compensating transaction ek database **rollback** nahi hai — yeh ek **naya, intentional business operation** hai (refund issue karna, stock wapas add karna, cancellation email bhejna). Interview mein "rollback" aur "compensation" ko synonym ki tarah use karna galat signal deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Uber">
+
+Uber jaisa ride-booking flow — driver assignment, fare calculation, payment hold, trip confirmation — multiple services span karta hai. Agar driver assignment ke baad payment method invalid nikle, Saga-style compensating transaction driver assignment release kar deta hai (taaki woh driver kisi aur ride ke liye available ho jaaye) instead of poori booking ko ek single locked transaction mein rakhne ke.
+
+</RealWorld>
+
+<RealWorld company="Paytm">
+
+Paytm jaisa payment platform jab ek merchant payment process karta hai jisme wallet debit, merchant credit, aur notification teeno involve hain — yeh saga-style flow follow karta hai, orchestration ke saath, taaki agar merchant credit step fail ho (jaise merchant account suspended), wallet debit ka compensating "refund to wallet" turant trigger ho sake, user ka paisa stuck na rahe.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon ka order pipeline (payment, inventory, shipping label generation, notification) classic saga orchestration pattern follow karta hai. 2PC scale pe (millions of orders) use nahi hota kyunki locks hold karna itni deer tak throughput ko crash kar dega — instead har step apna commit fast karta hai, aur failures compensating actions (refunds, re-stocking) se handle hote hain asynchronously.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 2PC coordinator failure window — even a few seconds of coordinator downtime during phase 2 can leave participant locks held indefinitely until manual/timeout recovery
+- Saga step latency — typically each local transaction commits in single-digit to tens of milliseconds, vs 2PC's cross-network round trips for every participant in both phases
+- Typical e-commerce saga: 3-6 steps (payment, inventory reservation, shipping label, notification, loyalty points, etc.) each independently committing
+- Compensating transaction success rate matters operationally — teams often track "compensation failure" as a distinct alert since a failed compensation can leave the system in a genuinely inconsistent state
+- 2PC is rarely used beyond a single datacenter/cluster boundary in modern systems — cross-region 2PC round trips can add 100+ ms per phase, doubling to 200+ ms total before any commit happens
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: **"How would you handle a transaction that spans multiple microservices, like an e-commerce checkout?"** Interviewer testing kar raha hai ki tumhe pata hai single-database ACID transactions distributed setting mein directly extend nahi hoti, aur tum practical alternatives (Saga) ko theoretical ones (2PC) se differentiate kar sakte ho.
+
+Model answer shape: pehle problem statement clearly bolo — "payment, inventory, shipping alag services/databases hain, ek single ACID transaction inke across possible nahi hai." Phir 2PC mention karo as the theoretical strong-consistency approach, uski blocking/coordinator-failure weakness explain karo, aur bolo "isi wajah se production microservices systems mein Saga pattern zyada practical hai." Phir Saga explain karo compensating transactions ke saath, aur orchestration vs choreography ka trade-off do — "complex flows ke liye orchestration prefer karunga kyunki debuggability aur explicit failure handling zaroori hai." Ek concrete failure scenario zaroor do (jaise "agar shipping fail ho jaaye toh inventory aur payment dono compensate honge").
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Yeh sochna ki distributed transactions bhi normal database transaction jaisi hi hoti hain — "hum bas transaction wrap kar denge multiple services ke around" bolna bina yeh samjhe ki network boundaries ke across ACID naturally extend nahi hoti.
+
+</Mistake>
+
+<Mistake>
+
+Compensating transaction ko database rollback samajh lena — yeh ek explicit, intentional "undo" business operation hai (refund, re-stock), rollback ek database-internal mechanism hai jo distributed setting mein directly available nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+2PC ko production-scale microservices ke liye recommend kar dena bina uski blocking/coordinator-failure weakness mention kiye — yeh dikhata hai candidate ne theory padhi hai lekin practical limitation nahi samjhi.
+
+</Mistake>
+
+<Mistake>
+
+Choreography aur orchestration ko interchangeable samajh lena, ya sirf ek approach jaanna — dono ke trade-offs (coupling, debuggability, single point of failure risk) clearly articulate na kar paana.
+
+</Mistake>
+
+<Mistake>
+
+Saga pattern mein intermediate inconsistent states ka mention na karna — jaise "payment ho chuka hai lekin order abhi tak 'confirmed' status pe nahi hai" — yeh eventual consistency ka natural side-effect hai jo interviewer expect karta hai discuss ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant O as Saga Orchestrator
+    participant P as Payment Service
+    participant I as Inventory Service
+    participant S as Shipping Service
+
+    O->>P: Charge payment
+    P-->>O: Success
+    O->>I: Reserve inventory
+    I-->>O: Failed (out of stock)
+    Note over O: Trigger compensating transaction
+    O->>P: Refund payment (compensation)
+    P-->>O: Refunded
+    Note over O,S: Shipping never called - saga stopped and compensated
+`}
+  caption="Orchestrated saga: when Inventory fails, the orchestrator triggers a compensating refund instead of a database rollback — Shipping is never invoked."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Distributed transaction = atomic success/failure needed across multiple independent services/databases; plain ACID doesn't extend across network boundaries
+- 2PC: prepare phase (coordinator asks "can you commit?", participants lock + vote) then commit phase (all yes -> commit, any no -> abort)
+- 2PC's fatal weakness: coordinator crash after prepare but before commit leaves participants blocked, holding locks indefinitely
+- Saga: sequence of local transactions, each committing independently and publishing an event to trigger the next step
+- Compensating transaction = an intentional "undo" business action (refund, re-stock), NOT a database rollback
+- Choreography: services react to events, no central coordinator — simple but hard to trace as steps grow
+- Orchestration: a central saga orchestrator commands each step and decides compensations — easier to debug, becomes a component you must build/run
+- Running example: Payment -> Inventory -> Shipping; if Shipping fails, compensate Inventory and Payment, don't try to "rollback"
+
+</QuickRevision>

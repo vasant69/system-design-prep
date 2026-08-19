@@ -1,0 +1,193 @@
+---
+slug: "latency-throughput-bandwidth"
+title: "Latency, Throughput & Bandwidth"
+section: "system-design"
+module: "fundamentals"
+order: 3
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["client-server-model"]
+tags: ["fundamentals", "performance"]
+englishDefinition: "Latency is the time taken for a single request to complete, from the moment it's sent to the moment its response is received. Throughput is the number of requests (or units of data) a system processes per unit of time. Bandwidth is the maximum data-transfer capacity of a network link. These are not the same thing — a system can have high bandwidth but poor latency, or high throughput achieved specifically by sacrificing latency, and the trade-offs between them shape most performance decisions in system design."
+interviewFrequency: "high"
+companies: ["Amazon", "Microsoft", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Latency is the time taken for a single request to complete, from the moment it's sent to the moment its response is received. Throughput is the number of requests (or units of data) a system processes per unit of time. Bandwidth is the maximum data-transfer capacity of a network link. These are not the same thing — a system can have high bandwidth but poor latency, or high throughput achieved specifically by sacrificing latency, and the trade-offs between them shape most performance decisions in system design.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh teen words — latency, throughput, bandwidth — interview mein sabse zyada loosely use hote hain, aur exactly isi wajah se interviewer inhe precisely define karwana pasand karta hai. "System fast hona chahiye" bolna kaafi nahi hai — fast ka matlab kya hai, latency kam chahiye ya throughput zyada? Yeh dono alag cheezein hain, aur kabhi-kabhi ek doosre ke against bhi jaati hain.
+
+### Highway analogy — properly samjho
+
+Sabse intuitive tarika hai ek highway sochna:
+
+- **Bandwidth = highway pe kitni lanes hain.** Yeh raw capacity hai — ek link ek second mein max kitna data carry kar sakta hai (measured in Mbps, Gbps). Zyada lanes = zyada gaadiyan ek saath ja sakti hain.
+- **Latency = ek single car ko start se end tak pahunchne mein kitna time lagta hai.** Chahe highway pe 2 lanes ho ya 20, agar Mumbai se Pune 150 km hai aur car 100 km/h chal rahi hai, to time roughly fixed hai — extra lanes is single car ko fast nahi bana dete.
+- **Throughput = per second kitni cars destination pe pahunch rahi hain.** Yeh lanes (bandwidth), speed limit, aur traffic density teeno pe depend karta hai.
+
+Iska matlab: tum lanes badha ke (bandwidth increase) throughput improve kar sakte ho, lekin ek single car ka travel time (latency) zyada nahi badlega jab tak underlying speed limit ya distance na badle. Yeh distinction interview mein bolne layak hai — bahut log bandwidth badhaane ko hi "latency fix karna" samajh lete hain, jo galat hai.
+
+### Latency aur throughput kabhi-kabhi conflict karte hain
+
+Yeh sabse important insight hai is topic ka: **low latency aur high throughput same goal nahi hain, aur kabhi-kabhi ek doosre ke against jaate hain.**
+
+Sabse classic example — **batching**. Maan lo tumhare paas ek system hai jo database writes ko process karta hai. Agar har write ko individually, turant process karo, latency per-write low hogi (fast response), lekin throughput limited hogi kyunki har write ka apna overhead hai (connection, transaction commit, disk flush). Ab agar tum writes ko batch karo — 100 writes collect karke ek saath commit karo — to throughput dramatically badh jaati hai (per-write overhead amortize ho jaata hai), lekin individual write ki latency badh jaati hai, kyunki us pehle write ko batch fill hone tak wait karna padta hai.
+
+Yehi trade-off Kafka producers mein `linger.ms` setting mein dikhta hai, TCP mein Nagle's algorithm mein dikhta hai, database mein bulk-insert vs single-insert mein dikhta hai. Interview mein agar tumse pucha jaaye "throughput kaise improve karoge", aur tum sirf "batching karenge" bol do bina yeh mention kiye ki isse tail latency badhegi — depth kam lagegi.
+
+### Average latency ek jhootha metric hai
+
+Bahut candidates bolte hain "average latency 50ms hai, so system fast hai." Yeh misleading hai. Maan lo 99 requests 10ms mein complete ho rahe hain, lekin 1 request 5000ms le raha hai — average ~60ms aayega, jo theek lagta hai, lekin us 1 user ka experience terrible tha.
+
+Isi wajah se production systems **percentiles** track karte hain, average nahi:
+
+- **p50 (median)** — 50% requests isse fast complete hote hain. Typical/normal experience batata hai.
+- **p95** — 95% requests isse fast hain, matlab 5% users se worse experience mila.
+- **p99** — 99% requests isse fast hain — yeh "tail latency" hai, aur bade systems mein sabse zyada iski chinta ki jaati hai, kyunki high-traffic system mein 1% bhi lakhs of users ho sakte hain.
+
+Amazon jaisi companies specifically p99 (aur kabhi p99.9) ko SLA mein target karte hain, average ko nahi — kyunki average outliers ko hide kar deta hai, aur woh outliers hi wo users hain jo complain karte hain ya churn kar jaate hain.
+
+### Real network latency numbers — context ke saath
+
+Latency location aur network type pe heavily depend karta hai:
+
+- Same datacenter, same rack — sub-millisecond se 1-2 ms tak.
+- Same region, cross-datacenter (jaise AWS ap-south-1 ke andar do AZs) — 1-5 ms.
+- Cross-region (jaise Mumbai se US-East) — 200-250 ms round trip, speed-of-light distance ki wajah se — yeh koi optimization se fix nahi hota, physics ki limit hai.
+- India mein 4G/5G mobile network RTT to a nearby server — typically 30-80 ms, lekin network congestion ya weak signal mein yeh 200ms+ tak jaa sakta hai.
+- India ke rural/Tier-2-3 areas mein average mobile latency aur bhi zyada variable hoti hai — isliye Indian-scale apps (Swiggy, Flipkart) ko design karte waqt "worst-case network" ko explicitly consider karna padta hai, sirf metro-city 5G assume nahi kar sakte.
+
+### Little's Law — conceptual intuition
+
+Ek useful mental model jo throughput, latency, aur concurrency ko connect karta hai — **Little's Law**:
+
+```text
+Throughput = Concurrency / Latency
+```
+
+Matlab: agar tumhare system mein average **L** (latency) hai per request, aur system ek time pe **C** concurrent requests handle kar sakta hai (jaise thread pool size, connection pool size), to max throughput roughly `C / L` hoga.
+
+Isse ek practical insight nikalta hai: throughput badhaane ke do hi tarike hain — ya to concurrency badhao (zyada threads, zyada servers — horizontal scaling), ya latency kam karo (faster processing, caching, better algorithms). Agar tumhara system slow hai per-request (high L) aur tumne concurrency nahi badhaayi, throughput automatically limited rahega — chahe bandwidth kitni bhi ho.
+
+Yeh formula interview mein exact derivation ke saath bolna zaroori nahi hai, lekin intuition ("throughput improve karne ke liye ya to concurrency badhao ya latency ghatao") bolna strong signal hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Interview mein sabse common trap: "hum bandwidth badha denge" bol dena jab actual problem latency ka ho. Bandwidth upgrade (jaise 1Gbps se 10Gbps link) throughput ceiling badhata hai, lekin agar bottleneck kahin aur hai — jaise ek slow database query ya cross-region round trip — bandwidth badhaane se latency bilkul nahi sudhregi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Amazon ne publicly kaha hai ki unke experiments mein har 100ms extra latency se sales mein measurable drop hota hai. Isi wajah se Amazon jaisi companies latency ko sirf "engineering metric" nahi, ek **business metric** ki tarah treat karti hain — checkout flow, search results, product page load, sab jagah p99 latency targets explicitly defined hote hain aur monitor kiye jaate hain.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Big Billion Days jaise sale events mein Flipkart ka focus **throughput** pe shift ho jaata hai — lakhs of concurrent orders per second handle karne hain. Iske liye woh queueing (order requests ko buffer karke asynchronously process karna) use karte hain, jo individual order confirmation ki latency thodi badha deta hai (turant confirm nahi milta, "processing" state dikhta hai) lekin overall system throughput ko protect karta hai crash hone se bachane ke liye. Yeh classic latency-vs-throughput trade-off hai real production mein.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Same datacenter/rack round trip — under 1 ms typically
+- Cross-AZ (same region) round trip — 1-5 ms
+- Cross-region round trip (e.g., Mumbai to US-East) — 200-250 ms, bound by speed of light
+- India 4G/5G mobile RTT to nearby server — 30-80 ms typical, 200ms+ under congestion
+- Well-optimized API target — p99 under 200-300 ms for user-facing endpoints
+- p50 vs p99 gap in a healthy system — p99 should ideally be under ~3-5x of p50; a much larger gap signals tail-latency problems
+- 1 Gbps link theoretical max — ~125 MB/s (bandwidth), completely independent of any single request's latency
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common framing: **"How would you improve this system's performance?"** — a vague prompt on purpose. Interviewer wants to see if you first ask **"performance for whom, measured how?"** before proposing a fix. A strong answer separates the two axes explicitly: "Agar goal latency kam karna hai to main caching, closer-to-user deployment (CDN/edge), ya query optimization dekhunga. Agar goal throughput badhana hai to main horizontal scaling, batching, ya async processing dekhunga — lekin yeh keep in mind ki batching latency thodi badha sakta hai, so trade-off explicitly state karna hai."
+
+Also expect a follow-up on percentiles: if you say "average latency is fine," a good interviewer will immediately ask about p99. Preempting that by mentioning percentiles unprompted is a strong signal.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Latency aur throughput ko interchangeably use karna — jaise "system fast hai" bol dena bina specify kiye ki kaunsa metric behtar hua hai. Yeh imprecision interviewer ko turant dikh jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Average latency ko hi "the" latency metric samajhna, percentiles (p95/p99) ka zikr na karna — jisse outlier/tail experiences completely hidden reh jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Bandwidth badhaana hi latency ka universal fix samajh lena. Bandwidth ek highway ki lane-count hai — agar bottleneck kahin aur hai (slow processing, cross-region distance), extra bandwidth kuch nahi karega.
+
+</Mistake>
+
+<Mistake>
+
+Batching ya caching jaisi throughput-improving techniques suggest karna bina yeh mention kiye ki inka individual-request latency pe kya effect padta hai — trade-off ko silently ignore karna.
+
+</Mistake>
+
+<Mistake>
+
+Yeh sochna ki cross-region latency ko "better code" se fix kiya ja sakta hai — speed-of-light delay ek physical limit hai, iska fix architecture-level hota hai (edge servers, regional replicas), code-level nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Highway["Highway Analogy"]
+        direction TB
+        L["Latency<br/>= one car's travel time"]
+        T["Throughput<br/>= cars arriving per second"]
+        B["Bandwidth<br/>= number of lanes"]
+    end
+    B -->|"more lanes raises the ceiling for"| T
+    T -.->|"does NOT reduce"| L
+    style L fill:#1e293b,stroke:#f87171,color:#e2e8f0
+    style T fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style B fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Bandwidth raises the ceiling for throughput, but does not by itself improve any single request's latency."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Latency = time for one request; Throughput = requests per unit time; Bandwidth = max capacity of a link
+- Highway analogy: bandwidth = lanes, latency = one car's travel time, throughput = cars/second
+- Batching improves throughput but increases individual-request latency — classic trade-off
+- Never trust average latency alone — always check p50/p95/p99, since averages hide outliers
+- p99 (tail latency) matters most at scale — 1% of a huge traffic base is still a lot of unhappy users
+- Same-DC latency: under 1ms; cross-region: 200-250ms (speed of light limit); India mobile 4G/5G: 30-80ms typical
+- Little's Law intuition: Throughput = Concurrency / Latency — improve one of those two to raise throughput
+- Bandwidth upgrades don't fix latency problems caused by distance or slow processing
+
+</QuickRevision>

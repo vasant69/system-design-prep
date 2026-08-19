@@ -1,0 +1,244 @@
+---
+slug: "rate-limiting"
+title: "Rate Limiting"
+section: "system-design"
+module: "communication-async"
+order: 5
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["caching"]
+tags: ["reliability", "api-design", "algorithms"]
+englishDefinition: "Rate limiting is the practice of controlling how many requests a client can make to a system within a given time window, in order to protect backend resources from overload and abuse, absorb accidental traffic spikes, and enforce fair usage or pricing tiers across clients."
+interviewFrequency: "very-high"
+companies: ["Stripe", "Razorpay", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Rate limiting is the practice of controlling how many requests a client can make to a system within a given time window, in order to protect backend resources from overload and abuse, absorb accidental traffic spikes, and enforce fair usage or pricing tiers across clients.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Rate limiting interview mein sabse zyada asked topics mein se ek hai kyunki yeh do cheezein test karta hai ek saath — system design judgment (kahan enforce karna hai, kya store karna hai) aur algorithmic thinking (actual counting mechanism kya hai). Chalo dono cover karte hain.
+
+### Kyun chahiye rate limiting
+
+Teen alag reasons hain, aur inhe alag rakhna important hai:
+
+1. **Abuse/attack se protection** — koi malicious client ya bot tumhare API ko hammer kar sakta hai (brute-force login attempts, scraping, DDoS-jaisa pattern).
+2. **Accidental spikes se protection** — ek buggy client script jo infinite retry loop mein phas gaya, ya ek naya feature jo accidentally N times zyada calls kar raha hai — bina malicious intent ke bhi system ko down kar sakta hai.
+3. **Fair usage / pricing tiers** — jaise Stripe ya Razorpay ka API — free tier users ko 100 requests/min, paid tier ko 10,000 requests/min. Yeh business-level enforcement hai, technical protection se alag reason lekin same mechanism.
+
+Bina rate limiting ke, ek hi misbehaving client poore system ke liye baaki sab users ka experience kharab kar sakta hai — yeh **noisy neighbor problem** hai, aur rate limiting isko contain karta hai.
+
+### Teen algorithms — pseudocode ke saath
+
+**1. Token Bucket** — sabse commonly used algorithm hai kyunki yeh bursts allow karta hai jabki average rate control mein rehti hai. Ek bucket hai jisme fixed capacity ke tokens hote hain. Bucket fixed rate pe refill hota hai. Har request ek token consume karta hai. Agar bucket empty hai, request reject.
+
+```text
+function allowRequest(bucket):
+    now = currentTime()
+    elapsed = now - bucket.lastRefillTime
+    tokensToAdd = elapsed * bucket.refillRatePerSecond
+    bucket.tokens = min(bucket.capacity, bucket.tokens + tokensToAdd)
+    bucket.lastRefillTime = now
+
+    if bucket.tokens >= 1:
+        bucket.tokens = bucket.tokens - 1
+        return ALLOW
+    else:
+        return REJECT
+```
+
+Key property: agar client kuch der idle raha, tokens accumulate ho jaate hain (capacity tak), isliye woh ek **burst** bhej sakta hai (jaise ek saath 50 requests, agar bucket capacity 50 hai) — lekin sustained rate refill rate se zyada nahi ja sakta. Yeh real-world traffic patterns ke liye realistic hai — clients aksar bursty hote hain, purely uniform nahi.
+
+**2. Leaky Bucket** — is analogy mein bucket mein pani (requests) daala jaata hai upar se, aur neeche se ek **fixed constant rate** pe leak (process) hota hai — chahe upar se kitna bhi burst aaya ho. Requests queue mein wait karte hain.
+
+```text
+function handleRequest(request, queue):
+    if queue.size >= queue.maxCapacity:
+        return REJECT   // bucket overflow
+
+    queue.enqueue(request)
+    return ACCEPTED_FOR_PROCESSING
+
+// separate process, running independently at fixed rate:
+function leakProcess(queue):
+    while true:
+        wait(1 / fixedProcessingRate)   // e.g. process 1 every 100ms
+        if not queue.isEmpty():
+            request = queue.dequeue()
+            process(request)
+```
+
+Key property: output rate **hamesha constant** hai, chahe input kitna bhi bursty ho — yeh downstream systems ko smooth, predictable load deta hai. Trade-off: agar burst aaya, extra requests queue mein wait karte hain (added latency) ya queue full hone par reject hote hain — token bucket ke comparison mein bursts ko turant serve nahi karta.
+
+**3. Sliding Window (log ya counter variant)** — yeh fixed window ki ek specific flaw fix karne ke liye bana hai, jo pehle samajhna zaroori hai.
+
+**Fixed window ka boundary problem**: socho limit hai 100 requests/minute, aur window boundaries clock-aligned hain (12:00:00-12:01:00, 12:01:00-12:02:00, etc). Ek client 12:00:59 pe 100 requests bhej deta hai (window 1 ke end mein), aur phir 12:01:01 pe (window 2 ke start mein) turant 100 aur requests bhej deta hai. Dono individually apne apne window ki limit ke andar hain — lekin sirf **2 second** ke andar client ne effectively **200 requests** bhej diye, jo intended rate ka 2x hai. Yeh hai fixed window ka boundary problem — window edges pe rate limit **bypass** ho sakta hai.
+
+Sliding window isko fix karta hai kyunki yeh kisi fixed clock-aligned boundary pe depend nahi karta — yeh hamesha "**abhi se pichle N seconds**" dekhta hai, chahe woh N seconds do clock-minutes ke beech mein hi kyun na spread ho.
+
+```text
+// Sliding window LOG variant — precise, memory-heavier
+function allowRequest(clientId, limit, windowSeconds):
+    now = currentTime()
+    windowStart = now - windowSeconds
+
+    // remove timestamps older than the window
+    removeTimestampsBefore(clientId, windowStart)
+
+    requestCount = countTimestamps(clientId)
+
+    if requestCount < limit:
+        addTimestamp(clientId, now)
+        return ALLOW
+    else:
+        return REJECT
+```
+
+Log variant har request ka exact timestamp store karta hai — bahut accurate hai lekin memory-heavy (high-traffic client ke liye hazaaron timestamps store karne padte hain). Isiliye ek **counter variant** bhi common hai jo previous aur current fixed-window counts ko weighted-average karke approximate karta hai — kam memory, thoda kam precise, lekin fixed-window boundary problem ko largely fix kar deta hai.
+
+### Enforce kahan karna hai
+
+- **API gateway / edge** — sabse common jagah. Har request backend tak pahunchne se pehle gateway pe hi reject ho jaati hai agar limit cross ho — isse backend services ka load bilkul bachta hai, aur ek jagah centrally sab APIs ke liye policy manage hoti hai.
+- **Per-service** — kabhi kabhi additional, finer-grained limits chahiye hote hain kisi specific expensive operation ke liye (jaise ek heavy search query endpoint), jo gateway-level generic limit se alag hona chahiye. Yahan per-service rate limiting bhi lagta hai, gateway ke upar ek extra layer ke roop mein.
+
+### Counter kahan store karein
+
+Distributed system mein — jahan multiple gateway/service instances parallel chal rahe hain — counters ek shared, fast store mein rakhne padte hain, warna har instance apna alag local count rakhega aur global limit enforce nahi hogi.
+
+- **Redis with atomic INCR + EXPIRE** — sabse common pattern fixed/counter-based approaches ke liye. `INCR` request count badhata hai atomically (race condition-safe), `EXPIRE` window ke end pe key ko auto-delete kar deta hai.
+- **Sorted set (Redis ZSET) for sliding window log** — timestamp ko score ke roop mein store karo, `ZREMRANGEBYSCORE` se purane timestamps remove karo, `ZCARD` se current count lo. Yeh sliding window log implement karne ka standard Redis pattern hai.
+
+Redis fast hai (in-memory, sub-millisecond operations) aur atomic operations support karta hai jo race conditions avoid karte hain jab multiple gateway instances simultaneously same client ka counter update kar rahe hon.
+
+### Client ko response kya dena hai jab limited ho
+
+Jab limit exceed ho jaaye, standard practice hai:
+
+- **HTTP 429 (Too Many Requests)** status code return karo — yeh specifically isi purpose ke liye HTTP spec mein defined hai, generic 400/500 mat bhejo.
+- **`Retry-After` header** include karo — batao client ko kitni der baad retry karna chahiye (seconds mein, ya ek specific timestamp). Yeh well-behaved clients ko exponential backoff ke bajaye ek precise wait time deta hai, jo unnecessary retries kam karta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Token bucket: bursts allow karta hai jabki average rate control mein rehti hai — real traffic patterns ke liye realistic",
+    "Leaky bucket: output rate hamesha smooth/constant hai — downstream systems ke liye predictable load",
+    "Sliding window: fixed-window boundary bypass problem solve karta hai, sabse accurate rate enforcement",
+  ]}
+  cons={[
+    "Token bucket: burst ke baad thoda complex tuning chahiye (capacity vs refill rate)",
+    "Leaky bucket: bursts ko turant serve nahi karta, extra latency ya rejection ho sakta hai",
+    "Sliding window log: memory-heavy hai high-traffic clients ke liye (har timestamp store karna padta hai)",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Stripe">
+
+Stripe apne public API pe strict rate limits enforce karta hai per API key, aur jab limit cross hoti hai, `429` status ke saath `Retry-After` header bhejta hai. Stripe ka documentation explicitly bolta hai ki clients ko exponential backoff ke saath retry logic implement karna chahiye — yeh dikhata hai ki rate limiting sirf server-side protection nahi hai, client-side sahi behavior bhi ek design consideration hai.
+
+</RealWorld>
+
+<RealWorld company="Razorpay">
+
+Razorpay jaisa Indian payment gateway bhi per-merchant rate limits enforce karta hai apne payment aur webhook APIs pe — kyunki ek buggy merchant integration (jaise ek retry loop jo galti se turant-turant retry kar raha ho) poore shared infrastructure ko affect kar sakta hai agar unchecked chhoda jaaye. Yeh fair usage ka classic example hai — ek merchant ka bug doosre merchants ki request latency ko degrade nahi karna chahiye.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+AWS APIs (jaise S3, DynamoDB) rate limiting ko throttling ke roop mein implement karte hain, aur specifically token-bucket-jaisi burst-tolerant approach use karte hain kyunki real workloads aksar bursty hote hain (jaise ek batch job jo achanak bahut saari requests bhejta hai, phir idle ho jaata hai) — pure fixed-rate limiting is pattern ke liye bahut restrictive hoti.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Redis INCR + EXPIRE operation — sub-millisecond latency, easily handles tens of thousands of ops/sec per instance
+- Typical public API free tier — 60-100 requests/minute is a common default
+- Fixed window boundary exploit — can let a client burst up to ~2x the intended limit for a short window around the boundary
+- Sliding window log memory — roughly one timestamp entry per request per client within the window (can be MBs for high-traffic clients)
+- HTTP 429 — the standard status code; almost always paired with a `Retry-After` header value in seconds
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: **"Design a rate limiter for an API."** Interviewer testing kar raha hai algorithmic depth (kya tum actual algorithm likh sakte ho, na sirf naam bata sakte ho) aur system design judgment (kahan enforce karna hai, kaise distribute karna hai counters ko).
+
+Strong answer structure: pehle bolo **kyun** rate limiting chahiye (abuse, accidental spikes, fair usage), phir algorithm choose karo aur justify karo ("token bucket kyunki bursts realistic hain"), phir explicitly fixed-window boundary problem mention karo unprompted — yeh depth ka strongest signal hai is topic mein. Phir bolo enforcement layer (API gateway) aur storage (Redis, atomic INCR+EXPIRE ya sorted set). End mein response contract (429 + Retry-After) bolna polish add karta hai.
+
+Follow-up jo aksar aata hai: "Distributed system mein, agar multiple gateway instances hain, race condition kaise avoid karoge counter update karte waqt?" — yahan Redis ke atomic operations (`INCR` is inherently atomic) ka answer expected hai, ya agar tumne local in-memory counting bola tha to uska limitation explain karna padega.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Fixed window algorithm use kar lena bina uske boundary problem ko realize kiye — ki client window edge ke around effectively 2x rate tak burst kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Rate limiting ko sirf ek algorithm problem samajhna, distributed counter storage (race conditions jab multiple instances parallel update kar rahe hon) ka discussion skip kar dena.
+
+</Mistake>
+
+<Mistake>
+
+Rate limit exceed hone par generic `400` ya `403` return karna instead of `429`, aur `Retry-After` header include na karna — jisse client ko pata hi nahi chalta kitni der wait karna hai.
+
+</Mistake>
+
+<Mistake>
+
+Token bucket aur leaky bucket ko same cheez samajh lena — token bucket bursts allow karta hai (output bursty ho sakta hai), leaky bucket output ko hamesha smooth/constant rakhta hai. Yeh do alag trade-offs hain.
+
+</Mistake>
+
+<Mistake>
+
+Sirf ek jagah (jaise sirf API gateway pe) rate limiting laga dena aur yeh na sochna ki kuch expensive per-endpoint operations ko finer-grained, per-service limits bhi chahiye ho sakte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Client["Client"] --> GW["API Gateway<br/>rate limit check"]
+    GW -->|"under limit"| Backend["Backend Service"]
+    GW -->|"over limit"| Reject["429 Too Many Requests<br/>+ Retry-After header"]
+    GW <-->|"atomic INCR + EXPIRE<br/>or sorted set"| Redis["Redis<br/>(shared counter store)"]
+`}
+  caption="Enforcement happens at the edge (gateway) before backend load; the counter lives in a fast, shared, atomic store so multiple gateway instances stay consistent."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Rate limiting protects against abuse, absorbs accidental spikes, and enforces fair usage/pricing tiers
+- Token bucket: refills at fixed rate, allows bursts up to bucket capacity, rejects when empty
+- Leaky bucket: processes at a fixed constant rate regardless of input burst, smooths traffic but adds latency
+- Sliding window (log or counter): tracks recent request timestamps, fixes the fixed-window boundary problem
+- Fixed window boundary problem: client can send ~2x the limit right around the window edge
+- Enforce at API gateway/edge for centralized policy; add per-service limits for specific expensive endpoints
+- Store counters in Redis — atomic INCR + EXPIRE for counters, sorted set (ZSET) for sliding window logs
+- Return HTTP 429 with a Retry-After header when a client is rate limited
+
+</QuickRevision>

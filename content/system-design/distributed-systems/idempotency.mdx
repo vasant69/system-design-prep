@@ -1,0 +1,192 @@
+---
+slug: "idempotency"
+title: "Idempotency"
+section: "system-design"
+module: "distributed-systems"
+order: 6
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["distributed-transactions-2pc-saga"]
+tags: ["distributed-systems", "payments", "reliability"]
+englishDefinition: "An operation is idempotent if performing it multiple times has the exact same effect as performing it once. This matters because networks are unreliable and clients/systems retry requests, so operations that aren't idempotent can accidentally be executed twice — a critical concern in any system that handles retries, especially payments."
+interviewFrequency: "very-high"
+companies: ["Paytm", "PhonePe", "Razorpay", "Amazon"]
+---
+
+<SimpleDefinition>
+
+An operation is idempotent if performing it multiple times has the exact same effect as performing it once. This matters because networks are unreliable and clients/systems retry requests, so operations that aren't idempotent can accidentally be executed twice — a critical concern in any system that handles retries, especially payments.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Idempotency ek chhota sa lagne wala concept hai, lekin production payment systems mein yeh literally **crores ke bugs** prevent ya cause karta hai. Yeh syllabus mein explicitly critical maana jaata hai kyunki payments ka domain hai jahan is mistake ka real financial cost hota hai — isliye is topic ko us angle se deeply samjhte hain.
+
+### Classic double-charge bug
+
+Socho scenario: user "Pay ₹500" button click karta hai. Client server ko ek payment request bhejta hai. Server request receive karta hai, payment process karta hai, database mein "payment successful" likh deta hai — **lekin response wapas bhejne se pehle hi network glitch ho jaata hai** (connection drop, timeout, mobile network switch). Client ko koi response nahi milta, sirf timeout dikhta hai.
+
+Ab client (ya user manually) kya karega? **Retry**. "Shayad request pahunchi hi nahi thi" soch ke wahi payment request dobara bhejega. Lekin server-side, pehli request actually **already succeed ho chuki thi** — sirf response client tak nahi pahunch paaya tha. Agar server ne is retry ko ek **naya independent payment** samjha, user se **double charge** ho jaayega — same cheez ke liye do baar paisa katega. Yeh exactly wahi bug hai jo idempotency solve karta hai, aur yeh itna common hai ki har major payment company (Paytm, PhonePe, Razorpay, Stripe) apne API docs mein explicitly idempotency key requirement mention karti hai.
+
+Root cause samjho: problem yeh nahi hai ki request do baar bheji gayi — retries zaroori hain unreliable networks mein (agar retry hi nahi karoge, temporary glitches pe transactions permanently fail ho jaayenge, jo bhi bura UX hai). Problem yeh hai ki server ko **pata nahi hai ki yeh ek retry hai ya ek genuinely nayi request** — dono cases mein request same dikhti hai agar koi extra mechanism na ho.
+
+### Idempotency key pattern — full mechanical detail
+
+Solution: client ek **unique key per logical operation** generate karta hai — typically ek UUID — **request bhejne se pehle hi**, aur usse request header mein bhejta hai (jaise `Idempotency-Key: 7f3c1a2b-...`). Yeh key represent karta hai "yeh specific ₹500 payment attempt", chahe request kitni baar bhi bhejni pade.
+
+Server-side flow:
+1. Request aati hai with idempotency key.
+2. Server check karta hai — **kya yeh key pehle dekhi hai?** (ek fast lookup store mein, discussed neeche).
+3. Agar **naya key hai**: request ko normally process karo, result (success/failure, transaction ID, etc.) ko us key ke against **store** kar do, aur result client ko return karo.
+4. Agar **key already exist karti hai** (matlab yeh ek retry hai): request ko **dobara process mat karo** — bas **stored result wapas return kar do** jo pehli baar compute hua tha. Server ne payment dobara nahi kiya, sirf pehle wala result phir se bata diya.
+
+Isse guarantee milta hai: chahe client 1 baar retry kare ya 10 baar, actual payment sirf **ek** baar hi hota hai — baaki saari "retries" sirf stored result ka echo hain.
+
+### Kaunse HTTP methods idempotent hain by definition
+
+HTTP spec khud kuch methods ko idempotent define karta hai:
+
+- **GET** — idempotent by definition. Ek resource ko baar-baar read karna usse change nahi karta.
+- **PUT** — idempotent. "Set this resource to exactly this state" — chahe ek baar karo ya paanch baar, end state same hai. Jaise "user ka address set karo X" — dobara same request bhejne se address wahi X hi rahega.
+- **DELETE** — idempotent. Ek resource ko delete karna, phir dobara delete karne ki koshish karna — end state same hai (resource exist nahi karta). Doosri baar shayad "404 not found" mile, lekin system state same hi hai jo pehli delete ke baad tha.
+- **POST** — **idempotent NAHI hai by definition**. POST typically ek naya resource **create** karta hai, ya ek action **trigger** karta hai (jaise "payment karo", "order place karo"). Har POST call by default ek naya effect create kar sakta hai — do POST calls ka matlab do payments, do orders. **Isi wajah se POST endpoints ko idempotency-key pattern ki sabse zyada zaroorat hoti hai** — kyunki HTTP khud koi safety guarantee nahi deta POST ke liye, application ko explicitly implement karna padta hai.
+
+Isliye jab bhi ek API "payment create karo" jaisa POST endpoint design karte ho, idempotency key ek **default requirement** honi chahiye, optional nahi.
+
+### Idempotency key kahan store karein, aur TTL kya ho
+
+Key → result mapping store karne ke liye chahiye ek **fast, shared store** — sab application server instances ko usi mapping tak access hona chahiye (chahe request kisi bhi instance pe land ho, load balancer ke peeche). **Redis** is use-case ke liye classic choice hai — in-memory, fast lookups (single-digit millisecond), aur naturally shared across instances.
+
+**TTL kya rakhein**: key ko permanently store karna zaroori nahi (aur wasteful hai) — client sirf ek **limited retry window** ke andar hi retry karega realistically (network glitches turant resolve hoti hain ya user turant dobara try karta hai). Common practice: **24 ghante** jaisa TTL rakhna — yeh kaafi generous window hai client-side retries ke liye (including cases jaha client offline chala jaaye aur wapas aake retry kare), lekin store ko indefinitely bloat nahi hone deta. Kuch systems shorter TTL (jaise 1 ghanta) bhi use karte hain agar unka retry window chhota hai by design.
+
+### Natural idempotency by design — best fix hai jab possible
+
+Sabse elegant solution hai **operation ko khud idempotent design karna**, extra key-tracking mechanism ke bina bhi:
+
+- **"Set balance to ₹5000"** — yeh **naturally idempotent** hai. Chahe yeh command 1 baar chale ya 5 baar, end result same hai: balance = ₹5000.
+- **"Add ₹500 to balance"** — yeh **idempotent NAHI hai**. Agar yeh command accidentally 2 baar chal jaaye, balance mein ₹1000 add ho jaayega instead of ₹500 — bug.
+
+Jahan bhi possible ho, "absolute set" jaisi operations prefer karo "relative add/increment" ke bajaye — kyunki woh operation ki nature hi retries ke against safe bana deti hai, koi extra tracking mechanism chahiye hi nahi. Real payment systems mein, yeh often "compute new balance client/service side ek unique transaction ID ke against, phir woh exact final value set karo" jaisा pattern banta hai — combined with idempotency keys for the full picture.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Idempotency key sirf request ko "duplicate detect" karne ke liye kaafi nahi hai agar tum usse sirf **duplicate reject** kar do (error return kar do). Sahi behavior hai: duplicate detect karo, aur **pehli baar ka successful result wapas return karo** — taaki client ko lage jaise unki request successfully process hui (jo technically sach hai, bas is baar nahi, pehli baar).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Razorpay">
+
+Razorpay ke Payment API docs explicitly `Idempotency-Key` header support karte hain — agar ek merchant ka server timeout ho jaaye Razorpay se response ka wait karte hue aur woh retry kare same key ke saath, Razorpay guarantee karta hai ki payment sirf ek baar process hoga, chahe request kitni baar retry ho.
+
+</RealWorld>
+
+<RealWorld company="PhonePe">
+
+UPI-based systems jaise PhonePe mein transaction ID (jo end-to-end unique hota hai poore UPI ecosystem mein, bank se bank tak) exactly idempotency key ki tarah kaam karta hai — agar same transaction ID ke saath dobara request aaye (network retry ki wajah se), banking backend usse duplicate recognize karta hai aur dobara debit nahi karta, balki original transaction ka status hi return karta hai.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon ke internal payment/order systems (aur AWS APIs jaise EC2 instance launch) bhi idempotency tokens support karte hain — jaise agar `RunInstances` API call timeout ho jaaye, retry same idempotency token ke saath karne se do instances launch nahi hote, sirf ek. Yeh pattern payments se aage bhi kaafi general-purpose hai — kisi bhi "create" ya "trigger" style operation ke liye applicable hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Idempotency key store lookup (Redis) — typically under 5 ms, negligible overhead compared to actual payment processing time
+- Common idempotency key TTL — 24 hours is a widely used default; some systems use shorter windows (1-2 hours) depending on realistic retry behavior
+- Idempotency key format — typically a client-generated UUID (v4), ~36 characters, unique per logical operation attempt
+- Payment gateway retry timeout thresholds — clients often configured to retry after 5-30 seconds of no response, exactly the window where duplicate-request risk is highest
+- Real fintech incident pattern — a meaningful share of reported "double charge" customer complaints trace back to missing or improperly scoped idempotency handling on POST-based payment endpoints
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Extremely common in fintech-adjacent interviews (Paytm, PhonePe, Razorpay, and general Amazon/e-commerce rounds too): **"How would you prevent a user from being charged twice if their payment request times out and they retry?"** This is almost always testing specifically for the idempotency key pattern — interviewer wants mechanical detail, not just the buzzword.
+
+Model answer shape: start with the failure scenario concretely — "request succeeds server-side, but the response is lost in transit, client sees a timeout and retries, and without protection this creates a second charge." Then walk through the mechanism: client generates a UUID before sending, server stores key-to-result mapping in a fast shared store like Redis with a TTL (e.g. 24 hours), and on a duplicate key returns the stored result instead of reprocessing. Mention that GET/PUT/DELETE are idempotent by HTTP definition but POST is not, so POST-based "create/charge" endpoints specifically need this pattern. Bonus depth: mention preferring naturally idempotent operations ("set balance to X") over non-idempotent ones ("add X to balance") wherever the domain allows it.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Idempotency ko sirf "retry hone se rokna" samajh lena — asal mein retries honi chahiye (networks unreliable hain), problem yeh hai ki retry ka effect duplicate na ho. Idempotency retries ko safe banata hai, unhe prevent nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Idempotency key ko server-side generate karna, ya request ke baad generate karna — key hamesha **client-side, request bhejne se pehle** generate honi chahiye, taaki retry mein bhi wahi key dobara use ho sake.
+
+</Mistake>
+
+<Mistake>
+
+Duplicate request detect hone pe sirf error/reject kar dena, stored result return na karna — isse client ko lagta hai unka payment fail ho gaya jabki woh actually pehle hi succeed ho chuka tha, jo user ko confuse karta hai aur unnecessary support tickets banata hai.
+
+</Mistake>
+
+<Mistake>
+
+GET/PUT/DELETE ko bhi POST jaisa treat karke unpe bhi manual idempotency-key layer implement karna jabki unki idempotency HTTP semantics se already guaranteed hai (agar correctly implemented ho) — extra unnecessary complexity.
+
+</Mistake>
+
+<Mistake>
+
+Idempotency key store ke liye ek slow, non-shared store use karna (jaise ek single app server ki local memory) — agar retry kisi doosre server instance pe land kare (load balancer ke peeche), woh key ko dekh hi nahi paayega aur duplicate process ho jaayega. Store shared aur fast dono hona chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    participant R as Redis (key store)
+
+    C->>S: POST /pay, Idempotency-Key: abc-123
+    S->>R: Has key abc-123?
+    R-->>S: No
+    S->>S: Process payment
+    S->>R: Store abc-123 -> result
+    Note over C,S: Response lost in transit (timeout)
+    C->>S: RETRY: POST /pay, Idempotency-Key: abc-123
+    S->>R: Has key abc-123?
+    R-->>S: Yes -> stored result
+    S-->>C: Return stored result (no reprocessing)
+`}
+  caption="The retry reuses the same idempotency key — the server recognizes it and replays the stored result instead of charging the customer again."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Idempotent operation = same effect whether run once or many times
+- Classic bug: payment succeeds server-side, response lost, client retries -> double charge without protection
+- Idempotency key pattern: client generates a UUID before sending, server maps key -> result, duplicate key returns stored result instead of reprocessing
+- GET, PUT, DELETE are idempotent by HTTP definition; POST is NOT — POST-based create/charge endpoints need explicit idempotency keys
+- Store key -> result mapping in a fast, shared store (Redis) so any server instance behind a load balancer can see it
+- Common TTL: around 24 hours — generous enough for realistic client retries, doesn't bloat the store forever
+- Prefer naturally idempotent operations by design: "set balance to X" is safe to retry, "add X to balance" is not
+- On duplicate detection, always return the original stored result — never just reject the retry with an error
+
+</QuickRevision>

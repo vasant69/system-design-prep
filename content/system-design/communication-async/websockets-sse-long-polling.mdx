@@ -1,0 +1,196 @@
+---
+slug: "websockets-sse-long-polling"
+title: "WebSockets, SSE & Long Polling"
+section: "system-design"
+module: "communication-async"
+order: 4
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["client-server-model"]
+tags: ["networking", "realtime"]
+englishDefinition: "Long polling is a pattern where the client repeatedly asks the server 'anything new?', holding each connection open until there is data or a timeout. Server-Sent Events (SSE) let the server push a one-way stream of updates to the client over a single long-lived HTTP connection. WebSockets provide a full-duplex, persistent connection allowing both client and server to send messages to each other at any time."
+interviewFrequency: "high"
+companies: ["Zomato", "Swiggy", "WhatsApp"]
+---
+
+<SimpleDefinition>
+
+Long polling is a pattern where the client repeatedly asks the server "anything new?", holding each connection open until there is data or a timeout. Server-Sent Events (SSE) let the server push a one-way stream of updates to the client over a single long-lived HTTP connection. WebSockets provide a full-duplex, persistent connection allowing both client and server to send messages to each other at any time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Real-time updates chahiye — jaise Zomato mein delivery partner ki live location, ya ek chat app mein naya message. In sabko achieve karne ke kai tareeke hain, aur inka evolution samajhna important hai kyunki har agla approach pichle wale ki ek specific limitation solve karta hai. Chalo naive approach se shuru karte hain aur build up karte hain.
+
+### Step 0 — Plain polling (naive approach)
+
+Sabse simple idea: client har N seconds mein ek naya HTTP request bhejta hai — "kuch naya hai?" Server turant respond karta hai, chahe naya data ho ya na ho. Yeh kaam toh karta hai, lekin do bade problems hain:
+
+1. **Wasteful** — agar N=5 seconds hai aur actual update har 30 seconds mein ek baar aata hai, to tumne 5 extra empty requests bheje har real update ke liye. Server pe unnecessary load, client pe unnecessary battery/data usage.
+2. **Laggy** — agar update N second interval ke turant baad aata hai, user ko woh update almost N seconds tak dikhega hi nahi. Chhota N rakho to lag kam lekin waste zyada; bada N rakho to waste kam lekin lag zyada. Yeh trade-off hi plain polling ka fundamental flaw hai.
+
+### Step 1 — Long polling (thoda better)
+
+Long polling isi flaw ko partially fix karta hai. Client request bhejta hai, lekin ab server **turant respond nahi karta** agar data available nahi hai — woh connection ko **open rakhta hai** jab tak ya to naya data aa jaaye, ya ek timeout (jaise 30-60 seconds) ho jaaye. Jaise hi data available hota hai (ya timeout hota hai), server respond karta hai, aur client turant ek naya request bhej deta hai.
+
+Yeh plain polling se better hai kyunki ab empty responses kam hote hain aur latency bhi kam hai (data available hote hi mil jaata hai, N second wait nahi karna padta). Lekin ismein bhi limitations hain:
+
+- **Connection churn** — har response ke baad ek naya connection banana padta hai. High-frequency updates ke liye yeh overhead add hota hai (naya HTTP request, headers, potentially naya TCP handshake agar keep-alive na ho).
+- **Sirf server-to-client, woh bhi client-triggered** — server sirf tabhi data bhej sakta hai jab client ne request kiya ho. Agar server ko turant kuch bhejna hai lekin client ka request abhi active nahi hai (pichla response abhi-abhi gaya, naya request abhi bana nahi), thoda gap ban sakta hai.
+
+### Step 2 — SSE (efficient one-way push)
+
+Server-Sent Events isi connection-churn problem ko solve karta hai. Client ek single HTTP connection kholta hai, aur server usi connection pe **stream** ke roop mein updates bhejta rehta hai — jitni baar chahe, jab tak chahe, bina connection band kiye. Yeh plain HTTP ke upar bana hai (`text/event-stream` content type), isliye:
+
+- **Simple hai** — koi naya protocol nahi seekhna, standard HTTP hi hai.
+- **Proxies/firewalls ke through easily kaam karta hai** — kyunki yeh HTTP hi hai, corporate firewalls, load balancers, proxies jo already HTTP samajhte hain, usse bina extra config ke through de dete hain.
+- **Automatic reconnection** — browser ka `EventSource` API agar connection drop ho jaaye to khud reconnect kar leta hai.
+
+Lekin SSE **sirf one-way** hai — server client ko push kar sakta hai, lekin client server ko is connection pe kuch nahi bhej sakta (agar client ko kuch bhejna hai, usko alag se normal HTTP request use karna padega). Yeh un use-cases ke liye perfect hai jahan sirf server se updates aani hain — live score ticker, stock price feed, ek dashboard jo periodically refresh hota hai.
+
+### Step 3 — WebSockets (true bidirectional)
+
+Jab client ko bhi frequently, real-time data bhejna ho — jaise ek chat app mein message type karke bhejna, ya live location sharing mein apni current position continuously bhejna — SSE kaafi nahi hai. Yahan WebSockets chahiye.
+
+WebSocket ek **full-duplex persistent connection** hai — ek baar handshake ho jaaye (HTTP se WebSocket protocol tak "upgrade" hota hai), dono taraf — client aur server — kabhi bhi, kisi bhi order mein messages bhej sakte hain usi connection pe. Na koi request-response cycle ka wait, na koi connection re-open karna. Yeh perfect fit hai jab **dono sides** active participants hain real-time conversation mein.
+
+### Concrete use-case mapping
+
+- **Live score/stock ticker** — SSE kaafi hai. Sirf server updates push kar raha hai, client sirf sunta hai, koi bidirectional need nahi.
+- **Chat app** — WebSockets zaroori hain. Dono users messages bhej sakte hain kabhi bhi.
+- **Zomato/Swiggy live delivery tracking** — yahan interesting hai: pehli nazar mein lagta hai sirf server-to-client hai (delivery partner ki location dikhani hai). Lekin actual production systems mein aksar WebSockets use hote hain kyunki **two-way interaction** involved hoti hai — customer app ko bhi kabhi kabhi server ko signal bhejna padta hai (jaise "customer ne delivery instructions update ki", ya real-time chat feature agar ho customer aur delivery partner ke beech). Plus delivery partner ka app khud continuously apni location **bhejta** hai server ko — yeh bhi ek "client-to-server frequent data" case hai. Isliye pure server-push use-case se zyada complex hone ki wajah se WebSockets zyada common hain in apps mein.
+
+### Operational cost of WebSockets at scale
+
+Yeh interview mein bolna zaroori hai kyunki bahut log sirf feature-level comparison karte hain, operational reality nahi. Har WebSocket connection **stateful** hota hai — server ko us connection ke liye memory aur resources hold karne padte hain jab tak connection khula hai (jo minutes se hours tak ho sakta hai). Yeh plain stateless HTTP requests (jo milliseconds mein complete ho jaate hain) se fundamentally different scaling problem hai:
+
+- **Load balancing mushkil hoti hai** — agar ek client ka WebSocket connection Server A pe khula hai, aur agla related request Server B pe chala jaaye (load balancer ne randomly route kiya), woh connection kaam nahi karega. Isliye **sticky sessions** chahiye (load balancer ek client ko hamesha same server pe route kare) ya ek connection-aware routing layer (jaise ek dedicated WebSocket gateway jo track kare kaunsa client kaunse server pe connected hai).
+- **Horizontal scaling harder hai** — stateless HTTP mein koi bhi server instance kisi bhi request ko serve kar sakta hai. WebSockets mein connections specific servers se "pinned" hote hain, isliye naye instances add karna utna trivial nahi hota — existing connections ko migrate nahi kar sakte bina disconnect kiye.
+- **Resource limits per server** — ek server sirf itne concurrent open connections handle kar sakta hai (memory, file descriptors ki limit). Yeh capacity planning ko HTTP request-per-second sochne se different banata hai — ab tumhe "concurrent connections" bhi track karna padta hai.
+
+Yahi wajah hai ki teams SSE ya long polling ko prefer karte hain jab bidirectional zaroorat na ho — operational simplicity ka fayda bahut real hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein yeh progression bolna (polling → long polling → SSE → WebSockets, har step pichle ki ek specific limitation fix karta hai) khud ek strong signal hai — yeh dikhata hai tumne sirf feature list ratta nahi maara, balki trade-offs samjhe hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Zomato / Swiggy">
+
+Live delivery tracking screen mein delivery partner ki location continuously update hoti hai map pe. Yeh WebSockets (ya isi tarah ka persistent bidirectional channel) use karta hai kyunki delivery partner ka app khud frequently apni location server ko bhejta hai (client-to-server data), aur customer ka app real-time mein us location ko receive karta hai (server-to-client) — dono directions active hain, isliye pure one-way SSE kaafi nahi hota.
+
+</RealWorld>
+
+<RealWorld company="WhatsApp">
+
+WhatsApp jaisa chat application classic bidirectional real-time use-case hai — dono users kabhi bhi message bhej sakte hain, typing-indicator jaise features ("user is typing...") ko bhi turant dono taraf reflect hona chahiye. Yeh sirf persistent, full-duplex connection (WebSocket-jaisi technology, ya WhatsApp ka apna custom protocol jo similar principles pe based hai) se hi efficiently possible hai — polling se yeh experience kabhi utna smooth nahi lagega.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Plain polling interval — typically 3-10 seconds in naive implementations, direct trade-off between staleness and server load
+- Long polling timeout — typically 30-60 seconds before server force-closes and client reconnects
+- SSE reconnection (browser default) — automatic, typically retries within a few seconds of disconnect
+- WebSocket handshake — 1 HTTP upgrade request, then persistent connection (no repeated handshake overhead)
+- Concurrent WebSocket connections per server — commonly tens of thousands, bounded by memory and file descriptor limits, not CPU
+- Typical real-time location update frequency (delivery tracking) — every 3-5 seconds per active delivery
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: **"Design a live order-tracking feature — how would updates reach the client?"** Interviewer specifically checking ki tum ek single "WebSockets everywhere" answer nahi de rahe, balki use-case ke hisaab se reasoning kar rahe ho — aur ki tumhe scaling implications pata hain.
+
+Strong answer shape: "Pehle dekhunga kya truly bidirectional hai — agar sirf server updates push kar raha hai, SSE kaafi hai aur operationally simpler hai. Agar client bhi frequently data bhej raha hai (jaise delivery partner ki location), WebSockets chahiye." Phir turant follow-up as unprompted depth: "WebSockets choose karne ka matlab hai ab connections stateful hain — load balancer ko sticky sessions ya connection-aware routing chahiye hoga, aur per-server concurrent connection limits capacity planning mein factor honge." Yeh extra layer hi "textbook" answer ko "production-aware" answer mein badalta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har real-time use-case ke liye directly WebSockets choose kar lena bina yeh check kiye ki kya truly bidirectional communication chahiye — SSE aksar simpler aur sufficient hota hai one-way push ke liye.
+
+</Mistake>
+
+<Mistake>
+
+Plain polling aur long polling ko same cheez samajh lena — plain polling fixed interval pe fire hoti hai chahe data ho ya na ho, long polling connection ko data available hone tak (ya timeout tak) open rakhti hai.
+
+</Mistake>
+
+<Mistake>
+
+WebSockets ke operational cost (stateful connections, sticky sessions, per-server connection limits) ko completely ignore kar dena jab scaling discuss ho rahi ho — sirf feature-level comparison karna kaafi nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+SSE ko bidirectional samajh lena — SSE strictly one-way (server-to-client) hai, client ko kuch bhejna ho to alag HTTP request lagti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    rect rgb(30,41,59)
+    Note over C,S: Long Polling
+    C->>S: Request (any update?)
+    Note over S: Server holds connection open
+    S-->>C: Response (when data ready or timeout)
+    C->>S: New request immediately
+    end
+
+    rect rgb(30,41,59)
+    Note over C,S: SSE
+    C->>S: Open stream (once)
+    S-->>C: Update 1
+    S-->>C: Update 2
+    S-->>C: Update 3 (same connection)
+    end
+
+    rect rgb(30,41,59)
+    Note over C,S: WebSocket
+    C->>S: Upgrade to WebSocket (once)
+    C->>S: Client message
+    S-->>C: Server message
+    C->>S: Client message
+    S-->>C: Server message
+    end
+`}
+  caption="Each step removes a limitation: long polling avoids empty-response waste, SSE avoids per-update reconnects, WebSockets add true two-way traffic."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Plain polling: fixed interval, wasteful (empty responses) and laggy (staleness up to the interval)
+- Long polling: connection held open until data or timeout — less waste, still has connection churn, still client-triggered
+- SSE: single long-lived HTTP connection, server streams updates, simple and firewall-friendly, but one-way only
+- WebSockets: full-duplex persistent connection, both sides send anytime — needed when client also sends frequent real-time data
+- Use SSE for: live score/stock ticker (server-only push)
+- Use WebSockets for: chat apps, live delivery tracking with two-way interaction
+- WebSockets are stateful at scale — need sticky sessions or connection-aware routing, harder to scale than stateless HTTP
+- The progression itself (polling → long polling → SSE → WebSockets) is the interview-worthy insight, not just the definitions
+
+</QuickRevision>

@@ -1,0 +1,249 @@
+---
+slug: "chat-system-whatsapp"
+title: "Design WhatsApp / a Chat System"
+section: "system-design"
+module: "case-studies"
+order: 2
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["websockets-sse-long-polling", "message-queues"]
+tags: ["case-study", "messaging", "realtime"]
+englishDefinition: "A chat system like WhatsApp supports real-time one-to-one and group text messaging at billions-of-users scale, with delivery guarantees such as sent, delivered, and read receipts, reliable offline message delivery, and end-to-end encryption so that even the server cannot read message content. The core engineering challenge is maintaining persistent connections and routing messages to the correct server for hundreds of millions of simultaneously online users."
+interviewFrequency: "very-high"
+companies: ["WhatsApp", "Meta"]
+---
+
+<SimpleDefinition>
+
+A chat system like WhatsApp supports real-time one-to-one and group text messaging at billions-of-users scale, with delivery guarantees such as sent, delivered, and read receipts, reliable offline message delivery, and end-to-end encryption so that even the server cannot read message content. The core engineering challenge is maintaining persistent connections and routing messages to the correct server for hundreds of millions of simultaneously online users.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh interview ka sabse "layered" case study hai — kyunki HTTP request-response ke maafik simple nahi hai. Yahan har user ek **persistent connection** rakhta hai, aur poori game hai ki "abhi is user ka socket kaunsi server machine pe khula hai" — yeh ek sawaal hai jo billions of users ke saath answer karna genuinely hard hai. Chalo requirements se shuru karte hain aur poora system layer by layer banate hain.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- One-to-one real-time text messaging.
+- Group messaging (WhatsApp jaisa cap ~1024 members per group).
+- Delivery status — sent (single tick), delivered (double tick), read (blue tick) receipts.
+- Offline delivery — agar recipient offline hai, message store ho aur reconnect hone par deliver ho.
+- Media messages (images, video, voice notes) — briefly scope mein, lekin deep dive text messaging pe focus karenge.
+- End-to-end encryption — server bhi message content read nahi kar sakta.
+
+Non-functional requirements:
+
+- **Low latency** — online users ke beech delivery sub-second honi chahiye, real-time feel honi chahiye.
+- **High availability** — chat down nahi ho sakta, availability ko priority denge (AP-leaning system).
+- **Durability** — ek baar message "sent" accept ho gaya, woh kabhi lose nahi hona chahiye, chahe server crash ho jaaye.
+- **Massive scale** — billions of registered users, sainkadon millions concurrent connections.
+- **Ordering** — ek conversation ke andar messages sahi order mein dikhne chahiye.
+- **Idempotency** — network retries ki wajah se duplicate messages create nahi hone chahiye.
+
+Yeh clarify karna zaroori hai kyunki "real-time" aur "durable" dono ek saath chahiye — yeh tension hi poore design ko drive karta hai.
+
+### Back-of-Envelope Estimation
+
+- Assume 2 billion registered users, ~500 million-1 billion daily active, aur peak concurrent open connections ~200-300 million (sab users ek time pe online nahi hote, lekin peak hours mein bahut bade fraction active hote hain).
+- Message volume: real-world scale pe WhatsApp jaisa system roughly 100 billion messages/day process karta hai. Per second average: 100 billion / 86,400 seconds ≈ 1.16 million messages/second average, peak (3-5x) ≈ 4-5 million messages/second.
+- Storage: average text message ~100 bytes (metadata + content reference, media alag store hoti hai). 100 billion messages * 100 bytes/day ≈ 10TB/day sirf message metadata ke liye — isliye messages ko server pe indefinitely store nahi kiya jaata, sirf delivery tak temporarily rakha jaata hai, phir purge ho jaate hain.
+- Connection capacity: agar ek chat server node ~500K-1M concurrent WebSocket connections handle kar sakta hai (memory aur file descriptor limits ke andar), to 300 million concurrent connections ke liye roughly 300-600 chat server nodes chahiye globally.
+- Routing table size: 2 billion users ke liye `user_id -> server_id` mapping, har entry ~50 bytes, total ≈ 100GB — ek partitioned in-memory store (Redis cluster) mein comfortably fit hota hai agar hash-partitioned ho.
+
+Yeh numbers dikhate hain ki yeh problem sirf "message bhejna" nahi hai — yeh ek **massive stateful connection management problem** hai.
+
+### High-Level Design
+
+Core components:
+
+1. **Client apps** — persistent WebSocket connection maintain karte hain apni assigned chat server ke saath.
+2. **Load balancer / connection gateway** — naye connections ko available chat server nodes ke beech distribute karta hai.
+3. **Chat servers** — stateful nodes jo live WebSocket connections hold karte hain, aur incoming/outgoing messages route karte hain.
+4. **Presence & routing service** — ek fast lookup (Redis-backed) jo batata hai ki kisi user ka live connection abhi kaunsi chat server pe hai.
+5. **Message persistence layer** — durable store (wide-column store jaisa Cassandra, partitioned by conversation/user) jahan undelivered messages temporarily rakhe jaate hain.
+6. **Push notification service** — jab recipient app hi band hai (koi socket connection nahi), APNs/FCM ke through OS-level push notification bhejna taaki app wake ho.
+7. **Media storage + CDN** — images/videos blob store mein rakhe jaate hain, message sirf ek reference URL carry karta hai, raw bytes nahi.
+
+**1:1 message flow**: sender ka app apne chat server ko message bhejta hai (over open WebSocket) → chat server message ko durable store mein persist karta hai (crash-safety ke liye) → recipient ka current server dhoondne ke liye presence/routing service query karta hai → agar recipient online hai (routing entry mili), message uss server ko forward hota hai aur unke live socket pe push ho jaata hai → agar offline hai, message durable per-user queue mein reh jaata hai + push notification bhej di jaati hai to wake the device. Delivery status acks (sent → delivered → read) isi routing infrastructure se wapas sender tak flow karte hain.
+
+### Deep Dive: Connection Management & Routing at Massive Scale
+
+Yeh is system ka core engineering problem hai. Har online user ka ek live socket exactly ek chat server node pe hota hai — sainkadon nodes mein se koi ek. Jab sender ka message deliver karna ho, sender ka chat server ko yeh pata hona chahiye: **recipient abhi kaunsi machine pe connected hai?**
+
+Solution: ek fast, low-latency, high-throughput key-value lookup service — typically Redis — jo `user_id -> server_id` mapping maintain karta hai:
+
+- Jab user connect karta hai, uska chat server is mapping mein ek entry likh deta hai (`user_id -> apna server_id`).
+- Jab user disconnect hota hai (ya connection drop hoti hai), entry remove/expire ho jaati hai.
+- Message send karte waqt, sender ka server is table mein recipient ka `server_id` lookup karta hai, phir ek server-to-server internal call (ya internal message bus) se message uss specific chat server tak forward karta hai, jo phir apne live socket pe push kar deta hai.
+- Agar lookup mein koi entry nahi milti (user offline), fallback path: durable queue + push notification.
+
+Iske saath ek **heartbeat mechanism** zaroori hai — chat servers periodically clients ko ping karte hain (ya vice versa) taaki dead connections jaldi detect ho jaayein. Mobile networks flaky hote hain — app background mein jaana, network switch hona, WiFi se mobile data — sab connection silently todh sakte hain. Agar routing table mein ek stale entry reh gayi (jo ek mar chuke socket ko point kar rahi hai), messages galat jagah route honge aur silently lost lagenge. Isliye routing entries pe short TTL rakha jaata hai jo heartbeat se refresh hoti rehti hai — agar heartbeat miss ho jaaye, entry automatically expire ho jaati hai aur system fallback (offline queue) pe switch kar deta hai.
+
+Presence store khud bhi billions of users ke liye partition/shard karna padta hai — `user_id` pe hash-based partitioning, taaki ek single Redis node bottleneck na bane.
+
+### Deep Dive: Receipts, Group Fan-Out, and Ordering
+
+**Read/delivered receipts** genuinely tricky hain kyunki yeh bhi ek message hi hain jo wapas route karni padti hai. Jab recipient ka device message receive karta hai, woh ek "delivered" ack apne chat server ko bhejta hai → uska server sender ka current location presence service se lookup karta hai → ack sender ke server tak forward hoti hai → sender ka UI single tick se double tick update hota hai. "Read" receipt bhi same path follow karta hai jab user chat khol ke dekh leta hai. Matlab har ek message potentially 2-3 extra small acks generate karta hai jo same routing infrastructure use karte hain — total message volume effectively double-triple ho jaata hai (chhote payloads sahi, lekin volume phir bhi matter karta hai).
+
+**Group chats yeh problem multiply karte hain.** Ek group ke N members hain to ek message ke liye potentially N delivered-acks aur N read-acks wapas sender tak aa sakti hain. Real product mein UI simplify karta hai ("read by all" ek single indicator dikhata hai), lekin backend ko internally sab N acks track karni padti hain before woh aggregate status flip karta hai.
+
+**Group fan-out approach**: WhatsApp jaisa system **fan-out-on-write** use karta hai — jab message group mein bheja jaata hai, system turant har member ke individual inbox/queue mein message push/write kar deta hai (aur jo online hain unko live bhi deliver karta hai). Yeh reads ko fast banata hai (har member sirf apni queue padhta hai) lekin ek incoming message N writes mein convert ho jaata hai. WhatsApp isiliye group size ko ~1024 members tak **cap** karta hai — is limit ke andar N writes acceptable cost hai. Agar group unbounded ho (jaise ek public broadcast channel with millions of subscribers), fan-out-on-write catastrophic ho jaata — ek message, millions writes. Waise scenarios ke liye pull-based approach better hota hai: ek shared message log hota hai jisse members apne aap recent messages "sync/pull" karte hain, individual push copy ki jagah — yehi fundamental trade-off news feed jaise systems mein celebrity fan-out ke saath bhi milta hai.
+
+**Ordering aur idempotency**: network retries (agar sender ko time pe ack nahi mila to woh retry karega) duplicate messages create kar sakte hain. Fix: client message create karte waqt ek unique message ID generate karta hai (client-side UUID ya local sequence number) — server isi ID pe dedup karta hai, same ID dobara aaye to woh no-op treated hoti hai (idempotent write). Ordering ke liye har conversation ke andar ek monotonically increasing sequence number maintain kiya jaata hai, taaki agar network delay ki wajah se messages out-of-order pahunchein, unhe display se pehle resequence kiya ja sake.
+
+**End-to-end encryption** (brief mention): WhatsApp Signal protocol use karta hai — messages client-side encrypt hote hain keys ke saath jo server ke paas kabhi hoti hi nahi. Server sirf encrypted opaque blobs route karta hai, content dekh hi nahi sakta. Yeh privacy ke liye excellent hai, lekin iska matlab hai server-side features jo normally "free" hote (jaise full-text search across all your messages, ya server-side spam/content moderation) ab possible nahi rehte in their usual form — search on-device/client-side implement karna padta hai.
+
+### Bottlenecks & Failure Modes
+
+- **Chat server crash**: uss node pe hold kiye gaye lakhon connections instantly drop ho jaate hain. Clients ko backoff ke saath reconnect karna padta hai naye chat server pe, aur dead server ki routing entries jaldi invalidate honi chahiye (TTL/heartbeat approach) taaki messages galat, mar chuki machine ko route na ho.
+- **Presence/routing service ek critical dependency ban jaata hai** — agar yeh down hai, sender apne recipients dhoond hi nahi paayega. Graceful degradation: fallback to offline-queue path (message lost nahi hota, thoda delay hota hai). Yeh service khud highly-available aur replicated hona chahiye.
+- **Thundering reconnect**: agar ek poora data center ya chat-server cluster crash ho jaaye, lakhon clients ek saath reconnect try karenge — bina jittered backoff ke, yeh reconnect storm khud ek cascading failure ban sakta hai.
+- **Group fan-out write amplification** — bade groups mein har message N writes generate karta hai; group size cap aur/ya pull-based approach yeh mitigate karta hai.
+- **Offline queue growth** — koi user hafton offline rahe to unki message queue badi ho sakti hai; durable, paged retrieval aur retention limits define karna zaroori hai.
+- **Ack-before-persist bug**: agar server sender ko "sent" ack bhej deta hai persist karne se pehle, aur beech mein crash ho jaaye, message silently lost ho jaata hai. Sahi order hai: pehle durably persist karo, phir hi "sent" ack bhejo.
+- **Multi-device complexity**: user ek saath phone + web/desktop pe logged in ho sakta hai — message sabhi active sessions ko deliver karna padta hai, matlab routing table ab per-device entries maintain karta hai, na sirf per-user.
+
+### Follow-Up Questions
+
+- "Multi-device support (same account phone + web pe) kaise doge?" — per-device routing entries, ek user ke multiple `device_id -> server_id` mappings.
+- "Globally, alag-alag geographies mein low latency kaise maintain karoge?" — regional chat-server clusters, cross-region relay jab conversation ke members alag continents mein hon.
+- "Do users ek hi second mein ek doosre ko message bhejte hain — dono taraf order kaise consistent dikhaoge?" — per-conversation sequence numbers ya server-assigned timestamps se resolve hota hai.
+- "E2E encryption ke saath server-side search kaise add karoge?" — on-device search index approach, server ko involve kiye bina.
+- "Group mein naya member add ho to woh purani messages dekh sakta hai?" — normally nahi; membership versioning se decide hota hai ki naya member sirf apne join-time ke baad ke messages dekhega, privacy/security consideration ki wajah se.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Fan-out-on-write se group reads bahut fast hain — har member bas apni already-populated queue padhta hai",
+    "Delivery guarantees track karna simple hai kyunki har member ka apna individual copy/status hai",
+    "Bounded group size (jaise ~1024) ke andar yeh approach predictable aur reliable rehta hai",
+  ]}
+  cons={[
+    "Ek message N members ke liye N writes ban jaata hai — bade/unbounded groups ke liye scale nahi karta",
+    "Storage cost badhta hai kyunki message effectively N baar duplicate/referenced hota hai",
+    "Bahut bade broadcast-style audiences (millions) ke liye pull-based/shared-log approach zyada practical hai",
+  ]}
+/>
+
+<Callout type="warning">
+
+"Sent" ack bhejne se pehle message ko durably persist karna zaroori hai. Agar order ulta ho gaya — pehle ack, phir persist — to ek crash ke beech ka window message ko silently gaayab kar sakta hai, aur sender ko pata bhi nahi chalega ki unka message kabhi deliver hi nahi hua.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="WhatsApp">
+
+WhatsApp duniya ka sabse bada real-time chat system hai — 2+ billion users, roughly 100 billion messages/day process karta hai, aur famously bahut kam engineers ke saath yeh scale achieve kiya tha Erlang jaisi concurrency-friendly language ka use karke, jo lakhon lightweight processes (har connection ke liye ek) efficiently handle kar sakti hai. Unka architecture exactly is topic ka connection-routing pattern follow karta hai — har user session ek specific server node se bound hoti hai, aur ek fast lookup layer batata hai kaunsa node.
+
+</RealWorld>
+
+<RealWorld company="Meta">
+
+Meta ke messaging infra (WhatsApp aur Messenger dono) mein presence/routing layer ko extremely optimize kiya gaya hai kyunki connect/disconnect events itni high frequency pe hote hain (mobile networks flaky hain) — yeh internal system continuously routing table update karta rehta hai, aur heartbeat-based expiry se stale entries clean karta hai taaki messages kabhi ek dead connection ko route na ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Registered users (WhatsApp-scale reference) — approximately 2 billion, with 500M-1B daily active
+- Peak concurrent open connections — roughly 200-300 million WebSocket connections simultaneously
+- Message volume — approximately 100 billion messages/day → ~1.16M messages/sec average, ~4-5M/sec at peak
+- Chat server capacity assumption — ~500K-1M concurrent connections per node → 300-600 nodes needed globally
+- Presence/routing table size — ~2 billion entries at ~50 bytes each → roughly 100GB, sharded across an in-memory store
+- Group size cap (WhatsApp reference) — approximately 1,024 members per group
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Yeh question stateful, connection-oriented distributed systems thinking test karta hai — jo typical CRUD/HTTP system design se bahut different hai. Weak candidates seedha "hum WebSockets use karenge" bolke aage badh jaate hain bina yeh explain kiye ki sender ko recipient ka sahi server kaise pata chalega. Strong candidates presence/routing layer ko explicitly design karte hain, offline delivery path clearly separate karte hain online path se, aur group fan-out ka trade-off (push vs pull, aur size cap ka reasoning) khud se laate hain. Model answer shape: requirements clarify karo (especially delivery guarantees aur offline handling) → scale numbers nikaalo → high-level architecture (chat servers + routing/presence + persistence + push notifications) → connection routing pe deep dive → receipts/group fan-out pe deep dive → failure modes discuss karo (khaas kar chat server crash aur stale routing entries).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Yeh assume kar lena ki sender aur recipient hamesha same chat server se connected honge — real system mein sainkadon servers hote hain, aur ek routing/presence layer explicitly design karni padti hai.
+
+</Mistake>
+
+<Mistake>
+
+Offline message delivery ko completely bhool jaana — sirf "online path" design karna aur yeh na sochna ki recipient ka phone band ho to kya hoga.
+
+</Mistake>
+
+<Mistake>
+
+Group messaging ke liye seedha fan-out-on-write bol dena bina yeh mention kiye ki yeh approach unbounded/celebrity-scale groups ke liye kyun break hota hai, aur WhatsApp jaanbujh kar group size cap kyun rakhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Message ordering aur duplicate-delivery (idempotency) ka edge case ignore karna — network retries se duplicates aa sakte hain, isko explicitly handle na karna.
+
+</Mistake>
+
+<Mistake>
+
+"Sent" ack ko persist-before-ack order ke bina design karna — isse crash ke case mein silent message loss ho sakta hai, aur candidate ko yeh realize hi nahi hota.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant A as Sender App
+    participant S1 as Chat Server 1
+    participant P as Presence/Routing Service
+    participant S2 as Chat Server 2
+    participant B as Recipient App
+
+    A->>S1: Send message (WebSocket)
+    S1->>S1: Persist message durably
+    S1->>P: Lookup recipient's server_id
+    P-->>S1: server_id = S2 (online) or not found (offline)
+    alt Recipient online
+        S1->>S2: Forward message
+        S2->>B: Push over live WebSocket
+        B-->>S2: Delivered ack
+        S2-->>S1: Forward ack
+        S1-->>A: Update to double tick
+    else Recipient offline
+        S1->>S1: Store in durable per-user queue
+        S1->>B: Trigger push notification (FCM/APNs)
+    end
+`}
+  caption="The sender's server never talks to the recipient's device directly — it must first ask the presence/routing layer which chat server currently holds that user's live connection."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Every online user holds a persistent WebSocket to exactly one chat server — the hard problem is knowing WHICH one for a given user_id
+- Presence/routing service (Redis-backed user_id -> server_id map) is the backbone that makes cross-server delivery possible
+- Offline users fall back to a durable per-user queue plus a push notification (FCM/APNs) to wake the app
+- Receipts (sent/delivered/read) are themselves messages routed back through the same infrastructure — groups multiply this to N acks per message
+- Fan-out-on-write for groups keeps reads fast but costs N writes per message — that's exactly why WhatsApp caps group size (~1024)
+- Client-generated message IDs enable dedup (idempotency); per-conversation sequence numbers preserve ordering
+- Always persist a message durably BEFORE acking it as "sent" — reversing that order risks silent message loss on crash
+- End-to-end encryption means the server only routes opaque blobs — search and moderation must move client-side
+
+</QuickRevision>

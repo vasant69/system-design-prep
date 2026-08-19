@@ -1,0 +1,254 @@
+---
+slug: "payment-system-upi"
+title: "Design a Payment System (UPI-style)"
+section: "system-design"
+module: "case-studies"
+order: 6
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["idempotency", "distributed-transactions-2pc-saga"]
+tags: ["case-study", "payments", "consistency"]
+englishDefinition: "A payment system transfers money between two bank accounts through intermediary apps (PSPs) and a central switch such as NPCI for UPI, with correctness as the absolute top priority. Money must never be created, destroyed, or duplicated, even under network failures, timeouts, and concurrent requests — this makes it fundamentally a consistency-first system rather than a throughput-first one."
+interviewFrequency: "very-high"
+companies: ["Paytm", "PhonePe", "NPCI"]
+---
+
+<SimpleDefinition>
+
+A payment system transfers money between two bank accounts through intermediary apps (PSPs) and a central switch such as NPCI for UPI, with correctness as the absolute top priority. Money must never be created, destroyed, or duplicated, even under network failures, timeouts, and concurrent requests — this makes it fundamentally a consistency-first system rather than a throughput-first one.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh interview mein sabse zyada "misleading easy" lagne wala topic hai. Log sochte hain "bas ek account se paise minus karo, doosre mein plus karo" — aur yahi sochna interview mein sabse bada red flag hai. Is topic ka poora point yeh hai ki tumhe pata ho ki **idempotency aur consistency** yahan koi optional nice-to-have nahi hain, yeh system ki jaan hain. Chalo end-to-end banate hain, aur is baar depth pe extra dhyaan denge kyunki yeh explicitly consistency-focused topic hai.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- User A, User B ko paise bhej sake — apne bank account se doosre ke bank account tak.
+- Transaction ka status track ho sake — pending, success, failed.
+- User apni transaction history dekh sake.
+- System multiple PSPs (Payment Service Providers — jaise PhonePe, Paytm, GPay) aur multiple banks ke beech interoperate kare, ek central switch (NPCI jaisa) ke through.
+- Refunds/reversals support ho (agar transaction fail ho jaaye actual money movement ke baad).
+
+Non-functional requirements — yahan priority order interview mein explicitly bolna chahiye:
+
+- **Correctness sabse upar hai** — no double debit, no lost money, no duplicate credit. Yeh kisi bhi cost pe compromise nahi ho sakta.
+- Strong consistency — ek user ka balance hamesha accurate dikhna chahiye, stale ya "eventually correct" nahi chalega.
+- Availability important hai lekin correctness ke baad — better hai system thoda slow ho ya thodi der ke liye unavailable ho, par galat balance kabhi na dikhaye.
+- Durability — ek baar transaction commit ho gaya, uska record kabhi lost nahi hona chahiye (audit/regulatory requirement bhi hai).
+- Scale — UPI jaisa system billions of transactions per month handle karta hai, saath hi peak hours (salary day, festival sales) mein spike bhi.
+- Latency — end user ko kuch seconds ke andar clear status chahiye (success/failed/pending), poora hop-chain milakar.
+
+Yahan explicitly interviewer se confirm karna chahiye: **"Is system CP hai ya AP?"** — aur khud answer bhi dena chahiye: yeh explicitly CP hai (CAP theorem se). Network partition ki situation mein, system availability chhod dega lekin kabhi wrong balance nahi dikhayega. Isse related caveat: UPI apps kabhi "processing..." dikhate hain jab tak sure na ho jaaye — yeh CP choice ka hi UX manifestation hai.
+
+### Back-of-Envelope Estimation
+
+UPI-scale system ke real numbers dekhte hain — NPCI ne khud publicly billions of monthly transactions ka data share kiya hai.
+
+- Maan lo roughly 12-15 billion transactions per month (yeh real UPI scale ke aas-paas hai). Average per day approx 400-500 million transactions.
+- Average QPS = 500,000,000 / 86,400 seconds approx **~5,800 transactions/second average**.
+- Peak traffic (salary days, festival sales, month-end) typically average ka 5-10x hota hai — approx **~40,000-60,000 TPS peak**.
+- Har transaction mein multiple hops hain (payer app se payer PSP, PSP se NPCI switch, NPCI se payee PSP, payee PSP se payee bank, aur phir acknowledgment wapas). Agar har hop approx 50-150 ms le, aur 5-6 hops hain end to end, total round trip approx **500 ms se 1.5 second** tak ho sakta hai ek normal successful transaction ke liye.
+- Storage: har transaction record (transaction ID, amount, timestamp, status, payer/payee identifiers, retry metadata) roughly 1-2 KB. 15 billion transactions/month x 1.5 KB approx **~22 TB/month** raw ledger data — yeh explains why payment companies invest heavily in efficient storage aur archival strategies, aur kyun purane records cold storage mein move hote hain.
+- Timeout aur retry ka impact: agar even 0.1% transactions kisi hop pe timeout/fail hote hain (network blip, downstream slow), 5,800 TPS average pe yeh approx **~6 transactions/second** hain jo status-uncertain state mein reconciliation/retry logic se guzarti hain — chhota percentage lagta hai, lekin absolute count din mein lakhon transactions ban jaata hai jinhe correctly handle karna hai.
+
+### High-Level Design
+
+UPI-style flow samajhna zaroori hai pehle, kyunki yeh design directly isi flow se nikalta hai:
+
+**Payer app -> Payer's PSP -> NPCI switch -> Payee's PSP -> Payee's bank**, aur phir har step ka **acknowledgment reverse path** se wapas aata hai.
+
+1. User (payer) apni UPI app (jaise PhonePe) mein amount enter karke payee ka UPI ID daalta hai, PIN se authorize karta hai.
+2. Payer ki app request apne PSP (jo PhonePe khud hai, ya uska backend partner bank) ko bhejti hai.
+3. PSP request NPCI ke central switch ko forward karta hai — NPCI ek central routing/clearing layer hai jo saare banks aur PSPs ko interoperate karta hai.
+4. NPCI request ko payee ke PSP tak route karta hai, jo aage payee ke actual bank tak jaata hai debit/credit ke liye asal processing ke liye (payer ke bank se debit, payee ke bank mein credit).
+5. Har hop apna acknowledgment (success/failure) reverse path se wapas bhejta hai — payee bank se payee PSP, PSP se NPCI, NPCI se payer PSP, PSP se payer app tak.
+
+Itne saare hops ka matlab hai **itni hi jagah hai jahan koi request timeout ya fail ho sakta hai**. Ek transaction technically payer ke bank se successfully debit ho sakta hai, lekin payee bank tak credit confirmation pahunchne se pehle hi koi hop timeout kar sakta hai — is case mein payer ki app ko pata hi nahi chalta ki actual mein kya hua.
+
+High-level components:
+
+- **Client apps** (PSP apps jaise PhonePe/GPay/Paytm) — user-facing.
+- **PSP backend** — apne bank/NPCI ke saath integrate, transaction initiate karta hai, idempotency keys assign karta hai.
+- **NPCI switch** — central routing aur clearing layer, saare participating banks/PSPs ko connect karta hai, ek common protocol enforce karta hai.
+- **Bank core banking systems** — actual debit/credit yahan hota hai, ledger yahin maintained hota hai authoritative source of truth ke roop mein.
+- **Ledger service** — double-entry bookkeeping records maintain karta hai (deep dive mein detail).
+- **Reconciliation service** — batch job jo periodically sab systems ke records compare karta hai.
+- **Status-check API** — client kabhi bhi "transaction X ka current status kya hai" pooch sakta hai bina naya money-movement request bheje.
+
+</Hinglish>
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant P as Payer App
+    participant PP as Payer's PSP
+    participant N as NPCI Switch
+    participant QP as Payee's PSP
+    participant QB as Payee's Bank
+
+    P->>PP: Pay request (txn_id: T123)
+    PP->>N: Forward (idempotency key: T123)
+    N->>QP: Route to payee PSP (T123)
+    QP->>QB: Credit request (T123)
+    QB-->>QP: Credit confirmed
+    QP-->>N: Ack success (T123)
+    N-->>PP: Ack success (T123)
+    PP-->>P: Payment successful
+
+    Note over P,QB: If any hop times out, client status is UNKNOWN —<br/>retry MUST reuse T123, never a new ID
+`}
+  caption="Five-plus hops between payer and payee — every arrow is a place a request can time out without the caller knowing whether the other side actually processed it."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Timeouts, Ambiguity, and Why Blind Retry is Catastrophic
+
+Yeh is poore topic ka sabse critical concept hai, isliye slow chalte hain. Jab payer ki app ek request bhejti hai aur response ka wait karti hai, teen cheezein ho sakti hain agar timeout ho jaaye:
+
+1. Request kabhi doosri taraf pahunchi hi nahi (server ne process hi nahi kiya) — safe to retry.
+2. Request pahunchi, process bhi hui, **success bhi hua**, lekin response wapas aate waqt network mein lost ho gaya — retry karna **dangerous** hai kyunki dobara process hone se double debit ho sakta hai.
+3. Request abhi bhi processing mein hai kisi downstream system mein — na safe hai retry karna na wait karna definitively kehna ki fail ho gaya.
+
+Client (chahe woh payer ki app ho, chahe PSP ho, chahe NPCI khud ho) in teeno situations mein **distinguish nahi kar sakta** sirf timeout dekh kar. Yeh exact wajah hai ki naive approach — "response nahi mila, dobara try karo" — is domain mein **catastrophic** hai. Agar original request already successfully process ho chuki thi aur tumne blindly retry kar diya as a brand-new request, to payer se **do baar paise debit** ho sakte hain ek hi intended payment ke liye.
+
+#### 2. Idempotency Keys — Non-Negotiable, Not Optional
+
+Isi wajah se har transaction ko end-to-end ek **unique reference ID** milta hai jab woh initiate hoti hai (payer app hi generate karti hai, ya payer ka PSP). Yeh ID poori chain mein — PSP se NPCI, NPCI se payee PSP, payee PSP se bank tak — same rehta hai. Jab bhi koi retry hoti hai (chahe client-triggered ho, chahe koi intermediate hop apna khud ka retry kare), **wahi same ID reuse hoti hai**, koi naya ID nahi banaya jaata.
+
+Har hop is ID ko dekh kar decide karta hai: "maine yeh ID pehle process ki thi kya?" Agar haan, to woh dobara actual money-movement operation nahi karta — seedha pehle wala stored result return kar deta hai (safe deduplication). Yeh design pattern **idempotent request handling** kehlata hai, aur is system mein yeh matlab hai ki har hop apne yahan ek dedup store rakhta hai (recent transaction IDs aur unke results, kam se kam kuch din/hafton ke liye) taaki duplicate requests ko silently detect aur short-circuit kar sake.
+
+Bina idempotency key ke, retry aur double-debit ke beech koi safety net nahi hota — yeh feature nahi, is poore system ki correctness ki **foundation** hai.
+
+#### 3. Ledger Design — Double-Entry, Never a Single Balance Update
+
+Ek aur bahut common design mistake: balance ko ek single mutable number ki tarah treat karna, jaise "UPDATE accounts SET balance = balance - 100 WHERE user = payer". Yeh production payment systems mein kabhi nahi hota, aur iski wajah samajhna zaroori hai.
+
+Iske bajaye, **double-entry bookkeeping** style use hoti hai — har transaction do linked entries banata hai: ek **debit** entry payer ke account mein, aur ek matching **credit** entry payee ke account mein, dono **atomically** (ya dono commit hote hain, ya koi nahi). Balance khud kabhi directly modify nahi hota — balance hamesha ek user ke saare debit/credit entries ka **computed sum** hota hai.
+
+Yeh design do reasons se critical hai:
+
+- "Balance mein X add karo" (`balance = balance + X`) operation safely retriable nahi hai — agar yeh operation retry ho jaaye (jaisa upar dekha), amount do baar add ho jaayega. Lekin "yeh transaction ID ke saath ek debit/credit entry pehle se exist karti hai kya" check karna trivially idempotent hai — same transaction ID dobara insert karne ki koshish simply reject ya ignore ho jaati hai (unique constraint pe).
+- Audit aur reconciliation ke liye — agar sirf ek current balance number stored hai, tum kabhi trace nahi kar sakte ki woh number kaise bana. Debit/credit entries ka poora immutable trail hota hai, jo regulatory audits (RBI compliance jaise India mein) ke liye mandatory bhi hai.
+
+Yeh directly ACID properties se connect hota hai (atomicity — dono entries ya na ho ya dono ho) aur idempotency principles se (natural key-based dedup, mutation-based operation ki jagah).
+
+</Hinglish>
+
+<Callout type="trap">
+
+Sabse common interview trap: candidate bolta hai "hum retry karenge with exponential backoff agar timeout ho" bina yeh mention kiye ki retry **same idempotency key** ke saath honi chahiye. Yeh line miss karna interviewer ko turant signal deta hai ki tumhe is domain ki actual difficulty samajh nahi aayi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="NPCI / UPI">
+
+UPI system mein har transaction ek unique **RRN (Retrieval Reference Number)** carry karta hai jo poori chain mein same rehta hai — yeh exactly wahi idempotency key concept hai jo upar discuss kiya. Agar payer ki app ko response nahi milta, woh usi RRN ke saath status query bhej sakti hai ya retry kar sakti hai, aur NPCI/banks us RRN ko dekh kar duplicate processing avoid karte hain. Yeh real-world proof hai ki idempotency keys koi academic concept nahi, production payment infrastructure ka core hai.
+
+</RealWorld>
+
+<RealWorld company="Paytm / PhonePe">
+
+Jab bhi tum apni UPI app mein "Check Status" button dekhte ho ek "pending" transaction pe, yeh exactly **status-check API** pattern hai — app ne blindly retry nahi kiya money-movement operation ko, balki ek read-only query bheji "is transaction ID ka current status kya hai". Yeh pattern is liye zaroori hai kyunki jab tak status definitively pata na ho, koi bhi money-movement retry unsafe hai — pehle status confirm karo, tabhi decide karo ki retry karni hai ya nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Estimated UPI-scale monthly transaction volume — roughly 12-15 billion transactions/month
+- Average TPS at that scale — approx 5,800 transactions/second
+- Peak TPS (salary day, festival sales) — approx 40,000-60,000 transactions/second (5-10x average)
+- Typical end-to-end hops in a UPI transaction — 5-6 (payer app to payer PSP to NPCI to payee PSP to payee bank, plus ack path)
+- Estimated total round-trip latency for a successful transaction — 500 ms to 1.5 seconds
+- Estimated raw ledger storage growth — roughly 22 TB/month at 15 billion transactions and ~1.5 KB/record
+- Even a 0.1% timeout/failure rate at average TPS — translates to lakhs of ambiguous-status transactions per day needing reconciliation
+- Idempotency key/dedup record retention — typically kept for days to weeks to safely catch delayed retries
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer is topic mein bahut jaldi "what if the request times out" wala follow-up puchhega — yeh THE core test hai. Weak candidates seedha "retry with backoff" bol dete hain. Strong candidates pehle explain karte hain ki **timeout ka matlab failure nahi hai**, teen possible states hain (never received, processed-but-ack-lost, still-processing), aur is ambiguity ko solve karne ke liye idempotency key + status-check API dono zaroori hain — retry sirf tabhi safe hai jab woh same ID reuse kare. Ek aur strong signal: khud bolna ki yeh system explicitly CP hai, CAP theorem se, aur is trade-off ko justify karna — "hum availability chhodne ko ready hain, kyunki wrong balance dikhana galat paisa create/destroy karne jaisa hai."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Balance ko ek single mutable field ki tarah treat karna ("balance = balance - amount") — yeh operation safely retriable nahi hai aur audit trail nahi deta. Production systems double-entry ledger use karte hain.
+
+</Mistake>
+
+<Mistake>
+
+Timeout ko seedha "failure" maan lena aur blindly retry kar dena as a fresh request — is se double debit ho sakta hai agar original request actually succeed ho chuki thi.
+
+</Mistake>
+
+<Mistake>
+
+Idempotency key ko sirf ek "nice to have deduplication feature" ki tarah mention karna, is baat ko emphasize kiye bina ki yeh poore system ki correctness ka non-negotiable foundation hai.
+
+</Mistake>
+
+<Mistake>
+
+Is system ko AP (availability-favoring) design karna — jaise "hum eventual consistency use karenge speed ke liye". Payment systems explicitly CP hote hain, wrong/stale balance dikhana acceptable nahi hai kabhi bhi.
+
+</Mistake>
+
+<Mistake>
+
+Reconciliation ko skip karna, yeh sochna ki idempotency keys + atomic ledger akela sab kuch guarantee kar dete hain. Real systems still periodic batch reconciliation rakhte hain kyunki rare edge cases (jaise ek hop ka crash beech mein, ya ek bank ka apna internal bug) prevention ke bawajood ho sakte hain — detection/correction bhi utna hi zaroori hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Payer initiates payment<br/>(txn_id generated)"] --> B{Timeout ya no response?}
+    B -->|No, got response| C[Return actual result]
+    B -->|Yes, unknown state| D["Call Status-Check API<br/>with same txn_id"]
+    D --> E{Status known now?}
+    E -->|Success| F[Show success, do NOT retry]
+    E -->|Failed| G["Safe to retry —<br/>same txn_id (idempotent)"]
+    E -->|Still pending| H[Wait / poll again]
+    G --> B
+    style A fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style F fill:#1e293b,stroke:#34d399,color:#e2e8f0
+    style G fill:#1e293b,stroke:#fbbf24,color:#e2e8f0
+`}
+  caption="On timeout, the correct move is a status check with the same transaction ID — never a blind retry with a new ID."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- UPI flow: payer app to payer PSP to NPCI switch to payee PSP to payee bank, plus a reverse acknowledgment path — 5-6 hops, 5-6 places to fail
+- Timeout does not mean failure — three possible states: never processed, processed-but-ack-lost, still processing — client can't tell which
+- Idempotency key (unique transaction/reference ID, same on every retry) is non-negotiable, not optional — it's what makes retry safe
+- Never do a single mutable balance update — use double-entry ledger: atomic debit + matching credit, balance is a computed sum of entries
+- This is a CP system (CAP theorem) — favors correctness/consistency over availability, unlike most consumer-facing systems
+- Reconciliation is a real, necessary safety net — periodic batch jobs compare records across PSPs/banks/NPCI to catch rare mismatches
+- Status-check API lets a client ask "what's the real current status" instead of blindly retrying the money-movement operation
+- Double debit is the single worst failure mode this entire design exists to prevent
+
+</QuickRevision>

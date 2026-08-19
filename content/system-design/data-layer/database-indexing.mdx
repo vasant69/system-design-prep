@@ -1,0 +1,190 @@
+---
+slug: "database-indexing"
+title: "Database Indexing"
+section: "system-design"
+module: "data-layer"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["sql-vs-nosql"]
+tags: ["databases", "performance"]
+englishDefinition: "A database index is an auxiliary data structure built on one or more columns of a table that lets the database engine locate matching rows directly instead of scanning every row. It trades additional storage and additional write cost — since every insert, update, or delete must also update the index — for dramatically faster reads on the indexed columns. Without an index, a query must perform a full table scan, checking every single row to find matches."
+interviewFrequency: "high"
+companies: ["Amazon", "Flipkart", "Zomato"]
+---
+
+<SimpleDefinition>
+
+A database index is an auxiliary data structure built on one or more columns of a table that lets the database engine locate matching rows directly instead of scanning every row. It trades additional storage and additional write cost — since every insert, update, or delete must also update the index — for dramatically faster reads on the indexed columns. Without an index, a query must perform a full table scan, checking every single row to find matches.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Indexing wo topic hai jise log "index laga do, fast ho jaayega" jaisa treat karte hain — ek magic switch. Yeh mindset interview mein turant pakda jaata hai kyunki index free nahi hota, aur agar tumhe pata nahi ki andar kya ho raha hai, tum galat column pe index laga doge aur write performance barbaad kar doge. Chalo asli internals dekhte hain.
+
+### Index ke bina — full table scan
+
+Bina index ke, database ek query jaise `SELECT * FROM orders WHERE order_id = 48213` ko satisfy karne ke liye **har row** check karta hai top se bottom tak. 10 lakh rows wali table pe yeh seconds le sakta hai. Index ka poora point hai is linear scan ko **O(log n)** lookup mein convert karna.
+
+### B-Tree internals — asli engineering
+
+Zyadatar relational databases (Postgres, MySQL/InnoDB, SQL Server) apne default index ke liye **B-Tree** (balanced tree) use karte hain, plain binary tree nahi. Yeh distinction interview mein bolna important hai:
+
+- Binary tree mein har node ke sirf 2 children hote hain, isliye 10 lakh rows ke liye tree ki depth ~20 levels tak ja sakti hai.
+- B-Tree mein har node **bahut wide** hota hai — hundreds of keys ek node mein fit ho sakti hain — isliye same 10 lakh rows sirf 3-4 levels deep tree mein fit ho jaate hain.
+
+Yeh design decision **disk ke around** hai, memory ke around nahi. Databases ka data disk pe fixed-size pages mein store hota hai (typically 4KB, 8KB, ya 16KB). Har B-Tree node ko ek disk page ke size ke barabar design kiya jaata hai — matlab ek node read karna = ek disk seek. Agar tree binary hota (har node mein sirf 2 keys), to 10 lakh rows dhoondhne ke liye ~20 disk seeks lagte — aur disk seeks (especially spinning disks, aur even SSDs pe relatively) sabse expensive operation hai database mein. B-Tree ka wide fan-out (ek node mein 100-500 keys) is depth ko 3-4 levels tak la deta hai, matlab 3-4 disk reads mein ek row mil jaati hai, chahe table mein arbo rows hi kyun na ho.
+
+### Clustered vs non-clustered (secondary) index
+
+Yeh distinction interview mein sabse zyada confuse karta hai:
+
+- **Clustered index** — actual table data **physically** is index ke order mein disk pe stored hota hai. Matlab clustered index literally table hi hai, sirf sorted form mein. Ek table mein sirf **ek** clustered index ho sakta hai (data ek hi physical order mein reh sakta hai) — usually primary key pe automatically banta hai.
+- **Non-clustered (secondary) index** — ek alag data structure hai jo indexed column ki values ko sorted rakhta hai, aur har entry actual row ka **pointer** (row ID ya, InnoDB mein, primary key value) rakhti hai. Lookup do steps mein hota hai: pehle secondary index mein search karo, phir us pointer se actual row fetch karo (isse "lookup" ya "bookmark lookup" kehte hain, aur yeh ek extra I/O hai). Ek table mein **kai** non-clustered indexes ho sakte hain.
+
+Isi wajah se primary key pe query (jo clustered index use karti hai) aksar secondary index wali query se thodi fast hoti hai — ek extra hop nahi lagta.
+
+### Composite index aur leftmost prefix rule
+
+Jab index ek se zyada columns pe banaya jaata hai — jaise `(city, category, created_at)` — usko **composite index** kehte hain. Column **order matter karta hai**, aur yeh interview mein poocha jaane wala classic gotcha hai. B-Tree in teeno columns ko concatenated key ki tarah sort karta hai — pehle `city` se, phir uske andar `category` se, phir uske andar `created_at` se. Isse yeh **leftmost prefix rule** nikalta hai:
+
+```text
+Index: (city, category, created_at)
+
+Query filters on city                       -> index usable
+Query filters on city + category            -> index usable
+Query filters on city + category + created_at -> index usable (fully)
+Query filters on category only              -> index NOT usable (city missing, leftmost broken)
+Query filters on created_at only            -> index NOT usable
+```
+
+Agar tumhe query hai jo sirf `category` pe filter karti hai, yeh composite index kaam nahi aayega — database ko ya to full scan karna padega ya ek alag index chahiye hoga jo `category` ko leftmost rakhe. Isliye composite index design karte waqt column order ko actual query patterns ke hisaab se choose karna padta hai, sabse selective/most-commonly-filtered column pehle.
+
+### Jab index HURT karta hai
+
+Yeh part interview mein depth dikhata hai — index hamesha faayde ka sauda nahi hota:
+
+- **Write-heavy tables** — har `INSERT`, `UPDATE`, ya `DELETE` sirf table data update nahi karta, balki **har index** ko bhi update karna padta hai. Agar ek table pe 6 indexes hain, ek single insert 6 alag B-Tree structures ko touch karta hai. High-write systems (jaise event logging tables) mein zyada indexes seedha write latency badha dete hain.
+- **Low-cardinality columns** — agar tum ek boolean column (jaise `is_active`) ya ek column jisme sirf 3-4 distinct values hain (jaise `status`) pe index banate ho, index ka benefit bahut kam hota hai. Query planner ko pata hota hai ki index se filter karne ke baad bhi 30-40% rows match karenge, isliye woh index **ignore** karke seedha full scan kar sakta hai — index storage aur write cost dono waste ho gaye bina kisi read benefit ke.
+- **Index bloat** — bahut zyada indexes, ya indexes jo kabhi query mein use hi nahi hote, sirf disk space aur write overhead badhate hain bina kisi benefit ke. Production teams regularly "unused index" audits karte hain aur unhe drop karte hain.
+
+### EXPLAIN — query plan padhna
+
+Har major database mein `EXPLAIN` (ya `EXPLAIN ANALYZE`) command hoti hai jo batati hai database tumhari query ko **actually** kaise execute karega — index use ho raha hai ya full table scan ho raha hai, kitne rows estimate hue, konsa join order use hua. Interview mein iska deep syntax yaad rakhna zaroori nahi, lekin yeh concept bolna zaroori hai: "main assume nahi karunga index use ho raha hai, main `EXPLAIN` se verify karunga" — yeh ek senior-sounding line hai jo dikhati hai tumhe pata hai ki index banana aur index **actually use hona** do alag cheezein hain.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Index add karna free lunch nahi hai — har naya index ek read-vs-write trade-off hai. Read-heavy, rarely-updated table pe indexes daalo generously; write-heavy, high-throughput table (jaise raw event logs) pe har index ko justify karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Flipkart">
+
+Flipkart ke "My Orders" page pe query hoti hai roughly `WHERE user_id = ? ORDER BY created_at DESC`. Ek composite index `(user_id, created_at)` yahan perfect fit hai — leftmost column `user_id` filter ke liye, aur `created_at` already sorted milta hai order ke liye, koi extra sort step nahi lagta. Sirf `user_id` pe index hota to database ko phir bhi in-memory sort karna padta result set ko date se order karne ke liye.
+
+</RealWorld>
+
+<RealWorld company="Zomato">
+
+Restaurant search "near me" jaisi queries geographic coordinates pe filter karti hain — yeh standard B-Tree index ke liye natural fit nahi hai kyunki latitude/longitude 2D space hai, 1D sorted order nahi. Isi wajah se Zomato jaisi apps specialized spatial indexes (jaise PostGIS ke GiST/R-Tree index, ya geohashing) use karti hain jo 2D proximity queries ko efficiently handle karte hain — yeh dikhata hai ki "ek index type sab kuch solve karta hai" galat assumption hai.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon ke product catalog mein SKU/ASIN lookup extremely frequent hota hai — yeh column almost always clustered ya heavily-indexed primary lookup key hoti hai kyunki har product page view, cart add, aur order isi key se guzarta hai. Lekin internal analytics teams jo "sabhi products jisne is mahine 4-star se kam rating paayi" jaisi ad-hoc queries chalati hain, unhe live production replica pe nahi, balki alag read-optimized/analytical store pe chalana padta hai — kyunki aisi queries ke liye naye indexes production write path ko slow kar dete.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Full table scan on 10 million rows — can take multiple seconds; indexed lookup on the same table — typically low single-digit milliseconds
+- Typical B-Tree fan-out per node — 100-500 keys, keeping tree depth at 3-4 levels even for billions of rows
+- Disk page size most databases align index nodes to — commonly 4 KB, 8 KB, or 16 KB
+- Each additional index on a table — roughly adds write overhead per insert/update (exact cost varies by engine, but "more indexes = slower writes" holds universally)
+- Query planners typically stop using an index when a query would return more than roughly 20-30% of a table's rows — full scan becomes cheaper than repeated index lookups plus row fetches
+- Composite index on N columns still fully serves any query filtering on a leftmost prefix of those columns (1 to N columns from the left)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic question: "Yeh query slow chal rahi hai, kaise fix karoge?" Interviewer testing kar raha hai ki tum blindly "index laga do" nahi bolte — balki systematic approach follow karte ho: pehle `EXPLAIN` se dekho query plan kya hai (index use ho raha hai ya scan), phir dekho `WHERE`/`ORDER BY` clauses mein kaunse columns hain, phir socho composite index ka column order kya hona chahiye based on selectivity aur query pattern, aur last mein yeh bhi bolo ki naya index write path pe kya cost daalega.
+
+Follow-up jo aksar aata hai: "Tumne is column pe index laga diya, ab bhi slow hai — kyun?" Depth wala jawab: shayad column low-cardinality hai aur planner index ignore kar raha hai, ya query composite index ka leftmost prefix follow nahi kar rahi, ya function apply ho raha hai column pe (`WHERE LOWER(email) = ?`) jo plain index ko unusable bana deta hai jab tak functional index na ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har column pe index laga dena "safety ke liye" — yeh sochna ki indexes free hain, jabki har index write latency aur storage dono badhata hai.
+
+</Mistake>
+
+<Mistake>
+
+Composite index banate waqt column order galat rakhna — jaise `(created_at, user_id)` banana jab actual queries `user_id` se filter karti hain — leftmost prefix rule todna.
+
+</Mistake>
+
+<Mistake>
+
+Low-cardinality column (jaise boolean `is_deleted`) pe akela index banana yeh soch ke ki "index hai to fast hoga" — jabki query planner aisa index aksar ignore kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Binary tree aur B-Tree ko same samajh lena — yeh na explain kar paana ki B-Tree ka wide fan-out specifically disk seeks minimize karne ke liye design kiya gaya hai.
+
+</Mistake>
+
+<Mistake>
+
+Index add karne ke baad `EXPLAIN` se verify na karna ki index actually use ho raha hai — assume kar lena ki index bana diya to automatically fast ho gaya.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Root["Root node (1 disk page)<br/>wide fan-out, few levels"] --> N1["Node<br/>keys A-M"]
+    Root --> N2["Node<br/>keys N-Z"]
+    N1 --> L1["Leaf page<br/>keys A-F -> row pointers"]
+    N1 --> L2["Leaf page<br/>keys G-M -> row pointers"]
+    N2 --> L3["Leaf page<br/>keys N-S -> row pointers"]
+    N2 --> L4["Leaf page<br/>keys T-Z -> row pointers"]
+    style Root fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+`}
+  caption="Each level down the B-Tree is one disk page read. Wide fan-out keeps the tree only 3-4 levels deep even for billions of rows, unlike a binary tree which would need dozens of levels."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Index = auxiliary structure trading write cost + storage for faster reads, avoids full table scans
+- B-Tree, not binary tree — wide fan-out (100-500 keys/node) keeps depth to 3-4 levels, each level = one disk page read
+- Clustered index = table data physically sorted by key, only one per table; non-clustered index = separate structure + pointer back to row, can have many
+- Composite index follows leftmost prefix rule — `(a,b,c)` serves queries on `a`, `a+b`, or `a+b+c`, not `b` alone
+- Indexes hurt write-heavy tables (every write updates every index) and low-cardinality columns (planner may just ignore them)
+- Watch for index bloat — unused indexes cost storage and write latency for zero read benefit
+- Always verify with `EXPLAIN`/`EXPLAIN ANALYZE` — building an index and it actually being used are two different things
+- Column order in composite indexes should match real query filter patterns, most selective/most-common-filter column first
+
+</QuickRevision>

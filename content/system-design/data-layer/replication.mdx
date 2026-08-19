@@ -1,0 +1,183 @@
+---
+slug: "replication"
+title: "Database Replication"
+section: "system-design"
+module: "data-layer"
+order: 3
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["sql-vs-nosql"]
+tags: ["databases", "high-availability"]
+englishDefinition: "Database replication is the practice of maintaining copies of the same dataset across multiple database nodes so the system keeps serving traffic even when a single node fails, and read load can be distributed across several machines instead of one. It is the primary mechanism relational and non-relational databases both use for fault tolerance, read scaling, and geographic distribution of data."
+interviewFrequency: "high"
+companies: ["Amazon", "Flipkart", "Paytm"]
+---
+
+<SimpleDefinition>
+
+Database replication is the practice of maintaining copies of the same dataset across multiple database nodes so the system keeps serving traffic even when a single node fails, and read load can be distributed across several machines instead of one. It is the primary mechanism relational and non-relational databases both use for fault tolerance, read scaling, and geographic distribution of data.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek single database server pe poora production traffic chalana ek disaster waiting to happen hai — server crash hua to poora system down, aur agar sirf ek machine hai to read traffic bhi utne hi hardware pe squeeze hota hai jitna write traffic. Replication is problem ko solve karta hai: same data ki multiple copies, alag-alag machines pe.
+
+### Leader-follower (master-slave) replication
+
+Sabse common pattern hai **leader-follower** (purana naam master-slave): ek node **leader** hota hai jo saari **writes** accept karta hai, aur ek ya zyada **followers** hote hain jo leader se changes replicate karte hain aur **reads** serve karte hain. Yeh design simple hai kyunki writes ek hi jagah se aate hain — conflict resolve karne ki zaroorat nahi. Lekin ek fundamental issue hai: leader se follower tak change pahunchne mein time lagta hai — isko **replication lag** kehte hain, aur yeh bahut real production bugs create karta hai (neeche detail mein).
+
+### Multi-leader (master-master) replication
+
+Kabhi-kabhi ek single write node bhi bottleneck ban jaata hai — ya geographically distributed users ko low write latency chahiye hoti hai (jaise ek India ka user Mumbai data center ko likhe, aur ek US ka user Virginia data center ko, bina dono ke round-trip ke). **Multi-leader** replication mein multiple nodes writes accept kar sakte hain, aur woh apas mein changes sync karte hain. Yeh better **write availability** deta hai — ek leader down ho, doosra bhi writes le sakta hai. Lekin ab ek naya, genuinely hard problem aata hai: agar do leaders pe **same record** simultaneously alag-alag tarike se update ho jaaye (jaise Mumbai aur Virginia dono pe ek hi user ka profile ek hi second mein alag values se update hua), yeh **conflict** hai — kaunsi value jeetegi? Common strategies hain "last write wins" (timestamp based, lekin data loss ho sakta hai), application-level merge logic, ya CRDTs (conflict-free replicated data types) jo specific data shapes ke liye mathematically guarantee karte hain ki merge deterministic hoga. Yeh complexity hi wajah hai ki zyadatar systems single-leader se start karte hain aur multi-leader sirf tab jaate hain jab genuinely zaroorat ho.
+
+### Synchronous vs asynchronous replication
+
+Jab leader pe write hoti hai, follower ko update kab bheja jaaye aur kab client ko "success" bola jaaye — yeh ek core trade-off hai:
+
+- **Synchronous replication** — leader tabhi client ko "write successful" bolta hai jab **kam se kam ek follower** ne bhi confirm kar diya ki usne bhi change apply kar liya. Iska matlab hai agar leader crash ho jaaye turant baad, koi data loss nahi — follower ke paas already woh data hai. Lekin har write ab ek extra network round-trip wait karti hai, isliye write latency badh jaati hai.
+- **Asynchronous replication** — leader write ko apne paas commit karke turant client ko "success" bol deta hai, aur followers ko background mein update bhejta hai. Write latency fast hoti hai, lekin agar leader crash ho jaaye us window mein jab change abhi follower tak nahi pahuncha, woh write **permanently lost** ho sakti hai.
+
+Yeh classic **durability vs latency** trade-off hai. Financial systems (payments) aksar synchronous ya semi-synchronous (quorum-based — jaise "kam se kam 2 out of 3 replicas confirm karein") replication choose karte hain, jabki social-feed jaisi cheezein async replication se chal jaati hain kyunki ek lost "like" event dukhda nahi.
+
+### Replication lag — asli depth
+
+Async replication mein leader aur follower ke beech ka time-gap **replication lag** hai, aur yeh normal operation mein bhi kabhi-kabhi seconds tak ja sakta hai — heavy write load, network congestion, ya follower slow hardware pe ho to lag minutes tak bhi badh sakta hai.
+
+Sabse classic real-world bug jo isse aata hai: user apna profile photo update karta hai (write leader ko jaati hai), page reload hota hai aur read ek follower se serve hoti hai jo abhi tak update nahi mila — user ko apna hi update **gayab** dikhta hai. Yeh "read-your-own-writes" consistency ka violation hai, aur users ke liye yeh confusing aur trust-breaking hota hai ("maine to save kiya tha, gaya kahan?").
+
+Common mitigations:
+
+- **Read-from-leader-after-write** — jis user ne abhi write kiya hai, uske agle kuch reads ko (kam se kam kuch seconds ke liye) directly leader se serve karo, follower se nahi.
+- **Sticky sessions** — ek user ki saari requests ek hi replica ko route karo ek session ke duration ke liye, taaki within-session inconsistency na dikhe (though yeh cross-session issue solve nahi karta).
+- **Replication lag monitoring** — production systems lag ko actively monitor karte hain (metric: seconds behind leader), aur agar ek follower ka lag ek threshold cross kare, usse read traffic se temporarily nikaal do (load balancer configuration se) jab tak woh catch up na kare.
+
+### Failover — jab leader mar jaaye
+
+Agar leader crash ho jaaye, system ko ek follower ko naya leader banana padta hai — isko **failover** kehte hain. Yeh manually bhi ho sakta hai lekin production systems usually automated failover use karte hain: health checks leader ki availability monitor karte hain, aur ek threshold ke baad ek follower ko promote kar dete hain. Do cheezein yahan tricky hain — **kaunsa** follower promote ho (jo sabse kam lag wala ho, taaki minimum data loss ho), aur split-brain avoid karna (kahin purana leader wapas aakar khud ko still-leader na samjhe aur do leaders simultaneously writes accept na karne lagein). Isliye robust failover systems consensus protocols ya external coordination service (jaise a dedicated leader-election service) use karte hain, sirf "timeout ho gaya to promote kar do" jaisi naive logic nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Synchronous replication — zero data loss on leader crash, follower already has the committed data",
+    "Strong durability guarantee — good fit for payments, financial ledgers, inventory counts",
+  ]}
+  cons={[
+    "Higher write latency — every write waits for at least one follower's round-trip acknowledgment",
+    "If a follower is slow or unreachable, writes can stall or the leader must decide to proceed without full confirmation",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Paytm">
+
+Paytm jaise payment systems mein leader-follower replication use hoti hai, aur critical transaction writes ke liye synchronous ya quorum-based replication (kam se kam N replicas confirm karein) preferred hoti hai — kyunki ek lost payment record ka cost bahut zyada hai (paisa track hi nahi hua). Read-heavy queries (transaction history dekhna) followers se serve hoti hain taaki leader sirf writes pe focused rahe.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Flipkart jaisi catalog-heavy app mein product data ke liye replication ratio bahut read-skewed hoti hai — ek leader, aur kai read replicas jo product listing/search traffic serve karte hain, kyunki catalog reads writes se orders of magnitude zyada hote hain. Classic replication-lag bug yahan bhi dikh sakta hai: seller ne price update kiya, kuch seconds tak kuch users ko purana price replica se dikh sakta hai jab tak replication catch up nahi karti.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon RDS jaisi managed database services "Multi-AZ" deployment offer karti hain — ek synchronous standby replica ek alag availability zone mein, taaki agar primary ka poora data center hi down ho jaaye, automated failover ho sake bina data loss ke. Yeh production-grade failover ka ek concrete example hai jahan synchronous replication ka extra latency cost consciously accept kiya jaata hai durability ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical async replication lag under normal load — a few milliseconds to low hundreds of milliseconds
+- Replication lag under heavy write bursts or network issues — can spike to several seconds or, in bad cases, minutes
+- Synchronous replication added write latency — typically one extra network round trip, roughly 1-20 ms within a region, much higher cross-region
+- Managed database automated failover time (e.g., cloud-managed Multi-AZ setups) — commonly in the tens of seconds to a couple of minutes
+- Common read replica fan-out for read-heavy services — anywhere from 2-3 replicas to 10+ for very read-skewed workloads like catalogs
+- Read-after-write mitigation window — commonly a few seconds of "stick to leader" after a user's own write, before falling back to replicas
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Replication questions usually show up as a follow-up to "how do you scale reads" or as a debugging scenario: "user updates their profile, refreshes, and sees the old data — why, and how do you fix it?" Interviewer testing kar raha hai ki tumhe replication lag ka concept pata hai aur tum ise ek specific, named phenomenon ki tarah explain kar sakte ho — not just "database is slow."
+
+Model answer shape: "Yeh classic read-your-own-writes issue hai — write leader ko gaya, lekin read serve hui ek follower se jiska replication abhi catch up nahi hua tha. Fix karne ke options hain: usi user ke immediate reads ko leader se serve karo kuch seconds ke liye, ya sticky sessions use karo, ya client-side ek 'read your writes' token pass karo jo batata hai kis point tak ka data guaranteed dikhna chahiye." Phir depth ke liye trade-off bolo: leader se hi sab reads serve karna simplest fix hai lekin leader ko overload kar sakta hai agar overused ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Replication ko backup samajh lena — replication live, continuously-synced copies hain jo failover ke liye hain; backup ek point-in-time snapshot hai jo disaster recovery ke liye hai. Dono alag purpose serve karte hain aur ek doosre ka replacement nahi hain.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki async replication mein lag hamesha negligible hota hai — production mein spikes (heavy write load, network partition) lag ko seconds ya minutes tak badha sakte hain, aur system ko is worst-case ke liye design karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Multi-leader replication ko "better" samajh lena bina conflict resolution ki complexity samjhe — multiple write nodes availability improve karte hain, lekin concurrent conflicting writes ka resolution ek genuinely hard distributed-systems problem hai.
+
+</Mistake>
+
+<Mistake>
+
+Failover ko sirf "ek follower ko leader bana do" jaisa oversimplify karna — bina split-brain risk (do leaders simultaneously active) ya data-loss-minimizing replica selection consider kiye.
+
+</Mistake>
+
+<Mistake>
+
+Har use case ke liye synchronous replication choose kar lena "safety ke liye" bina yeh socho ki iska latency cost har write pe lagta hai — jabki bahut se use cases (social feed, view counts) async replication se perfectly fine chalte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App as Application
+    participant L as Leader (Master)
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+
+    App->>L: WRITE (update profile)
+    L-->>App: ACK write committed
+    L->>F1: Replicate change (async)
+    L->>F2: Replicate change (async)
+    Note over F1,F2: Replication lag window
+    App->>F1: READ (immediately after write)
+    F1-->>App: Stale data (not caught up yet)
+`}
+  caption="Async replication acknowledges the write before followers catch up — a read from a lagging follower right after the write returns stale data. This is the classic read-your-own-writes bug."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Replication = same data on multiple nodes, for fault tolerance and read scaling
+- Leader-follower: single write node, simple, but replication lag causes stale reads on followers
+- Multi-leader: multiple write nodes, better write availability, but introduces real conflict-resolution complexity
+- Synchronous replication = durability (no data loss) at the cost of write latency; asynchronous = fast writes, risk of loss on leader crash
+- Replication lag causes the classic "I saved it, why does it show the old value" bug — mitigate with read-from-leader-after-write or sticky sessions
+- Monitor replication lag actively; pull lagging replicas out of the read pool
+- Failover = promoting a follower to leader when the leader dies; must minimize data loss and avoid split-brain
+- Replication is not a backup — it's live synced copies, not point-in-time recovery
+
+</QuickRevision>

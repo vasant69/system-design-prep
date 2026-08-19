@@ -1,0 +1,182 @@
+---
+slug: "leader-election-consensus"
+title: "Leader Election & Consensus (Raft)"
+section: "system-design"
+module: "distributed-systems"
+order: 4
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["replication"]
+tags: ["distributed-systems", "consensus"]
+englishDefinition: "Leader election is the process by which distributed nodes agree on a single coordinator/leader node, and consensus is the broader problem of getting multiple nodes to agree on a value despite failures. Both are needed because a leader cannot simply be picked without a protocol — without one, two nodes might both believe they are leader at once, a dangerous condition known as split brain."
+interviewFrequency: "medium"
+companies: ["Google", "Amazon", "MongoDB"]
+---
+
+<SimpleDefinition>
+
+Leader election is the process by which distributed nodes agree on a single coordinator/leader node, and consensus is the broader problem of getting multiple nodes to agree on a value despite failures. Both are needed because a leader cannot simply be picked without a protocol — without one, two nodes might both believe they are leader at once, a dangerous condition known as split brain.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Distributed systems mein aksar ek node ko "leader" (ya "primary", "master") banaya jaata hai — writes coordinate karne ke liye, ya kisi decision ka final authority hone ke liye. Sawaal yeh hai: **kaunsa node leader banega, aur kaise decide hoga?** Naive approach — "jo pehle start ho woh leader hai" ya "static config mein likh do node A leader hai" — production mein turant break ho jaati hai jaise hi koi node crash hota hai ya network partition hoti hai. Isi problem ko solve karne ke liye **leader election** aur uske underlying foundation, **consensus algorithms** (jaise Raft, Paxos) exist karte hain.
+
+### Split-brain problem — concretely
+
+Pehle samjho **kyun** yeh itna critical hai. Socho tumhare paas 3 nodes hain — A, B, C — jisme A abhi leader hai. Ek network partition ho jaati hai: A ek taraf, B aur C doosri taraf, aur yeh do groups ek dusre se baat nahi kar paate (lekin dono groups apne andar functional hain).
+
+Ab agar koi protocol na ho, to yeh ho sakta hai:
+1. A ko lagta hai "main abhi bhi leader hoon, mujhe koi bataya nahi ki main disconnect hoon" — woh writes accept karta rehta hai.
+2. B aur C dekhte hain "A se koi heartbeat nahi aa raha, shayad A down hai" — woh apne mein se ek naya leader elect kar lete hain, say B.
+3. Ab **dono A aur B khud ko leader samajhte hain** — dono independently writes accept kar rahe hain, apne apne log mein. Isi ko **split brain** kehte hain.
+4. Jab partition heal hoti hai, tumhare paas do conflicting histories hain — kaunsa sahi hai? Data corruption, lost writes, ya duplicate/conflicting transactions ka risk.
+
+Yeh exactly wahi problem hai jo ek achha consensus protocol prevent karta hai — woh guarantee karta hai ki **kabhi bhi ek se zyada node simultaneously "legitimate leader" nahi ban sakta**, chahe partition ho ya nodes crash ho jaayein.
+
+### Raft — intuition level (poora formal proof nahi)
+
+Raft (2014, Diego Ongaro aur John Ousterhout ne design kiya) is problem ko solve karta hai ek samajhne-mein-aasan protocol se. Core ideas:
+
+**1. Har node teen states mein se ek hota hai**: **Follower** (default, passively sunta hai), **Candidate** (election shuru kar raha hai), **Leader** (active coordinator). Normal operation mein ek leader hota hai, baaki sab follower.
+
+**2. Terms (logical clock/epoch)**: Time ko **terms** mein baanta hai — har term ek monotonically increasing number hai. Har term mein zyada se zyada ek leader ho sakta hai (ya koi nahi, agar election fail ho jaaye). Yeh term number ek **logical clock** ki tarah kaam karta hai — agar koi node purane term ka message dekhta hai, woh use turant reject kar deta hai kyunki woh jaanta hai ek naya term (naya leader) already exist karta hai.
+
+**3. Election kaise hoti hai — randomized timeout + majority vote**: Har follower ek **election timeout** rakhta hai (randomized, jaise 150-300ms range mein). Agar itne time tak leader se koi heartbeat nahi aata, follower **candidate** ban jaata hai, apna term number badhata hai, aur baaki sab nodes ko vote maangta hai. Agar usse **majority** (quorum) votes mil jaate hain, woh leader ban jaata hai. **Timeout randomized kyun hai?** Agar sab followers ka timeout same ho, sab ek saath candidate ban jaayenge aur votes split ho jaayenge, election fail hogi baar baar. Random timeout ensure karta hai ki usually ek node pehle candidate banta hai aur cleanly majority le leta hai before others even timeout hote hain.
+
+**4. Log replication — majority acknowledgment required**: Jab leader ek write receive karta hai, woh use apne local log mein append karta hai, aur baaki followers ko bhejta hai replicate karne ke liye. Write **tabhi "committed" mana jaata hai jab majority nodes (leader including) ne use apne log mein likh liya ho**. Sirf tabhi leader client ko success bolta hai. Yeh ensure karta hai ki agar leader turant crash bhi ho jaaye, naya elected leader (jo bhi ban ta hai woh bhi majority ka hissa hoga) us committed write ko already apne log mein rakhta hai — koi committed data lose nahi hota.
+
+### Majority (quorum) itna important kyun hai
+
+Yeh Raft (aur Paxos, aur almost saare consensus protocols) ka **mathematical core insight** hai: agar tumhare paas N nodes hain, aur ek decision (leader election ya write commit) ke liye **majority** ((N/2)+1) votes chahiye, to **koi bhi do majorities ek dusre se kam se kam ek node overlap karengi hi**. Yeh guarantee karta hai:
+
+- Agar term T mein A ne majority vote leke leader bana, aur term T+1 mein B bhi majority vote leke leader bana, to us overlap wale node ne dono ko vote diya — matlab woh node jaanta hai ki A purana leader tha aur ab B naya hai, isliye A ka term outdated maana jaayega. **Do simultaneous leaders same term mein possible hi nahi hain**, kyunki unki majorities zaroor overlap karengi aur ek shared node dono ko simultaneously vote nahi de sakta same term mein.
+- 5 nodes mein se agar 2 crash ho jaayein, bacha hua 3-node majority phir bhi decisions le sakta hai — system available rehta hai as long as majority alive hai.
+
+Isi wajah se odd numbers (3, 5, 7) common hain consensus clusters mein — majority clearly define hoti hai bina tie ke.
+
+### Paxos vs Raft
+
+Paxos (Leslie Lamport, 1989) is problem ka original, mathematically rigorous solution hai — lekin famously **samajhna aur implement karna bahut hard hai**, itna ki khud Lamport ko multiple papers likhne pade isse simplify karne ke liye. Raft explicitly Paxos ke baad, "understandability" ko primary design goal banake banaya gaya — same guarantees deta hai (safety, liveness under majority availability), lekin roles (follower/candidate/leader), terms, aur election process ko explicit aur intuitive banake. Yehi wajah hai aajkal zyada naya distributed systems (etcd, Kubernetes ka control plane, CockroachDB, TiKV) Raft use karte hain, Paxos directly rarely.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Consensus protocols sirf tabhi kaam karte hain jab **majority nodes reachable** hain. Agar cluster ke 5 mein se 3 nodes down ho jaayein (ya unreachable ho jaayein), bacha hua minority (2 nodes) koi naya leader elect nahi kar sakta aur na hi writes commit kar sakta — system unavailable ho jaata hai us window mein. Yeh CP behavior hai by design: galat leader elect karne se better hai unavailable ho jaana.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Google">
+
+Kubernetes ka control plane **etcd** pe depend karta hai, jo Raft consensus use karta hai cluster state (jaise "kaunse pods kahan schedule hain") store karne ke liye. Agar etcd cluster ke majority nodes down ho jaayein, Kubernetes API server writes accept karna band kar deta hai — yeh intentional hai, kyunki galat/split cluster state se poore cluster mein wrong scheduling decisions ho sakte hain.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Distributed lock services aur coordination systems (jaise Zookeeper, jo AWS ke andar bhi internally kaafi jagah use hota hai) **ZAB** (Zookeeper Atomic Broadcast) protocol use karte hain, jo Raft se conceptually kaafi similar hai — ek leader election phase, phir leader-driven log replication with majority acknowledgment.
+
+</RealWorld>
+
+<RealWorld company="MongoDB">
+
+MongoDB **replica sets** apna khud ka consensus-based leader election protocol use karte hain (Raft-inspired) primary node choose karne ke liye. Agar primary crash ho jaaye, replica set members apne beech election karte hain — is process ke during (typically kuch second) cluster **writes accept nahi karta**, kyunki koi confirmed leader nahi hai. Yeh directly dikhata hai CP trade-off: thodi der ke liye unavailable rehna, galat leader se corruption avoid karne ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical Raft election timeout range — 150-300 ms, randomized per node to avoid split votes
+- MongoDB replica set election/failover window — typically a few seconds of write-unavailability during primary failure
+- Odd-sized clusters are standard — 3, 5, or 7 nodes so majority is always clearly defined (no ties)
+- A 5-node cluster tolerates 2 node failures while still reaching majority (3 of 5); a 3-node cluster tolerates only 1
+- etcd (used by Kubernetes) recommended cluster size in production — 3 or 5 nodes, rarely more due to write-latency overhead from replicating to more followers
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: **"How would you design leader election for a distributed cache/database?"** or "what happens if two nodes both think they're the leader?" Interviewer testing kar raha hai ki tumhe split-brain ka real danger samajh aata hai, aur tum "majority/quorum" ka concept articulate kar sakte ho — sirf "Raft use karenge" bol dena depth nahi dikhata.
+
+Model answer shape: pehle split-brain problem concretely explain karo (network partition example ke saath), phir bolo "isko prevent karne ke liye hume ek consensus protocol chahiye jaise Raft, jisme leader banne ke liye ek node ko **majority votes** chahiye — yeh mathematically guarantee karta hai ki ek time pe sirf ek leader ho sakta hai kyunki koi bhi do majorities overlap karengi." Phir mention karo ki writes bhi majority acknowledgment ke baad hi committed maane jaate hain, taaki leader crash hone pe bhi data safe rahe. Bonus depth: mention karo Paxos ka existence aur Raft kyun usse zyada popular hai (understandability).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Yeh sochna ki leader election sirf "jo pehle available ho use leader bana do" jaisa simple problem hai — split-brain ka risk articulate na kar paana.
+
+</Mistake>
+
+<Mistake>
+
+"Majority/quorum" ka mathematical reasoning explain na kar paana — sirf "Raft majority use karta hai" bol dena bina yeh bataye ki do majorities hamesha overlap karti hain, isliye do simultaneous leaders same term mein possible nahi.
+
+</Mistake>
+
+<Mistake>
+
+Raft ko poori formal detail (log matching property, safety proofs) mein explain karne ki koshish karna interview mein — jabki intuition-level explanation (states, terms, majority vote, majority-acked commits) hi expected hai aur zyada clearly communicate hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+Yeh bhool jaana ki consensus cluster minority partition mein unavailable ho jaata hai by design — kisi ko lagta hai system hamesha available rehna chahiye, jabki yeh actually correctness ke liye intentional trade-off hai (CP behavior).
+
+</Mistake>
+
+<Mistake>
+
+Even-numbered cluster size propose karna (jaise 4 nodes) — isse tie hone ka risk badhta hai aur fault tolerance improve nahi hoti compared to odd sizes, isliye production clusters almost hamesha odd-sized hote hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant F3 as Follower 3 (was Leader, now unreachable)
+
+    Note over F1,F3: Leader heartbeat stops (partition/crash)
+    F1->>F1: Election timeout fires (randomized)
+    F1->>F1: Becomes Candidate, increments term
+    F1->>F2: RequestVote(term=5)
+    F2-->>F1: Vote granted
+    Note over F1,F2: F1 has majority (2 of 3) -> becomes Leader
+    F1->>F2: AppendEntries (heartbeat + log replication)
+    F2-->>F1: Ack
+    Note over F1,F2: Write committed once majority acks
+`}
+  caption="A randomized timeout breaks ties naturally; a majority vote guarantees only one leader can exist per term, preventing split brain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Leader election = choosing one coordinator node; consensus = getting nodes to agree on a value despite failures — both prevent split brain
+- Split brain: partition makes both sides believe they're the leader, both accept writes, data conflicts result
+- Raft node states: follower, candidate, leader; time divided into terms (logical clock/epoch)
+- Election: randomized timeout triggers candidacy, majority vote wins leadership — randomization avoids repeated split votes
+- Log replication: a write is "committed" only after majority acknowledgment, protecting against leader crash
+- Majority (quorum) matters because any two majorities always overlap by at least one node — mathematically prevents two simultaneous leaders in the same term
+- Paxos is the older, harder-to-understand consensus algorithm; Raft was explicitly designed for understandability with equivalent guarantees
+- Real usage: etcd/Kubernetes and CockroachDB use Raft directly; Zookeeper uses the similar ZAB protocol; MongoDB replica sets use a Raft-inspired election
+
+</QuickRevision>

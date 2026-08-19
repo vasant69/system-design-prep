@@ -1,0 +1,167 @@
+---
+slug: "pubsub-vs-point-to-point"
+title: "Pub/Sub vs Point-to-Point Messaging"
+section: "system-design"
+module: "communication-async"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["message-queues"]
+tags: ["messaging", "async"]
+englishDefinition: "Point-to-point messaging delivers each message to exactly one consumer — a task queue model where a pool of workers competes for messages and each message is processed exactly once. Publish/subscribe (pub/sub) delivers each message to potentially many independent subscribers, where every subscriber receives its own copy of every message."
+interviewFrequency: "medium"
+companies: ["Uber", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+Point-to-point messaging delivers each message to exactly one consumer — a task queue model where a pool of workers competes for messages and each message is processed exactly once. Publish/subscribe (pub/sub) delivers each message to potentially many independent subscribers, where every subscriber receives its own copy of every message.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein humne message queues generally cover kiye. Ab ek subtle lekin interview mein bahut common distinction karte hain — jab message queue pe ek message publish hota hai, woh **kitne** consumers tak pahunchna chahiye? Ek? Ya sab tak? Yeh do fundamentally different messaging patterns hain, aur galat pattern choose karna production bugs ki bade wajah banta hai.
+
+### Point-to-point — task queue, ek kaam, ek worker
+
+Point-to-point model mein ek producer message bhejta hai, aur woh message **exactly ek** consumer ke paas jaata hai — chahe kitne bhi consumers queue sun rahe hon. Yeh classic **work distribution** pattern hai.
+
+Concrete example: socho tumhare paas image resize jobs ka ek pool hai — users images upload karte hain, aur unhe thumbnails mein resize karna hai. Tumne 10 workers deploy kiye hain jo isi queue ko sunte hain. Ek image-resize job aata hai — tum chahte ho ki **koi ek** worker use uthaye aur process kare, baaki 9 workers ussi job ko dobara process na karein (warna 10x wasted compute, aur duplicate output files). Yeh hai point-to-point: multiple workers competition mein hain, lekin har message sirf ek worker ko milta hai. Jitne zyada workers utna zyada parallel throughput, lekin har individual job sirf ek baar hoti hai.
+
+### Pub/Sub — fan-out, sab ko batao
+
+Pub/sub bilkul opposite intent solve karta hai — jab ek event hota hai jisme **multiple independent systems** ko interest ho, aur har ek ko apni poori copy chahiye.
+
+Concrete example: order status change ho gaya ("order picked up by delivery partner"). Yeh event kai jagah relevant hai — notification service ko customer ko push notification bhejni hai, analytics service ko dashboard update karna hai, aur delivery-partner-matching service ko apna internal state update karna hai. Yeh teeno **independent** consumers hain — koi bhi doosre ka kaam nahi kar raha, sabko **apni khud ki copy** chahiye us event ki. Agar yeh point-to-point hota, to sirf ek service ko event milta aur baaki do ko pata hi nahi chalta ki order status change hua — bilkul galat behavior.
+
+Yahi core difference hai: point-to-point mein consumers **compete** karte hain (ek jeetega, baaki miss karenge), pub/sub mein consumers **replicate** hote hain (sab jeetenge, sabko apni copy milegi).
+
+### Consumer groups — hybrid model
+
+Kafka jaisa system dono patterns ko ek hi mechanism se achieve karta hai — **consumer groups**. Yeh samajhna interview mein especially valuable hai kyunki yeh dikhata hai tumhe implementation-level clarity hai.
+
+- **Ek consumer group ke andar** — behavior point-to-point jaisa hota hai. Group ke multiple consumer instances mile-jule taur pe partitions consume karte hain — har partition ek hi group ke andar sirf ek consumer instance ko assign hota hai us waqt. Matlab agar 3 workers ek group mein hain, load unke beech balance ho jaata hai, har message sirf ek worker process karta hai.
+- **Alag-alag consumer groups ke beech** — behavior pub/sub jaisa hota hai. Har group independently poora message stream padhta hai apne alag offset ke saath. Agar "notification-service" aur "analytics-service" alag consumer groups hain, dono ko har message milega — ek doosre se independent.
+
+Toh Kafka ka trick hai: **within a group = load balanced (point-to-point); across groups = broadcast (pub/sub)**. Yeh design bahut elegant hai kyunki ek hi topic ko multiple teams apne apne group name ke saath subscribe kar sakti hain, bina ek doosre ko affect kiye, aur har group ke andar horizontal scaling bhi mil jaati hai.
+
+### Kab kaunsa use karna hai
+
+- **Point-to-point** jab kaam **divide** karna hai — background jobs, task processing, ek queue ke saath ek worker pool. Goal hai throughput aur load distribution, duplicate work avoid karna.
+- **Pub/sub** jab event ko **broadcast** karna hai — multiple unrelated systems ko notify karna ek hi state change ke baare mein. Goal hai decoupling aur independent reactions, na ki load distribution.
+
+Real systems mein aksar dono ek saath use hote hain — jaise "order status changed" event pub/sub se teen services tak fan-out hota hai, lekin har service ke andar (jaise notification service) khud ek internal task queue rakh sakti hai jahan multiple workers point-to-point fashion mein actual push notifications bhejne ka kaam baantte hain.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Point-to-point: simple load distribution, guaranteed single processing, easy horizontal scaling of workers",
+    "Pub/sub: true decoupling — naye consumers add karo bina existing producers/consumers ko touch kiye",
+  ]}
+  cons={[
+    "Point-to-point: naya use-case ke liye alag queue banani padti hai agar doosre system ko bhi event chahiye ho",
+    "Pub/sub: har subscriber apni poori copy process karta hai — zyada consumers matlab zyada total processing/storage",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Swiggy">
+
+Swiggy ke "order status changed" event ko dekho — yeh classic pub/sub hai. Ek hi event ("picked up", "on the way", "delivered") ko notification service, live-tracking-map service, aur analytics pipeline teeno independently consume karte hain. Agar kal Swiggy ek naya "loyalty points" service add kare jo bhi order-completion events pe react karna chahta ho, woh bas ek naya subscriber ban jaata hai — existing producer ya doosre consumers ko kuch badalna nahi padta.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber ke trip-receipt generation ya driver-payout-calculation jaise background jobs point-to-point pattern follow karte hain — ek pool of workers hai jo "calculate payout for trip X" jaise tasks queue se uthate hain. Har task sirf ek worker ko process karna chahiye (warna driver ko double payout mil jaayega) — isliye yahan competition-based, single-delivery semantics zaroori hain, broadcast nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Kafka partition — ek partition ek consumer group ke andar sirf ek consumer instance ko assign hota hai at a time
+- Consumer group scaling — workers ki count partitions ki count se zyada nahi honi chahiye (extra workers idle rahenge)
+- Pub/sub fan-out — N subscribers matlab N independent copies process hoti hain, storage/compute N ke saath linearly badhta hai
+- Point-to-point throughput — worker pool ki size ke saath roughly linearly scale hota hai jab tak downstream bottleneck (DB, API) na aa jaaye
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: **"Order status change ko multiple services ko kaise notify karoge — aur image processing jobs ko workers ke beech kaise distribute karoge?"** Yahan interviewer specifically dekhna chahta hai ki tum in dono patterns ko confuse na karo. Weak answer: dono ke liye same generic "queue" bol dena. Strong answer: "Order status broadcast karna hai multiple independent systems ko — yeh pub/sub hai, jaise Kafka topic jisko alag consumer groups subscribe karein. Image resize job sirf ek worker ko process karna chahiye — yeh point-to-point hai, ek shared task queue jahan worker pool competition mein hai."
+
+Follow-up jo aksar aata hai: "Kafka mein yeh dono ek hi system se kaise achieve hote hain?" — yahan consumer groups ka concept explain karna expected hai: same group = load balanced, different groups = broadcast.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Task-queue (point-to-point) use-case ke liye pub/sub system use karna bina duplicate-processing guard ke — result: same job multiple workers process karte hain, wasted compute ya duplicate side-effects (jaise double email bhej dena).
+
+</Mistake>
+
+<Mistake>
+
+Broadcast (pub/sub) use-case ke liye point-to-point queue use karna — result: sirf ek downstream service ko event milta hai, baaki services ka state stale reh jaata hai bina kisi error ke, jo debug karna especially painful hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Consumer groups ko sirf "scaling ka tareeka" samajhna, yeh na realize karna ki group boundary hi decide karti hai ki behavior point-to-point hoga ya pub/sub.
+
+</Mistake>
+
+<Mistake>
+
+Pub/sub mein naye subscriber add karte waqt yeh na sochna ki woh purane messages miss kar dega (jab tak replay/retention support na ho) — assume kar lena ki naya subscriber automatically sab kuch dekh payega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph "Point-to-Point (Task Queue)"
+        P1["Producer"] --> Q1["Queue"]
+        Q1 --> W1["Worker 1"]
+        Q1 -.->|"only one wins"| W2["Worker 2"]
+        Q1 -.-> W3["Worker 3"]
+    end
+
+    subgraph "Pub/Sub (Fan-out)"
+        P2["Producer"] --> T["Topic"]
+        T --> S1["Notification Service"]
+        T --> S2["Analytics Service"]
+        T --> S3["Matching Service"]
+    end
+`}
+  caption="Point-to-point: one message, one winning worker. Pub/sub: one message, every subscriber gets its own copy."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Point-to-point = one producer, one message, exactly one consumer processes it — workers compete
+- Pub/sub = one producer, one message, every independent subscriber gets its own copy — no competition
+- Point-to-point use-case = work distribution (image resize jobs, background tasks)
+- Pub/sub use-case = fan-out notification (order status change reaching multiple unrelated services)
+- Kafka consumer groups: within a group = point-to-point (load balanced); across groups = pub/sub (broadcast)
+- Real systems combine both — pub/sub fan-out at the top, point-to-point task distribution inside each subscriber
+- Wrong pattern choice causes either duplicate processing (point-to-point misused as pub/sub) or missed notifications (pub/sub misused as point-to-point)
+- New pub/sub subscribers may miss old messages unless replay/retention is supported
+
+</QuickRevision>

@@ -1,0 +1,157 @@
+---
+slug: "pacelc"
+title: "PACELC Theorem"
+section: "system-design"
+module: "distributed-systems"
+order: 2
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["cap-theorem"]
+tags: ["distributed-systems", "consistency"]
+englishDefinition: "PACELC extends CAP: if there is a Partition (P), choose between Availability and Consistency (as in CAP); Else (E, when the system is running normally, no partition), choose between Latency and Consistency. It covers the everyday, non-partitioned case that CAP is silent about, where systems constantly trade latency for consistency."
+interviewFrequency: "medium"
+companies: ["Amazon", "Google"]
+---
+
+<SimpleDefinition>
+
+PACELC extends CAP: if there is a Partition (P), choose between Availability and Consistency (as in CAP); Else (E, when the system is running normally, no partition), choose between Latency and Consistency. It covers the everyday, non-partitioned case that CAP is silent about, where systems constantly trade latency for consistency.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+CAP theorem samajhne ke baad ek natural sawaal aata hai: "okay, partition ke during CP ya AP choose karte hain — lekin partition to system life ka 99.99% time hota hi nahi. Baaki normal time mein kya trade-off hota hai?" Yehi gap CAP fill nahi karta, aur yehi gap **PACELC** fill karta hai. Isko 2010 mein Daniel Abadi ne propose kiya tha exactly is wajah se — CAP incomplete tha.
+
+### PACELC ka breakdown
+
+Naam hi formula hai:
+
+- **P — if there is a Partition** → choose **A**vailability or **C**onsistency (yeh exactly CAP wala hissa hai)
+- **E — Else** (jab partition nahi hai, normal healthy operation) → choose **L**atency or **C**onsistency
+
+Matlab poora theorem: **PA/EL** ya **PC/EC** jaisi notation mein likha jaata hai — pehla pair batata hai partition ke time kya prioritize karoge, doosra pair batata hai normal time mein kya prioritize karoge.
+
+### Yeh senior-level answer kyun hai
+
+CAP theorem ka sabse bada practical limitation yeh hai ki **partitions rare hote hain**. Ek well-run datacenter mein partition shayad saal mein kuch hi baar hoti hai. Lekin system **har single request** pe ek trade-off le raha hota hai — chahe partition ho ya na ho. Woh trade-off hai: **"kya main write ko turant confirm karun (fast, low latency) ya kya main wait karun jab tak saare (ya majority) replicas ne acknowledge na kar diya ho (consistent, but slower)?"**
+
+Yeh choice **continuous** hai — har write, har second, chahti hai. Isliye jab interviewer CAP ke baare mein poochta hai aur tum sirf CAP tak ruk jaate ho, tum ek bahut chhota sa hissa cover kar rahe ho system ke actual behavior ka. Jab tum PACELC bolte ho aur explain karte ho ki "even without any partition, hum roz yeh decide karte hain ki quorum acknowledgment ka wait karein ya nahi" — yeh dikhata hai tumhe **production reality** samajh aati hai, sirf textbook theorem nahi.
+
+### Concrete example: quorum wait vs fast return
+
+Socho ek write operation aata hai jo 3 replicas pe jaana hai. Do options:
+
+1. **Consistency prioritize karo**: coordinator wait karega jab tak **majority (quorum)** replicas ne confirm na kar diya ki unhone write apply kar liya. Tabhi client ko "success" bolega. Isse guarantee milta hai ki agar turant koi read aaye, usse latest data milega (chahe woh kisi bhi replica se serve ho, jab tak read bhi quorum se ho). Lekin isme extra network round trips lagte hain — **latency badhti hai**.
+2. **Latency prioritize karo**: coordinator sirf local write karke turant "success" bol dega, aur baaki replicas ko **asynchronously** (background mein) replicate karega. Client ko fast response milta hai, lekin agar turant koi doosra replica se read kare, usse purana data mil sakta hai (write abhi tak propagate nahi hua).
+
+Yeh trade-off **har single write** pe hota hai, partition ho ya na ho — isi wajah se PACELC CAP se zyada "everyday relevant" hai.
+
+### Real systems ka PACELC classification
+
+- **DynamoDB — PA/EL**: Partition ke time availability prioritize karta hai (stale read chalega), aur normal time mein bhi latency prioritize karta hai — default eventual consistency reads fast hote hain, strong consistency reads explicitly maangni padti hai (aur woh slower + costlier hoti hai).
+- **MongoDB (typical/default single-primary setup) — PC/EC**: Partition ke time consistency prioritize karta hai (primary lose ho jaaye to election hoti hai, writes tab tak block, availability temporarily sacrifice), aur normal time mein bhi strong consistency ke liye latency ka cost pay karta hai (writes primary se replicate hote hain before being considered durable, depending on write concern).
+- **Cassandra — tunable, dono axes pe**: Cassandra tumhe per-query consistency level choose karne deta hai (`ONE`, `QUORUM`, `ALL`), jo directly PACELC ke dono halves ko control karta hai — same cluster, ek query PA/EL jaisa behave kar sakti hai (fast, less consistent) aur doosri PC/EC jaisa (slow, more consistent), depending on business need.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein agar CAP discuss ho raha hai aur tumhe lagta hai answer complete karna hai, ek line add karo: "CAP sirf partition scenario cover karta hai, jo rare hai — PACELC extend karta hai isse aur bolta hai ki normal operation mein bhi hum latency vs consistency trade-off continuously le rahe hote hain, jaise quorum write acknowledgment wait karna ya nahi." Yeh ek chhota sa addition hai jo turant depth signal deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+DynamoDB **PA/EL** system hai. Default reads "eventually consistent" hote hain — fast, kam latency, kyunki koi bhi replica serve kar sakta hai bina coordination ke. Agar tumhe strong consistency chahiye (guarantee ki latest write dikhega), tumhe explicitly `ConsistentRead=true` set karna padta hai — jisme extra coordination hoti hai aur latency badhti hai, plus yeh do read capacity units consume karta hai instead of one. Yeh bilkul PACELC ka textbook example hai — same system, developer explicitly choose karta hai latency vs consistency per request.
+
+</RealWorld>
+
+<RealWorld company="Google">
+
+Google Cloud Spanner interesting case hai — yeh globally strong consistency (linearizability) provide karta hai even across regions, jo isse **PC/EC** ki taraf le jaata hai heavily, using synchronized atomic clocks (TrueTime) taaki coordination overhead kam ho. Lekin yeh latency ka cost pay karta hai — cross-region strongly consistent writes multiple-millisecond commit latency le sakti hain, jo ek pure PA/EL system se zyada hai. Yeh dikhata hai ki "consistency prioritize karna" bhi engineering se cheaper banaya ja sakta hai, lekin cost zero nahi hota.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- DynamoDB eventually-consistent read — roughly half the cost (read capacity units) and lower latency vs strongly-consistent read
+- Quorum write with 3 replicas (W=2 majority) — needs ack from 2 of 3 nodes, adds meaningfully more round-trip latency than async single-node ack (typically several extra milliseconds within a region, tens of ms cross-region)
+- Cassandra `QUORUM` consistency on a 3-node RF=3 cluster — needs 2 acks; `ONE` needs just 1 — measurable latency delta in production benchmarks
+- Cross-region synchronous replication latency — often 50-150 ms extra depending on geographic distance, vs single-digit ms for local-only acknowledgment
+- Google Spanner commit latency for globally-consistent transactions — single-digit to tens of milliseconds due to TrueTime uncertainty windows, notably higher than a purely local, no-consistency-guarantee write
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+PACELC usually apne aap se poocha nahi jaata — yeh aata hai jab tum CAP discuss kar rahe ho aur interviewer follow-up poochta hai: **"okay, but what happens when there's NO partition — is everything free then?"** Yeh ek trap/test hai for candidates jo sirf CAP tak ruk jaate hain.
+
+Model answer shape: "CAP sirf partition ke case ko address karta hai, jo production mein rare event hai. PACELC extend karta hai — even jab sab healthy hai, system ko yeh decide karna padta hai ki writes ko turant confirm kare (low latency, but risk of a read seeing stale data on another replica) ya replicas se acknowledgment wait kare (consistent, but slower). Humare use-case mein main [latency/consistency] choose karunga kyunki [specific reasoning tied to the problem]." Yeh answer CAP se aage ek layer dikhata hai — production-thinking ka signal.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+PACELC ko CAP se completely alag/unrelated theorem samajh lena — asal mein yeh CAP ka hi extension hai, "P" wala half literally CAP hi hai, sirf "Else" wala half naya hai.
+
+</Mistake>
+
+<Mistake>
+
+Yeh sochna ki latency vs consistency trade-off sirf tab matter karta hai jab kuch "wrong" ho raha ho — asal mein yeh trade-off har single write pe hota hai, sabse healthy, normal din pe bhi.
+
+</Mistake>
+
+<Mistake>
+
+Ek system ko sirf "PA/EL" ya "PC/EC" ka permanent label de dena, jabki tunable systems (Cassandra) mein yeh per-query configurable hota hai — same system dono modes mein use ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+PACELC discuss karte waqt sirf theorem bol dena bina concrete mechanism explain kiye (jaise "quorum acknowledgment wait karna" ya "async replication") — yeh dikhata hai ki candidate ne term rata hai, mechanism nahi samjha.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Is there a network Partition?"] -->|Yes| B["P: Choose Availability or Consistency<br/>(this is CAP)"]
+    A -->|No, system healthy| C["E: Choose Latency or Consistency<br/>(CAP is silent here — PACELC covers it)"]
+    B --> D["e.g. DynamoDB picks A during partition"]
+    C --> E["e.g. DynamoDB picks Latency normally<br/>(eventually consistent reads by default)"]
+    style A fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style B fill:#1e293b,stroke:#f87171,color:#e2e8f0
+    style C fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="CAP only answers the top-left branch. PACELC adds the everyday bottom branch — the trade-off a system makes on every single request, partition or not."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- PACELC = if Partition, choose Availability or Consistency (CAP); Else, choose Latency or Consistency
+- CAP is silent about normal (non-partitioned) operation — PACELC fills that gap
+- The Latency vs Consistency trade-off happens on every write, all the time, not just during rare partition events
+- DynamoDB = PA/EL (availability + latency prioritized, strong consistency opt-in)
+- MongoDB (typical default) = PC/EC (consistency prioritized both during and outside partitions)
+- Cassandra = tunable on both axes, per-query consistency level (ONE vs QUORUM vs ALL)
+- Mechanism behind the "Else" trade-off: wait for quorum ack (consistent, slower) vs return immediately (fast, risk of stale reads elsewhere)
+- Mentioning PACELC after CAP is a strong senior-level signal — shows you know CAP is incomplete
+
+</QuickRevision>
