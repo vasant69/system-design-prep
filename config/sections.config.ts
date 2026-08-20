@@ -70,6 +70,40 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "git",
+    title: "Git & GitHub",
+    description:
+      "The day-to-day Git a working developer actually types — branching, merging, undoing mistakes, and the GitHub PR workflow — taught through real workplace scenarios.",
+    icon: "GitBranch",
+    enabled: true,
+    modules: [
+      {
+        id: "foundations",
+        title: "Foundations",
+        description: "The three areas every Git command moves things between, and the daily add/commit/push loop.",
+        order: 1,
+      },
+      {
+        id: "branching-collaboration",
+        title: "Branching & Collaboration",
+        description: "Working on a feature in parallel with teammates — branches, fetch vs pull, merge vs rebase, and resolving conflicts.",
+        order: 2,
+      },
+      {
+        id: "history-safety",
+        title: "History & Undoing Mistakes",
+        description: "Undoing things safely, parking half-done work with stash, keeping junk out of the repo, and reading history.",
+        order: 3,
+      },
+      {
+        id: "github-workflow",
+        title: "GitHub Workflow",
+        description: "Branch to PR to merge, plus contributing to someone else's repo through a fork.",
+        order: 4,
+      },
+    ],
+  },
+  {
     slug: "api-design",
     title: "API Design",
     description: "REST, versioning, pagination, auth patterns, and API contracts.",

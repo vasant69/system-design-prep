@@ -1,0 +1,222 @@
+---
+slug: "rate-limiter-service"
+title: "Design a Rate Limiter as a Service"
+section: "system-design"
+module: "case-studies"
+order: 7
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["rate-limiting"]
+tags: ["case-study", "reliability"]
+englishDefinition: "This is not the rate-limiting algorithm itself, but a standalone, shared, highly-available infrastructure service that many other services and APIs across a company call to check whether a given request is allowed, at very high QPS and with minimal added latency. The design challenge shifts from 'which algorithm' to 'how do you build and run this as a piece of shared infrastructure the whole company depends on.'"
+interviewFrequency: "high"
+companies: ["Stripe", "Amazon"]
+---
+
+<SimpleDefinition>
+
+This is not the rate-limiting algorithm itself, but a standalone, shared, highly-available infrastructure service that many other services and APIs across a company call to check whether a given request is allowed, at very high QPS and with minimal added latency. The design challenge shifts from "which algorithm" to "how do you build and run this as a piece of shared infrastructure the whole company depends on."
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Is topic ka naam suna kar log turant token bucket/sliding window algorithm explain karna shuru kar dete hain — lekin yeh galat framing hai agar question specifically "as a service" bola gaya hai. Yahan interviewer algorithm nahi, **infrastructure/systems design** test kar raha hai. Chalo isi angle se banate hain.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Koi bhi internal service ek check kar sake: "is user/API-key/IP ke liye yeh request allowed hai ya nahi, given ek configured limit (jaise 100 requests/minute)."
+- Different services alag alag limits configure kar sakein (per-endpoint, per-user, per-API-key).
+- Response fast aana chahiye — allow/deny decision.
+
+Non-functional requirements — yeh is topic ka asli focus hai:
+
+- **Extremely low added latency** — kyunki har single request jo kisi bhi rate-limited API ko hit karti hai, is service se guzarti hai. Agar yeh service khud slow hai, poori company ki saari APIs slow ho jaayengi.
+- **Extremely high availability** — agar yeh service down ho jaaye aur design fail-closed ho, poori company ki APIs down ho jaayengi. Yeh single point of failure risk hai jise explicitly design se address karna hoga.
+- Consistency ka ek genuine trade-off hai — perfectly accurate counting vs low latency, jo neeche deep dive mein explore karenge.
+- Horizontally scalable honi chahiye khud yeh service, kyunki iska load company ke total API traffic ke proportional hai — bahut zyada hoga.
+
+**Yaad rakhna:** algorithm (token bucket, sliding window, fixed window) pehle ke "Rate Limiting" topic mein cover ho chuka hai — yahan sirf brief reference karo, depth mat do dobara. Iska focus hai: **kahan rehta hai, state kaise share hoti hai, aur khud kaise highly available banaya jaaye.**
+
+### Back-of-Envelope Estimation
+
+- Maan lo ek large company ka total API traffic across all services approx 500,000 requests/second hai peak par. Agar rate limiter har request ke liye consulted hota hai, is service ko khud bhi **~500,000 QPS** handle karni padegi — yeh already ek massive-scale service hai apne aap mein.
+- Latency budget: agar target end-to-end API latency 50ms hai, aur rate limiter check ek network hop add karta hai, yeh check khud **1-5ms** ke andar complete hona chahiye taaki overall latency budget significantly na khaye.
+- Agar counters Redis mein rakhe jaayein, ek naya counter entry approx 50-100 bytes (key + count + TTL metadata). 10 million active unique keys (users/API-keys) x 100 bytes approx **~1 GB** — chhota hai, easily ek sharded Redis cluster mein fit hota hai.
+- Agar limiter apni khud ki high availability ke liye 3-5 replicas rakhta hai load ke liye, aur har replica local approximate counting kare instead of shared state, effective rate limit accuracy approx **N replicas ka factor se off** ho sakti hai worst case mein — yeh trade-off deep dive mein detail mein explain hoga.
+
+### High-Level Design
+
+Do fundamentally different architectural choices hain jahan yeh service "sit" kar sakti hai — dono ko explicitly discuss karna zaroori hai:
+
+**Option A — Embedded library:** Rate limiting logic har service ke apne process ke andar ek library ki tarah embed hoti hai, local state (in-memory counters) use karke.
+
+**Option B — Centralized service/sidecar:** Ek alag, shared rate-limiter service hai jise har API call se pehle consult kiya jaata hai (chahe directly, chahe ek sidecar proxy ke through jaisa a service mesh pattern).
+
+High-level components (centralized approach ke liye, jo production mein zyada common hai):
+
+- **Client SDK/sidecar** — calling service ke saath integrate hota hai, rate-limiter service ko call karta hai check ke liye.
+- **Rate Limiter Service** — stateless application layer, counting logic execute karta hai, backing store se read/write karta hai.
+- **Shared Counter Store (Redis Cluster)** — actual counts yahan store hote hain, atomically incremented.
+- **Config Service** — per-key/per-endpoint limits kahan define aur update hoti hain (dynamically configurable, bina redeploy ke).
+
+</Hinglish>
+
+<Diagram
+  chart={`
+flowchart TD
+    A[API Request arrives at Service X] --> B{Rate Limiter check}
+    B -->|Embedded library option| C["Local in-memory counter<br/>(fast, but not shared across instances)"]
+    B -->|Centralized service option| D[Rate Limiter Service]
+    D --> E[("Shared Counter Store<br/>(Redis Cluster, sharded)")]
+    E --> F{Allowed?}
+    F -->|Yes| G[Request proceeds to Service X logic]
+    F -->|No| H[429 Too Many Requests]
+    style D fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style E fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="The embedded-library path avoids a network hop but can't share state across instances; the centralized path shares accurate state but adds a hop to every single request."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Embedded vs Centralized — the Core Trade-off
+
+**Embedded library:** har service instance apna khud ka local counter rakhta hai in-memory. Fayda — **zero network hop**, sabse fast possible check. Problem — agar ek service ke 10 instances load balancer ke peeche chal rahe hain, har instance ka apna alag counter hai jo doosre instances ko nahi pata. Ek user jo across different instances requests bhejta hai (jo normal hai, load balancer round-robin karta hai), effectively **N times zyada** requests kar sakta hai limit se, kyunki koi bhi ek instance ko poori tasveer nahi pata. Yeh **inconsistent limiting** hai.
+
+**Centralized service:** har request explicitly is shared service ko call karti hai check ke liye, jo ek shared, consistent state (jaise Redis) dekhta hai. Fayda — accurate, globally-consistent limiting chahe kitne bhi instances ho. Problem — **har single request** (chahe woh kisi bhi API ki ho) ab is limiter service se guzarti hai, jiska matlab hai (a) latency add hoti hai har request mein, aur (b) is limiter service ka apna availability aur performance ab **poori company ke liye ek critical dependency** ban jaata hai. Agar yeh slow ho jaaye ya down ho jaaye, poori company ki APIs affected hoti hain — is service ne khud ek massive blast-radius single point of failure create kar diya.
+
+Production systems mein centralized approach zyada common hai jab cross-instance accuracy zaroori ho, lekin isko **fail open** hona chahiye aur khud extremely highly available design hona chahiye (neeche discuss).
+
+#### 2. Atomic Counting at High QPS — Why Redis, Why Atomicity Matters
+
+Jab bahut saare concurrent requests same key (jaise same user) ke liye count check + increment kar rahe hain, agar yeh do separate operations hain (pehle read current count, phir agar limit ke andar hai to increment karo), to ek **race condition** ban sakta hai — do requests dono ek saath read karein, dono ko lage limit ke andar hain, dono increment karein, aur actual count limit se upar chala jaaye.
+
+Isliye Redis jaisa store use hota hai jiske `INCR` command **atomic** hai — increment-and-return-new-value ek hi indivisible operation hai, race condition ka koi mauka nahi. Saath mein `EXPIRE` (TTL) set kiya jaata hai taaki counter apne time-window ke baad automatically reset ho jaaye, koi explicit cleanup job nahi chahiye.
+
+High scale par, Redis khud bhi ek single instance nahi hota — counters ko keys ke hisaab se **shard/partition** kiya jaata hai across a Redis Cluster (yahan seedha consistent hashing/sharding concepts se connect hota hai jo pehle modules mein cover hue). Har shard apna subset of keys handle karta hai, isliye is limiter service ka apna scale bhi horizontally distribute ho sakta hai.
+
+#### 3. The False Negative/Positive Trade-off with Local Approximation
+
+Agar centralized service khud multiple replicas rakhta hai apni availability ke liye, ek genuine design choice yeh hai: **har replica ek shared Redis ko har single check ke liye hit kare** (perfectly accurate, lekin har replica Redis pe load daal rahi hai aur network latency har check mein add hoti hai), **ya** **har replica apna local approximate count maintain kare**, periodically sync/reconcile kare shared state ke saath.
+
+Local approximation ka matlab hai limit thoda "loose" ho sakta hai — jaise agar limit 100 req/min hai aur 5 replicas hain, worst case mein actual allowed requests kuch zyada ho sakte hain 100 se (kyunki har replica apna khud ka approximate view rakhta hai jo thoda stale ho sakta hai). Yeh ek **genuinely reasonable trade-off** hai, bug nahi — kyunki rate limiting ka purpose hai system ko **protect** karna overload se, exact precision (99.9999% accurate limiting) usually itni critical nahi hoti jitni **low latency aur high availability khud limiter ki**. Ek "thoda loose" rate limiter jo fast aur available hai, ek "perfectly accurate" rate limiter se better hai jo khud slow ya fragile ho.
+
+#### 4. Fail Open vs Fail Closed
+
+Jab is limiter service ka backing store (Redis) down ho jaaye ya unreachable ho, do choices hain:
+
+- **Fail closed** — sab requests ko deny/block kar do jab tak limiter recover na ho. Risk: rate limiter khud ek **outage cause kar deta hai** poori company ke liye, jabki uska poora purpose tha overload **prevent** karna, na ki khud ek availability problem banna.
+- **Fail open** — sab requests ko allow kar do jab tak limiter recover na ho, effectively rate limiting temporarily disabled ho jaaye. Risk: kuch der ke liye system unprotected hai against abuse/overload.
+
+**Fail open usually safer default hai** — logic yeh hai ki rate limiter ka poora existence hi is liye hai ki woh ek **protective/defensive layer** hai, uska apna failure company-wide outage cause nahi karna chahiye. Ek temporary window of "no rate limiting" (jo rare hai, sirf jab backing store down ho) generally kam damaging hai compared to poori company ki saari APIs down ho jaana. Yeh ek strong, opinionated interview-worthy point hai jo depth dikhata hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Common trap: candidate bolta hai "hum fail closed karenge safety ke liye" bina yeh socha ki is service ka scope kya hai — yeh ek company-wide shared dependency hai, aur fail-closed matlab ek Redis outage ab company-wide API outage bhi ban jaata hai. Yeh exact opposite hai jo tum chahte ho ek defensive/protective infrastructure piece se.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Stripe">
+
+Stripe apne public API par explicit, well-documented rate limits maintain karta hai per API key, aur yeh centralized enforcement infra ke through hota hai jo Stripe ke saare API endpoints ko cover karta hai — ek shared service jo alag alag endpoint-teams ko apna khud ka rate-limiting logic dobara likhne se bachata hai.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+AWS ke andar internal services ke beech throttling ek company-wide shared concern hai — kisi ek service ka overload dusri dependent services tak cascade na kare, isliye centralized/standardized rate-limiting infrastructure large-scale companies mein common pattern hai, individual teams ko apna khud ka ad-hoc solution banane ki jagah.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Assumed company-wide peak API traffic that a centralized limiter must itself sustain — roughly 500,000 QPS
+- Target added latency from a rate-limiter check — roughly 1-5 ms, to stay within a tight overall API latency budget
+- Estimated counter storage (10 million active keys x ~100 bytes) — roughly 1 GB, easily fits a sharded Redis cluster
+- Typical rate-limiter service replica count for its own high availability — 3-5+, load-balanced
+- Local-approximation trade-off — effective limit accuracy can be off by roughly a factor related to replica count when not hitting shared state per check
+- Redis INCR + EXPIRE — the standard atomic primitive pair for counting + auto-reset within a time window
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer expects you to recognize this is a different question from "explain token bucket" — spend at most a sentence referencing the algorithm and pivot immediately to placement (embedded vs centralized), shared-state mechanics (Redis atomicity, sharding), and availability trade-offs (local approximation, fail open vs closed). The strongest signal in this topic is arguing for fail-open with the reasoning "a rate limiter that causes an outage has failed at its one job" — that line, said clearly, tells the interviewer you understand this is infrastructure-design thinking, not algorithm trivia.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Pura answer token bucket/sliding window algorithm explain karne mein spend kar dena jab question explicitly "as a service" pucha gaya ho — yeh signal deta hai ki candidate ne question ka actual ask nahi samjha.
+
+</Mistake>
+
+<Mistake>
+
+Fail closed ko "safer" default maan lena bina yeh socho ki is service ka failure ab company-wide blast radius rakhta hai — fail open usually better default hai exactly is wajah se.
+
+</Mistake>
+
+<Mistake>
+
+Count check aur increment ko do separate non-atomic operations ki tarah design karna — is se concurrent requests ke beech race condition ban sakta hai jahan actual limit exceed ho jaaye.
+
+</Mistake>
+
+<Mistake>
+
+Embedded-library approach ka cross-instance inconsistency problem completely ignore karna — yeh assume kar lena ki ek service ka har instance apna alag local counter rakh sakta hai bina iske consequences discuss kiye.
+
+</Mistake>
+
+<Mistake>
+
+Local approximate counting (replicas ke apne local counts) ko ek "bug" ya "bad design" ki tarah treat karna, jabki yeh ek deliberate, reasonable latency-vs-accuracy trade-off hai jab discuss kiya jaaye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    S[Redis / Backing Store DOWN] --> Q{Fail-open ya fail-closed?}
+    Q -->|Fail Closed| A["ALL requests denied<br/>Rate limiter caused a company-wide outage"]
+    Q -->|Fail Open| B["ALL requests allowed<br/>Temporarily unprotected, but no outage"]
+    style A fill:#1e293b,stroke:#f87171,color:#e2e8f0
+    style B fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Fail-open is usually the safer default — a rate limiter exists to prevent overload, so it should not itself become the outage."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- This topic is about the SERVICE/infrastructure design, not the algorithm — reference token bucket/sliding window briefly, don't re-explain it
+- Embedded library: zero network hop but inconsistent limiting across instances (no shared state)
+- Centralized service: consistent, accurate limiting, but adds a network hop and becomes a company-wide critical dependency
+- Redis INCR + EXPIRE gives atomic counting + auto-reset, avoiding race conditions under concurrent checks
+- Shard/partition counters across a Redis Cluster for the limiter's own scale — ties back to consistent hashing
+- Local approximate counting per replica trades perfect accuracy for lower latency — a reasonable design choice, not a bug
+- Fail open (allow all) vs fail closed (block all) when the backing store is down — fail open is usually the safer default
+- Core principle: a rate limiter exists to prevent overload, so it should never itself become the source of an outage
+
+</QuickRevision>

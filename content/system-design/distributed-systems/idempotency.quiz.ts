@@ -17,7 +17,7 @@ const quiz: QuizQuestion[] = [
   },
   {
     id: "idem-2",
-    question: "HTTP methods mein se PUT aur DELETE idempotent by definition hain, lekin POST nahi hai. Isका practical implication kya hai payment APIs design karte waqt?",
+    question: "HTTP methods mein se PUT aur DELETE idempotent by definition hain, lekin POST nahi hai. Iska practical implication kya hai payment APIs design karte waqt?",
     options: [
       "Payment APIs ko hamesha PUT use karna chahiye, POST kabhi use nahi karna chahiye",
       "POST-based 'create payment/charge' endpoints ko explicitly idempotency-key pattern implement karna chahiye kyunki HTTP khud POST ke liye koi duplicate-safety guarantee nahi deta",

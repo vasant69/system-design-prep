@@ -36,6 +36,13 @@ function listTopicFiles(sectionSlug: string, moduleId: string): string[] {
   return fs.readdirSync(dir).filter((file) => file.endsWith(".mdx"));
 }
 
+const DIAGRAM_CHART_RE = /<Diagram\s+chart=\{`([\s\S]*?)`\}/;
+
+/** Pulls the raw Mermaid source out of a topic's first <Diagram>, for section-page thumbnails. */
+function extractDiagramChart(body: string): string | null {
+  return DIAGRAM_CHART_RE.exec(body)?.[1]?.trim() ?? null;
+}
+
 /** All topic frontmatter for a section, unsorted. Cached per request/build. */
 export const getAllTopicsMeta = cache((sectionSlug: string): TopicMeta[] => {
   const metas: TopicMeta[] = [];
@@ -47,12 +54,13 @@ export const getAllTopicsMeta = cache((sectionSlug: string): TopicMeta[] => {
       // untrusted input or at request time, so it's safe to opt this
       // dynamic path out of Vercel's output file tracing.
       const raw = fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8");
-      const { data } = matter(raw);
+      const { data, content: body } = matter(raw);
       const frontmatter = data as TopicFrontmatter;
       metas.push({
         ...frontmatter,
         sectionSlug,
         href: `/${sectionSlug}/${frontmatter.slug}`,
+        diagramChart: extractDiagramChart(body),
       });
     }
   }
@@ -157,6 +165,7 @@ export const getTopic = cache(async (sectionSlug: string, slug: string) => {
     ...frontmatter,
     sectionSlug,
     href: `/${sectionSlug}/${slug}`,
+    diagramChart: extractDiagramChart(raw),
   };
 
   return { meta, moduleId: found.moduleId, content };

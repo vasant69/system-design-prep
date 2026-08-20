@@ -48,6 +48,8 @@ export type TopicMeta = TopicFrontmatter & {
   sectionSlug: string;
   /** Full route, e.g. "/system-design/load-balancing" */
   href: string;
+  /** Raw Mermaid source of the topic's first <Diagram>, if it has one — used for section-page thumbnails */
+  diagramChart: string | null;
 };
 
 export type QuizQuestion = {

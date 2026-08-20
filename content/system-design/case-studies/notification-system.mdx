@@ -1,0 +1,245 @@
+---
+slug: "notification-system"
+title: "Design a Notification System"
+section: "system-design"
+module: "case-studies"
+order: 8
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["message-queues", "pubsub-vs-point-to-point"]
+tags: ["case-study", "messaging"]
+englishDefinition: "A notification system reliably delivers notifications — push notifications, SMS, email, in-app alerts — to users, triggered by many different upstream services and events such as an order status change or a payment confirmation. It must operate at scale, respect user preferences, avoid duplicate or spammy delivery, and provide a single well-defined interface so individual teams don't each build their own delivery integrations."
+interviewFrequency: "high"
+companies: ["Swiggy", "Zomato", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+A notification system reliably delivers notifications — push notifications, SMS, email, in-app alerts — to users, triggered by many different upstream services and events such as an order status change or a payment confirmation. It must operate at scale, respect user preferences, avoid duplicate or spammy delivery, and provide a single well-defined interface so individual teams don't each build their own delivery integrations.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh topic dikhne mein simple lagta hai ("bas message bhej do") lekin real depth iske **architecture shape** mein hai — kitni alag alag teams isko trigger karti hain, kitne alag channels hain, aur kaise ek flaky third-party provider poore system ko block nahi karna chahiye. Chalo poora design banate hain, Swiggy/Zomato order-tracking ko running example banate hue.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Koi bhi upstream service (order service, payment service, marketing team) ek notification trigger kar sake — jaise "order out for delivery".
+- Multiple channels support ho — push notification (mobile app), SMS, email, in-app notification center.
+- User apni preferences set kar sake — kaunse category mute karne hain, kaunse channel prefer karte hain.
+- Notification content templated ho — same event type ke liye consistent formatting, personalized data ke saath (order ID, ETA).
+- Delivery status track ho sake — sent, delivered, failed, read.
+
+Non-functional requirements:
+
+- **High throughput** — bahut saare upstream events, especially peak hours (lunch/dinner time Swiggy/Zomato ke liye) mein burst traffic.
+- Delivery **latency reasonable** honi chahiye lekin real-time-critical nahi (payment system jaisa strict nahi) — kuch second ka delay generally acceptable hai.
+- **Reliability** — ek triggered notification generally deliver honi chahiye, at-least-once semantics ke saath, retries ke saath agar channel provider fail ho.
+- Anti-spam — user ko ek din mein bahut zyada notifications se overwhelm nahi karna, aur duplicate notifications avoid karna agar same event multiple baar trigger ho jaaye kisi bug/retry ki wajah se.
+- Loose coupling — upstream services (order service) ko yeh nahi pata hona chahiye ki SMS provider konsa hai ya push kaise kaam karta hai — sirf ek clean event/API contract.
+
+### Back-of-Envelope Estimation
+
+- Maan lo Swiggy/Zomato-scale system mein daily 10 million orders hain, aur har order ka lifecycle roughly 4-5 notification-worthy events generate karta hai (order placed, confirmed, out for delivery, delivered, plus occasional issues). 10,000,000 x 4.5 approx **45 million order-related notifications/day**, plus marketing/promotional notifications aur alag alag categories mila kar total roughly **60-80 million notifications/day** ek reasonable estimate hai.
+- Average QPS = 70,000,000 / 86,400 approx **~800 notifications/second average**. Peak (lunch/dinner rush) approx 4-5x — **~3,500-4,000 notifications/second peak**.
+- Per-channel split example: agar 70% push, 20% in-app, 8% SMS, 2% email — push volume peak par approx **2,500-2,800/second**, SMS approx **280-320/second** (SMS providers typically has lower rate limits aur higher cost per message, isliye yeh split matter karta hai).
+- Cost consideration: SMS typically per-message cost hota hai (paisa/message), jabki push notifications largely free hain (APNs/FCM). Is wajah se production systems SMS ko fallback ke roop mein use karte hain, primary channel ke roop mein nahi — cost ek genuine architectural driver hai.
+- Notification budget example: agar per-user per-day cap 20 notifications hai (anti-spam), aur ek user ka ek din mein normally 3-5 hi genuine events hote hain, yeh cap rarely bind karta hai normal usage mein, lekin protects against bug-triggered floods.
+
+### High-Level Design
+
+Core insight: **ek shared Notification Service** honi chahiye jise saari upstream teams call karein, na ki har team apna khud ka SMS/push integration banaye. Yeh genuine architecture win hai — consistent user preference handling, ek jagah rate limiting/anti-spam logic, aur naye channel add karna (jaise WhatsApp Business API) sirf ek jagah change requires karta hai, har upstream service ko nahi.
+
+High-level components:
+
+- **Upstream services** (order service, payment service, marketing) — event publish karte hain, jaise "OrderStatusChanged" ek well-defined schema ke saath.
+- **Message Queue** (event bus) — upstream services queue mein event publish karte hain, notification service consume karta hai. Yeh critical hai async decoupling ke liye (neeche detail mein).
+- **Notification Service (orchestrator)** — event consume karta hai, user preferences check karta hai, template select karta hai, decide karta hai kaunsa channel(s) use karna hai.
+- **Template Rendering** — event data (order ID, ETA) ko ek human-readable message mein render karta hai, per-language/locale support ke saath.
+- **User Preference Store** — kaunsa user kaunsa category mute kiya hai, kaunsa channel prefer karta hai.
+- **Per-channel Workers** — Push Worker (APNs/FCM ko call karta hai), SMS Worker (telecom gateway), Email Worker (ESP — Email Service Provider jaisa SendGrid).
+- **Delivery Tracking Store** — status track karta hai per notification, retry attempts.
+
+</Hinglish>
+
+<Diagram
+  chart={`
+flowchart TD
+    O[Order Service] -->|publish event| Q[(Message Queue)]
+    P[Payment Service] -->|publish event| Q
+    M[Marketing Service] -->|publish event| Q
+    Q --> NS[Notification Service]
+    NS --> PREF[(User Preference Store)]
+    NS --> TMPL[Template Rendering]
+    TMPL --> ROUTE{Channel routing}
+    ROUTE -->|primary| PUSH["Push Worker<br/>(APNs / FCM)"]
+    PUSH -->|device offline / fails| SMS["SMS Worker<br/>(fallback)"]
+    ROUTE --> EMAIL["Email Worker<br/>(ESP)"]
+    ROUTE --> INAPP["In-app Worker"]
+    PUSH --> TRACK[(Delivery Tracking Store)]
+    SMS --> TRACK
+    EMAIL --> TRACK
+    INAPP --> TRACK
+    style NS fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style Q fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Many upstream services fan into one shared Notification Service through a queue; the service then fans out across channels, with fallback if the primary channel fails."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Why This MUST Be Async/Queue-Based, Not Synchronous
+
+Sabse important architectural decision: jab order service ek notification trigger karta hai (jaise "order confirmed"), woh **kabhi bhi directly, synchronously** SMS gateway ya push provider ko call nahi karta. Iske bajaye, woh sirf ek event ek message queue mein publish karta hai aur turant apna kaam continue karta hai.
+
+Yeh async design non-negotiable hai kyunki:
+
+- Third-party channel providers (SMS gateway, email ESP) **slow aur unreliable** ho sakte hain — network issues, rate limits, temporary outages. Agar order service synchronously in providers ka wait karta, ek flaky SMS gateway seedha order-confirmation flow ko block/slow kar sakta hai — jo core business logic hai use-case se completely unrelated ek dependency ki wajah se degrade ho raha hai.
+- Queue **decoupling** deta hai — upstream service ko sirf itna pata hona chahiye "maine event publish kar diya", uske aage kya hota hai (kaunsa channel, kya retry logic) uski concern nahi hai.
+- Traffic spikes (lunch rush) queue mein naturally buffer ho jaate hain — notification workers apni pace se consume kar sakte hain, upstream services ko wait nahi karna padta peak load mein.
+
+#### 2. Multi-Channel Delivery with Fallback
+
+Har channel ka apna reliability/latency/cost profile hai:
+
+- **Push (APNs/FCM)** — fast, free, lekin device offline ho sakta hai (app background mein force-closed, ya internet na ho) — delivery guarantee weak hai.
+- **SMS** — telecom gateway ke through, zyada reliable device-reachability ke terms mein (phone signal hai to milta hi hai generally), lekin **cost per message** hai aur push se slower.
+- **Email** — reliable delivery, lekin latency zyada aur "urgent" notifications ke liye kam suitable (log email turant nahi dekhte).
+
+Isliye production systems ek **fallback chain** design karte hain: pehle push try karo. Agar device ek threshold time (jaise 2-3 minutes) tak delivery-confirm nahi karta (ya provider explicitly bolta hai device unreachable hai), **automatically SMS** pe fallback karo urgent notifications ke liye (jaise "your OTP" ya "order ready for pickup"). Har channel ke liye separate retry-with-backoff logic hoti hai (failure-handling-patterns se directly connect hota hai) — kitni baar retry karna hai, kitna wait karna hai retries ke beech, aur kab give up karke next channel try karna hai.
+
+#### 3. User Preferences and Anti-Spam Logic
+
+Do alag concerns yahan hain:
+
+- **User preferences** — user explicitly bol sakta hai "mujhe marketing notifications mat bhejo, sirf order updates bhejo." Yeh ek per-user, per-category opt-in/opt-out setting hai jo Notification Service check karta hai har event process karne se pehle, actual delivery se pehle hi filter kar deta hai.
+- **Notification budget/rate limiting** — chahe user ne explicitly mute na kiya ho, system khud ek per-user-per-day cap enforce karta hai (jaise max 20 notifications/day non-critical categories ke liye) taaki koi upstream bug (jaise ek retry loop jo same event baar baar publish kar de) user ko spam na kar de.
+- **Deduplication** — agar same logical event (jaise "order confirmed") galti se do baar publish ho jaaye (upstream retry ki wajah se, jo distributed systems mein normal hai), Notification Service ek dedup key (event ID) check karke duplicate ko silently drop kar deta hai, user ko do baar same notification nahi milta.
+
+#### 4. The Fan-in/Fan-out Shape as the Core Architecture Insight
+
+Yeh worth explicitly naming hai: is system ka shape **fan-in phir fan-out** hai. Fan-in — kayi alag upstream services (order, payment, marketing, delivery-partner-app) sab ek hi Notification Service mein events publish karte hain. Fan-out — ek single event potentially multiple channels (push + in-app simultaneously, ya push-then-SMS-fallback) mein deliver hota hai.
+
+Yeh explicitly ek achha reason hai ek **shared service** banane ka instead of har team apna khud ka integration banaye — agar kal ek naya channel add karna ho (jaise WhatsApp Business API notifications), sirf Notification Service mein ek naya worker add karna padta hai, upstream services ko kuch bhi change nahi karna padta unka contract same rehta hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein strong signal: khud proactively bolna "main is design ko ek shared Notification Service banaunga, per-team integrations nahi" — yeh sirf ek implementation detail nahi hai, yeh ek genuine architecture insight hai jo maintenance cost aur consistency dono improve karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Swiggy / Zomato">
+
+Order-tracking flow perfect running example hai: order place hote hi "order confirmed" notification, restaurant accept karte hi "being prepared", delivery partner assign hote hi "out for delivery" with live tracking link, aur delivery complete hote hi "delivered, rate your experience". Har step ek alag upstream event hai (order service, restaurant-partner service, delivery-service sab alag systems hain), lekin user ko ek consistent, single-channel-prioritized notification experience milta hai — yeh exactly proves karta hai ki ek shared, well-designed Notification Service kyun zaroori hai jab itni saari upstream sources ek hi user-facing experience produce kar rahi hon.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+E-commerce order lifecycle mein (order placed, shipped, out for delivery, delivered) plus price-drop alerts aur back-in-stock notifications — sab alag trigger sources hain lekin same delivery infrastructure use karte hain. Price-drop/back-in-stock jaise "non-urgent" categories typically sirf push/in-app tak limited rakhe jaate hain (SMS cost-prohibitive hai low-urgency, high-volume categories ke liye), jabki order-status updates zyada aggressive fallback (push -> SMS) paate hain kyunki woh time-sensitive hain — yeh dikhata hai ki channel selection bhi ek per-category business decision hai, ek uniform rule nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Assumed daily orders (Swiggy/Zomato scale) — 10 million, roughly 4-5 notification-worthy events per order
+- Estimated total daily notifications (order + marketing combined) — roughly 60-80 million/day
+- Average notification QPS — roughly 800/second; peak (lunch/dinner rush) — roughly 3,500-4,000/second
+- Typical channel split — push dominant (~70%), in-app (~20%), SMS (~8%), email (~2%) — SMS kept low due to per-message cost
+- Typical push-to-SMS fallback threshold — a few minutes without delivery confirmation before escalating channel
+- Example per-user daily notification budget (anti-spam cap) — often around 15-20 for non-critical categories
+- Delivery tracking retention — typically days to weeks, enough to support user-facing "notification history" and debugging
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer typically probes two things. First: "why not have each service call the SMS/push provider directly?" — the strong answer is the fan-in architecture insight (a shared service avoids N teams duplicating integration logic, centralizes preference/anti-spam handling, and makes adding a new channel a one-place change). Second: "what happens if the SMS gateway is slow or down?" — the strong answer is that the whole pipeline is async via a queue specifically so a flaky third-party provider never blocks the upstream business logic that triggered the notification, and that channel-specific retry-with-backoff plus a fallback chain (push -> SMS) handles provider unreliability gracefully.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Notification triggering ko synchronous design karna — order service ko directly SMS/push provider call karte dikhana, bina queue ke beech mein daale. Isse ek flaky third-party provider core business flow ko block kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har upstream team ko apna khud ka channel integration banane dena instead of ek shared Notification Service propose karna — yeh duplicate logic, inconsistent user preference handling, aur naye channel add karna N jagah change karne jaisa mehenga bana deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Deduplication ko ignore karna — yeh assume kar lena ki upstream events kabhi duplicate nahi honge, jabki distributed systems mein retries ki wajah se same event do baar publish hona normal hai.
+
+</Mistake>
+
+<Mistake>
+
+Sab channels ko same reliability/cost/latency profile ka maan lena — SMS aur push ko interchangeable treat karna bina cost aur device-reachability trade-offs discuss kiye.
+
+</Mistake>
+
+<Mistake>
+
+User preferences aur anti-spam rate limiting ko ek hi cheez samajh lena — yeh do alag mechanisms hain: ek explicit user opt-out hai, doosra system-enforced safety cap hai bugs/retry-loops se bachne ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Push as Push Worker
+    participant Device as User Device
+    participant SMS as SMS Worker
+    participant Track as Delivery Tracking
+
+    Push->>Device: Send push notification
+    alt Delivered within threshold
+        Device-->>Push: Delivery confirmed
+        Push->>Track: Mark delivered (push)
+    else No confirmation within ~2-3 min
+        Push->>Track: Mark push undelivered
+        Push->>SMS: Trigger fallback
+        SMS->>Device: Send SMS
+        SMS->>Track: Mark delivered (SMS) or failed
+    end
+`}
+  caption="Fallback across channels only triggers after the primary channel fails to confirm delivery within a threshold — not on every send."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- One shared Notification Service, not per-team integrations — a genuine fan-in/fan-out architecture win
+- Must be async/queue-based — a flaky third-party channel provider should never block the upstream service that triggered the notification
+- Each channel (push, SMS, email) has a different reliability/latency/cost profile — SMS costs money and is used more sparingly, often as fallback
+- Fallback chain: try push first, escalate to SMS after a delivery-confirmation timeout, for urgent categories
+- User preferences (explicit opt-out) and notification budget (system-enforced anti-spam cap) are two different mechanisms, not one
+- Deduplication via event ID is required — distributed upstream retries can trigger the same logical event twice
+- Delivery tracking + per-channel retry-with-backoff ties directly back to failure-handling patterns
+- Swiggy/Zomato order-status flow: order placed -> confirmed -> out for delivery -> delivered, each event from a different upstream service, unified by one notification pipeline
+
+</QuickRevision>

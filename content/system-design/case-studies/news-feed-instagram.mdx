@@ -1,0 +1,246 @@
+---
+slug: "news-feed-instagram"
+title: "Design Instagram / a News Feed"
+section: "system-design"
+module: "case-studies"
+order: 3
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["caching", "sharding-partitioning"]
+tags: ["case-study", "feed-systems"]
+englishDefinition: "A news feed system lets users follow other users or pages and see a personalized, roughly-reverse-chronological or ranked feed aggregating posts from everyone they follow, at massive scale. The core difficulty is a highly skewed follower graph — most users have a handful of followers, while a small number of celebrity accounts have tens of millions — which makes the naive designs for both writing and reading a feed break down in opposite ways."
+interviewFrequency: "very-high"
+companies: ["Instagram", "Meta"]
+---
+
+<SimpleDefinition>
+
+A news feed system lets users follow other users or pages and see a personalized, roughly-reverse-chronological or ranked feed aggregating posts from everyone they follow, at massive scale. The core difficulty is a highly skewed follower graph — most users have a handful of followers, while a small number of celebrity accounts have tens of millions — which makes the naive designs for both writing and reading a feed break down in opposite ways.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh interview mein sabse "classic" case study hai kyunki iska core problem ek hi line mein bola ja sakta hai lekin uska solution genuinely elegant hai — aur yehi wajah hai ki yeh baar baar poocha jaata hai. Chalo poora design end to end banate hain.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- User kisi doosre user/page ko follow kar sake.
+- User apna feed dekh sake jisme un sabke posts aayein jinhe woh follow karta hai, roughly recent-first order mein.
+- User post create kar sake (text/image/video), jo uske followers ke feed mein appear ho.
+- Feed continuously scroll ho sake — infinite scroll / pagination.
+- (Optional, briefly mention) Feed ranked ho sake, sirf chronological nahi — ML-based relevance ranking.
+
+Non-functional requirements — yeh prioritize karna important hai:
+
+- **Read-heavy system** — feed reads writes se orders of magnitude zyada hote hain (log dozens of baar feed refresh karte hain, kabhi kabhi post karte hain).
+- Feed read latency low honi chahiye — feed open karte hi content turant dikhna chahiye, kuch sau milliseconds ke andar.
+- Eventual consistency acceptable hai — agar tumhara naya post kisi follower ke feed mein 1-2 second late dikhe, koi problem nahi. Yeh explicitly AP-leaning system hai, CP nahi (payment system se contrast karna interview mein achha signal hai).
+- Massive scale — hundreds of millions of users, aur follower graph **extremely skewed** — yeh non-functional requirement hi is poore design ka trigger hai.
+- Availability high honi chahiye — feed thoda stale dikhe chalega, lekin down nahi honi chahiye.
+
+Interviewer ko yahan explicitly bolna chahiye: "Follower distribution kaisa hai?" — yeh sabse important clarifying question hai is topic mein, kyunki poora design is asymmetry ke around bana hai.
+
+### Back-of-Envelope Estimation
+
+- Maan lo 500 million daily active users (DAU), average har user din mein feed 5 baar refresh karta hai — **2.5 billion feed reads/day**. QPS = 2,500,000,000 / 86,400 approx **~29,000 reads/second average**, peak (evening hours) approx 3-5x — **~100,000-150,000 reads/second peak**.
+- Posts: agar 10% DAU roz ek post karte hain, 50 million posts/day — approx **~580 writes/second average**, yeh reads ke comparison mein bahut chhota hai (read:write ratio roughly 50:1 se 100:1).
+- Follower graph skew: average user shayad 200-300 followers rakhta hai, lekin ek celebrity account (jaise ek Bollywood star) ke **50+ million followers** ho sakte hain. Yeh 5-6 orders of magnitude ka spread hai — yehi core design challenge hai.
+- Agar naive fan-out-on-write use karein aur ek celebrity post kare, us ek post ko 50 million feeds mein turant likhna padega — agar har write approx 1ms le (best case, batched), sirf ek post ke liye approx **50,000 seconds** (~14 hours) ka pure write work ban jaata hai agar serially kiya jaaye, ya massive parallel infrastructure chahiye hoti hai agar turant karna hai. Yeh number khud bata deta hai ki naive approach kyun tootta hai.
+- Feed cache storage: agar har user ka feed cache recent 500-1000 post IDs store karta hai (approx 8 bytes/ID), 500 million users x 1000 IDs x 8 bytes approx **~4 TB** — yeh Redis jaise in-memory store mein rakhne layak hai agar sharded properly ho.
+
+### High-Level Design
+
+Do core entities: **User Graph Service** (kaun kisko follow karta hai) aur **Post Service** (posts create/store karta hai), plus ek **Feed Service** jo dono ko combine karke actual feed generate karta hai.
+
+High-level components:
+
+- **User/Follower Graph Store** — kaun kisko follow karta hai, ek graph-like data model (ya simple adjacency tables — follower list aur following list dono directions mein, kyunki alag alag queries chahiye).
+- **Post Service** — post create hoti hai, metadata (post ID, author ID, timestamp, media URL) ek database mein store hoti hai, actual media (images/video) object storage + CDN mein.
+- **Fan-out Service** — jab post create hoti hai, yeh decide karta hai kaise us post ko followers ke feeds tak pahunchana hai (yehi is poore design ka core, neeche deep dive mein).
+- **Feed Cache** — per-user precomputed recent post IDs, Redis jaisa in-memory store, taaki feed read O(1) lookup ban jaaye jahan possible ho.
+- **Feed Service** — client ke request pe actual feed assemble karta hai — cache se IDs leta hai, phir Post Service se actual content fetch karta hai (denormalized read taaki ek hi feed request mein saare posts ka data mil jaaye, N+1 queries na ho).
+- **Ranking Service** (brief mention) — chronological order ki jagah ek ML model recency, engagement prediction, relationship strength jaise signals use karke feed ko re-order kar sakta hai.
+
+</Hinglish>
+
+<Diagram
+  chart={`
+flowchart TD
+    U["User creates post"] --> PS[Post Service]
+    PS --> DB[(Post Store)]
+    PS --> FO[Fan-out Service]
+    FO -->|"Regular user: push"| FC[(Feed Cache per follower)]
+    FO -->|"Celebrity: skip push"| SKIP["Marked as pull-only"]
+    R["Follower opens feed"] --> FS[Feed Service]
+    FS --> FC
+    FS -->|"merge celebrity posts at read time"| PULL["Pull-time query:<br/>fetch recent posts from<br/>followed celebrities"]
+    FS --> POSTDATA["Fetch full post content<br/>(denormalized)"]
+    POSTDATA --> DB
+    FS --> R
+    style FO fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style FS fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Hybrid fan-out: regular users' posts are pushed to follower caches immediately; celebrity posts are pulled and merged in at read time."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Fan-out-on-Write (Push Model)
+
+Jab koi user post karta hai, is model mein **turant** us post ki ID uske har follower ke precomputed feed cache mein insert kar di jaati hai. Jab woh follower feed open karta hai, feed simply uske cache se recent post IDs read karta hai — koi computation nahi, ek fast lookup.
+
+**Fayda:** reads extremely fast hain — O(1) cache lookup, kyunki poora kaam already post-time pe ho chuka hota hai.
+
+**Problem:** yeh "hot write" scenario mein completely tootta hai. Ek celebrity ke 50 million followers hain — ek single post ka matlab hai 50 million alag feed caches mein write karna. Yeh na sirf massive compute/infra cost hai, balki latency bhi — us celebrity ke followers ko naya post dikhne mein minutes lag sakte hain agar fan-out queue backlog ho jaaye. Isse "celebrity problem" kehte hain.
+
+#### 2. Fan-out-on-Read (Pull Model)
+
+Is model mein koi precomputation nahi hoti. Jab user feed open karta hai, **us waqt** system uski poori following list leta hai, har followed user/account ke recent posts fetch karta hai, sabko merge aur sort karta hai (jaise ek k-way merge, kyunki har source already time-sorted hai), aur result return karta hai.
+
+**Fayda:** celebrity ka post karna cheap hai — sirf ek write, uske apne post store mein.
+
+**Problem:** reads expensive ho jaate hain. Agar ek user 1000 accounts follow karta hai, har feed load pe 1000 alag sources se recent posts fetch karne padte hain aur merge karne padte hain — yeh "fan-in" hai, aur yeh compute-heavy hai, especially jab yeh **har single feed refresh** pe repeat hota hai.
+
+#### 3. The Resolution — Hybrid Approach
+
+Real production systems (Instagram, Twitter/X, Facebook) **dono ko combine karte hain**:
+
+- **Regular users** (jinke followers ek reasonable threshold se kam hain, jaise ~10,000 ya jo bhi threshold system decide kare) ke liye — **push model**. Post hote hi unke followers ke feed cache mein turant likha jaata hai. Yeh 99%+ users cover karta hai aur unka fan-out cost manageable hai.
+- **Celebrity/high-follower accounts** (threshold se upar) ke liye — **pull model**. Unka post kisi ke feed cache mein push nahi hota. Iske bajaye, jab bhi koi follower apna feed load karta hai, Feed Service **separately** check karta hai "maine kin celebrities ko follow kiya hai" aur unke recent posts ko **read-time par pull karke, cached feed ke saath merge** kar deta hai.
+- Result: user ko ek hi unified, time-sorted feed dikhta hai — usko farak nahi padta ki kaunsa post push se aaya aur kaunsa pull se, lekin backend mein dono mechanism alag hain based on the specific account's follower count.
+
+Yeh hybrid approach exactly wahi "aha" insight hai jo interviewer dhoondta hai — candidate jo sirf ek approach batakar ruk jaata hai (chahe push ho ya pull), woh incomplete answer deta hai. Dono ke trade-offs samajh kar unhe merge karna hi seedha production-grade thinking dikhata hai.
+
+#### 4. Feed Cache Storage Model
+
+Feed cache (Redis jaisa) mein full post content store nahi hota — sirf **post IDs**, ek per-user sorted list/structure (jaise Redis Sorted Set, score = timestamp) mein. Jab feed request aata hai, cache se IDs milte hain, phir un IDs ke actual content (text, image URL, like count) ek **separate denormalized read** se Post Service/cache se fetch hota hai — often ek batch/multi-get operation mein, taaki N alag database calls na karni padein ek hi feed request ke liye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Push (fan-out-on-write): feed reads O(1), extremely fast for the 99%+ of accounts with normal follower counts",
+    "Pull (fan-out-on-read): celebrity posting stays cheap — no write explosion for a single post",
+    "Hybrid combines both — worst case of neither model dominates the system",
+  ]}
+  cons={[
+    "Push alone: catastrophic write amplification for celebrity accounts (a single post -> tens of millions of writes)",
+    "Pull alone: every single feed load becomes an expensive fan-in/merge across hundreds or thousands of followed accounts",
+    "Hybrid adds real implementation complexity — two code paths, a threshold to tune, and a merge step at read time",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Instagram / Meta">
+
+Instagram-scale systems explicitly maintain a distinction between "normal" accounts and high-follower accounts for exactly this reason — internally this is often called handling the celebrity problem. A push-only design was Twitter's original approach and famously required rethinking as follower-count skew grew; the hybrid push/pull model is now the standard answer across major feed products.
+
+</RealWorld>
+
+<RealWorld company="Meta">
+
+Feed ranking at Meta scale is a separate ML pipeline layered on top of the fan-out mechanism described above — signals like recency, past engagement with the poster, and predicted interest re-order the candidate post set that fan-out produced. The fan-out problem and the ranking problem are architecturally separate concerns, which is worth saying explicitly in an interview: "the feed generation pipeline decides WHAT posts are candidates; ranking decides the ORDER."
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Assumed DAU for estimation — 500 million, average 5 feed opens/day
+- Average feed-read QPS — roughly 29,000/second; peak (evening) — roughly 100,000-150,000/second
+- Read-to-write ratio — roughly 50:1 to 100:1 (feed system is overwhelmingly read-heavy)
+- Typical average follower count — a few hundred; celebrity accounts — tens of millions (5-6 orders of magnitude spread)
+- Naive push fan-out for one celebrity post to 50 million followers — tens of thousands of seconds of raw write work if done serially
+- Estimated feed-cache storage (500M users x 1000 cached post IDs x 8 bytes) — roughly 4 TB, kept in an in-memory store like Redis
+- Typical celebrity/high-follower threshold for switching to pull model — often set around 10,000+ followers (tunable per system)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer almost always pushes on: "What happens when a celebrity with 50 million followers posts?" This is THE test question of this entire topic. A weak candidate describes only fan-out-on-write and doesn't notice the problem until prompted. A strong candidate proactively raises the follower-skew issue during requirements clarification, explains both push and pull models with their trade-offs unprompted, and arrives at the hybrid answer as the natural resolution — not because the interviewer forced it out of them. Mentioning that ranking exists as a separate concern (without going deep into the ML) is a good way to show breadth without derailing into a topic that isn't the point of this question.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sirf ek model (push ya pull) describe karke ruk jaana, bina yeh mention kiye ki dono ke apne breaking points hain — is se interviewer ko lagta hai candidate ne follower-skew problem socha hi nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Feed cache mein full post content store karne ki baat karna instead of just post IDs — yeh cache ko unnecessarily bloat karta hai aur post edit/delete jaisi cheezein handle karna mushkil banata hai (denormalized copies har jagah stale ho sakti hain).
+
+</Mistake>
+
+<Mistake>
+
+Is system ko strongly consistent design karne ki koshish karna — feed system explicitly eventual consistency ke saath theek hai (payment system ke bilkul ulta), ek naya post kuch second late dikhna koi bug nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Threshold ko hardcoded, static number maan lena aur usse aage discuss na karna — real systems mein yeh dynamically tune bhi ho sakta hai, aur bataana ki "yeh ek tunable parameter hai based on system load" ek achha depth signal hai.
+
+</Mistake>
+
+<Mistake>
+
+Ranking ko completely ignore karna aur feed ko purely chronological maan lena bina yeh acknowledge kiye ki real production feeds (Instagram/Facebook) ranked hote hain, sirf recency se sort nahi hote.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Reg as Regular User (Post)
+    participant Cel as Celebrity (Post)
+    participant FO as Fan-out Service
+    participant Cache as Follower Feed Caches
+    participant Store as Post Store
+    participant Reader as Follower (Feed Open)
+    participant FS as Feed Service
+
+    Reg->>FO: New post
+    FO->>Cache: Push post ID to every follower's cache
+    Cel->>Store: New post (no push fan-out)
+    Reader->>FS: Load feed
+    FS->>Cache: Get cached post IDs (from regular follows)
+    FS->>Store: Pull recent posts from followed celebrities
+    FS->>FS: Merge + sort by time
+    FS-->>Reader: Unified feed
+`}
+  caption="The reader never knows which posts were pushed ahead of time and which were pulled on demand — the merge at read time hides the hybrid mechanism."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Core problem: highly skewed follower graph — most users have few followers, celebrities have tens of millions
+- Fan-out-on-write (push): fast reads (O(1) cache lookup), but a celebrity post causes a catastrophic write explosion
+- Fan-out-on-read (pull): cheap celebrity posting, but every feed load becomes an expensive fan-in merge across all follows
+- Production answer: hybrid — push for regular users, pull for celebrities, merge both at read time
+- Feed cache stores post IDs only (not full content) — actual post data fetched separately/denormalized at read time
+- This is an AP-leaning system — eventual consistency is fine, a post appearing a second late is not a bug
+- Ranking (ML-based relevance) is a separate concern layered on top of the fan-out mechanism — don't conflate the two
+- Always raise the celebrity/follower-skew problem proactively during requirements clarification — it's the single strongest signal in this topic
+
+</QuickRevision>

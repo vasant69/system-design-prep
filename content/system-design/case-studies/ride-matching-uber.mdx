@@ -1,0 +1,242 @@
+---
+slug: "ride-matching-uber"
+title: "Design Uber / Ola Ride Matching"
+section: "system-design"
+module: "case-studies"
+order: 4
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["consistent-hashing", "message-queues"]
+tags: ["case-study", "geospatial"]
+englishDefinition: "A ride-matching system continuously tracks the real-time location of millions of drivers, and given a rider's pickup request, quickly finds and matches a nearby available driver. It must operate at city-wide and eventually global scale, processing an extremely high-frequency stream of location updates while keeping the matching decision itself fast enough to feel instant to the rider."
+interviewFrequency: "high"
+companies: ["Uber", "Ola"]
+---
+
+<SimpleDefinition>
+
+A ride-matching system continuously tracks the real-time location of millions of drivers, and given a rider's pickup request, quickly finds and matches a nearby available driver. It must operate at city-wide and eventually global scale, processing an extremely high-frequency stream of location updates while keeping the matching decision itself fast enough to feel instant to the rider.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh case study interview mein pasand kiya jaata hai kyunki iska core problem — "find nearby drivers, fast, at massive update frequency" — ek genuinely interesting data structure problem hai, sirf CRUD nahi. Chalo end to end banate hain.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Driver apni location continuously share kare, real system ko pata rahe woh kahan hai.
+- Rider pickup request kare — apni current location se.
+- System nearby available drivers dhoonde aur best match ko request bheje.
+- Driver request accept/reject/timeout kar sake — reject/timeout par next-best driver ko try kiya jaaye.
+- Trip ke dauraan dono (rider aur driver) ek doosre ki live location dekh sakein.
+- Surge/dynamic pricing jab demand supply se zyada ho (brief mention only).
+
+Non-functional requirements:
+
+- **Location updates extremely high-frequency** hain — har active driver har 3-5 second mein apni location bhejta hai. Yeh ek continuous, write-heavy real-time stream hai.
+- Matching latency low honi chahiye — rider ko request submit karne ke kuch seconds ke andar ek driver assigned dikhna chahiye.
+- Availability high — ride-matching down hone ka matlab poore city mein rides book hi nahi ho sakti, business-critical hai.
+- Consistency requirement medium hai — location data thoda stale (kuch second purana) chalega, lekin "driver available hai ya nahi" status accurate hona chahiye taaki double-booking na ho.
+- Scale — city-wide se shuru hokar globally hundreds of cities, lakhon concurrent active drivers.
+
+Interviewer se yahan explicitly confirm karna chahiye ki scope kya hai — payment, driver onboarding, ratings sab is design se bahar hain, focus hai location tracking + matching pipeline pe.
+
+### Back-of-Envelope Estimation
+
+- Maan lo ek major city mein 200,000 active drivers peak hours mein, har driver har 4 second mein location update bhejta hai. Updates/second = 200,000 / 4 approx **~50,000 location writes/second** ek city ke liye. Global scale (100+ cities) pe yeh easily **millions of writes/second** tak jaata hai.
+- Rider requests: maan lo peak hour mein 1 million ride requests/hour ek metro city mein — approx **~280 requests/second**. Yeh location-update stream ke comparison mein bahut chhota hai — matching requests location writes se roughly 100-200x kam frequent hain.
+- Ek matching query ("find drivers near me") ko typically kuch sau meter se 2-3 km radius ke andar drivers chahiye — is radius mein realistically kuch dozen se kuch sau candidate drivers milte hain jinhe rank karna hota hai.
+- Storage: agar driver ki location sirf latest value store hoti hai (history nahi, sirf current position), 200,000 drivers x approx 50 bytes (driver ID, lat, long, timestamp, status) approx **~10 MB** ek city ke liye — yeh trivially in-memory fit ho jaata hai, jo hi bataata hai ki iska sahi jagah ek in-memory store hai, disk-backed DB nahi.
+- Match decision latency target: pura pipeline (query nearby -> rank -> send request -> driver responds) end-to-end approx **2-8 seconds** realistic target hai for a good user experience.
+
+### High-Level Design
+
+Do core flows: **location ingestion** (drivers continuously) aur **matching** (rider request-driven).
+
+High-level components:
+
+- **Driver app** — periodically GPS location backend ko bhejta hai.
+- **Location Ingestion Service** — high-throughput write path, driver location ko geospatial index mein update karta hai.
+- **Geospatial Index (in-memory)** — jaise Redis GEO commands, ya ek custom geohash/quadtree-based store — "find drivers near point X within radius R" query ko efficiently serve karta hai.
+- **Matching Service** — rider request aane par geospatial index query karta hai, candidates ko rank karta hai (ETA, distance, driver rating), sequentially ya top-N ko request bhejta hai.
+- **Trip Service** — ek baar match ho jaaye, trip lifecycle manage karta hai (accepted, in-progress, completed).
+- **Notification/Push layer** — driver ko ride request push karta hai, timeout track karta hai.
+
+</Hinglish>
+
+<Diagram
+  chart={`
+flowchart TD
+    D["Driver App<br/>(every ~4 sec)"] --> ING[Location Ingestion Service]
+    ING --> GEO[("In-memory Geospatial Index<br/>(Redis GEO / geohash)")]
+    R["Rider requests pickup"] --> MS[Matching Service]
+    MS -->|"query nearby, radius R"| GEO
+    GEO -->|"candidate driver list"| MS
+    MS --> RANK["Rank by ETA / distance / rating"]
+    RANK --> SEND["Send request to top driver<br/>(with timeout)"]
+    SEND -->|"accept"| TRIP[Trip Service]
+    SEND -->|"reject / timeout"| NEXT["Try next-ranked driver"]
+    NEXT --> SEND
+    style GEO fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style MS fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Two very different-shaped flows share one index: a constant high-frequency write stream from drivers, and a comparatively rare read-heavy query burst from riders."
+/>
+
+### Deep Dive
+
+<Hinglish>
+
+#### 1. Why a Plain Database Query Doesn't Work
+
+Naive approach: driver location ek regular SQL table mein store karo (driver_id, lat, long), aur rider request aane par ek query chalao jaisa `WHERE distance(lat, long, rider_lat, rider_long) < 2km`. Yeh do reasons se fail karta hai production scale pe:
+
+- **Distance calculation ek row-by-row computation hai** jo index use nahi kar sakta seedhe — lat/long columns pe normal B-tree index range queries ke liye useful nahi hai kyunki "nearby" ek 2D concept hai, ek single column pe sort karke solve nahi hota.
+- **Update frequency bahut zyada hai** — har 4 second mein lakhon rows update ho rahi hain. Ek disk-backed relational DB is likha rate ko sustain karte hue simultaneously efficient nearby-queries serve karna — dono ek saath — bahut mehenga aur slow ban jaata hai.
+
+Isliye ek **specialized geospatial index** chahiye jo dono operations (fast write, fast "nearby" read) ko efficiently support kare.
+
+#### 2. Geohashing — the Standard Solution
+
+Geohashing 2D coordinates (lat, long) ko ek single string mein encode karta hai, jahan **property yeh hai ki jo points physically close hain, unke geohash strings mein common prefix hota hai**. Jitna lamba common prefix, utna precise/small woh shared area hai.
+
+Isse "nearby drivers dhoondo" query ek simple **prefix/range query** ban jaati hai — jaise ek geohash-prefix-indexed structure mein sabhi drivers dhoondo jinka geohash ek given prefix se match karta hai. Yeh ek 2D nearest-neighbor problem ko ek 1D string-matching problem mein convert kar deta hai, jo index karna aur query karna dono easy hain.
+
+**Boundary edge case (important interview detail):** do points jo physically bahut close hain lekin ek grid-cell boundary ke exactly opposite sides pe hain, unke geohash strings **completely different** ho sakte hain (kyunki grid cell change hote hi prefix bhi badal jaata hai). Isliye sirf apne exact geohash cell ke andar search karna kaafi nahi hai — **neighboring cells bhi check karne padte hain** taaki boundary ke paar wale valid candidates miss na hon. Production geospatial libraries yeh neighbor-cell logic internally handle karte hain.
+
+**Alternative approach (conceptual mention):** QuadTree — ek tree structure jo space ko recursively 4 quadrants mein divide karta hai, dense areas mein zyada deep subdivide karta hai. Geohash simpler aur string-based hai (easy to shard/index), QuadTree zyada adaptive hai non-uniform density ke liye — dono valid approaches hain, geohash zyada commonly used hai simplicity ki wajah se.
+
+#### 3. Why In-Memory (Redis GEO), Not a Disk-Backed DB
+
+Driver location updates ek continuous, extremely high-frequency write stream hain — lakhon writes/second globally. Har update ke liye disk I/O involve karna (even with good indexing) latency add karta hai jo is use-case mein acceptable nahi hai, kyunki:
+
+- Location data **inherently transient hai** — sirf current position matter karta hai, purani location values ki durability ki zaroorat nahi (trip history alag se, durable store mein rakhi ja sakti hai agar chahiye).
+- In-memory store (jaise Redis, jiske built-in **GEO commands** — `GEOADD`, `GEORADIUS`/`GEOSEARCH` — hain) is exact use-case ke liye design kiya gaya hai — updates aur radius queries dono sub-millisecond mein.
+- Agar Redis crash bhi ho jaaye, worst case thoda staleness hai (drivers apna next update bhejenge kuch second mein) — yeh acceptable trade-off hai given yeh transient data hai, durability critical nahi.
+
+#### 4. Matching Algorithm Flow
+
+1. Rider request submit karta hai apni current location ke saath.
+2. Matching Service geospatial index ko query karta hai — "is radius ke andar available drivers do" (radius dynamically expand ho sakta hai agar pehle attempt mein kaafi candidates na milein — jaise pehle 1km try karo, na mile to 3km, phir 5km).
+3. Candidates ko rank kiya jaata hai — primarily estimated pickup ETA (jo sirf straight-line distance nahi, actual road network/traffic-aware estimate hota hai production mein), phir driver rating jaise secondary signals.
+4. Top-ranked driver ko request bheja jaata hai, ek **timeout** ke saath (jaise 10-15 second).
+5. Agar driver accept kare, trip confirm. Agar reject ya timeout ho, **next-ranked driver ko try karo** — yeh sequential fallback chain chalti rehti hai jab tak koi accept na kare ya candidates khatam na ho jaayein (jispar radius expand hota hai).
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein ek strong signal hai jab candidate khud proactively boundary-edge-case mention karta hai geohashing explain karte waqt — yeh dikhata hai ki tumne concept sirf surface-level nahi, actually implementation detail tak socha hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Uber">
+
+Uber ne apna khud ka geospatial indexing system, **H3**, open-source kiya hai — yeh hexagonal grid-based approach use karta hai (geohash ke square-grid ki jagah), jo kuch geometric properties (jaise uniform neighbor distance) ke liye better hai. Yeh dikhata hai ki geospatial indexing itna core problem hai ki Uber-scale companies isme apna khud ka specialized system invest karke banate hain, generic solutions se aage badhkar.
+
+</RealWorld>
+
+<RealWorld company="Ola">
+
+Surge pricing (dynamic pricing jab ek area mein demand supply se zyada ho jaaye) bhi isi geospatial infrastructure pe depend karta hai — same "kitne riders vs kitne available drivers ek given area mein" signal jo matching ke liye use hota hai, pricing multiplier decide karne ke liye bhi reuse hota hai. Yeh ek achha example hai ki ek achhi geospatial foundation multiple downstream features ko power kar sakti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Assumed active drivers in one major city at peak — 200,000, updating location every ~4 seconds
+- Resulting location-write rate for one city — roughly 50,000 writes/second; globally, millions/second across cities
+- Assumed peak ride requests — roughly 280/second in a metro city (100-200x lower frequency than location writes)
+- Typical driver-location dataset size per city (current-position only, no history) — roughly 10 MB, comfortably in-memory
+- Typical matching search radius — starts around 1 km, expands to 3-5 km if too few candidates found
+- Target end-to-end match latency (request to assigned driver) — roughly 2-8 seconds
+- Typical driver-response timeout per match attempt — roughly 10-15 seconds before falling back to the next candidate
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer almost always drills into "how do you efficiently find nearby drivers" — this is the load-bearing question of the whole topic. A weak answer says "query the database for drivers within X km" without addressing why that doesn't scale. A strong answer explains geohashing (or QuadTree) as the actual mechanism, proactively raises the boundary/neighbor-cell edge case, and explains why the store needs to be in-memory given the update frequency. A second common follow-up is "what happens if the top driver doesn't respond" — answering with the timeout-and-fallback-to-next-candidate chain, plus radius expansion if candidates run out, shows you've thought about the full matching loop, not just the single happy path.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Naive "SQL query with a distance function in WHERE clause" design propose karna bina yeh explain kiye ki yeh index-friendly nahi hai aur write-heavy update stream ke saath scale nahi karega.
+
+</Mistake>
+
+<Mistake>
+
+Geohashing explain karte waqt boundary/neighbor-cell edge case completely miss kar dena — sirf apne exact cell mein search karna propose karna, jo physically-close-but-different-cell candidates ko silently miss kar dega.
+
+</Mistake>
+
+<Mistake>
+
+Driver location ko ek disk-backed relational database mein store karne ka suggestion dena bina yeh consider kiye ki yeh data transient hai aur is update frequency par disk I/O latency-prohibitive hai.
+
+</Mistake>
+
+<Mistake>
+
+Matching ko ek single-shot operation maan lena — yeh bhool jaana ki driver reject/timeout kar sakta hai aur system ko next-best candidate try karne ka fallback chahiye, na ki sirf ek attempt karke fail ho jaana.
+
+</Mistake>
+
+<Mistake>
+
+Surge pricing ko is topic ka main focus bana dena — yeh ek related-but-secondary concern hai, core matching/geospatial problem se interviewer ka dhyaan mat bhatkao unless specifically poocha jaaye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Rider
+    participant MS as Matching Service
+    participant Geo as Geospatial Index
+    participant D1 as Driver 1 (nearest)
+    participant D2 as Driver 2 (next)
+
+    Rider->>MS: Request ride at (lat, long)
+    MS->>Geo: Query nearby available drivers
+    Geo-->>MS: Candidate list (ranked by ETA)
+    MS->>D1: Ride request (timeout 12s)
+    D1-->>MS: Reject / timeout
+    MS->>D2: Ride request (timeout 12s)
+    D2-->>MS: Accept
+    MS-->>Rider: Driver matched
+`}
+  caption="On reject or timeout, the matching service falls back to the next-ranked candidate rather than failing the whole request."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Core problem: efficiently find nearby available drivers under an extremely high-frequency location-update stream
+- Plain SQL distance queries don't scale — no natural index for 2D "nearby" and the write rate is too high for disk-backed stores
+- Geohashing encodes lat/long into a string where nearby points share prefixes, turning "find nearby" into a prefix/range query
+- Boundary edge case: physically-close points straddling a grid cell can have very different geohashes — must check neighbor cells too
+- QuadTree is a conceptual alternative — more adaptive to density, geohash is simpler and more common in practice
+- Driver locations live in an in-memory geospatial store (e.g. Redis GEO) — data is transient and update frequency rules out disk-backed DBs
+- Matching flow: query nearby -> rank by ETA/distance/rating -> send to top candidate with timeout -> fallback to next on reject/timeout
+- Surge pricing is a light, secondary mention — driven by the same demand/supply signal, not the main design focus
+
+</QuickRevision>

@@ -1,0 +1,185 @@
+---
+slug: "api-gateway-service-discovery"
+title: "API Gateway & Service Discovery"
+section: "system-design"
+module: "reliability-ops"
+order: 5
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["microservices-vs-monolith"]
+tags: ["microservices", "networking"]
+englishDefinition: "An API Gateway is a single entry point that routes external client requests to the correct internal microservice, while centralizing cross-cutting concerns like authentication, rate limiting, and request logging. Service discovery is the mechanism by which services find the current network location of other services they need to call, given that in a dynamic, auto-scaled environment, instances come and go constantly. Together they are the two pieces of infrastructure that make a microservices architecture actually navigable."
+interviewFrequency: "high"
+companies: ["Netflix", "Uber", "Amazon"]
+---
+
+<SimpleDefinition>
+
+An API Gateway is a single entry point that routes external client requests to the correct internal microservice, while centralizing cross-cutting concerns like authentication, rate limiting, and request logging. Service discovery is the mechanism by which services find the current network location of other services they need to call, given that in a dynamic, auto-scaled environment, instances come and go constantly. Together they are the two pieces of infrastructure that make a microservices architecture actually navigable.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic (microservices vs monolith) mein humne dekha ki microservices split karne ke baad "naya infrastructure chahiye — service discovery, API gateway" — yeh topic exactly wahi do pieces gehraai mein cover karta hai. Yeh dono itne closely related hain ki inhe saath samajhna zaroori hai: gateway **external** traffic ko andar route karta hai, service discovery services ko **internally** ek dusre ko dhoondhne mein madad karta hai.
+
+### API Gateway kya karta hai — in depth
+
+Jab client (mobile app, web frontend) ke paas dus alag microservices hain jinse baat karni hai, do options hain: har service ka address directly client ko do do (bad idea — tight coupling, client ko sab kuch pata hona chahiye), ya ek single entry point banao jo internally route kare. Yehi API Gateway hai. Iski responsibilities:
+
+- **Routing / reverse-proxying** — incoming request ka path/method dekh ke sahi backend service ko forward karna. Jaise `/orders/*` order service ko, `/users/*` user service ko.
+- **Authentication/authorization at the edge** — har individual service ko apna auth logic reimplement nahi karna padta. Gateway ek baar token/session verify karta hai, downstream services ko sirf verified user-identity pass karta hai. Yeh massive duplication save karta hai — imagine 20 services, har ek apna JWT validation likh raha ho, versus ek jagah likha hua.
+- **Rate limiting** — per-client ya per-API-key request limits enforce karna, taaki ek abusive client poore backend ko overwhelm na kar sake. Yeh edge pe karna zyada efficient hai — backend services tak request pahunchne se pehle hi reject ho jaati hai.
+- **Request/response transformation** — client jo format expect karta hai aur backend service jo format deta hai, unmein mismatch ho to gateway translate kar sakta hai (jaise legacy SOAP backend ko REST-facing bana dena).
+- **Backend-for-frontend (BFF) / aggregation pattern** — ek client-facing request ke peeche multiple backend services ka data chahiye ho sakta hai (jaise ek product page ko product-service, pricing-service, aur review-service teeno se data chahiye). Gateway (ya ek dedicated BFF layer) yeh multiple internal calls khud karke ek single combined response client ko deta hai — client ko multiple round trips nahi karne padte.
+
+### Gateway ka real risk — monolith-in-disguise
+
+Yahan ek genuine trap hai jo interview mein bolna important hai: agar gateway mein **business logic** leak hone lage (jaise "agar order amount 500 se zyada hai to discount apply karo" jaisa rule gateway ke andar likh diya), to gateway khud ek **hidden monolith** ban jaata hai — saari services us par indirectly dependent ho jaati hain, aur woh single point of coordination/bottleneck ban jaata hai, exactly wahi problem jo microservices split karke avoid karna tha. Gateway ko **strictly cross-cutting concerns** tak limited rakhna chahiye — routing, auth, rate limiting, logging — business logic nahi.
+
+Doosra genuine risk: gateway **single point of failure** ban sakta hai agar sahi se scale na kiya jaaye — saara traffic isse guzarta hai, isliye yeh khud horizontally scaled (multiple replicas, load balancer ke peeche) aur highly available hona chahiye. Agar gateway down ho jaaye, poora system external traffic ke liye unreachable ho jaata hai, chahe baaki saari microservices healthy hon.
+
+### Service discovery — problem yeh hai
+
+Microservices ke world mein instances constantly aate-jaate hain — auto-scaling naye instances spin up karta hai traffic badhne pe, unhealthy instances terminate hote hain, deployments purane instances hata ke naye laate hain. Ek service (jaise order-service) ko har baar inventory-service ko call karne ke liye uska **current** IP:port jaanna hota hai — lekin woh IP:port continuously badalta rehta hai. Hardcode karna impossible hai. Yeh exactly load balancing jaisi problem hai (Module 2 mein cover hui), bas ab yeh **internal, constantly-changing service instances** ke liye hai, external client traffic ke liye nahi.
+
+### Client-side discovery
+
+Client (yahan "client" matlab calling service, jaise order-service) khud ek **service registry** ko directly query karta hai ("inventory-service ke kaunse instances abhi healthy hain?"), registry se list milti hai, aur client khud ek instance choose karta hai (round-robin, random, ya kisi load-balancing strategy se) aur directly call karta hai. Classic example: **Netflix Eureka** (unka original service registry) is pattern ka poster-child hai — calling service mein ek client-side library embedded hoti thi jo registry se baat karti thi aur locally load-balance karti thi (Netflix Ribbon ke saath).
+
+Trade-off: client thoda "smart" hona padta hai (registry-lookup logic + load-balancing logic client ke andar honi chahiye), lekin ek extra network hop (ek separate load balancer ke through) nahi lagta.
+
+### Server-side discovery
+
+Client sirf ek **fixed, stable address** (jaise ek load balancer ya router) ko call karta hai, aur woh load balancer registry ko internally query karke sahi instance ko route kar deta hai. Client ko registry ke baare mein kuch pata hi nahi hota — woh sirf "call inventory-service" bolta hai, baaki sab router handle karta hai.
+
+Yeh pattern aaj **zyada common** hai — jaise **Kubernetes Services + kube-proxy**: ek Kubernetes Service ek stable virtual IP/DNS name deta hai, aur kube-proxy actual pod instances (jo continuously badalte rehte hain) ko route karta hai. Calling service ko sirf Service ka naam pata hona chahiye, kaunsa specific pod handle kar raha hai woh transparent hai.
+
+Trade-off: client simple rehta hai (koi registry-lookup logic client ke andar nahi), lekin ek extra network hop lagta hai (router ke through), aur router khud ko highly available rakhna padta hai.
+
+### Registration — kaise pata chalta hai kaun healthy hai
+
+Do tareeke registry mein entries aati hain:
+
+- **Self-registration** — har service instance startup pe khud registry mein apna address register karta hai, aur periodically **heartbeat** bhejta rehta hai ("main zinda hoon"). Agar heartbeat rukk jaaye (ek TTL window ke andar nahi aaya), registry us entry ko stale/dead maan ke hata deta hai.
+- **Third-party registrar** — ek separate component (jaise Kubernetes ka control plane) instances ko khud monitor karta hai (health checks bhej ke) aur registry ko update karta hai — individual service ko khud register/deregister karne ki zimmedari nahi honi padti.
+
+Dono approach mein core mechanism same hai: **health checks + TTL/heartbeat** — agar ek instance ek certain time window ke andar apni liveness prove nahi karta (chahe self-reported heartbeat ho ya external health-check probe), registry usse stale maan ke remove kar deta hai, taaki koi aur service ek dead instance ko call na kare.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein service discovery explain karte waqt directly bolo: "yeh essentially load balancing hi hai, bas internal, constantly-changing service instances ke liye" — yeh ek line unprompted bolna dikhata hai ki tum concepts ko isolated facts ki tarah nahi, connected system ki tarah samajhte ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Netflix">
+
+Netflix ka Zuul API Gateway saara external traffic handle karta hai aur unke stack mein Eureka (service registry) ke saath integrate hota hai — client-side discovery ka classic real-world example, jaha calling services registry se directly baat karke instance choose karti thi Ribbon library ke through.
+
+</RealWorld>
+
+<RealWorld company="Uber">
+
+Uber jaisi elastic-traffic company (peak ride-hours mein massive instance scale-up, off-peak mein scale-down) ke liye service discovery critical hai — internal services ek dusre ko constantly changing instance pool mein reliably dhoondh paayein, taaki ek ride-request flow (matching, pricing, ETA services) bina manual coordination ke kaam kare chahe underlying instances minute-by-minute badal rahe hon.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon jaisi organization mein API Gateway pattern (jaise AWS API Gateway service khud is pattern ko ek managed product ki tarah offer karta hai) auth, rate limiting, aur routing ko centralize karta hai hazaaron internal microservices ke aage, taaki har team apna khud ka auth/rate-limiting reimplement na kare.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical extra latency added by a server-side discovery hop (client to router to service) — usually low single-digit milliseconds within the same datacenter/cluster
+- Kubernetes default liveness/readiness probe interval — commonly every 10 seconds, with a handful of failed probes before an instance is marked unhealthy and removed from routing
+- Service registry heartbeat/TTL windows in classic client-side discovery systems (e.g., Eureka-style) — often in the 30-90 second range before a stale entry is evicted
+- Number of cross-cutting concerns a gateway commonly centralizes — typically 4-5: routing, auth, rate limiting, logging, and response transformation
+- Companies running hundreds to thousands of internal microservices behind a small number of gateway clusters — a common real-world ratio at large-scale organizations
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common prompt: after a candidate proposes a microservices architecture, the interviewer often asks: "how does a client actually reach these services, and how do the services find each other?" This is testing whether the candidate has thought past drawing boxes-and-arrows into the actual operational plumbing.
+
+Model answer shape: start with the gateway — "external clients hit a single API Gateway, jo auth, rate limiting, aur routing centralize karta hai, taaki har service apna khud ka auth logic na likhe." Then pivot to internal communication — "services ek dusre ko call karne ke liye service discovery use karte hain, kyunki instances constantly scale up/down hote hain." Then name the mechanism you'd pick and why — "main server-side discovery use karunga (jaise Kubernetes Services), kyunki calling services simple rehti hain, registry-lookup logic unke andar nahi honi padti." Proactively flagging the gateway-becoming-a-monolith risk, unprompted, is a strong senior-level signal.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Business logic ko gateway ke andar daal dena (jaise pricing rules, discount logic) — isse gateway khud ek hidden monolith/bottleneck ban jaata hai, jo poore microservices split ka purpose hi defeat kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+API Gateway ko sirf "load balancer" samajh lena — gateway routing ke saath-saath auth, rate limiting, aur transformation jaisi cross-cutting concerns bhi centralize karta hai, sirf traffic distribute nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Gateway ko single instance ki tarah design karna, use horizontally scale na karna — gateway saara external traffic handle karta hai, isliye khud single point of failure ban sakta hai agar highly available na banaya jaaye.
+
+</Mistake>
+
+<Mistake>
+
+Service discovery ko sirf ek "nice-to-have" samajhna chhote systems ke liye — jabki yeh koi bhi auto-scaled ya dynamically-deployed environment mein zaroori hai, chahe services ki count kam ho, kyunki instance IPs kabhi bhi badal sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Stale/dead registry entries ka mechanism explain na kar paana — sirf "registry mein instances register hote hain" bol dena kaafi nahi hai, health checks + TTL/heartbeat ka mention karna zaroori hai warna dead instances ko traffic route hota rahega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C["External Client"] --> G["API Gateway<br/>auth, rate limit, route"]
+    G --> S1["Order Service"]
+    G --> S2["Inventory Service"]
+    S1 -->|"server-side discovery"| R["Service Registry / Router<br/>e.g. Kubernetes Service"]
+    R --> S2
+    S2 -.heartbeat / health check.-> R
+    S1 -.heartbeat / health check.-> R
+    style G fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style R fill:#1e293b,stroke:#facc15,color:#e2e8f0
+`}
+  caption="External traffic enters through one gateway; internally, order-service reaches inventory-service via a registry/router that knows current healthy instances through heartbeats, not a hardcoded address."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- API Gateway = single entry point for external traffic; centralizes routing, auth, rate limiting, request logging, and response transformation
+- Backend-for-frontend pattern: gateway aggregates multiple backend calls into one client-facing response
+- Risk 1: business logic leaking into the gateway turns it into a hidden monolith/bottleneck
+- Risk 2: gateway as single point of failure if not horizontally scaled and made highly available
+- Service discovery = how services find each other's current network location as instances constantly change
+- Client-side discovery: client queries registry directly and load-balances itself (e.g. classic Netflix Eureka + Ribbon)
+- Server-side discovery: client calls a fixed router/load balancer, which queries the registry (more common today, e.g. Kubernetes Services)
+- Registration is self-registration or third-party registrar; stale entries removed via health checks + TTL/heartbeat
+- Mental shortcut: service discovery is load balancing, applied to internal, constantly-changing service instances
+
+</QuickRevision>
