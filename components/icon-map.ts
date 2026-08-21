@@ -22,6 +22,13 @@ import {
   ShieldAlert,
   HardDrive,
   Archive,
+  Code2,
+  Route,
+  Workflow,
+  DatabaseZap,
+  FileJson,
+  Lock,
+  FlaskConical,
   type LucideIcon,
 } from "lucide-react";
 
@@ -32,6 +39,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Languages,
   GitBranch,
   Cloud,
+  Code2,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -52,4 +60,10 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "iam-advanced-ops": ShieldAlert,
   "s3-fundamentals": HardDrive,
   "s3-advanced-ops": Archive,
+  "api-fundamentals": Route,
+  "di-middleware": Workflow,
+  "efcore-data-access": DatabaseZap,
+  "api-design-practices": FileJson,
+  "dotnet-security": Lock,
+  "testing-production": FlaskConical,
 };

@@ -223,6 +223,58 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "dotnet-api",
+    title: "ASP.NET Core Web API",
+    description:
+      "Controllers, DI, EF Core, API design, and security in ASP.NET Core — the backend Web API stack, not the MVC/Razor UI layer.",
+    icon: "Code2",
+    enabled: true,
+    modules: [
+      {
+        id: "api-fundamentals",
+        title: "API Fundamentals",
+        description:
+          "The request lifecycle and Program.cs, the middleware pipeline, attribute routing and controllers, action results and status codes, and model binding/validation.",
+        order: 1,
+      },
+      {
+        id: "di-middleware",
+        title: "DI, Middleware & Cross-Cutting Concerns",
+        description:
+          "The DI container and service lifetimes, configuration and the options pattern, structured logging, writing custom middleware, filters vs middleware, and global exception handling.",
+        order: 2,
+      },
+      {
+        id: "efcore-data-access",
+        title: "Data Access with EF Core",
+        description:
+          "DbContext and change tracking, migrations, LINQ-to-Entities query translation, relationships and loading strategies, concurrency control, the repository/unit-of-work debate, and EF Core performance tuning.",
+        order: 3,
+      },
+      {
+        id: "api-design-practices",
+        title: "API Design & Best Practices",
+        description:
+          "REST design principles, Minimal APIs vs Controllers, versioning and OpenAPI/Swagger, HttpClient/IHttpClientFactory, pagination/filtering/sorting, and rate limiting/response caching.",
+        order: 4,
+      },
+      {
+        id: "dotnet-security",
+        title: "Security — AuthN & AuthZ",
+        description:
+          "JWT bearer authentication, ASP.NET Core Identity, roles/policies/claims-based authorization, CORS, secrets management and HTTPS/HSTS, and SQL injection prevention with EF Core.",
+        order: 5,
+      },
+      {
+        id: "testing-production",
+        title: "Testing & Production Readiness",
+        description:
+          "Unit testing with xUnit/Moq, integration testing with WebApplicationFactory, caching strategies, background jobs, health checks/observability, and deployment basics.",
+        order: 6,
+      },
+    ],
+  },
+  {
     slug: "english-learning",
     title: "English Learning",
     description: "Interview communication, vocabulary, and spoken English practice.",
