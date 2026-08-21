@@ -1,0 +1,192 @@
+---
+slug: "s3-performance-presigned-urls-cors"
+title: "S3 Performance, Presigned URLs & CORS"
+section: "aws"
+module: "s3-advanced-ops"
+order: 3
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["s3-bucket-object-versioning-basics"]
+tags: ["aws", "s3", "performance"]
+englishDefinition: "S3 throughput scales per partitioned prefix (3,500 writes/sec, 5,500 reads/sec, unlimited prefixes per bucket) rather than per bucket, and browser-facing access patterns — presigned URLs, presigned POST, and CORS — each carry sharp, frequently-tested gotchas around expiry limits, upload-size enforcement, and virtual-hosted-style endpoints."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 throughput scales per partitioned prefix (3,500 writes/sec, 5,500 reads/sec, unlimited prefixes per bucket) rather than per bucket, and browser-facing access patterns — presigned URLs, presigned POST, and CORS — each carry sharp, frequently-tested gotchas around expiry limits, upload-size enforcement, and virtual-hosted-style endpoints.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Request rate limits — per-prefix, not per-bucket
+
+S3 ka limit **partitioned prefix** ke hisaab se hai: **3,500** PUT/COPY/POST/DELETE requests per second, aur **5,500** GET/HEAD requests per second. **Bucket me prefixes ki koi limit nahi hai** — prefixes badha kar linearly scale kar sakte ho (10 prefixes = 35,000 writes/sec, 55,000 reads/sec). "Prefix" ka matlab yahan S3 ka **internal partition** hai, tumhara logical folder nahi — S3 traffic pattern dekh kar automatically partitions split karta hai, lekin ye split **instant nahi** hai, 30-60 minutes lag sakte hain. Isi wajah se key design SQL Server ke sequential clustered index hotspot jaisa hai: sequential keys (`logs/2026-08-06T09:14:22-001.json`) sab ek partition par jaate hain aur 3,500/s par throttle hote hain. Fix same hai — high-cardinality prefix pehle daalo (`logs/a3f9/...` — 4 hex chars = 65,536 possible partitions). Naye prefix par sudden 20,000 req/s daaloge to ramp-up ke dauraan `503 SlowDown` khaoge — exponential backoff with jitter (SDK default) aur gradual traffic ramp is ka solution hai; production ke liye `maxAttempts: 5-8` set karo, default `3` kam hai.
+
+### Throughput maximize karna
+
+Bottlenecks aur fixes: **single TCP connection** typically **~85-100 MB/s** tak jaati hai — isse zyada chahiye to **parallel connections** chahiye. Bade objects ke liye **multipart parallel upload** (`queueSize`/`partSize` tune karo). Bade downloads ke liye **byte-range GET** — ek 1 GB file ko 8 parallel chunks me padho. Bahut sare chhote objects ke liye bottleneck request rate hai, bandwidth nahi — prefixes distribute karo. **AWS Common Runtime (CRT)** SDK ka native transfer layer hai jo automatic parallelization, adaptive part sizing, connection pooling karta hai — 50 TB objects ke liye AWS explicitly ye recommend karta hai. Cross-region GET latency ~200ms extra add karta hai. Ek counter-intuitive Lambda gotcha: Lambda ka **network bandwidth memory ke saath scale karta hai** — 128 MB Lambda ko bahut kam bandwidth milti hai, memory 1,769 MB (1 vCPU) ya usse zyada karne se execution time itna kam ho jaata hai ki **zyada memory dene se cost kam** ho sakta hai.
+
+### Presigned URLs — expiry limits aur signer-permissions gotcha
+
+Presigned URL ek temporary signed URL hai jo bina AWS credentials ke ek specific operation allow karta hai. Use cases: private file download (bucket public kiye bina), direct browser upload (bandwidth/latency bachane ke liye server ke through jaane se), third-party ko temporary access. **Expiry limits jo interview me poochi jaati hain:** IAM user credentials se signed URL max **7 days** tak valid ho sakta hai. Temporary credentials (role session) se signed URL **credentials ke expire hone tak hi** valid hai — matlab typically 1 ghanta, chahe tum `expiresIn: 604800` likh do. Ye ek common gotcha hai jab Lambda role se URL generate karte ho.
+
+Sabse important security point: presigned URL ki permissions **signer** ki hain, requester ki nahi. Agar Lambda role poore bucket ko read kar sakta hai aur galat key ke liye URL bana do, to user wo file padh lega. Key ko **kabhi user input se directly mat lo** — path traversal (`../../other-tenant/data.csv`) ka real risk hai; hamesha server-side validate karo ki key user ke tenant prefix ke andar hai. Aur URL **share ho sakta hai** — jisko bhi mile wo use kar sakta hai, koi additional auth nahi hoti.
+
+```python
+import boto3
+
+s3 = boto3.client("s3", region_name="ap-south-1")
+url = s3.generate_presigned_url(
+    "get_object",
+    Params={"Bucket": "jmfs-reports", "Key": "2026/aug.csv"},
+    ExpiresIn=900,  # 15 minutes
+)
+```
+
+### Presigned PUT vs presigned POST
+
+**Presigned PUT** — simple, ek object, fixed key. Browser side: `fetch(url, { method: "PUT", body: file })`. **Presigned POST** — HTML form-based, aur **policy conditions** laga sakte ho: `content-length-range` (max size enforce), `starts-with $Content-Type` (sirf specific file types), `starts-with $key` (tenant isolation). **Key difference: presigned POST me file size aur content type par server-side limit laga sakte ho, PUT me nahi.** Presigned PUT me agar user 5 GB file upload kar de to S3 accept kar lega — size limit lagi hi nahi thi, ye ek real abuse vector hai. Gotcha: PUT me `ContentType` sign karne par client ko exactly wahi header bhejna padega warna `SignatureDoesNotMatch` (browser kabhi apne aap Content-Type badal deta hai). Aur `content-length-range` PUT me possible hi nahi hai — size limit chahiye to presigned POST use karo, ya PUT ke baad Lambda se size verify karke oversized objects delete karo.
+
+### CORS — sirf browsers ke liye
+
+Agar browser se directly S3 par request ja rahi hai (presigned upload, JS fetch), to CORS chahiye — warna browser block kar dega:
+
+```json
+[{
+  "AllowedOrigins": ["https://app.jmfinancial.com"],
+  "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+  "AllowedHeaders": ["*"],
+  "ExposeHeaders": ["ETag", "x-amz-request-id", "x-amz-version-id"],
+  "MaxAgeSeconds": 3000
+}]
+```
+
+`ExposeHeaders` critical hai — bina uske browser JS `ETag` nahi padh sakta, aur multipart upload me har part ka ETag chahiye hota hai; ye Angular/React se direct multipart upload karte waqt sabse common bug hai. Gotcha: CORS **sirf browsers** par lagta hai — Node se request karte ho to CORS irrelevant hai, agar CORS error dikh raha hai to problem browser me hai, server me nahi. `"AllowedOrigins": ["*"]` production me kabhi mat likhna — koi bhi website tumhare presigned URLs ko apne page se hit kar sakti hai. CORS config bhi eventually consistent hai — change karke turant test mat karo.
+
+### Multipart upload — teen steps aur invisible garbage
+
+Teen steps: `CreateMultipartUpload` (UploadId milta hai) → `UploadPart × N` (har part ka ETag, parallel ho sakta hai) → `CompleteMultipartUpload` (sab ETags bhejo, assemble hota hai), ya `AbortMultipartUpload`. Fayde: parallel upload, resumable (network toota to sirf failed part retry), streaming (total size pata na ho tab bhi shuru kar sakte ho), pause/resume (initiate ke baad koi expiry nahi). **100 MB se bade objects ke liye multipart use karo**, chahe single PUT allowed ho (5 GB tak) — single PUT me glitch aane par poora upload dobara karna padta hai, multipart me sirf ek part retry hota hai. Sabse mehnga hidden gotcha: **incomplete multipart uploads ka storage bill aata hai aur wo LIST me dikhte hi nahi** — abort na hua upload hamesha ke liye storage leta rehta hai, invisible. Har bucket par day-1 se `AbortIncompleteMultipartUpload` (7 din) lifecycle rule lagao.
+
+### Transfer Acceleration vs CloudFront
+
+Transfer Acceleration CloudFront ke edge locations use karta hai lekin **upload direction** me — user nearest edge se connect karta hai, phir AWS ka optimized backbone S3 tak le jaata hai. Cost ~$0.04/GB extra. CloudFront mostly **download** ke liye hai aur caching karta hai. Decision: downloads ke liye CloudFront (caching se paisa bachta hai), long-distance uploads ke liye Transfer Acceleration, bulk one-time migration ke liye Snowball/DataSync (dono se sasta). Gotcha: Transfer Acceleration **hamesha faster nahi hota** — agar user already region ke paas hai to sirf extra cost, koi fayda nahi. Enable karne se pehle AWS ka speed comparison tool (`s3-accelerate-speedtest`) se apne actual user locations test karo. AWS sirf tab charge karta hai jab acceleration actually faster ho.
+
+### Path-style vs virtual-hosted-style endpoints
+
+```
+Virtual-hosted style:  https://bucket-name.s3.region.amazonaws.com/key
+Path style:            https://s3.region.amazonaws.com/bucket-name/key
+```
+
+AWS ne path-style ko naye buckets (Sept 2020 ke baad) ke liye **deprecate** kar diya — virtual-hosted me bucket name DNS me hota hai, jisse AWS traffic ko bucket-specific infrastructure par route kar sakta hai bina HTTP path parse kiye, better load balancing/scaling ke liye. Node SDK v3 me virtual-hosted default hai; `forcePathStyle: true` sirf **local development** (MinIO/LocalStack, jahan wildcard DNS nahi hai) ke liye chahiye. Isse production config me chhod dene par naye buckets par `PermanentRedirect` errors aate hain.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Presigned POST: file size/type ko server-side enforce kar sakte ho, tenant isolation ke liye key prefix lock kar sakte ho", "Presigned PUT: simpler client code, koi form-field handling nahi"]}
+  cons={["Presigned POST: HTML form semantics, thoda zyada client-side complexity", "Presigned PUT: koi content-length-range enforcement nahi — oversized uploads accept ho jaate hain jab tak alag se size-check na ho"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real document-upload flow me pehle presigned PUT use kiya gaya tha — kaam kar raha tha, lekin ek load test me pata chala ki koi bhi client arbitrarily bada file upload kar sakta tha kyunki PUT me size limit enforce karne ka koi tareeka nahi hai. Migration presigned POST par hui, `content-length-range` (0-10 MB), `starts-with $Content-Type` (`image/`), aur `starts-with $key` (tenant prefix) conditions ke saath. CORS config me `ExposeHeaders: ["ETag"]` add karna pada kyunki multipart upload React se ETags read nahi kar pa raha tha — ye classic gotcha production me hi pakda gaya, staging me nahi (kyunki staging me chhoti files thi jo multipart threshold cross hi nahi karti thi).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Request rate: **3,500** PUT/COPY/POST/DELETE per second per partitioned prefix; **5,500** GET/HEAD per second per partitioned prefix
+- Partition split time: automatic but **not instant** — ~30-60 minutes
+- Single TCP connection throughput: **~85-100 MB/s** practically
+- Presigned URL max expiry: **7 days** with IAM user credentials; capped at the session's own expiry (often ~1 hour) with temporary/role credentials
+- Multipart recommended threshold: objects **>100 MB**; part size range **5 MiB - 5 GiB**; max **10,000 parts**
+- Transfer Acceleration: ~$0.04/GB extra ⚠️ verify — AWS only charges when it's actually faster
+- Path-style endpoints deprecated for buckets created **after September 2020**
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Browser se directly S3 me file upload karana hai, secure design kya hoga" is a strong scenario question — the complete answer chains presigned POST (not PUT, because only POST enforces `content-length-range`), a server-generated key (never from user input, to avoid path traversal), CORS with a specific origin and `ExposeHeaders: ["ETag"]`, a short expiry, and post-upload validation via an S3 event. A second common probe is "one bucket needs 10,000 requests/second — design it" — the strong answer names the per-prefix limit (not per-bucket), explains that prefixes are unlimited so keys should be distributed with a high-cardinality prefix, and flags that partition splitting takes 30-60 minutes so traffic should ramp gradually. A subtler trap: asking for a presigned URL's expiry with role-based credentials — many candidates don't know the URL's real lifetime is capped by the credential's own expiry, not the `expiresIn` parameter.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using presigned PUT when an upload size limit is required — PUT has no `content-length-range` mechanism. If size enforcement matters (it usually does in production), use presigned POST or verify size server-side after upload and delete oversized objects.
+
+</Mistake>
+
+<Mistake>
+
+Taking the S3 object key directly from user input for a presigned URL — this opens a path-traversal risk (`../../other-tenant/data.csv`). The key should be server-generated or validated against the requesting user's tenant prefix.
+
+</Mistake>
+
+<Mistake>
+
+Designing for a high request rate with sequential, timestamp-prefixed keys (`logs/2026-08-06T...`) — all writes land on one partition and throttle at 3,500/sec. Distribute with a high-cardinality prefix segment instead.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting `ExposeHeaders: ["ETag"]` in the CORS configuration — browser JavaScript can't read the ETag response header without it, which silently breaks multipart uploads initiated from the browser (each part's ETag is required to complete the upload).
+
+</Mistake>
+
+<Mistake>
+
+Leaving `forcePathStyle: true` set in a production SDK config after using it for local MinIO/LocalStack development — buckets created after September 2020 will throw `PermanentRedirect` errors against real S3.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Browser
+    participant API as App Server
+    participant S3
+
+    Browser->>API: Request upload (auth'd)
+    API->>API: Validate user, build tenant-scoped key
+    API->>S3: createPresignedPost (conditions: size, content-type, key prefix)
+    S3-->>API: url + fields
+    API-->>Browser: url + fields (short expiry, e.g. 15 min)
+    Browser->>S3: POST file directly (multipart/form-data)
+    S3-->>Browser: 204 No Content
+    S3->>API: s3:ObjectCreated event
+    API->>API: Validate actual content-type, size, virus scan
+`}
+  caption="A secure browser-to-S3 upload never routes file bytes through the app server — the server only issues a scoped, short-lived presigned POST and validates the result afterward via an S3 event."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Rate limits are per partitioned prefix (3,500 writes/sec, 5,500 reads/sec), not per bucket — prefixes are unlimited, so distribute high-cardinality prefix segments to scale
+- Partition splitting is automatic but takes 30-60 minutes — ramp traffic gradually into new prefixes to avoid `503 SlowDown`
+- A presigned URL's permissions belong to the signer, not the requester — never take the object key from raw user input
+- Presigned URL expiry: up to 7 days with IAM user credentials, but capped by the underlying credential's own expiry with temporary/role credentials
+- Presigned POST supports `content-length-range` and content-type enforcement; presigned PUT does not — use POST when upload limits matter
+- CORS only affects browser requests, and `ExposeHeaders: ["ETag"]` is required for browser-driven multipart uploads to work
+- Multipart upload for objects over 100 MB; always pair it with an `AbortIncompleteMultipartUpload` lifecycle rule — incomplete uploads bill silently and never show up in LIST
+- Transfer Acceleration speeds up long-distance uploads; CloudFront is for repeated downloads via caching — they solve different problems and AWS only bills acceleration when it's measurably faster
+
+</QuickRevision>

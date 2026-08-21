@@ -1,0 +1,301 @@
+---
+slug: "iam-boundaries-scps-multi-account"
+title: "Permissions Boundaries, SCPs & Multi-Account Design"
+section: "aws"
+module: "iam-advanced-ops"
+order: 1
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["iam-policy-anatomy-evaluation"]
+tags: ["aws", "iam", "governance"]
+englishDefinition: "Permissions boundaries, Service Control Policies (SCPs), and session policies are three distinct ceiling mechanisms in AWS IAM — none of them grant any permission, each caps what an identity, account, or session can do, and together with IAM Identity Center they form the governance backbone of a well-designed multi-account AWS organization."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Permissions boundaries, Service Control Policies (SCPs), and session policies are three distinct ceiling mechanisms in AWS IAM — none of them grant any permission, each caps what an identity, account, or session can do, and together with IAM Identity Center they form the governance backbone of a well-designed multi-account AWS organization.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek cheez pehle clear kar lo: permissions boundary, SCP, aur session policy — **teeno me se koi bhi kuch grant nahi karta.** Teeno sirf **ceiling** lagate hain. Actual permission hamesha identity policy (ya resource policy) se aati hai; ye teeno sirf batate hain ki us permission ka **maximum kitna** ho sakta hai. Interview me ye ek line bolna hi strong signal deta hai.
+
+### Permissions Boundary — safe delegation ka tool
+
+Permissions boundary ek **managed policy** hai jo tum ek IAM user ya role par **boundary ke roop me** attach karte ho (normal `attach-role-policy` se alag mechanism). Formula:
+
+```
+Effective permissions = (identity policies) ∩ (permissions boundary)
+```
+
+Agar boundary me `s3:*` hai aur identity policy me `AdministratorAccess` hai, to effective permission sirf `s3:*` hai — intersection.
+
+**Asli use case: safe delegation.** Tumhari platform team apne developers ko `iam:CreateRole` dena chahti hai taaki wo apne Lambda roles bana sakein — lekin unhe admin nahi banne dena. Solution:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["iam:CreateRole", "iam:AttachRolePolicy"],
+  "Resource": "arn:aws:iam::*:role/app/*",
+  "Condition": {
+    "StringEquals": {
+      "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/DevBoundary"
+    }
+  }
+}
+```
+
+Matlab: "tum role bana sakte ho, lekin sirf tab jab us role par `DevBoundary` boundary lagi ho." Developer jo bhi role banayega, wo us boundary se upar nahi ja sakega.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Boundary set karte waqt `iam:DeleteRolePermissionsBoundary` aur `iam:PutRolePermissionsBoundary` ko explicitly **deny** karna mat bhoolna — warna developer boundary hi hata dega ya replace kar dega. Ye do actions boundary setup me deny karna bhool jaana sabse common escalation hole hai.
+
+</Callout>
+
+<Hinglish>
+
+### SCP — poore account/OU par ceiling
+
+SCP AWS **Organizations** ka feature hai. Ye poore **account** ya **OU** par lagti hai, aur us account ke **har principal** par ceiling lagati hai — including root user (member accounts me, management account par nahi).
+
+| | Permissions Boundary | SCP |
+|---|---|---|
+| Scope | Ek IAM user/role | Poora account ya OU |
+| Kahan configure | IAM | AWS Organizations |
+| Root user par lagti? | Nahi | Haan (member accounts me) |
+| Service-linked roles par? | Haan | **Nahi** — SLRs exempt hain |
+| Grant karti hai? | Nahi | Nahi |
+
+Typical region-lock SCP:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyOutsideApprovedRegions",
+    "Effect": "Deny",
+    "NotAction": ["iam:*", "sts:*", "organizations:*", "cloudfront:*",
+                  "route53:*", "support:*", "budgets:*"],
+    "Resource": "*",
+    "Condition": {
+      "StringNotEquals": { "aws:RequestedRegion": ["ap-south-1", "us-east-1"] }
+    }
+  }]
+}
+```
+
+`NotAction` me global services isliye hain kyunki wo `us-east-1` me operate karte hain — unhe block karne se account tut jaayega.
+
+### Session Policy — ek session ka ceiling
+
+Session policy wo policy hai jo tum **AssumeRole call ke waqt** pass karte ho. Ye us **ek** session par extra ceiling lagati hai:
+
+```typescript
+await sts.send(new AssumeRoleCommand({
+  RoleArn: "arn:aws:iam::123:role/TenantAccessRole",
+  RoleSessionName: "tenant-42",
+  Policy: JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Action: "s3:GetObject",
+      Resource: "arn:aws:s3:::shared-data/tenant-42/*"
+    }]
+  })
+}));
+```
+
+Ye SaaS multi-tenancy ka bread-and-butter pattern hai: ek hi broad role banao, aur har tenant request par session policy se usko us tenant ke prefix tak scope kar do — per-tenant IAM role banane ki zaroorat nahi (jo 1,000-role quota me nahi samayega). Limits: JSON + managed policy ARNs milakar **2,048 characters**, max **10 managed policy ARNs**. Session policy sirf **restrict** kar sakti hai — agar role ke paas `dynamodb:*` nahi hai aur tum session policy me allow karoge, kuch nahi milega, intersection khaali hai.
+
+### Dono (boundary + SCP) kyun chahiye — ek kaafi nahi tha?
+
+Alag layers, alag owners, alag lifecycles:
+
+| | SCP | Permissions Boundary |
+|---|---|---|
+| Kaun manage karta hai | Central security/cloud team (Organizations access chahiye) | Account admin / platform team |
+| Scope | Poora account/OU | Individual identity |
+| Delegation ke liye | Nahi — bahut coarse | **Haan** — yahi primary use hai |
+| Frequency of change | Rare (governance) | Frequent (har naya role) |
+
+Real scenario jo dono ki zaroorat batata hai:
+
+```
+Company-wide rule (SCP):     "ap-south-1 aur us-east-1 ke bahar kuch nahi"
+                              → Cloud governance team, ek baar set
+
+Platform team rule (Boundary): "app developers apne Lambda roles bana sakte
+                                hain, lekin wo roles sirf apne team ke tagged
+                                resources access kar sakte hain aur IAM
+                                write nahi kar sakte"
+                              → Platform team, har naye team onboarding par
+```
+
+Agar sirf SCP hoti to platform team ko har delegation ke liye governance team se ticket kaatna padta. Agar sirf boundary hoti to koi bhi account admin company-wide rules bypass kar leta.
+
+Ek teesri cheez bhi is family me hai: **RCP (Resource Control Policy).** SCP principals par ceiling lagati hai, RCP **resources** par. "Koi bhi mere org ke bahar ka principal mere S3 buckets access na kar sake" — ye SCP se nahi ho sakta (external principal tumhari SCP ke under nahi hai), RCP se hota hai. Data exfiltration prevention ke liye RCP zaroori hai, SCP kaafi nahi.
+
+### IAM Identity Center vs IAM users — kaunsa kab
+
+**IAM Identity Center** (purana naam AWS SSO) ek alag service hai jo human access handle karta hai. Corporate IdP (Okta, Entra ID, Google Workspace) se SAML/SCIM se jud jaata hai, aur users ko ek portal deta hai jahan se wo multiple AWS accounts me multiple roles me jump kar sakte hain.
+
+```
+Okta/Entra ID  ──SAML──►  IAM Identity Center
+                                │
+                                │ Permission Set = "policy template"
+                                ▼
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+   Dev Account            Staging Account          Prod Account
+   (IAM role auto-        (IAM role auto-          (IAM role auto-
+    provisioned)           provisioned)             provisioned)
+```
+
+Ek **Permission Set** actually har target account me ek IAM role ban jaata hai, automatically — tum ek jagah define karte ho, Identity Center sab accounts me sync kar deta hai. Decision rule:
+
+- **Human access** → Identity Center. Hamesha.
+- **Machine inside AWS** → IAM role (instance profile, Lambda execution role, IRSA).
+- **Machine outside AWS** → OIDC federation, ya IAM Roles Anywhere.
+- **IAM user with access keys** → sirf jab upar wala kuch bhi possible na ho.
+
+Identity Center free hai. Permission set me maximum **10 managed policies** aa sakti hain (kyunki wo IAM role banti hai, aur role ka default quota 10 hai) aur **exactly 1 inline policy** (max 32,768 bytes, 10,240 non-whitespace).
+
+### Multi-account strategy — poora design
+
+Standard pattern (AWS Control Tower / Landing Zone se aligned):
+
+```
+                    ┌─────────────────────────┐
+                    │   Management Account    │
+                    │  (Organizations root)   │
+                    │  - SCPs define hoti hain│
+                    │  - KOI workload NAHI    │
+                    └───────────┬─────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+  ┌─────▼──────┐      ┌─────────▼────────┐    ┌────────▼────────┐
+  │ Security   │      │  Infrastructure  │    │   Workloads OU  │
+  │    OU      │      │       OU         │    │                 │
+  ├────────────┤      ├──────────────────┤    ├─────────────────┤
+  │ Log Archive│      │ Shared Services  │    │ Dev │ Stg │ Prod│
+  │ Audit      │      │ (Identity Center,│    │     │     │     │
+  │            │      │  networking)     │    │     │     │     │
+  └────────────┘      └──────────────────┘    └─────────────────┘
+
+  Human access:  Okta → Identity Center → permission sets → har account
+  Machine access: har account me apne roles, cross-account jahan zaroori
+  Guardrails:    SCPs per OU (Prod par sabse tight)
+```
+
+Key IAM decisions: (1) Identity Center Shared Services ya Management account me — ek hi jagah, sab accounts me federate; (2) Permission sets = job functions, na ki per-person (`PlatformAdmin`, `ReadOnlyAuditor`, `PaymentsDeveloper`); (3) SCPs OU level par, account level par nahi — naye account automatically inherit karta hai; (4) Prod OU ki SCP me production-specific denies, region locks, IAM user creation ban; (5) Audit account ko har account me read-only role milta hai; (6) CI/CD account se deployment roles har workload account me, OIDC se.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Boundary + SCP + session policy layering se central governance aur team-level delegation dono ek saath possible hain",
+    "OU-level SCPs + Identity Center permission sets se naya AWS account ~30 minutes me safely onboard ho sakta hai",
+  ]}
+  cons={[
+    "Teen alag ceiling mechanisms (plus RCP) debug karna mushkil hai — 'access kyun deny hua' ka answer kisi bhi layer me ho sakta hai",
+    "Management account ko galti se workload account bana lena ek baar ho jaaye to migrate karna practically impossible hai",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek 5-account Organizations setup (management, log-archive, audit, prod, non-prod) me IAM Identity Center Shared Services account me configure kiya gaya, Okta se SAML federation ke saath. Permission sets job-function-wise bane — `PlatformAdmin`, `ReadOnlyAuditor`, `PaymentsDeveloper` — per-person nahi. Prod OU par ek SCP lagi jo `ap-south-1`/`us-east-1` ke bahar kuch bhi deny karti thi aur IAM user creation ban karti thi. Platform team ne developers ko `DevBoundary` permissions boundary ke saath `iam:CreateRole` diya taaki wo apne Lambda roles bana sakein bina kabhi admin bane. Management account me koi workload nahi chala — sirf Organizations root, SCP definitions, aur root credential hardware MFA ke saath physical safe me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Session policy limit: JSON + managed policy ARNs milakar **2,048 characters**, max **10 managed policy ARNs**
+- Permission set: max **10 managed policies** + **exactly 1 inline policy** (32,768 bytes, 10,240 non-whitespace)
+- IAM Identity Center quotas: 3,500 permission sets, 200,000 users, 100,000 groups, 500 provisioned permission sets per account, API throttle 20 TPS
+- MaxSessionDuration range: 3,600s (1 hour, default) to 43,200s (12 hours, maximum)
+- Access Analyzer unused-access pricing: $0.20 per role/user per month (service-linked roles exempt)
+- Bigger permission sets need per-account managed-policy quota increases — 200 accounts = 200 separate quota requests
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Permissions boundary aur SCP me kya fark hai" is a near-guaranteed advanced-tier question — the strong answer leads with "both are ceilings, neither grants," then differentiates on scope (identity vs account/OU) and ownership (platform team vs central governance), and closes with the safe-delegation use case as the concrete reason boundaries exist. A follow-up almost always probes multi-account design ("design IAM for 200 AWS accounts") — the model answer is the OU structure, Identity Center for humans, OIDC for CI/CD, SCPs at OU level, and the non-negotiable rule that the management account runs no workloads.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Setting up a permissions boundary but forgetting to deny `iam:DeleteRolePermissionsBoundary` and `iam:PutRolePermissionsBoundary` — the developer you delegated to can simply remove or swap the boundary and escalate past it.
+
+</Mistake>
+
+<Mistake>
+
+Attaching the first custom Allow-based SCP to an OU and removing the default `FullAWSAccess` SCP in the same step — this instantly denies the entire account/OU, since SCPs are an intersection, not an addition.
+
+</Mistake>
+
+<Mistake>
+
+Running production workloads in the AWS Organizations management account because it was the first account created — SCPs don't apply there, and migrating off it later is practically impossible (accounts can move between OUs, but changing which account is the management account cannot).
+
+</Mistake>
+
+<Mistake>
+
+Assuming a session policy can grant extra access beyond the role's own permissions — it can only restrict. If the role lacks `dynamodb:*` and the session policy allows it, the intersection is still empty.
+
+</Mistake>
+
+<Mistake>
+
+Designing per-tenant IAM roles for a growing SaaS product instead of using session policies — this runs straight into the 1,000-role (10,000 max) per-account quota at scale, when a single broad role plus per-request session policies would have worked.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Identity Policy<br/>what the role CAN do] --> E{Effective Permission}
+    B[Permissions Boundary<br/>ceiling on this ONE role] --> E
+    C[SCP<br/>ceiling on the WHOLE account/OU] --> E
+    D[Session Policy<br/>ceiling on THIS session only] --> E
+    E --> F[Intersection of ALL layers<br/>Explicit Deny anywhere still wins]
+`}
+  caption="None of the four layers grant anything by themselves — the effective permission is always the intersection, and an explicit Deny in any single layer overrides every Allow in the rest."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Permissions boundary, SCP, and session policy are all **ceilings**, never grants — the actual permission always comes from an identity or resource policy
+- Boundary scopes one IAM user/role and is managed in IAM; SCP scopes a whole account/OU and is managed in AWS Organizations
+- Boundary's primary use is **safe delegation** — letting a team create roles without letting them become admin — but you must explicitly deny changing the boundary itself
+- SCPs don't apply to the management account or to service-linked roles; removing the default `FullAWSAccess` SCP without a replacement Allow locks out the whole account
+- Session policies power multi-tenant SaaS isolation: one broad role, scoped per request, avoiding a per-tenant-role quota problem
+- RCP (Resource Control Policy) is the newer sibling that ceilings **resources** instead of principals — needed for true data-exfiltration prevention
+- Multi-account design: Identity Center for all human access, IAM roles/OIDC for machines, SCPs at the OU level, and zero workloads in the management account
+
+</QuickRevision>

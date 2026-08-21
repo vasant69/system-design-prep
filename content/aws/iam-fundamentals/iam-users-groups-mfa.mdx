@@ -1,0 +1,206 @@
+---
+slug: "iam-users-groups-mfa"
+title: "IAM Users, Groups, Access Keys & MFA"
+section: "aws"
+module: "iam-fundamentals"
+order: 4
+difficulty: "beginner"
+readingTime: 13
+prerequisites: ["iam-policy-anatomy-evaluation"]
+tags: ["aws", "iam", "security"]
+englishDefinition: "IAM account security rests on three levers that only apply to IAM users, not federated identities: an account-level password policy, multi-factor authentication (with FIDO2/WebAuthn as the strongest option), and access-key rotation using the two-active-keys-per-user allowance to swap credentials without downtime."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+IAM users and groups are the account's oldest identity primitives — a user holds long-lived credentials (password, access keys), a group is just a bundle of users sharing attached policies. Securing them rests on three levers: an account-level password policy, MFA, and access-key rotation that uses the two-active-keys-per-user allowance to avoid downtime.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Password policy — kya-kya set kar sakte ho
+
+Account-level password policy sirf **IAM users** par lagti hai (root par nahi):
+
+| Setting | Default | Range |
+|---|---|---|
+| Minimum length | 8 | 6–128 |
+| Require uppercase | off | on/off |
+| Require lowercase | off | on/off |
+| Require numbers | off | on/off |
+| Require symbols | off | on/off |
+| Max password age | unlimited | 1–1095 days |
+| Password reuse prevention | off | 1–24 previous passwords |
+| Allow users to change own password | off | on/off |
+| Hard expiry (admin reset required) | off | on/off |
+
+Gotcha jo bahut logon ko chubhta hai: agar tum IAM Identity Center use kar rahe ho (jo modern practice hai), password policy wahan alag configure hoti hai — ya tumhare corporate IdP me. Log account-level password policy set karke sochte hain sab covered hai, jabki asli users SSO se aa rahe hain aur ye policy unhe touch hi nahi karti.
+
+### MFA — kitne types hain
+
+1. **Virtual MFA** — TOTP app (Authy, Google Authenticator). Free, lekin phone hi security boundary hai.
+2. **Hardware TOTP token** — physical keyfob.
+3. **FIDO2 / WebAuthn security key** — YubiKey. Phishing-resistant kyunki key origin bind karti hai. **Best option.**
+4. **Passkeys** — FIDO2 ka syncable version, root par bhi ab supported hai.
+
+Ek IAM user/root par **8 MFA devices tak** register kar sakte ho (AWS ne 2022 me badhaya tha) — backup device rakhna practical hai. Ye baat root user ke liye khaas important hai: root ke paas koi identity policy ya permissions boundary usko restrict nahi kar sakti (previous topic me dekha), isliye root ko lock karne ka sabse effective tareeka hardware MFA lagana aur uski access keys delete karna hai — root ko delete nahi kar sakte, sirf lock kar sakte ho.
+
+### Access key rotation — bina downtime ke
+
+Har IAM user ke paas max **2 active access keys** ho sakti hain, aur ye exactly rotation ke liye design kiya gaya hai:
+
+```bash
+# 1. Nayi key banao (ab 2 active hain)
+aws iam create-access-key --user-name ci-deployer
+
+# 2. Nayi key ko sab consumers me deploy karo (secrets manager, CI vars, etc.)
+
+# 3. Purani key ko INACTIVE karo (delete mat karo — rollback ke liye)
+aws iam update-access-key --user-name ci-deployer \
+    --access-key-id AKIAOLDKEY --status Inactive
+
+# 4. 24-48 ghante monitor karo. Kuch toota? Wapas Active kar do.
+aws iam get-access-key-last-used --access-key-id AKIAOLDKEY
+
+# 5. Sab theek? Ab delete
+aws iam delete-access-key --user-name ci-deployer --access-key-id AKIAOLDKEY
+```
+
+`get-access-key-last-used` batata hai key aakhri baar kab, kaunse region me, kaunse service ke liye use hui thi — ye pata karne ka sabse acha tool hai ki purani key abhi bhi zinda hai ya nahi. Is 2-keys-ka-allowance ke bina rotation ka matlab hota downtime — ek key delete karo, naya deploy karo, beech ke gap me kuch fail hota. INACTIVE status ka fayda ye hai ki wo reversible hai — agar rotation ke baad kuch break hua, ek command se purani key wapas Active ho jaati hai, delete karne se pehle hi pata chal jaata hai kya toota.
+
+### MFA ko policy me enforce karna
+
+Do condition keys hain: `aws:MultiFactorAuthPresent` (Bool — is session me MFA use hua tha?) aur `aws:MultiFactorAuthAge` (Numeric, seconds — MFA kitna purana hai?). "MFA ke bina kuch nahi" classic policy:
+
+```json
+{
+  "Sid": "DenyAllExceptSelfManageWithoutMFA",
+  "Effect": "Deny",
+  "NotAction": [
+    "iam:CreateVirtualMFADevice", "iam:EnableMFADevice",
+    "iam:ListMFADevices", "iam:ListVirtualMFADevices",
+    "iam:ResyncMFADevice", "iam:ChangePassword",
+    "iam:GetUser", "sts:GetSessionToken"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "BoolIfExists": { "aws:MultiFactorAuthPresent": "false" }
+  }
+}
+```
+
+`NotAction` me jo actions listed hain wo user ko MFA setup karne ke liye chahiye — warna ek chicken-and-egg problem ban jaata hai: MFA setup karne ke liye MFA chahiye. Sensitive operations ke liye fresh MFA maangna ho to:
+
+```json
+"Condition": {
+  "NumericGreaterThan": { "aws:MultiFactorAuthAge": "900" }
+}
+```
+
+Matlab: "agar MFA 15 minute se purana hai to deny" — production deletion jaise operations ke liye ye acha pattern hai. Ek subtle gotcha: `aws:MultiFactorAuthPresent` **role sessions me hamesha `true` hota hai** agar original AssumeRole call MFA ke saath hui thi — chahe wo 11 ghante pehle hui ho. Iska matlab "MFA present" ka matlab "abhi MFA kiya" nahi hai — freshness ke liye `aws:MultiFactorAuthAge` hi use karo. Aur EC2 instance role se aane wale requests me ye key **maujood hi nahi** hoti, isliye `BoolIfExists` use karna zaroori hai — plain `Bool` use karoge to un requests ko galti se deny kar doge jo kabhi MFA carry hi nahi karti thi.
+
+</Hinglish>
+
+<Callout type="tip">
+
+FIDO2/WebAuthn hardware keys (YubiKey) are the strongest MFA option because they bind to the request's origin — phishing-resistant in a way TOTP apps aren't. If you're setting up MFA for anything sensitive (especially root), prefer hardware over a virtual TOTP app.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+A CI deployer's access key was rotated using the create-new / deploy / mark-old-inactive / monitor-24-48h / delete sequence — the inactive-first step meant that when one downstream consumer was found still hardcoded with the old key during monitoring, it was reactivated instantly with a single CLI call instead of triggering an incident. Root access keys were removed entirely and hardware MFA was registered on root, following directly from the earlier finding that no IAM policy can restrict root — locking it down operationally was the only lever available. A `NumericGreaterThan: aws:MultiFactorAuthAge > 900` condition was attached to the production database-deletion action specifically, so a session assumed with MFA hours earlier couldn't authorize a destructive action without re-authenticating.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Max active access keys per IAM user: **2** — the mechanism that makes zero-downtime rotation possible
+- Max MFA devices per IAM user/root: **8** (raised by AWS in 2022)
+- Password policy minimum length range: **6–128** characters; default **8**
+- Max password age range: **1–1095 days**; password reuse prevention: **1–24** previous passwords
+- Recommended rotation monitoring window before deleting an old key: **24–48 hours**
+- Fresh-MFA condition example threshold used for sensitive actions: **900 seconds (15 minutes)** via `aws:MultiFactorAuthAge`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How do you rotate an access key with zero downtime?" is a very common hands-on question — the strong answer walks through the exact sequence (create new, deploy to consumers, mark old Inactive rather than deleting, monitor with `get-access-key-last-used`, delete only after the monitoring window), explicitly explaining why Inactive-before-delete matters (reversibility). A close second is "how do you enforce MFA in a policy, and what's the trap?" — the strong answer names the `IfExists` gotcha and clarifies that `aws:MultiFactorAuthPresent` reflects session-start MFA, not freshness, so genuinely sensitive actions should gate on `aws:MultiFactorAuthAge` instead.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Deleting an old access key immediately instead of marking it Inactive first. Skipping the Inactive step removes the safety net — if some forgotten consumer still uses the old key, there's no quick way back without generating and redistributing a new key again.
+
+</Mistake>
+
+<Mistake>
+
+Setting an account-level password policy and assuming it secures all human access, without realizing IAM Identity Center or a federated corporate IdP users are governed by a completely separate policy.
+
+</Mistake>
+
+<Mistake>
+
+Using plain `Bool` (without `IfExists`) on `aws:MultiFactorAuthPresent` in a Deny statement. This denies legitimate service-originated requests (like an EC2 instance role) that never carry the MFA key at all.
+
+</Mistake>
+
+<Mistake>
+
+Treating `aws:MultiFactorAuthPresent` as proof of recent authentication. It stays `true` for the entire session once set at AssumeRole time, even 11 hours later — sensitive actions need `aws:MultiFactorAuthAge` instead.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting to explicitly allow the MFA self-service actions (`iam:EnableMFADevice`, `iam:ChangePassword`, etc.) via `NotAction` in a "deny without MFA" policy — this locks users out before they can ever set MFA up in the first place.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Start: 1 active access key] --> B[create-access-key: now 2 active keys]
+    B --> C[Deploy new key to all consumers]
+    C --> D[Mark old key Inactive, not deleted]
+    D --> E{Monitor 24-48h with get-access-key-last-used}
+    E -->|Something still using old key| F[Reactivate old key instantly]
+    F --> C
+    E -->|Nothing using old key| G[Delete old key]
+    G --> H[Back to 1 active key, rotation complete]
+`}
+  caption="Access key rotation relies on the 2-active-keys-per-user allowance: the old key stays reversible (Inactive, not deleted) throughout the monitoring window, so a missed consumer never causes an outage."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Account-level password policy applies only to IAM users, not root, and not IAM Identity Center / federated identities
+- MFA types ranked by strength: Virtual TOTP < Hardware TOTP < FIDO2/WebAuthn security key (phishing-resistant, best) < Passkeys; up to 8 devices per user/root
+- Root has no IAM policy that can restrict it — hardware MFA plus deleting root's access keys is the only real lockdown lever
+- Access key rotation without downtime: create new (2 active now) -> deploy -> mark old Inactive -> monitor 24-48h via `get-access-key-last-used` -> delete
+- Max 2 active access keys per IAM user is what makes zero-downtime rotation possible at all
+- `aws:MultiFactorAuthPresent` = was MFA used at session start (stays true all session); `aws:MultiFactorAuthAge` = how long ago, use this for freshness checks
+- Always use `BoolIfExists` (not plain `Bool`) when denying on missing MFA, or service-principal requests get wrongly denied
+- A "deny without MFA" policy must `NotAction`-exempt the MFA self-service actions, or users get locked out before they can enable MFA
+
+</QuickRevision>

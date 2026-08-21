@@ -1,0 +1,179 @@
+---
+slug: "iam-mental-model"
+title: "IAM Mental Model: Identities, Policies & the Authorization Journey"
+section: "aws"
+module: "iam-fundamentals"
+order: 1
+difficulty: "beginner"
+readingTime: 15
+prerequisites: []
+tags: ["aws", "iam", "fundamentals"]
+englishDefinition: "IAM (Identity and Access Management) is AWS's global authentication and authorization control plane — it decides which principal can perform which API action on which resource, evaluating that decision as a stateless, deterministic function on literally every AWS API request."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+IAM is AWS's authentication + authorization control plane — it decides *who* (a principal) can do *what* (an API action) on *which* resource, and that decision runs on every single AWS API call. It stores identity objects (users, roles, groups, policies) and exposes a policy evaluation engine that every other AWS service consults before executing a request.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Before IAM: ek shared credential ka dark age
+
+Jab AWS 2006 me launch hua tha, har account ke paas sirf **ek** credential set hota tha — root email/password aur ek access key pair. Koi users nahi, koi roles nahi, koi granular permissions nahi. Practical matlab: team ke sab 8 log root key share karte the (koi resign kare to poori company ki key rotate karo), intern ko sirf ek S3 bucket se logs padhne the lekin usi key se wo poora production RDS `DeleteDBInstance` kar sakta tha, CloudTrail me har entry "root ne kiya" dikhati thi, EC2 par chalne wale app ki keys `config.json` me hardcode hoke AMI me bake ho jaati thi, aur third-party vendor ko access dena matlab apni permanent key de dena. Ye exactly wahi dard hai jo legacy SQL Server projects me dikhta hai jahan sab `sa` login se connect karte hain — kaam chalta hai jab tak koi galti se `DROP DATABASE` nahi maar deta.
+
+AWS ne 2010 me IAM launch karke ye model badla: shared credential ki jagah har insaan ka apna IAM identity, all-or-nothing access ki jagah action-level aur resource-level JSON policies, "kisne kiya pata nahi" ki jagah CloudTrail me actual principal ke saath har call log hoti hai, hardcoded keys ki jagah roles jo temporary credentials dete hain jo khud expire ho jaati hain, aur third-party access ke liye cross-account role assumption with External ID.
+
+### Aaj ka reality check
+
+Modern AWS setup me **IAM users banate hi nahi** (except kuch legacy edge cases). Human logon ke liye **IAM Identity Center** (ex-AWS SSO) hota hai jo corporate IdP (Okta/Entra ID/Google) se federate karta hai. Machines ke liye **IAM roles** hote hain. Long-lived access keys ab anti-pattern maane jaate hain.
+
+Ek important baat samajhni zaroori hai: **IAM control plane har AWS API call ke beech me baitha hai.** Jab bhi `s3:GetObject` maarte ho, request pehle IAM ke policy evaluation engine se guzarti hai — ye Express.js ke `app.use(authMiddleware)` jaisa hai, sirf ye ki tum ise bypass nahi kar sakte, aur ye AWS-wide global middleware hai.
+
+### IAM ek pure function hai
+
+IAM ko do alag cheezon ki tarah socho — ye distinction 90% confusion khatam kar deta hai:
+
+1. **Identity plane** — kaun ho tum? (Authentication) — access key, session token, ya federated assertion se prove hota hai.
+2. **Policy evaluation engine** — tumhe ye karne ki ijaazat hai ya nahi? (Authorization) — ek deterministic function jo har request par run hota hai.
+
+Sabse important: IAM ka input hai `(principal, action, resource, context)`, output hai `Allow` ya `Deny`. Koi state nahi, koi "session me pehle kya hua tha" nahi — har request independently evaluate hoti hai. Express middleware jaisa, lekin **stateless**.
+
+### Request ka poora journey
+
+High level par ek AWS API request 4 steps se guzarti hai. Pehle, credentials kahin se aati hain — ya to ek IAM user ki permanent access key (`AKIA...`), ya federation (SAML/OIDC) ke through `sts:AssumeRoleWithSAML` / `AssumeRoleWithWebIdentity`, ya EC2/Lambda/ECS ke attached role se `IMDSv2`/container credential endpoint ke through. In teeno cases me STS involve hota hai jo temporary credentials (`ASIA...` access key + secret + session token, default 1 hour expiry) return karta hai. Doosra, request ko SDK khud SigV4 se sign karta hai — HMAC-SHA256 chain jo `Authorization: AWS4-HMAC-SHA256 Credential=...` header banati hai. Teesra, request service endpoint (jaise `s3.ap-south-1.amazonaws.com`) tak pahunchti hai jahan signature verify hoke principal identify hota hai. Chautha aur sabse important step — policy evaluation engine explicit deny, SCP, RCP, resource-based policy, identity-based policy, permissions boundary, aur session policy sab check karta hai (poora precedence order agla topic — Policy Anatomy & Evaluation — me detail se hai). Kisi bhi step par "nahi" mile to implicit deny (`403 AccessDenied`), sab pass ho to `Allow`.
+
+### Do golden rules
+
+Rule 1 — **default deny**: jo explicitly allow nahi hai, wo deny hai. SQL Server me tumhe `DENY` explicitly likhna padta hai; IAM me silence hi deny hai. Rule 2 — **explicit deny hamesha jeetta hai**: ek hi Deny statement kahin bhi ho, 500 Allow statements bekaar ho jaate hain, aur ye override nahi ho sakta (root user bhi nahi, SCP ke case me).
+
+Ek dusra useful mental model hai "boundary vs grant": identity-based aur resource-based policies **grant** karti hain (permissions dete hain), jabki permissions boundary, SCP, RCP, aur session policy sirf **limit** karti hain (kabhi grant nahi karti). Effective permissions = intersection of all limits, intersect union of all grants. Node analogy: identity policies `Array.concat()` (union) hain, boundaries/SCPs `Array.filter()` (intersection) hain.
+
+### User, Role, Group, Principal — kaun kya hai
+
+**IAM User** ke paas permanent credentials hain jo hamesha uske saath rehti hain — password (console ke liye), access key pair (API ke liye) — jab tak manually rotate na karo, expire nahi hoti. **IAM Role** ke paas **koi credentials nahi hoti** — sirf ek permission set + trust policy. Koi bhi role "assume" kar sakta hai, aur STS us waqt fresh temporary credentials generate karta hai jo default 1 hour me expire ho jaati hain — `EXECUTE AS USER = 'x'` in SQL Server jaisa, sirf ye ki wo automatically revert ho jaata hai. Leak hui temporary credential ki shelf-life 1 hour hai; permanent access key ki shelf-life "jab tak koi notice na kare" hai — isliye roles better hain. Ek role ko hazaaron log/machines simultaneously assume kar sakte hain — role koi "seat" nahi hai, har assume ek independent session banata hai apne `RoleSessionName` ke saath jo CloudTrail me dikhta hai.
+
+**IAM Group** users ka collection hai jispar policies attach hoti hain — exactly SQL Server ke database role jaisa. Group ko role assign **nahi** kar sakte, group sirf IAM users rakh sakta hai, group ke andar group bhi nahi ho sakta (no nesting), aur group khud ek principal nahi hai — `Principal` field me group nahi likh sakte. Ek user max **10 groups** ka member ho sakta hai, account me default **300 groups** (max 500 tak badha sakte ho).
+
+**Principal** wo entity hai jo request kar rahi hai — `{"AWS": "arn:aws:iam::123:root"}` (poora account), `{"AWS": "...role/Deploy"}` (specific role), `{"Service": "lambda.amazonaws.com"}` (AWS service), `{"Federated": "..."}` (OIDC/SAML), ya `"*"` (anyone — danger). `:root` ka matlab "root user" **nahi** hai — iska matlab hai "us account ki koi bhi principal jise apni account ki identity policy se permission mili ho". Ye naming AWS ki galti hai aur log isse hamesha confuse hote hain. `"Principal": "*"` bina strong `Condition` ke matlab internet ko access — Access Analyzer isko turant flag karta hai.
+
+### ARN — har resource ka address
+
+```
+arn:partition:service:region:account-id:resource-type/resource-id
+```
+
+Examples: `arn:aws:iam::123456789012:role/PaymentServiceRole` (region khaali, IAM global hai), `arn:aws:s3:::jmfs-client-data/reports/2026/*` (region aur account dono khaali, S3 legacy), `arn:aws:sts::123456789012:assumed-role/DeployRole/shani` (assumed role session ka ARN — role ke ARN se alag). Policies me `Resource` ARN se match hoti hai, aur wildcards ARN ke kisi bhi hisse me lag sakte hain — `arn:aws:s3:::jmfs-*` sab matching buckets cover karega.
+
+### IAM ek global service hai — practical matlab
+
+IAM ka control plane commercial partition me **us-east-1** me rehta hai. Jo bhi user/role/policy banao, wo poore account me har region me valid hai — per-region banane ki zaroorat nahi. Practical implications: quota increase requests sirf us-east-1 se maang sakte ho; CloudTrail me IAM events us-east-1 me global service events ke roop me log hote hain (agar sirf ek regional trail dekh rahe ho aur "global service events" include nahi kiya to IAM changes miss ho jaayenge); us-east-1 ka outage IAM **writes** ko affect kar sakta hai (naye roles/policies banana) lekin existing credential evaluation chalti rehti hai kyunki wo replicated hai; aur **STS global nahi hai** — uske regional endpoints hain (agla topic me detail).
+
+</Hinglish>
+
+<Callout type="tip">
+
+Sabse pehle ye internalize karo: IAM ek **stateless, deterministic function** hai — `(principal, action, resource, context) → Allow/Deny`. Baaki sab topics (policy anatomy, roles/STS, users/groups/MFA) isi ek idea ke upar built hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real deployed project me shuru se hi IAM users banaye hi nahi gaye — human access ke liye IAM Identity Center use hua jo corporate IdP se federate karta tha, aur EC2/Lambda ko attached IAM roles diye gaye jinke credentials automatically rotate hote hain (default 1 hour). Root user par hardware MFA laga diya gaya, access keys delete kar di gayi, aur root sign-in par CloudTrail alert set kiya gaya — kyunki root koi identity policy ya permissions boundary se rok nahi sakta, isse "lock" hi kiya ja sakta hai, delete nahi. Cross-team AssumeRole calls me `RoleSessionName` ko meaningful rakha gaya (jaise `shani@jmfs`, employee ID ya pipeline run ID) taaki CloudTrail me "kisne kiya" ka jawab turant mile, "session1" jaisa generic naam kabhi nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- IAM control plane region: **us-east-1** (commercial partition) — but policies replicate to every region
+- Max IAM groups per user: **10**; default groups per account: **300** (raisable to **500**)
+- IAM Identity Center permission sets quota: **3,500** per instance
+- Root user: implicit `*:*`, cannot be restricted by any IAM policy or permissions boundary
+- Default STS session (AssumeRole) expiry: **3,600 seconds (1 hour)**
+- ARN has 6 colon-separated fields: `arn:partition:service:region:account-id:resource`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"IAM kya hai — service, database, ya middleware?" tests whether you understand IAM is a control plane exposing a policy evaluation engine that every service consults per-request, not a network call each time (policies replicate regionally, which is why IAM is eventually consistent). A very common trap question is "what does `:root` in a Principal ARN mean?" — the strong answer distinguishes it from the actual root user: it means "any principal in that account with identity-policy permission," not "the root login." Another frequent probe: "why do we prefer roles over IAM users for applications?" — the answer should center on credential lifetime (1-hour auto-expiring temporary credentials vs. a permanent key that only rotates if a human remembers to).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Assuming IAM controls application-level or database-level permissions. IAM only governs AWS API calls — it has no idea what happens inside `s3:GetObject`'s response, or what `SELECT` permissions exist inside a Postgres instance running on EC2. Those are separate layers entirely.
+
+</Mistake>
+
+<Mistake>
+
+Treating an IAM role like a "seat" that one person occupies. A role can be assumed by thousands of principals simultaneously — each assumption creates an independent session with its own `RoleSessionName`, which is what actually shows up in CloudTrail.
+
+</Mistake>
+
+<Mistake>
+
+Confusing the `:root` principal keyword with the account's root user. `{"AWS": "arn:aws:iam::123:root"}` in a trust or resource policy means "any authorized identity in account 123," not literally the root login.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that CloudTrail logs IAM changes as global service events in us-east-1. A regional trail that doesn't include global service events will silently miss every IAM/STS change.
+
+</Mistake>
+
+<Mistake>
+
+Trying to put a group inside `Principal` field of a resource policy, or nesting groups inside groups. Groups are not principals and cannot be nested — only IAM users can belong to a group.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Principal gets credentials] -->|IAM user access key| D[Sign request with SigV4]
+    A -->|Federated SAML/OIDC -> AssumeRoleWithSAML/WebIdentity| B[AWS STS]
+    A -->|EC2/Lambda/ECS attached role -> IMDSv2/container endpoint| B
+    B -->|Returns AccessKeyId ASIA..., SecretAccessKey, SessionToken, 1hr expiry| D
+    D --> E[Service endpoint e.g. s3.ap-south-1.amazonaws.com]
+    E -->|Verify signature, identify principal| F[Policy Evaluation Engine]
+    F -->|Explicit Deny anywhere?| G{Deny found?}
+    G -->|Yes| H[DENY - stop immediately]
+    G -->|No| I[Check SCP, RCP, resource policy, identity policy, boundary, session policy]
+    I -->|All pass| J[ALLOW]
+    I -->|Any missing Allow| H
+`}
+  caption="IAM is a stateless function: credentials in, SigV4-signed request, policy evaluation engine decides Allow/Deny fresh on every single call — no session state is remembered between requests."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- IAM is a global control plane: it stores identities/policies and exposes a stateless policy evaluation engine consulted on every AWS API call
+- Two planes: identity plane (authentication — who are you) and policy evaluation engine (authorization — are you allowed)
+- Default deny: silence means deny (unlike SQL Server, where DENY must be explicit); explicit Deny always wins over any number of Allow statements
+- IAM User = permanent credentials; IAM Role = no credentials, just a trust policy + permission set, assumed for temporary (default 1-hour) credentials via STS
+- Group = collection of IAM users only (max 10 groups/user, 300/account default); groups cannot hold roles, cannot nest, and are not principals
+- `:root` in a Principal ARN means "any authorized identity in that account," not literally the root user
+- ARN format: `arn:partition:service:region:account-id:resource-type/resource-id` — region/account blank for global services like IAM
+- IAM's control plane lives in us-east-1; quota increases and global CloudTrail events are tied to that region, but STS itself has separate regional endpoints
+
+</QuickRevision>

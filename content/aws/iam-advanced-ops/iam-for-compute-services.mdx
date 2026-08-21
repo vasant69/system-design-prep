@@ -1,0 +1,322 @@
+---
+slug: "iam-for-compute-services"
+title: "IAM for Compute: EC2, Lambda, ECS & EKS Credentials"
+section: "aws"
+module: "iam-advanced-ops"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["iam-roles-sts-credentials"]
+tags: ["aws", "iam", "compute"]
+englishDefinition: "Every AWS compute service — EC2, Lambda, ECS, EKS — gets temporary IAM credentials through a service-specific mechanism (instance metadata, environment variables, a container endpoint, or projected OIDC tokens), and the same instance/execution role model extends to how those workloads talk to KMS, S3, Secrets Manager, and each other."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Every AWS compute service — EC2, Lambda, ECS, EKS — gets temporary IAM credentials through a service-specific mechanism (instance metadata, environment variables, a container endpoint, or projected OIDC tokens), and the same instance/execution role model extends to how those workloads talk to KMS, S3, Secrets Manager, and each other.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### EC2, Lambda, ECS ko credentials kaise milti hain
+
+**EC2 — IMDS (Instance Metadata Service):**
+
+```bash
+# IMDSv2 (token-based, ye use karo)
+TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/)
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE
+# → { "AccessKeyId": "ASIA...", "SecretAccessKey": "...",
+#     "Token": "...", "Expiration": "2026-08-06T18:00:00Z" }
+```
+
+EC2 agent ye credentials background me refresh karta rehta hai, typically expiry se ~5+ minutes pehle. SDK automatically yahan se padhta hai.
+
+**Lambda — environment variables:** Lambda service execution role assume karke `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` env vars me daal deta hai. Credentials invocation ke liye valid rehti hain — long-running Lambda (15 min max) me SDK khud refresh nahi kar sakta kyunki env vars static hain, lekin 15 min < 1 hour, isliye problem nahi.
+
+**ECS/Fargate — container credentials endpoint:** `http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. Env var ECS agent set karta hai.
+
+**EKS — IRSA / Pod Identity:** projected service account token file par mount hota hai, SDK usse `AssumeRoleWithWebIdentity` karta hai (details neeche).
+
+</Hinglish>
+
+<Callout type="trap">
+
+**IMDSv1 ko disable karo.** IMDSv1 simple GET hai — koi token nahi. Iska matlab agar tumhare app me **SSRF vulnerability** hai (attacker tumse arbitrary URL fetch karwa sakta hai), to wo `http://169.254.169.254/...` fetch karke tumhare instance ki credentials nikaal lega. Capital One ka 2019 breach (100 million records) exactly ye tha. IMDSv2 me PUT + custom header chahiye jo browser/proxy-based SSRF nahi kar sakta. Enforce:
+
+```bash
+aws ec2 modify-instance-metadata-options --instance-id i-123 \
+  --http-tokens required --http-put-response-hop-limit 1
+```
+
+`hop-limit 1` isliye ki container se IMDS reachable na ho (agar containers host network par nahi hain).
+
+</Callout>
+
+<Hinglish>
+
+### EKS me IRSA aur Pod Identity — dono kyun hain
+
+**IRSA (IAM Roles for Service Accounts)** — 2019 se hai. Mechanism: (1) Cluster ka OIDC issuer URL IAM me OIDC provider ke roop me register hota hai; (2) Kubernetes ServiceAccount par annotation: `eks.amazonaws.com/role-arn: arn:aws:iam::123:role/AppRole`; (3) Pod me projected token file mount hoti hai; (4) SDK us token se `AssumeRoleWithWebIdentity` karta hai.
+
+Trust policy:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Federated": "arn:aws:iam::123:oidc-provider/oidc.eks.ap-south-1.amazonaws.com/id/ABC123" },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {
+      "oidc.eks.ap-south-1.amazonaws.com/id/ABC123:sub": "system:serviceaccount:payments:payment-sa",
+      "oidc.eks.ap-south-1.amazonaws.com/id/ABC123:aud": "sts.amazonaws.com"
+    }
+  }
+}
+```
+
+**EKS Pod Identity** — 2023 me aaya, simpler: EKS par ek addon chalta hai, tum ek "pod identity association" banate ho (cluster + namespace + SA → role), aur role ki trust policy me sirf `pods.eks.amazonaws.com` service principal hota hai. **Koi OIDC provider register karne ki zaroorat nahi, koi per-cluster trust policy nahi.**
+
+Kyun dono: IRSA me har cluster ke liye alag OIDC provider register karna padta hai, aur role ki trust policy me cluster-specific issuer URL hota hai — matlab cluster recreate karo (naya OIDC ID) to sab roles ki trust policies update karni padti hain. Pod Identity is pain ko khatam karta hai. Naye clusters ke liye **Pod Identity** use karo, jab tak koi feature gap na ho.
+
+</Hinglish>
+
+<Callout type="trap">
+
+IRSA me `:sub` condition me `StringEquals` use karo, `StringLike` nahi. Agar `system:serviceaccount:*:*` likh diya to **cluster ka koi bhi pod** us role ko assume kar sakta hai — including ek compromised sidecar ya kisi doosri team ka namespace. Multi-tenant cluster me ye poora isolation model tod deta hai.
+
+</Callout>
+
+<Hinglish>
+
+### Service-linked role vs normal role
+
+Service-linked role (SLR) ek predefined role hai jo ek specific AWS service **apne liye** banata aur use karta hai — naming pattern `AWSServiceRoleForElasticLoadBalancing`, `/aws-service-role/` path me.
+
+| | Normal role | Service-linked role |
+|---|---|---|
+| Trust policy edit kar sakte ho | Haan | **Nahi** |
+| Permissions edit kar sakte ho | Haan | **Nahi** (AWS manage karta hai) |
+| SCP lagti hai | Haan | **Nahi** — exempt |
+| Kaun banata hai | Tum | Service khud, ya `iam:CreateServiceLinkedRole` |
+
+Kyun exist karte hain: pehle log service ke liye role banate the aur galti se uski permissions tod dete the, jisse service silently fail ho jaati thi. SLR AWS ko guarantee deta hai ki uske paas woh permissions hain jo usse kaam karne ke liye chahiye. **Gotcha:** SLRs SCPs se exempt hain — agar tumhari SCP kehti hai "us-west-2 me kuch mat karo" aur koi service apni SLR se wahan kuch karti hai, SCP usko nahi rokegi. Compliance audit me ye explain karna padta hai.
+
+### IAM Roles Anywhere — on-prem ke liye
+
+Problem: tumhare data center me ek server hai jise AWS access chahiye. Traditional solution: IAM user + access key on the server — wahi permanent-credential problem. **IAM Roles Anywhere** solution: server ke paas ek **X.509 certificate** hota hai (tumhari PKI se), jo AWS ko authenticate karke temporary credentials paata hai.
+
+Setup: (1) **Trust anchor** — kaunsi CA trust karni hai; (2) **Profile** — kaunse roles assume ho sakte hain; (3) server par `aws_signing_helper` binary chalta hai.
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Service": "rolesanywhere.amazonaws.com" },
+  "Action": ["sts:AssumeRole", "sts:TagSession", "sts:SetSourceIdentity"],
+  "Condition": {
+    "StringEquals": { "aws:PrincipalTag/x509Subject/CN": "prod-batch-server-01" },
+    "ArnEquals": { "aws:SourceArn": "arn:aws:rolesanywhere:ap-south-1:123:trust-anchor/abc" }
+  }
+}
+```
+
+Certificate ke fields (CN, OU, O, serial number) session tags ban jaate hain, jinpar tum conditions laga sakte ho. Roles Anywhere khud **free** hai; AWS Private CA use karoge to wo **~$400/month per CA** hai (⚠️ verify) — ye bahut logon ko surprise karta hai. External CA sasta hai agar tumhare paas already PKI hai. **Gotcha:** certificate revocation ke liye tumhe CRL upload karna padta hai — AWS automatically fetch nahi karta. Server compromise ho aur cert revoke kiya lekin CRL update nahi kiya, to wo cert abhi bhi credentials le sakta hai.
+
+### KMS key policy — compute workloads ke liye alag behave karti hai
+
+**Baaki sab services me:** identity policy YA resource policy — kisi ek me Allow kaafi hai (same account). **KMS me:** key policy **must** explicitly IAM ko delegate kare, warna identity policy kuch nahi kar sakti:
+
+```json
+{
+  "Sid": "EnableIAMUserPermissions",
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::123456789012:root" },
+  "Action": "kms:*",
+  "Resource": "*"
+}
+```
+
+Agar ye statement key policy me nahi hai, to us account ka **koi bhi** IAM principal — chahe uska Lambda execution role ho ya EC2 instance role — us key ko use nahi kar sakta, chahe uske paas `AdministratorAccess` ho. Compute workloads ke liye practical impact: tumhara Lambda execution role me `kms:Decrypt` hone se kaafi nahi, target key ki policy me bhi tumhara account delegate hona chahiye. Cross-account KMS access (jaise ek shared encryption service) ke liye **teen** cheezein chahiye: (1) key policy me source account allowed, (2) source account ki identity/execution-role policy me `kms:Decrypt`, (3) agar service ke through use ho raha hai to `kms:ViaService` condition match kare.
+
+### S3 ke saath compute roles ka interaction
+
+S3 me **paanch** layers ek saath evaluate hote hain: IAM identity policy, bucket policy, ACLs (legacy), Block Public Access (override switch), aur VPC endpoint policy. Key actions jo compute workloads use karte hain:
+
+| Kaam | Action | Resource ARN |
+|---|---|---|
+| List karo | `s3:ListBucket` | `arn:aws:s3:::bucket` (bina `/*`) |
+| Padho | `s3:GetObject` | `arn:aws:s3:::bucket/*` |
+| Likho | `s3:PutObject` | `arn:aws:s3:::bucket/*` |
+
+Per-tenant/per-service isolation ka pattern:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "s3:ListBucket",
+  "Resource": "arn:aws:s3:::jmfs-tenants",
+  "Condition": {
+    "StringLike": { "s3:prefix": ["tenant-42/*"] }
+  }
+}
+```
+
+**Gotcha:** `s3:prefix` condition **sirf `ListBucket` par** kaam karti hai, `GetObject` par nahi. `GetObject` restrict karne ke liye Resource ARN me hi prefix likho: `arn:aws:s3:::jmfs-tenants/tenant-42/*`. Log dono jagah `s3:prefix` lagane ki koshish karte hain aur access silently zyada broad reh jaata hai.
+
+### Lambda execution role vs resource-based policy
+
+Lambda me **do** IAM concepts hain aur log inhe mix kar dete hain:
+
+**1. Execution role** — "function **kya kar sakta hai**" (outbound):
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+  "Resource": "arn:aws:logs:ap-south-1:123456789012:*"
+}
+```
+
+**2. Resource-based policy (function policy)** — "**kaun** is function ko invoke kar sakta hai" (inbound). Jab API Gateway, EventBridge, S3, ya SNS tumhare function ko trigger karta hai:
+
+```bash
+aws lambda add-permission --function-name PaymentProcessor \
+  --statement-id apigw-invoke \
+  --action lambda:InvokeFunction \
+  --principal apigateway.amazonaws.com \
+  --source-arn "arn:aws:execute-api:ap-south-1:123456789012:abcd1234/*/POST/pay"
+```
+
+Direction yaad rakhne ka tareeka: **execution role = outbound, function policy = inbound.**
+
+</Hinglish>
+
+<Callout type="trap">
+
+`--source-arn` dena **optional** hai lekin ise skip karna security hole hai — bina uske **duniya ka koi bhi** API Gateway tumhare function ko invoke kar sakta hai (confused deputy again). Console se trigger add karo to console automatically source-arn set karta hai; CLI/CDK me tumhe khud karna padta hai. CDK me `Function.grantInvoke()` sahi karta hai, raw `addPermission()` nahi.
+
+</Callout>
+
+<Hinglish>
+
+### Secrets Manager — compute execution roles ka common companion
+
+Lambda, ECS, aur EC2 workloads bahut baar Secrets Manager se DB credentials padhte hain. IAM policy execution role par:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+  "Resource": "arn:aws:secretsmanager:ap-south-1:123:secret:prod/payments/db-*",
+  "Condition": {
+    "StringEquals": { "secretsmanager:VersionStage": "AWSCURRENT" }
+  }
+}
+```
+
+Secret ARN ke end me AWS ek random 6-char suffix lagata hai (`-AbCd12`), isliye policy me `*` lagana padta hai. **Gotcha:** agar secret KMS CMK se encrypted hai to `kms:Decrypt` bhi chahiye us key par — ye alag permission hai jo execution role banate waqt aksar bhool jaate hain, aur ye bilkul KMS section wale "key policy must delegate" rule se juda hai.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek report-generator service ke liye EC2 role banaya jiski trust policy sirf `ec2.amazonaws.com` ko allow karti hai, aur permission policy sirf `s3:ListBucket` (prefix-scoped) + `s3:GetObject` (prefix-scoped ARN) deti hai — koi write, koi delete nahi. IMDSv2 `required` set kiya aur `hop-limit 1` lagaya taaki koi container-level SSRF credentials na nikaal sake. Ek doosre Lambda function ke liye execution role me `logs:*` (basic execution) + `secretsmanager:GetSecretValue` (specific secret prefix) + `kms:Decrypt` (us secret ki key par) diya, aur function ki resource-based policy me `--source-arn` API Gateway ke exact route tak scope kiya — taaki koi doosra API Gateway is function ko trigger na kar sake.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- IMDSv2 token TTL example: 21,600 seconds (6 hours), token `X-aws-ec2-metadata-token-ttl-seconds` header se set hota hai
+- Lambda max execution duration: 15 minutes — env-var credentials ki lifetime (up to 1 hour) isse hamesha zyada hoti hai
+- IAM Roles Anywhere: free; AWS Private CA ~$400/month per CA (⚠️ verify)
+- KMS: ~$1/month per customer-managed key + $0.03 per 10,000 requests
+- Secrets Manager: $0.40 per secret/month + $0.05 per 10,000 API calls
+- EKS OIDC providers per account: default 100, adjustable to 700
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How does an EC2 instance actually get its AWS credentials, mechanism-level" is a common intermediate question — the strong answer names IMDSv2 specifically (PUT token + header, not the older GET-only IMDSv1) and ties it directly to the Capital One breach as the reason IMDSv2 is now the enforced default. A second common probe is "IRSA vs Pod Identity, why do both exist" — the answer that scores well leads with the operational pain (per-cluster OIDC provider registration and trust-policy churn on cluster recreation) rather than just listing mechanism differences.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Leaving IMDSv1 enabled on EC2 instances — combined with an SSRF vulnerability in the application, this lets an attacker fetch the instance's IAM credentials directly from the metadata endpoint with a simple GET request.
+
+</Mistake>
+
+<Mistake>
+
+Writing the IRSA trust policy's `:sub` condition with `StringLike` and a wildcard (`system:serviceaccount:*:*`) instead of `StringEquals` with the exact namespace and service account — this lets any pod in a multi-tenant cluster assume the role.
+
+</Mistake>
+
+<Mistake>
+
+Skipping `--source-arn` when granting an event source permission to invoke a Lambda function — without it, any resource of that principal type (any API Gateway, any account) can trigger the function, not just the intended one.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting the `EnableIAMUserPermissions` root-delegation statement in a new KMS key policy — no IAM identity policy, however permissive, can grant access to that key without it, and it's easy to miss until a compute workload's `kms:Decrypt` call mysteriously fails.
+
+</Mistake>
+
+<Mistake>
+
+Granting `secretsmanager:GetSecretValue` on an execution role but forgetting `kms:Decrypt` on the secret's encryption key — the secret access still fails, because Secrets Manager delegates decryption to KMS, which enforces its own separate key policy.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    EC2[EC2 Instance] -->|IMDSv2: PUT token + GET with header| IMDS[Instance Metadata Service]
+    Lambda[Lambda Function] -->|Env vars set at invoke| LambdaCreds[AWS_ACCESS_KEY_ID / SECRET / SESSION_TOKEN]
+    ECS[ECS/Fargate Task] -->|GET with relative URI| ECSEndpoint[169.254.170.2 Container Credentials Endpoint]
+    EKS[EKS Pod] -->|Projected token file| EKSMech{IRSA or Pod Identity}
+    EKSMech -->|AssumeRoleWithWebIdentity via OIDC provider| STS[AWS STS]
+    IMDS --> STS
+    LambdaCreds --> STS
+    ECSEndpoint --> STS
+    STS --> Creds[Temporary Credentials]
+`}
+  caption="Four compute services, four different credential-delivery mechanisms — but all of them ultimately resolve to STS-issued temporary credentials, never a stored access key."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- EC2 uses IMDSv2 (token-based) for credentials; Lambda injects them as env vars at invoke time; ECS/Fargate uses a container credentials endpoint; EKS uses IRSA or Pod Identity via projected OIDC tokens
+- IMDSv1 (no token) plus an SSRF bug is exactly how the 2019 Capital One breach happened — always enforce `--http-tokens required --http-put-response-hop-limit 1`
+- Pod Identity (2023) removes IRSA's biggest pain: no per-cluster OIDC provider registration, no trust-policy rewrite on cluster recreation
+- IRSA trust policies must use `StringEquals` on the `:sub` claim, never `StringLike` with a wildcard — that breaks multi-tenant pod isolation
+- Service-linked roles are SCP-exempt and their trust/permissions can't be edited — that's a deliberate guarantee, not a bug
+- KMS key policy is the "boss" — without an `EnableIAMUserPermissions` statement, no IAM policy can grant access to that key, ever
+- Lambda has two separate IAM surfaces: execution role (outbound, what the code can do) and resource-based policy (inbound, who can invoke it) — always set `--source-arn` on the latter
+- Secrets Manager access commonly needs both `secretsmanager:GetSecretValue` AND `kms:Decrypt` on the secret's encryption key
+
+</QuickRevision>

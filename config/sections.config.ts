@@ -112,6 +112,58 @@ export const sectionsConfig: SectionConfig[] = [
     modules: [],
   },
   {
+    slug: "aws",
+    title: "AWS",
+    description:
+      "Route 53, CloudFront, S3, Lambda, SES, and a deep dive into IAM — real interview answers and architecture from an actual deployed project, not just service descriptions.",
+    icon: "Cloud",
+    enabled: true,
+    modules: [
+      {
+        id: "core-services",
+        title: "Core Services",
+        description:
+          "Route 53, CloudFront, S3, Lambda, and SES — how they work internally, real project configuration, common mistakes, cost, and security for each.",
+        order: 1,
+      },
+      {
+        id: "architecture-strategy",
+        title: "Architecture & Interview Strategy",
+        description:
+          "How the five core services connect into one real architecture, how to pitch your own AWS project, service comparisons, cross-service scenario questions, and the red flags that make candidates sound junior.",
+        order: 2,
+      },
+      {
+        id: "iam-fundamentals",
+        title: "IAM Fundamentals",
+        description:
+          "The mental model, policy anatomy and evaluation logic, roles and temporary credentials, and users/groups/MFA — the IAM vocabulary everything else builds on.",
+        order: 3,
+      },
+      {
+        id: "iam-advanced-ops",
+        title: "IAM Advanced & Operations",
+        description:
+          "Permissions boundaries and SCPs, cross-account access and federation, IAM for compute services, debugging access-denied, and a hands-on lab.",
+        order: 4,
+      },
+      {
+        id: "s3-fundamentals",
+        title: "S3 Fundamentals",
+        description:
+          "The key-value mental model, storage classes and lifecycle rules, and bucket/object/versioning basics.",
+        order: 5,
+      },
+      {
+        id: "s3-advanced-ops",
+        title: "S3 Advanced & Operations",
+        description:
+          "Security and encryption, versioning/replication/consistency, performance and presigned URLs, and a hands-on lab.",
+        order: 6,
+      },
+    ],
+  },
+  {
     slug: "databases",
     title: "Database Design",
     description:

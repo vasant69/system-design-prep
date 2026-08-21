@@ -1,0 +1,204 @@
+---
+slug: "s3-security-policies-encryption"
+title: "S3 Security: Policies, Access Control & Encryption"
+section: "aws"
+module: "s3-advanced-ops"
+order: 1
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["s3-bucket-object-versioning-basics"]
+tags: ["aws", "s3", "security"]
+englishDefinition: "S3 access control is a layered evaluation — Block Public Access, SCPs/RCPs, VPC endpoint policies, explicit Deny, then Allow (bucket policy OR IAM policy same-account, bucket policy AND IAM policy cross-account) — combined with server-side encryption (SSE-S3 by default since January 2023, SSE-KMS, DSSE-KMS, SSE-C) and Object Ownership settings that replaced the legacy ACL system in April 2023."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 access control is a layered evaluation — Block Public Access, SCPs/RCPs, VPC endpoint policies, explicit Deny, then Allow (bucket policy OR IAM policy same-account, bucket policy AND IAM policy cross-account) — combined with server-side encryption (SSE-S3 by default since January 2023, SSE-KMS, DSSE-KMS, SSE-C) and Object Ownership settings that replaced the legacy ACL system in April 2023.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+S3 security ek single switch nahi hai — ye ek **layered evaluation** hai, aur "bucket policy vs IAM policy vs ACL kaise evaluate hote hain" almost-guaranteed interview question hai. Order yaad rakho:
+
+1. **Block Public Access** — anonymous/public grant hai? Turant BLOCK, baaki sab rules bekaar.
+2. **SCP / RCP** — Organizations level Deny hai to khatam.
+3. **VPC endpoint policy** — agar endpoint se aa rahe ho to ye bhi check hota hai.
+4. Koi bhi **explicit Deny** — DENY jeet jaata hai, hamesha.
+5. Allow chahiye: **same account** me bucket policy **YA** IAM policy (OR logic) kaafi hai; **cross-account** me bucket policy **AUR** IAM policy dono chahiye (AND logic); **anonymous** access ke liye sirf bucket policy/ACL.
+6. **ACL** (agar enabled hain — naye buckets me ab default disabled).
+
+### Kyun ListBucket aur GetObject ke ARN alag hote hain
+
+Ye do actions alag **resource types** par operate karte hain: `s3:ListBucket`, `s3:GetBucketLocation`, `s3:PutBucketPolicy` — ye sab **bucket-level** actions hain, ARN `arn:aws:s3:::bucket` (no trailing `/*`). Lekin `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` **object-level** hain, ARN `arn:aws:s3:::bucket/*`. Per-tenant isolation likhte waqt classic galti yahi hai: `s3:prefix` condition **sirf ListBucket par kaam karti hai**, `GetObject` par bilkul nahi. `GetObject` ko restrict karne ka ek hi tareeka hai — **Resource ARN me hi prefix likhna** (`arn:aws:s3:::bucket/tenant-42/*`). Log dono jagah `s3:prefix` lagate hain aur sochte hain isolation ho gaya, jabki actually koi bhi tenant kisi doosre tenant ki file `GetObject` se seedha padh sakta hai — financial services me ye ek serious audit finding hai.
+
+Ek least-privilege bucket policy jo TLS enforce karti hai, tenant ke object-level access ko ARN se restrict karti hai (condition se nahi), aur ek specific role ko allow karti hai:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": ["arn:aws:s3:::jmfs-tenants", "arn:aws:s3:::jmfs-tenants/*"],
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+    },
+    {
+      "Sid": "AllowListWithPrefixCondition",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::123456789012:role/TenantAppRole" },
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::jmfs-tenants",
+      "Condition": { "StringLike": { "s3:prefix": ["tenant-42/*", "tenant-42"] } }
+    },
+    {
+      "Sid": "AllowObjectAccessScopedByArn",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::123456789012:role/TenantAppRole" },
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::jmfs-tenants/tenant-42/*"
+    }
+  ]
+}
+```
+
+Note: `ListBucket` ka isolation `s3:prefix` **condition** se ho raha hai, lekin `GetObject`/`PutObject` ka isolation Resource **ARN** se ho raha hai — dono alag mechanism hain, aur ye difference bhoolna sabse common mistake hai.
+
+### Block Public Access — 4 switches jo override karte hain
+
+BPA ek override layer hai, chaar independent switches ke saath: `BlockPublicAcls` (naye public ACLs banane se rokta hai), `IgnorePublicAcls` (existing public ACLs ignore karta hai), `BlockPublicPolicy` (public bucket policy set hone se rokta hai), `RestrictPublicBuckets` (public policy ko sirf AWS service principals/authorized users tak limit karta hai). **April 2023 se naye buckets me BPA default ON hai aur ACLs default disabled hain** — AWS ka sabse important security default change, kyunki isse pehle countless breaches sirf "kisine bucket public kar diya" ki wajah se hue the. BPA account level par bhi laga sakte ho, phir koi bhi bucket kabhi public nahi hoga chahe koi kuch bhi kare. Purana pattern tha static website hosting ke liye BPA off karna — **ye ab zaroori nahi**: BPA on rakho, bucket private rakho, aur CloudFront + Origin Access Control lagao.
+
+### Encryption ke options
+
+**January 2023 se S3 me saare naye objects default SSE-S3 se encrypted hote hain**, bina kuch kiye. Options: **SSE-S3** (`AES256`, AWS poori tarah manage karta hai, free, 90% cases ke liye kaafi), **SSE-KMS** (tumhara CMK, $1/key/month + $0.03 per 10k requests, audit trail aur key rotation control ke liye), **DSSE-KMS** (double encryption, sirf specific government/defense requirements ke liye), **SSE-C** (key har request me tum khud bhejte ho, S3 ko key kabhi nahi dete), aur **client-side** encryption (zero-trust — S3 ko plaintext kabhi dikhta hi nahi). SSE-KMS ke saath **S3 Bucket Keys zaroor enable karo** — ek short-lived bucket-level key generate hota hai jo KMS calls **99% tak** kam kar deta hai (ek million objects encrypt karne ka KMS cost $3.00 se ~$0.03 ho jaata hai).
+
+### Object Ownership aur ACLs — legacy system jo replace hua
+
+Historically S3 me **ACLs** the — per-object/per-bucket permission grants, IAM se poori tarah alag system (2006 me IAM tha hi nahi). Problem tha cross-account writes me: Account A ne tumhare bucket me file daali to us object ka **owner writer account** hota tha, bucket owner nahi — tum apne hi bucket ka file padh nahi sakte the, jab tak writer `x-amz-acl: bucket-owner-full-control` na bheje. **Object Ownership** setting isko fix karti hai (3 options): **Bucket owner enforced** (naye buckets me April 2023 se default — ACLs poori tarah disabled, bucket owner automatically har object ka owner), **Bucket owner preferred**, aur **Object writer** (purana behaviour). ACLs disable hone ke baad koi bhi request jo ACL set karne ki koshish kare, `AccessControlListNotSupported` (400) se fail hogi — purane SDKs, scripts, aur third-party tools jo `--acl private` bhejte hain, migration ke baad toot jaate hain.
+
+### TLS aur encryption in transit enforce karna
+
+S3 HTTP aur HTTPS dono accept karta hai by default — HTTP block karne ke liye bucket policy me **explicit deny** lagana padta hai, AWS khud ye nahi karta. CDK me `enforceSSL: true` ek line me ye add kar deta hai. Minimum TLS version bhi condition se enforce ho sakta hai. Ye compliance auditors ko turant dikh jaata hai agar missing ho, isliye har production bucket par honi chahiye.
+
+### Cross-account access — dono side chahiye, AND hai
+
+Do tareeke: **bucket policy (direct)** jisme dono taraf — target bucket ki policy me source account allow, aur source account ki IAM identity policy me bhi wahi permissions — chahiye (ye **AND** hai, OR nahi). Ya **role assumption**, jo cleaner audit trail deta hai kyunki assume karne ke baad wo tumhare account ka hi principal ban jaata hai. SSE-KMS encrypted bucket me cross-account ke liye **teesri** cheez bhi chahiye: KMS **key policy** me doosre account ko `kms:Decrypt` allow karna — ye sabse common miss hai, aur error `AccessDenied` aata hai jo bucket policy ka lagta hai jabki actually KMS ka hai.
+
+### ABAC — tag-based access
+
+S3 object tags (10 per object) par policy conditions lag sakti hain — `s3:ExistingObjectTag/Team`, `s3:RequestObjectTag/Team` — jisse ek hi policy saari teams ke liye kaam karti hai (principal ka `Team` tag object ke `Team` tag se match kare). Lekin ABAC bina **tag governance** ke security theatre hai — agar koi apne object par khud `Team: finance` tag laga sakta hai to wo finance ka access le lega. Tagging permissions (`s3:PutObjectTagging`) ko explicitly lock karna padta hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`s3:prefix` condition **sirf `ListBucket` par** lagti hai — `GetObject` par nahi. Multi-tenant isolation likhte waqt object-level actions ko hamesha **Resource ARN me prefix** se restrict karo (`.../tenant-42/*`), condition se nahi. Ye galti financial services audits me baar-baar pakdi jaati hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real setup me shared data-lake bucket par per-tenant isolation implement karte waqt pehle `s3:prefix` condition dono `ListBucket` aur `GetObject` actions par laga di gayi thi — testing me kaam kar gaya (kyunki tester ne sirf apna hi tenant ID try kiya) lekin production me pata chala ki koi bhi authenticated user doosre tenant ki known key `GetObject` se seedha padh sakta tha. Fix tha object-level actions ka Resource ARN khud `tenant-42/*` tak scope karna. Isi bucket par TLS enforcement (`aws:SecureTransport: false` par Deny) aur SSE-KMS encryption dono lagaye gaye — aur cross-account partner access dete waqt bucket policy + IAM policy + KMS key policy, teeno jagah update karna pada, kyunki teesra (KMS key policy) bhoolne se `AccessDenied` aata tha jo bucket policy ka lagta tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Bucket policy maximum size: **20 KB** — large multi-team policies isse hit ho jaate hain
+- SSE-KMS: $1/key/month + $0.03 per 10,000 requests; **Bucket Key** ON karne se KMS cost 99% tak kam (ek million objects: $3.00 → ~$0.03)
+- BPA aur ACL-disabled: **April 2023 se naye buckets me default**
+- Default encryption (SSE-S3): **January 2023 se saare naye objects par automatic**
+- Object tags: 10 per object, ~$0.01 per 10,000 tags/month ⚠️ verify
+- Object Ownership "Bucket owner enforced" ke saath legacy `--acl` calls: `AccessControlListNotSupported` (HTTP 400)
+- Cross-account with SSE-KMS: teen permissions chahiye — bucket policy, IAM policy, aur KMS key policy `kms:Decrypt`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Bucket policy, IAM policy, aur ACL kaise evaluate hote hain" is the single most tested S3 security question — the strong answer names the exact order (BPA → SCP/RCP → VPC endpoint policy → explicit Deny → Allow, with same-account OR vs cross-account AND → ACL) rather than a vague "it depends." A close second is a live scenario: "cross-account access set kiya, phir bhi AccessDenied — kya check karoge?" The strong debugging answer walks the three-permission checklist (bucket policy, IAM policy, KMS key policy) and explicitly calls out that missing `kms:Decrypt` is the most common cause, because the error message rarely says "KMS" clearly. Interviewers also probe multi-tenant designs with "prove your isolation is real" — the correct answer distinguishes bucket-level ARNs (`bucket`) from object-level ARNs (`bucket/*`) and explains why `s3:prefix` conditions don't restrict `GetObject`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using `s3:prefix` condition to try to restrict `GetObject` for tenant isolation — it only applies to `ListBucket`. Object-level actions must be restricted via the Resource ARN itself (`bucket/tenant-42/*`), or any tenant can read any other tenant's known key.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting the KMS key policy in cross-account SSE-KMS access — bucket policy and IAM policy alone aren't enough; the destination account also needs `kms:Decrypt` granted in the key's own policy, or requests fail with a misleading `AccessDenied`.
+
+</Mistake>
+
+<Mistake>
+
+Assuming S3 blocks HTTP by default — it doesn't. Encryption in transit must be explicitly enforced with a `Deny` statement on `aws:SecureTransport: false`; this is one of the first things a compliance audit checks for.
+
+</Mistake>
+
+<Mistake>
+
+Deploying ABAC (tag-based access) without locking down `s3:PutObjectTagging`/`s3:DeleteObjectTagging` — if any principal can set their own tags, they can grant themselves access by tagging their own objects to match a privileged condition.
+
+</Mistake>
+
+<Mistake>
+
+Leaving legacy `--acl private` calls in old scripts or Terraform (`aws_s3_bucket_acl`) after migrating to "Bucket owner enforced" — every ACL-setting request now fails with `AccessControlListNotSupported`, even for a harmless value like `private`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Request arrives] --> B{Block Public Access blocks it?}
+    B -->|Yes| Z[DENIED — nothing else matters]
+    B -->|No| C{SCP / RCP explicit Deny?}
+    C -->|Yes| Z
+    C -->|No| D{VPC endpoint policy denies?}
+    D -->|Yes| Z
+    D -->|No| E{Any explicit Deny anywhere?}
+    E -->|Yes| Z
+    E -->|No| F{Same account or cross-account?}
+    F -->|Same account| G["Bucket policy OR IAM policy allows -> ALLOWED"]
+    F -->|Cross-account| H["Bucket policy AND IAM policy must BOTH allow"]
+    F -->|Anonymous| I["Only bucket policy / ACL can allow"]
+    H --> J{Also SSE-KMS?}
+    J -->|Yes| K["KMS key policy must ALSO allow kms:Decrypt"]
+`}
+  caption="S3's layered evaluation order — Block Public Access and any explicit Deny win instantly; same-account access needs either policy to allow, cross-account needs both, and SSE-KMS quietly adds a third gate (the KMS key policy)."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Evaluation order: Block Public Access → SCP/RCP → VPC endpoint policy → explicit Deny (always wins) → Allow (same-account OR, cross-account AND) → ACL
+- `s3:ListBucket`/`s3:GetBucketPolicy` are bucket-level (ARN `bucket`); `s3:GetObject`/`s3:PutObject` are object-level (ARN `bucket/*`) — `s3:prefix` conditions only work on the former
+- BPA has 4 independent switches; default ON for new buckets and ACLs default disabled since April 2023
+- Encryption options: SSE-S3 (default since Jan 2023, free), SSE-KMS (auditable, needs Bucket Key to control cost), DSSE-KMS (double encryption), SSE-C (you hold the key), client-side (S3 never sees plaintext)
+- Object Ownership "Bucket owner enforced" ends the old cross-account-write ownership problem — bucket owner always owns the object now
+- S3 allows HTTP by default — TLS-in-transit enforcement requires an explicit Deny on `aws:SecureTransport: false`
+- Cross-account + SSE-KMS needs three separate grants: bucket policy, IAM policy, and the KMS key policy's `kms:Decrypt`
+- ABAC via object tags is only as secure as the tagging permissions — lock `PutObjectTagging` down or the access control is theatre
+
+</QuickRevision>

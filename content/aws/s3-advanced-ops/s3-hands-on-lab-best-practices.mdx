@@ -1,0 +1,350 @@
+---
+slug: "s3-hands-on-lab-best-practices"
+title: "S3 Hands-On Lab & Best Practices"
+section: "aws"
+module: "s3-advanced-ops"
+order: 4
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["s3-performance-presigned-urls-cors"]
+tags: ["aws", "s3", "hands-on"]
+englishDefinition: "A practical, command-driven walkthrough of provisioning a production-grade S3 bucket (private, encrypted, versioned, lifecycle-managed) via Console/CLI/CDK, cleaning it up correctly, and the operational runbooks — systematic AccessDenied debugging, bill-spike investigation, and a new-project setup checklist — that separate junior from senior S3 usage."
+interviewFrequency: "medium"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+A practical, command-driven walkthrough of provisioning a production-grade S3 bucket (private, encrypted, versioned, lifecycle-managed) via Console/CLI/CDK, cleaning it up correctly, and the operational runbooks — systematic AccessDenied debugging, bill-spike investigation, and a new-project setup checklist — that separate junior from senior S3 usage.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Day-1 checklist — pehle ye, phir code
+
+Ye checklist maine baar-baar galat hote dekha hai — naye project me S3 bucket banane se pehle:
+
+```
+□ Block Public Access — ON (bucket + account level)
+□ ACLs disabled (ObjectOwnership: BucketOwnerEnforced)
+□ Default encryption — SSE-S3 minimum; SSE-KMS + Bucket Key sensitive data ke liye
+□ Bucket policy: DenyInsecureTransport (aws:SecureTransport = false)
+□ Versioning ON (production buckets par)
+□ Lifecycle rule: AbortIncompleteMultipartUpload after 7 days  ← sabse zyada bhoolte hain
+□ Lifecycle rule: NoncurrentVersionExpiration (versioning ke saath)
+□ Lifecycle rule: ExpiredObjectDeleteMarker: true
+□ Gateway VPC endpoint (free — NAT charges bachao)
+□ CloudTrail data events (sensitive prefixes par, selective)
+□ Server access logs (alag bucket me)
+□ Tags: Environment, Owner, CostCenter, DataClassification
+□ Naming: <company>-<env>-<purpose>-<region>-<account-id>
+□ CRR to another region/account (production/compliance data)
+□ AWS Budgets anomaly alert
+□ IaC me define kiya (console me manual nahi)
+```
+
+**Sabse zyada missed item: `AbortIncompleteMultipartUpload`.** Ye objects `aws s3 ls` me nahi dikhte, console me nahi dikhte, Storage Lens ke basic view me nahi dikhte — lekin bill me dikhte hain. Har existing bucket par check karo:
+
+```bash
+for B in $(aws s3api list-buckets --query 'Buckets[].Name' --output text); do
+  N=$(aws s3api list-multipart-uploads --bucket "$B" --query 'length(Uploads)' --output text 2>/dev/null)
+  [ "$N" != "None" ] && [ "$N" != "0" ] && echo "$B: $N incomplete uploads"
+done
+```
+
+### Console se lab bucket banana
+
+1. **S3 → Create bucket** → type **General purpose**, name `jmfs-lab-docs-8x2k` (globally unique), region **ap-south-1**
+2. Object Ownership: **ACLs disabled (recommended)** — default. Block Public Access: **saare 4 checkboxes ON** — chhedo mat
+3. Bucket Versioning: **Enable**. Default encryption: **SSE-S3**, ya SSE-KMS chuno karo aur **Bucket Key: Enable** zaroor karo
+4. Tags: `Environment=lab`, `Owner=shani`, `CostCenter=CC-4471`, phir **Create bucket**
+5. **Management** tab → lifecycle rule: prefix `docs/`, minimum object size **128 KB**, transitions Standard-IA (30d) → Glacier IR (90d), expire current versions (2555d = 7 years), permanently delete noncurrent versions after 30d (keep 3 newer), delete expired delete markers, **delete incomplete multipart uploads after 7 days**
+6. **Permissions** tab → bucket policy paste karo (TLS + encryption enforce — neeche CLI section me exact JSON)
+7. Test: folder banao, upload karo, **Properties** me encryption/storage-class verify karo, dobara upload karke **Versions** toggle se 2 versions dekho, delete karke delete marker dekho
+
+### CLI se poora setup — reproducible, IaC-friendly
+
+```bash
+set -euo pipefail
+export AWS_REGION=ap-south-1
+BUCKET="jmfs-lab-docs-$(openssl rand -hex 3)"
+
+# 1. Bucket create
+aws s3api create-bucket --bucket "$BUCKET" --region ap-south-1 \
+  --create-bucket-configuration LocationConstraint=ap-south-1
+
+# 2. Block Public Access (naye buckets me default, but be explicit)
+aws s3api put-public-access-block --bucket "$BUCKET" \
+  --public-access-block-configuration \
+  "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+# 3. ACLs disable
+aws s3api put-bucket-ownership-controls --bucket "$BUCKET" \
+  --ownership-controls '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}'
+
+# 4. Versioning
+aws s3api put-bucket-versioning --bucket "$BUCKET" \
+  --versioning-configuration Status=Enabled
+
+# 5. Default encryption (SSE-S3, or swap SSEAlgorithm to aws:kms + KMSMasterKeyID)
+aws s3api put-bucket-encryption --bucket "$BUCKET" \
+  --server-side-encryption-configuration '{
+    "Rules":[{
+      "ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},
+      "BucketKeyEnabled":true}]}'
+
+# 6. Lifecycle rules
+cat > /tmp/lifecycle.json <<'EOF'
+{
+  "Rules": [
+    { "ID": "DocsArchival", "Status": "Enabled",
+      "Filter": { "And": { "Prefix": "docs/", "ObjectSizeGreaterThan": 131072 } },
+      "Transitions": [
+        { "Days": 30, "StorageClass": "STANDARD_IA" },
+        { "Days": 90, "StorageClass": "GLACIER_IR" }
+      ],
+      "Expiration": { "Days": 2555 } },
+    { "ID": "CleanupNoncurrentVersions", "Status": "Enabled", "Filter": {},
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30, "NewerNoncurrentVersions": 3 },
+      "Expiration": { "ExpiredObjectDeleteMarker": true } },
+    { "ID": "AbortStuckUploads", "Status": "Enabled", "Filter": {},
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 } }
+  ]
+}
+EOF
+aws s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" \
+  --lifecycle-configuration file:///tmp/lifecycle.json
+
+# 7. Bucket policy — TLS + encryption enforcement
+cat > /tmp/bucket-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*",
+      "Action": "s3:*",
+      "Resource": ["arn:aws:s3:::$BUCKET", "arn:aws:s3:::$BUCKET/*"],
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } } },
+    { "Sid": "DenyUnencryptedUploads", "Effect": "Deny", "Principal": "*",
+      "Action": "s3:PutObject", "Resource": "arn:aws:s3:::$BUCKET/*",
+      "Condition": { "Null": { "s3:x-amz-server-side-encryption": "true" } } }
+  ]
+}
+EOF
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy file:///tmp/bucket-policy.json
+
+# 8. Test: upload, overwrite, list versions, delete, undelete
+echo "order_id,amount,status" > /tmp/test.csv
+aws s3 cp /tmp/test.csv "s3://$BUCKET/docs/test.csv"
+echo "order_id,amount,status,updated" > /tmp/test.csv
+aws s3 cp /tmp/test.csv "s3://$BUCKET/docs/test.csv"     # v2
+
+aws s3api list-object-versions --bucket "$BUCKET" --prefix docs/test.csv \
+  --query 'Versions[].{Ver:VersionId,Latest:IsLatest,Size:Size}' --output table
+
+aws s3 rm "s3://$BUCKET/docs/test.csv"                    # delete marker banega
+MARKER=$(aws s3api list-object-versions --bucket "$BUCKET" --prefix docs/test.csv \
+  --query 'DeleteMarkers[0].VersionId' --output text)
+aws s3api delete-object --bucket "$BUCKET" --key docs/test.csv --version-id "$MARKER"
+```
+
+### CDK — same setup, ~30 lines, IaC-native
+
+```typescript
+const bucket = new s3.Bucket(this, "DocsBucket", {
+  bucketName: `jmfs-lab-docs-${this.account}-${this.region}`,
+  blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+  objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+  encryption: s3.BucketEncryption.KMS,
+  encryptionKey: key,
+  bucketKeyEnabled: true,          // 99% KMS cost saving — HAMESHA true
+  enforceSSL: true,                // DenyInsecureTransport auto-added
+  versioned: true,
+  lifecycleRules: [
+    { id: "DocsArchival", enabled: true, prefix: "docs/",
+      objectSizeGreaterThan: 131072,
+      transitions: [
+        { storageClass: s3.StorageClass.INFREQUENT_ACCESS, transitionAfter: cdk.Duration.days(30) },
+        { storageClass: s3.StorageClass.GLACIER_INSTANT_RETRIEVAL, transitionAfter: cdk.Duration.days(90) },
+      ], expiration: cdk.Duration.days(2555) },
+    { id: "CleanupNoncurrentVersions", enabled: true,
+      noncurrentVersionExpiration: cdk.Duration.days(30),
+      noncurrentVersionsToRetain: 3, expiredObjectDeleteMarker: true },
+    { id: "AbortStuckUploads", enabled: true,
+      abortIncompleteMultipartUploadAfter: cdk.Duration.days(7) },  // MANDATORY
+  ],
+});
+bucket.grantReadWrite(appRole, "docs/*");
+// Internally: GetObject/PutObject/DeleteObject on docs/*, ListBucket with prefix
+// condition, AND kms:Decrypt/GenerateDataKey on the key — manually likhne me
+// log KMS wala part bhool jaate hain.
+```
+
+`cdk-nag`'s `AwsSolutionsChecks` chalao — `AwsSolutions-S1` (server access logs missing) jaisi cheezein flag karega jo production me add karni chahiye.
+
+### Cleanup — order matters, aur `BucketNotEmpty` ka gotcha
+
+`aws s3api delete-bucket` fail hoga `BucketNotEmpty` ke saath **chahe console me bucket khaali dikhe** — teen chhupi hui cheezein "non-empty" rakhti hain: **object versions** (versioning on tha), **delete markers**, aur **incomplete multipart uploads** (ye LIST me bilkul nahi dikhte). Poora cleanup:
+
+```bash
+BUCKET=jmfs-lab-docs-8x2k
+
+# 1. Sab object versions delete
+aws s3api list-object-versions --bucket "$BUCKET" \
+  --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+  --output json > /tmp/v.json
+aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/v.json
+
+# 2. Sab delete markers delete
+aws s3api list-object-versions --bucket "$BUCKET" \
+  --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+  --output json > /tmp/m.json
+aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/m.json
+
+# 3. Incomplete multipart uploads abort
+aws s3api list-multipart-uploads --bucket "$BUCKET" \
+  --query 'Uploads[].[Key,UploadId]' --output text | \
+while read KEY UPLOADID; do
+  [ -n "$KEY" ] && aws s3api abort-multipart-upload \
+    --bucket "$BUCKET" --key "$KEY" --upload-id "$UPLOADID"
+done
+
+# 4. Ab bucket delete
+aws s3api delete-bucket --bucket "$BUCKET"
+```
+
+**Millions of objects hain?** CLI se mat karo — `delete-objects` ek call me 1,000 tak leta hai, aur LIST calls ka paisa lagta hai. Ek lifecycle rule lagao (`Expiration: {Days: 1}` + `NoncurrentVersionExpiration: {NoncurrentDays: 1}` + `AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}`), 2 din wait karo, phir delete karo — lifecycle expiration **free** hai. Aur agar bucket par **Object Lock (Compliance mode)** hai to bucket retention period tak delete ho hi nahi sakta, koi tareeka nahi — root bhi nahi.
+
+### `AccessDenied` — systematic debugging runbook
+
+S3 ka `AccessDenied` 6 alag layers se aa sakta hai. Order me check karo:
+
+```bash
+aws sts get-caller-identity                                          # 1. Main kaun hoon?
+aws s3api get-public-access-block --bucket jmfs-reports              # 2. BPA block kar raha?
+aws s3api get-bucket-policy --bucket jmfs-reports --query Policy --output text | jq .   # 3. Bucket policy?
+aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::123:role/MyRole \
+  --action-names s3:GetObject --resource-arns arn:aws:s3:::jmfs-reports/2026/aug.csv    # 4. Identity policy?
+aws s3api get-bucket-encryption --bucket jmfs-reports                # 5. SSE-KMS issue?
+aws s3api get-bucket-ownership-controls --bucket jmfs-reports        # 6. Object ownership/ACL
+```
+
+**5 most common causes:** (1) `ListBucket` ARN me `/*` laga diya, ya `GetObject` me nahi lagaya — ye do alag resource types hain. (2) SSE-KMS hai aur `kms:Decrypt` missing. (3) Cross-account hai aur sirf ek side configure kiya. (4) Block Public Access anonymous access ko block kar raha. (5) Bucket policy me koi purana `Deny` statement (aksar VPCE ya IP restriction). Ek non-obvious gotcha: S3 kabhi `AccessDenied` deta hai jab actual problem **object exist hi nahi karta** — ye intentional hai (agar tumhare paas `ListBucket` nahi hai to S3 `404 NoSuchKey` nahi batayega, kyunki "is key ka object nahi hai" bhi ek information leak hai). Isliye permissions theek hone par bhi **key spelling check karo** — case-sensitive hai, trailing spaces bhi count hote hain.
+
+### Bill achanak badh gaya — kaise investigate karo
+
+**Step 1:** Cost Explorer me `Service = S3`, `Group by = Usage Type` — exact meter batata hai (`TimedStorage` = storage, `Requests-Tier1` = PUT/LIST, `Requests-Tier2` = GET, `DataTransfer-Out` = egress, `EarlyDelete` = minimum duration violation). **Step 2:** Storage Lens se bucket/prefix identify karo. **Step 3 — symptom se cause map karo:**
+
+| Symptom | Likely cause |
+|---|---|
+| Storage badha, object count nahi | Versioning on hai, purane versions jamā ho rahe |
+| Storage badha, "0 objects" dikh raha | Incomplete multipart uploads |
+| Tier1 requests spike | LIST loop, ya har request par PutObject |
+| DataTransfer-Out spike | Public bucket scrape, CloudFront hataya gaya, ya cross-region read |
+| NatGateway line item badha | Gateway VPC endpoint missing hai |
+
+**Sabse expensive surprise: public bucket ka scrape.** 500 GB assets wale ek public bucket ko koi scraper roz poora download kare = 15 TB/month egress = ~$1,600/month, aur bill aane tak pata nahi chalta. Prevention: public buckets rakho hi mat (CloudFront + OAC), aur **AWS Budgets me anomaly alert** lagao.
+
+### S3 ko filesystem ki tarah mount karna — kab theek, kab bura
+
+FUSE-based mounting (Mountpoint for S3) ek API mismatch ko abstraction se chhupata hai: filesystem `seek()`/partial `write()`/`append()`/atomic `rename()`/`flock()` expect karta hai, S3 in me se kuch bhi native nahi deta — har write poora object re-upload hai, rename COPY+DELETE hai (non-atomic), `stat()` ek HeadObject call hai (~50-100ms), directory listing ek paginated LIST hai. `ls -la` jo local disk par 1ms leta hai, S3 mount par har file ke liye ek HeadObject call karta hai — 10,000 files = 10,000 API calls = seconds-to-minutes plus cost. **Kab theek hai:** read-heavy, sequential, bade files (ML training data, log processing). **Kab bura hai:** write-heavy, random access, shared mutable files. Legacy app migration me "S3 mount kar denge, code change nahi karna" sochna common galti hai — production me app slow ho jaati hai, bill unexpected aata hai, aur kabhi silent data corruption bhi (multiple instances ek file par likh rahe, koi lock nahi). Agar data genuinely object-shaped hai (write-once), to code ko S3 SDK par port karna 2 din ka kaam hai aur permanently better hai.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real lab-to-production migration me `jmfs-lab-docs` bucket cleanup karte waqt `delete-bucket` baar-baar `BucketNotEmpty` de raha tha jabki console me "0 objects" dikh raha tha — root cause tha ek fail hua multipart upload jo kabhi abort nahi hua tha, aur jo LIST/console dono me invisible tha. `list-multipart-uploads` chala kar dhoonda gaya aur `abort-multipart-upload` se saaf kiya. Isi project me AccessDenied ka ek case tha jahan bucket policy aur IAM policy dono sahi dikh rahe the — asal problem SSE-KMS key policy me tha, jahan consumer role ko `kms:Decrypt` diya hi nahi gaya tha. Runbook (identity → BPA → bucket policy → identity policy → encryption → ownership) follow karke minutes me pakda gaya, jo trial-and-error se ghanton leta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Realistic monthly bill for a 5M-object, 5 TB document workload with CRR + KMS + CloudFront (ap-south-1): **~$183/month** correctly configured vs **~$415/month** with common misconfigurations — a **2.3x** difference from configuration alone
+- General purpose buckets per account: **10,000 default**, up to **1,000,000** (soft limit, Service Quotas)
+- Maximum object size: **50 TB** (48.8 TiB, Dec 2025 onward); single PUT max **5 GB**; console upload max **160 GB**
+- Bucket policy max size: **20 KB**; lifecycle rules max **1,000 per bucket**; CORS rules max **100 per bucket**
+- Standard-IA / One Zone-IA minimum storage duration: **30 days**; Glacier IR: **90 days**; Deep Archive: **180 days**
+- `delete-objects` batch limit: **1,000 keys per call**
+- Public bucket scrape example: 500 GB assets, daily full scrape = 15 TB/month egress ≈ **$1,600/month**
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewers calibrate depth by level. **Junior (0-3 yrs):** expected to explain what S3 is versus a filesystem, bucket vs object, storage classes at a high level, why public buckets are risky, and what versioning does. **Mid (3-7 yrs):** expected to run a real investigation — "bill badh gaya, investigate karo" (Cost Explorer → Usage Type → Storage Lens → common-cause checklist), design for 10,000 req/s (per-prefix limits, key distribution), set up cross-account access correctly (bucket policy AND IAM policy, plus KMS key policy as the commonly-missed third piece), and reason about a lifecycle rule that increased cost instead of decreasing it (minimum billable size, transition charges, early-delete). **Senior/Architect (7+ yrs):** expected to design a 500 TB data lake (partitioning, file format, small-files problem, access-point strategy), explain the pre/post-2020 consistency model and its architectural implications, design for a 15-minute RPO / 1-hour RTO, and diagnose "S3 is slow for our use case" as a measurement problem first, an architecture problem second. The practical runbooks in this topic — the AccessDenied checklist and the bill-spike investigation — are exactly what a mid-level candidate is expected to walk through unprompted.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Skipping the `AbortIncompleteMultipartUpload` lifecycle rule on a new bucket — it's the single most commonly missed item on the day-1 checklist, and the resulting cost is completely invisible in `aws s3 ls`, the console, and Storage Lens's basic view.
+
+</Mistake>
+
+<Mistake>
+
+Trying `aws s3api delete-bucket` on a bucket that "looks empty" in the console without first checking for object versions, delete markers, and incomplete multipart uploads — all three can make a visually-empty bucket fail with `BucketNotEmpty`.
+
+</Mistake>
+
+<Mistake>
+
+Debugging `AccessDenied` by guessing instead of following the layered checklist (identity → Block Public Access → bucket policy → identity policy → encryption → ownership) — this wastes hours on problems like a missing `kms:Decrypt` grant that the checklist catches in minutes.
+
+</Mistake>
+
+<Mistake>
+
+Treating a public bucket as low-risk because "it's just static assets" — an unmonitored public bucket getting scraped can silently generate thousands of dollars in egress before anyone notices, which is why an AWS Budgets anomaly alert belongs on the day-1 checklist, not as an afterthought.
+
+</Mistake>
+
+<Mistake>
+
+Mounting S3 as a filesystem for a write-heavy or randomly-accessed workload to avoid rewriting legacy code — the FUSE abstraction leaks badly under those patterns (non-atomic renames, no file locking, expensive `stat()`), often producing silent data corruption rather than an obvious failure.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["AccessDenied received"] --> B["1. aws sts get-caller-identity — who am I?"]
+    B --> C["2. Block Public Access blocking anonymous access?"]
+    C --> D["3. Bucket policy — explicit Deny or missing Allow?"]
+    D --> E["4. Identity/IAM policy — simulate-principal-policy"]
+    E --> F{"Bucket uses SSE-KMS?"}
+    F -->|Yes| G["5. KMS key policy — is kms:Decrypt granted to this principal?"]
+    F -->|No| H["6. Object Ownership / ACL settings"]
+    G --> H
+    H --> I{"Still denied and permissions look correct?"}
+    I -->|Yes| J["Check key spelling/case — S3 returns 403, not 404,\nwhen ListBucket is missing, even if the key doesn't exist"]
+`}
+  caption="The systematic AccessDenied runbook — six layers checked in order, ending with the non-obvious case where S3 returns 403 instead of 404 to avoid leaking whether a key exists."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Day-1 checklist for any new bucket: BPA on, ACLs disabled, default encryption, TLS-deny policy, versioning, three lifecycle rules (abort MPU, expire noncurrent versions, expire delete markers), gateway VPC endpoint, tags, IaC-defined
+- `BucketNotEmpty` on a visually-empty bucket almost always means leftover object versions, delete markers, or incomplete multipart uploads — check all three before assuming console is wrong
+- `AccessDenied` debugging is a 6-layer checklist (identity → BPA → bucket policy → IAM policy → KMS if applicable → ownership/ACL) — follow it in order rather than guessing
+- S3 returns `403 AccessDenied` instead of `404 NoSuchKey` when the caller lacks `ListBucket`, even if the object genuinely doesn't exist — this is intentional information-hiding, not a bug
+- Bill investigation starts with Cost Explorer grouped by Usage Type, then Storage Lens for the bucket/prefix, then a symptom-to-cause lookup table
+- A correctly-configured setup and a commonly-misconfigured one can differ by 2x+ on the same workload — the gaps are almost always: no lifecycle rules, no gateway endpoint, Bucket Key off, no CloudFront
+- Mounting S3 as a filesystem (Mountpoint for S3) is fine for read-heavy, sequential, large-file workloads; it's a liability for write-heavy or randomly-accessed ones
+- Millions of objects to delete: use a 1-day lifecycle expiration rule and wait, don't loop `delete-objects` from the CLI — lifecycle expiration is free, LIST calls are not
+
+</QuickRevision>

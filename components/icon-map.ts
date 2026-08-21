@@ -15,6 +15,13 @@ import {
   GitMerge,
   History,
   GitPullRequest,
+  Cloud,
+  Server,
+  Compass,
+  KeyRound,
+  ShieldAlert,
+  HardDrive,
+  Archive,
   type LucideIcon,
 } from "lucide-react";
 
@@ -24,6 +31,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Database,
   Languages,
   GitBranch,
+  Cloud,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -38,4 +46,10 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "branching-collaboration": GitMerge,
   "history-safety": History,
   "github-workflow": GitPullRequest,
+  "core-services": Server,
+  "architecture-strategy": Compass,
+  "iam-fundamentals": KeyRound,
+  "iam-advanced-ops": ShieldAlert,
+  "s3-fundamentals": HardDrive,
+  "s3-advanced-ops": Archive,
 };

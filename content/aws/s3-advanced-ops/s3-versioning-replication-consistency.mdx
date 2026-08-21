@@ -1,0 +1,164 @@
+---
+slug: "s3-versioning-replication-consistency"
+title: "S3 Versioning, Replication & Consistency in Depth"
+section: "aws"
+module: "s3-advanced-ops"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["s3-bucket-object-versioning-basics"]
+tags: ["aws", "s3", "replication"]
+englishDefinition: "S3 has offered strong read-after-write consistency on every operation since December 2020 (object data, not bucket-level configuration), and versioning plus Cross/Same-Region Replication (CRR/SRR) build durability and disaster-recovery guarantees on top — with conditional writes (2024-2025) finally adding compare-and-swap semantics that were previously missing entirely."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 has offered strong read-after-write consistency on every operation since December 2020 (object data, not bucket-level configuration), and versioning plus Cross/Same-Region Replication (CRR/SRR) build durability and disaster-recovery guarantees on top — with conditional writes (2024-2025) finally adding compare-and-swap semantics that were previously missing entirely.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Consistency model — kya badla aur kab
+
+**December 2020 se S3 me strong read-after-write consistency hai**, saare operations par, saare regions me, bina extra cost ya performance penalty ke. Matlab: PUT karke turant GET karo to naya data milega (nayi object ho ya overwrite), DELETE karke turant GET karo to 404 milega, PUT karke turant LIST karo to object dikhega. **Pehle** sirf naye objects par read-after-write consistency thi — overwrites aur deletes **eventually consistent** the. Ye eventual consistency data lake workloads ke liye ek silent correctness bug thi: Spark stage 1 file likhta, stage 2 usko LIST karke padhne jaata, file nahi milti, aggregation chupchaap galat aa jaati — koi error nahi. Industry ne workarounds banaye the (Netflix S3mper, Hadoop S3Guard, EMRFS consistent view) jo sab DynamoDB me external consistency layer maintain karte the — buggy aur operationally bhaari. AWS ne apna metadata subsystem redesign karke ye permanently solve kiya.
+
+**Important caveat jo interview me differentiator hai:** strong consistency **object data** par hai, **bucket-level configuration** par nahi. Bucket policy, lifecycle rules, replication config, CORS — ye abhi bhi **eventually consistent** hain aur propagate hone me seconds lag sakte hain. CI/CD pipeline me bucket policy laga ke turant test karoge to flaky hoga. Bucket delete karke usi naam se turant naya banane me bhi weird errors mil sakte hain — kuch minute wait karna padta hai.
+
+### Versioning — delete marker, states, aur bill ka trap
+
+Versioning on karne ke baad har overwrite ya delete purani copy ko rakhta hai apne unique **version ID** ke saath. **Delete behaviour** sabse zyada poocha jaane wala part hai: versioned bucket me `DeleteObject` actually delete nahi karta — wo ek **delete marker** daal deta hai jo latest version ban jaata hai. Object normal GET me "gayab" ho jaata hai (404), lekin sab versions maujood hain. Delete marker hata do, object wapas aa jaata hai. Actual delete ke liye version ID specify karna padta hai.
+
+States teen hain: `Unversioned` (default) → `Enabled` → `Suspended`. **Enabled se wapas Unversioned nahi ja sakte** — sirf Suspended kar sakte ho, aur purane versions phir bhi rahenge (aur bill aata rahega). Versioning **silently bill badha deta hai** aur log mahino baad pata karte hain — ek 1 GB file jo roz overwrite hoti hai wo ek mahine me 30 GB storage ban jaati hai, aur `aws s3 ls` sirf current versions dikhata hai, purane versions invisible rehte hain. Isliye versioning on karte hi turant lifecycle rule bhi lagani chahiye — `NoncurrentVersionExpiration` (30 din baad, latest 3 rakh ke) aur `ExpiredObjectDeleteMarker: true`, warna orphaned delete markers jamā hote rahenge.
+
+### Accidental deletion se recovery — layers
+
+Sabse light se sabse heavy: **Layer 1 — Versioning** (minimum, har production bucket par) — delete marker hatao aur object wapas. **Layer 2 — noncurrent version retention** (30+ din). **Layer 3 — Cross-account replication** — DR copy ek **alag account** me, ye ransomware/insider threat ke against sabse strong hai kyunki compromised account us copy tak pahunch hi nahi sakta. **Layer 4 — Object Lock (Governance)** — delete ke liye special permission chahiye. **Layer 5 — Object Lock (Compliance)** — koi delete nahi kar sakta, period, root bhi nahi. **Layer 6 — AWS Backup for S3** — managed point-in-time restore. Lekin ek gotcha yaad rakhna zaroori hai: versioning tumhe **accidental** delete se bachati hai, **malicious** delete se nahi — agar attacker ke paas `s3:DeleteObjectVersion` hai to wo versions bhi mita sakta hai. Isliye production me ek Deny statement rakhte hain jo sirf ek break-glass role ko chhodkar `s3:DeleteObjectVersion` block kare. Aur cross-account replication ke bina tumhara "backup" usi blast radius me hai jisme original.
+
+### Replication (CRR/SRR) — requirements aur intentional gaps
+
+**CRR** = Cross-Region Replication, **SRR** = Same-Region Replication. Requirements: **source aur destination dono par versioning ON** (mandatory), ek IAM role jise S3 assume kar sake, aur replication configuration bucket par. **S3 RTC (Replication Time Control)** ek SLA deta hai — 99.99% objects **15 minute** me replicate honge, plus CloudWatch metrics — extra cost ~$0.015 per GB. Use cases: DR, data residency, latency (users ke paas copy), compliance separation.
+
+Do intentional gaps yaad rakhne wale hain: replication **sirf naye objects par** lagti hai — configuration lagane se pehle ke objects replicate **nahi** honge, purana data copy karne ke liye **S3 Batch Replication** alag se chalana padta hai. Aur by default **delete markers replicate nahi hote** (explicitly enable karna padta hai), aur **version deletes kabhi replicate nahi hote** — ye jaanbujh kar intentional hai, taaki source par accidental ya malicious delete DR copy ko na maare. Ye "DR bucket empty kyun hai" ka #1 reason hai.
+
+### Replication debug karna
+
+Systematic checklist: (1) dono buckets par versioning ON hai? (2) replication config sahi hai? (3) kisi object ka `ReplicationStatus` kya hai — `PENDING | COMPLETED | FAILED | REPLICA`? (4) IAM replication role ke paas sahi permissions hain (`s3:GetObjectVersionForReplication`, `s3:ReplicateObject`, `s3:ReplicateDelete`, plus SSE-KMS ho to `kms:Decrypt` source key par aur `kms:Encrypt` destination key par)? (5) RTC enabled ho to `OperationsFailedReplication` CloudWatch metric dekho. Common causes: purane objects (replication sirf nayi writes par), KMS permissions missing, destination bucket policy cross-account allow nahi karti, delete markers explicitly enable nahi kiye. **`ReplicationStatus: FAILED` par S3 automatically retry nahi karta** — manually re-copy karna padta hai (object ko khud par COPY karke). CloudWatch alarm lagao `OperationsFailedReplication` par.
+
+### Conditional writes — 2024-2025 me aaya compare-and-swap
+
+Isse pehle S3 me koi atomic compare-and-swap nahi tha. **Conditional PUT (Aug 2024)** — `IfNoneMatch: "*"` se sirf tab likho jab object exist na kare (distributed lock/idempotency key ke liye — object hai to `412 PreconditionFailed`). **Conditional overwrite (Nov 2024)** — `IfMatch: currentETag` se sirf tab likho jab ETag match kare, optimistic locking, SQL ke `UPDATE ... WHERE version = @expected` jaisa exactly. **Conditional delete (Sep 2025)** aur **conditional copy (Oct 2025)** bhi ab available hain. Bina conditional writes ke, S3 me **"last writer wins"** hai — do concurrent PUTs ka result non-deterministic hai aur **koi error nahi milta**, ek silently lost ho jaata hai. Agar S3 ko mutable state (counters, aggregates, config) ke liye use kar rahe ho to conditional writes chahiye — 2024 se pehle likha gaya purana code me ye guard nahi hoga, audit kar lena.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"S3 strongly consistent hai" statement half-true hai. **Object data** (PUT/GET/LIST) December 2020 se strongly consistent hai — lekin **bucket-level configuration** (policy, lifecycle, CORS, replication) abhi bhi eventually consistent hai. IaC pipeline me policy apply karke turant assertion test likhoge to flaky rahega — ye distinction bolna interview me strong signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real setup me DR ke liye CRR configure kiya gaya — source aur destination dono par versioning ON, RTC enabled (15-minute SLA), aur delete marker replication explicitly on kiya gaya. Kuch hafton baad DR bucket "khaali" lag raha tha jabki source me sab data tha — root cause tha replication configuration lagane se **pehle** ka saara data, jo replicate hi nahi hua tha. Fix tha S3 Batch Replication ek baar chalana existing objects ke liye. Isi setup me `s3:DeleteObjectVersion` par ek explicit Deny statement rakha gaya (sirf `BreakGlassAdmin` role ko exempt karte hue), taaki versioning sirf accidental delete nahi, malicious delete se bhi kuch protection de.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Strong read-after-write consistency: **since December 2020**, all operations, all regions, no extra cost
+- S3 RTC (Replication Time Control): **99.99% objects in 15 minutes**, extra cost ~$0.015/GB replicated ⚠️ verify
+- Replication requirement: versioning **must be Enabled** on both source and destination
+- Conditional writes rollout: PUT (Aug 2024), overwrite/ETag match (Nov 2024), delete (Sep 2025), copy (Oct 2025)
+- Versioning cost trap: a 1 GB file overwritten daily becomes ~30 GB/month storage after a month
+- Recommended lifecycle guard with versioning: `NoncurrentVersionExpiration` at 30 days, keep 3 newer versions
+- Replication scope: applies to **new writes only** — pre-existing objects need S3 Batch Replication separately
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"S3 ka consistency model kya hai" is a near-guaranteed question, and the strong answer names the exact date (December 2020), explains what changed (overwrites/deletes went from eventually to strongly consistent), and — the differentiator — calls out that bucket-level configuration is still eventually consistent. A close follow-up is "replication set up kiya lekin DR bucket khaali hai, kya hua" — the strong answer immediately names the two intentional gaps: replication only applies to new writes (pre-existing data needs S3 Batch Replication), and delete markers/version deletes don't replicate by default. On concurrency, "S3 me do processes ek hi key par simultaneously likhein to kya hoga" tests whether the candidate knows S3 was last-writer-wins with silent data loss until conditional writes arrived in 2024 — a good answer names `IfNoneMatch`/`IfMatch` and the `412 PreconditionFailed` response.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Assuming replication will backfill existing objects once configured — it only applies to writes that happen after the configuration is set. Pre-existing data needs a separate S3 Batch Replication job.
+
+</Mistake>
+
+<Mistake>
+
+Enabling versioning without a `NoncurrentVersionExpiration` lifecycle rule — storage cost grows silently, invisible in `aws s3 ls` (which only shows current versions), and is often discovered months later in the bill.
+
+</Mistake>
+
+<Mistake>
+
+Relying on versioning alone as "backup" against a malicious actor — anyone with `s3:DeleteObjectVersion` can still permanently remove old versions. Real protection needs cross-account replication and/or a Deny statement scoped to a break-glass role.
+
+</Mistake>
+
+<Mistake>
+
+Writing code that treats "last writer wins" as safe for mutable state (counters, config, aggregates) without conditional writes — concurrent PUTs silently overwrite each other with no error, and pre-2024 code has no guard against this at all.
+
+</Mistake>
+
+<Mistake>
+
+Testing a freshly-applied bucket policy or lifecycle rule immediately after deployment and treating a failure as a bug — bucket-level configuration is eventually consistent and can take seconds to propagate, unlike object data.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App
+    participant S3 as S3 (Source, versioned)
+    participant Repl as Replication Engine
+    participant DR as S3 (Destination, versioned)
+
+    App->>S3: PUT object (new write)
+    S3-->>App: 200 OK (strongly consistent immediately)
+    S3->>Repl: Object created event
+    Repl->>DR: Replicate object (within RTC's 15-min SLA if enabled)
+    DR-->>Repl: ReplicationStatus: COMPLETED
+
+    Note over App,S3: DELETE on a versioned bucket
+    App->>S3: DELETE object (no version ID)
+    S3-->>App: Delete marker created (object appears gone, GET returns 404)
+    S3--xDR: Delete marker NOT replicated by default
+    Note over DR: DR copy still has the "deleted" object unless<br/>DeleteMarkerReplication is explicitly enabled
+`}
+  caption="Object writes replicate automatically once configured, but deletes are intentionally excluded by default — the DR copy is protected from accidental or malicious deletes on the source unless you opt in."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Strong read-after-write consistency since December 2020 — but only for object data, not bucket-level configuration (policy, lifecycle, CORS, replication remain eventually consistent)
+- Versioned `DeleteObject` (no version ID) creates a delete marker, not a real delete — remove the marker to restore the object
+- Versioning states only move forward: `Unversioned` → `Enabled` → `Suspended` (never back to Unversioned); always pair with `NoncurrentVersionExpiration`
+- Recovery layers, lightest to heaviest: versioning → noncurrent retention → cross-account replication → Object Lock Governance → Object Lock Compliance → AWS Backup
+- CRR/SRR requires versioning Enabled on both source and destination; RTC gives a 99.99%-in-15-minutes SLA
+- Replication only covers new writes (use S3 Batch Replication for backfill) and excludes delete markers/version deletes by default — both are the top causes of "DR bucket looks empty"
+- Conditional writes (`IfNoneMatch`, `IfMatch`) arrived 2024-2025 and finally give S3 compare-and-swap semantics; before that, concurrent writes were silent last-writer-wins
+- Versioning protects against accidental deletion, not a malicious actor with `s3:DeleteObjectVersion` — pair it with a Deny statement scoped to a break-glass role for real protection
+
+</QuickRevision>

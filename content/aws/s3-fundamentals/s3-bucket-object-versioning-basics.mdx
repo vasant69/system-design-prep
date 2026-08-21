@@ -1,0 +1,216 @@
+---
+slug: "s3-bucket-object-versioning-basics"
+title: "S3 Buckets, Objects & Versioning Fundamentals"
+section: "aws"
+module: "s3-fundamentals"
+order: 3
+difficulty: "beginner"
+readingTime: 14
+prerequisites: ["s3-mental-model"]
+tags: ["aws", "s3", "fundamentals"]
+englishDefinition: "S3 objects live in a flat namespace where console 'folders' are a LIST-time rendering illusion built from prefixes and a delimiter, not real directories. Since December 2020 S3 provides strong read-after-write consistency for all object operations, and features like versioning, multipart upload, presigned URLs, and Block Public Access give fine-grained control over object history, large uploads, temporary access, and public exposure respectively."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 objects live in a flat namespace where console "folders" are a LIST-time rendering illusion built from prefixes and a delimiter, not real directories. Since December 2020 S3 provides strong read-after-write consistency for all object operations, and features like versioning, multipart upload, presigned URLs, and Block Public Access give fine-grained control over object history, large uploads, temporary access, and public exposure respectively.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`s3-mental-model` topic me humne dekha ki S3 ek hash map hai, filesystem nahi. Ye topic us foundation par bucket/object level ke practical fundamentals build karta hai — jo har din ke S3 kaam me use hote hain.
+
+### "Folders" — prefix aur delimiter se banti illusion
+
+Namespace bilkul flat hai. `reports/2026/aug.csv` ek pura key hai, `/` sirf ek normal character. LIST API me `Prefix` aur `Delimiter` parameters milte hain:
+
+```bash
+# Sab keys — flat
+aws s3api list-objects-v2 --bucket jmfs-reports --prefix "reports/"
+
+# Delimiter ke saath — "folders" jaisa dikhega
+aws s3api list-objects-v2 --bucket jmfs-reports \
+  --prefix "reports/" --delimiter "/"
+# -> CommonPrefixes: ["reports/2025/", "reports/2026/"]
+#    Contents: [reports/README.txt]
+```
+
+`CommonPrefixes` hi wo "folders" hain — S3 ne runtime par calculate kiye, koi stored object nahi hai. Console me "Create folder" karo to actually ek **0-byte object** banta hai jiska key `reports/2026/` hai (trailing slash ke saath) — sirf console ko folder dikhane ke liye, functionally bekaar. **Rename ek O(n) operation hai:** `reports/2025/` ko `archive/2025/` karne ke liye har object individually COPY karke DELETE karna padta hai — 100,000 objects = 200,000 API calls, ghanton ka kaam. Isliye key structure **din-1 se design karo**, baad me badalna SQL me clustered index change karne jaisa costly hai.
+
+### Consistency model — Dec 2020 se strong hai
+
+**Strong read-after-write consistency saare operations par, saare regions me, bina extra cost ya performance penalty ke.** Matlab: PUT karke turant GET karo → naya data milega; DELETE karke turant GET karo → 404 milega; PUT karke turant LIST karo → object dikhega.
+
+Pehle (2020 se pehle) sirf naye objects par read-after-write consistency thi, overwrites/deletes **eventually consistent** the — log workarounds likhte the (DynamoDB consistency layer, retry loops, EMR ka S3Guard). Wo sab ab bekaar hai — eventual consistency data lake workloads ke liye correctness bug tha (Spark job ne file likhi, agla stage padhne gaya, file "nahi mili" — silent data loss). AWS ne metadata subsystem redesign karke strong consistency di.
+
+Ek gotcha: strong consistency **object data** par hai, **bucket-level configuration** par nahi. Bucket policy, lifecycle rules, replication config, CORS abhi bhi **eventually consistent** hain, propagate hone me seconds lag sakte hain — CI/CD me policy laga ke turant test karoge to flaky ho sakta hai.
+
+### Object size limits — poori table
+
+| Limit | Value |
+|---|---|
+| Minimum object size | 0 bytes |
+| Maximum object size | 50 TB (Dec 2025 se; pehle 5 TB) |
+| Single PUT me maximum | 5 GB |
+| Console se upload maximum | 160 GB |
+| Multipart: max parts | 10,000 |
+| Multipart: part size | 5 MiB – 5 GiB |
+| Multipart theoretical max | 10,000 × 5 GiB = ~48.8 TiB (~53.7 TB) |
+| Key length | 1,024 bytes UTF-8 |
+| User metadata | 2 KB total |
+
+50 TB ke uploads ke liye AWS **Common Runtime (CRT)** aur S3 Transfer Manager use karne ko kehta hai — normal SDK code itne bade uploads efficiently handle nahi karta.
+
+### Versioning — object history rakhna
+
+Versioning on karne ke baad, har overwrite ya delete purani copy ko rakhta hai apne unique **version ID** ke saath:
+
+```bash
+aws s3api put-bucket-versioning --bucket jmfs-reports \
+  --versioning-configuration Status=Enabled
+```
+
+**Delete behaviour poora badal jaata hai:** versioned bucket me `DeleteObject` actually delete nahi karta — ek **delete marker** daal deta hai jo latest version ban jaata hai. Object normal GET me "gayab" ho jaata hai, lekin sab versions maujood hain. Delete marker hata do, object wapas aa jaata hai. Actually permanently delete karne ke liye version ID specify karna padta hai:
+
+```bash
+aws s3api delete-object --bucket jmfs-reports --key 2026/aug.csv \
+  --version-id "3HL4kqtJlcpXroDTDmjVBH40Nrjfkd"
+```
+
+States teen hain: `Unversioned` (default) → `Enabled` → `Suspended`. **Enabled se wapas Unversioned nahi ja sakte** — sirf Suspended kar sakte ho, aur purane versions phir bhi rahenge (aur bill aata rahega).
+
+**Versioning silently bill badha deta hai** aur log mahino baad pata karte hain. Ek 1 GB file jo roz overwrite hoti hai = 30 GB/month storage ek mahine baad. `aws s3 ls` sirf current versions dikhata hai — purane versions invisible hain. Versioning enable karo to **turant lifecycle rule bhi lagao** (pichhle topic me covered):
+
+```json
+{ "NoncurrentVersionExpiration": { "NoncurrentDays": 30, "NewerNoncurrentVersions": 3 } }
+```
+
+`ExpiredObjectDeleteMarker: true` bhi zaroori hai, warna orphaned delete markers jamā hote rahenge.
+
+### Multipart upload — kab mandatory, kab recommended
+
+Teen steps: `CreateMultipartUpload` (UploadId milta hai) → `UploadPart × N` (har part ka ETag milta hai, parallel ho sakta hai) → `CompleteMultipartUpload` (sab ETags bhejo, S3 assemble karta hai) — ya `AbortMultipartUpload` (sab parts discard). Fayde: parallel upload se throughput multiply, resumable (network toota to sirf failed part retry), streaming (total size pata na ho tab bhi shuru kar sakte ho), pause/resume.
+
+**5 GB se bada object → multipart mandatory** (single PUT ki hard limit hai). **100 MB se bada → multipart recommended**, chahe single PUT allowed ho — kyunki single PUT me network glitch aane par poora upload dobara karna padta hai. 4 GB upload 95% par fail ho gaya = 4 GB dobara upload. Multipart me sirf wo ek failed part retry hota hai. Node SDK v3 me `@aws-sdk/lib-storage` ka `Upload` class ye automatically handle karta hai — raw `PutObjectCommand` nahi karta.
+
+**Sabse invisible gotcha:** incomplete multipart uploads ka storage bill aata hai aur wo LIST me dikhte hi nahi. Upload fail hua aur abort nahi hua, to wo parts hamesha ke liye storage lete rehte hain — invisible. "0 objects" wale bucket me 2 TB ka bill aana possible hai. Isliye har bucket par `AbortIncompleteMultipartUpload` (7 din) lifecycle rule day-1 se lagao.
+
+### Presigned URLs — introduction (deep dive s3-advanced-ops module me)
+
+Presigned URL ek temporary signed URL hai jo bina AWS credentials ke ek specific operation allow karta hai:
+
+```typescript
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
+
+const url = await getSignedUrl(s3,
+  new GetObjectCommand({ Bucket: "jmfs-reports", Key: "2026/aug.csv" }),
+  { expiresIn: 900 }  // 15 minutes
+);
+```
+
+Common use cases: private file download (bucket public kiye bina), direct browser upload (tumhare server ke through jaane ke bajaye seedha S3 me), aur third-party ko temporary access. Ek baat abhi hi samajhna zaroori hai: **presigned URL ki permissions signer ki permissions hain, requester ki nahi** — agar tumhara Lambda role poore bucket ko padh sakta hai aur galat key ke liye URL bana do, user wo file bhi padh sakta hai. Key ko user input se directly lena path-traversal risk deta hai. Signing internals, expiry limits, aur access-control patterns is site ke `s3-advanced-ops` module me deeply cover hote hain.
+
+### Bucket public kaise hota hai — introduction (deep security s3-advanced-ops module me)
+
+Public access do tareeke se aata hai: **bucket/object ACL** (legacy) ya **bucket policy** with `"Principal": "*"`. **Block Public Access (BPA)** ek override layer hai jo 4 independent switches se in dono ko block karta hai — chahe ACL ya policy kuch bhi kahe. **April 2023 se naye buckets me BPA default ON hai aur ACLs default disabled hain** — ye AWS ka sabse important security default change tha, kyunki usse pehle countless data breaches sirf "kisi ne bucket public bana diya" ki wajah se hue. Practical rule jo abhi hi note karna zaroori hai: bucket ko public karna ab almost hamesha galti hai — sahi tareeka BPA on rakhna, bucket private rakhna, aur CloudFront + Origin Access Control lagana hai. Full BPA switch-by-switch mechanics aur cross-account access patterns `s3-advanced-ops` module me hain.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+`jmfs-reports` bucket me versioning enable kiya gaya rollback ke liye, saath hi **turant** `NoncurrentVersionExpiration` (30 din, 3 versions tak) aur `ExpiredObjectDeleteMarker: true` lifecycle rules bhi laga di gayin — enable karne aur cleanup rule lagane ke beech koi gap nahi rakha gaya. Uploads jo 100 MB se bade the (monthly report bundles) `@aws-sdk/lib-storage` ke `Upload` class se multipart me jaate the, aur `AbortIncompleteMultipartUpload` (7 din) day-1 se on tha. User-facing downloads private rakhe gaye — Node API pehle auth check karta, phir 15-minute presigned URL deta, direct bucket access kabhi expose nahi kiya gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Strong read-after-write consistency: since December 2020, all operations, no extra cost
+- Object size: 0 bytes to 50 TB; single PUT hard limit: 5 GB; multipart mandatory beyond that
+- Multipart recommended threshold: 100 MB (even though single PUT allows up to 5 GB)
+- Multipart limits: up to 10,000 parts, 5 MiB-5 GiB per part, theoretical max ~48.8 TiB
+- Key length: max 1,024 bytes UTF-8; user metadata: max 2 KB total
+- Versioning storage growth example: 1 GB file overwritten daily = ~30 GB/month after one month
+- Presigned URL max expiry with IAM user credentials: 7 days; with temporary role credentials: bounded by the credentials' own expiry (often ~1 hour)
+- Block Public Access + ACLs disabled by default: since April 2023, on all new buckets
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"S3 me folders exist karte hain kya" is the most common opening probe — the strong answer names `CommonPrefixes` and the `Delimiter` parameter specifically, not just "no, it's flat." A near-guaranteed follow-up on versioning: "versioning enable karne ke baad bill achanak badh gaya, kya hua" — the strong answer identifies that overwrites keep every version at full storage cost and that the fix is pairing versioning with a `NoncurrentVersionExpiration` lifecycle rule from day one, not after the fact. On consistency, naming the exact date (December 2020) and the caveat that it applies to object data but not bucket-level configuration (policies, CORS, lifecycle) is what separates a memorized answer from an understood one. For multipart, the strong distinction is "5 GB is the hard mandatory line, 100 MB is the recommended one" — conflating the two is a common tell of shallow knowledge.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Treating S3 "folders" as real and trying to rename one directly — there is no rename operation; it's copy-then-delete of every object under that prefix, an O(n) cost that can mean hundreds of thousands of API calls.
+
+</Mistake>
+
+<Mistake>
+
+Enabling versioning without immediately adding a `NoncurrentVersionExpiration` lifecycle rule — old versions are invisible in a normal `aws s3 ls` but still billed in full, so storage cost creeps up silently over weeks or months.
+
+</Mistake>
+
+<Mistake>
+
+Using a single `PutObjectCommand` for uploads over 100 MB instead of multipart — a network glitch at 95% means the entire upload restarts from zero, instead of retrying just the one failed part.
+
+</Mistake>
+
+<Mistake>
+
+Never checking for incomplete multipart uploads — failed or abandoned uploads don't show up in a normal object LIST but are still billed for storage indefinitely, until an `AbortIncompleteMultipartUpload` lifecycle rule (or manual cleanup) removes them.
+
+</Mistake>
+
+<Mistake>
+
+Assuming a presigned URL's access is scoped to the person who receives it — it actually carries the permissions of whoever signed it, so generating a URL for a key taken directly from user input (without validating it's within that user's own prefix) opens a path-traversal-style risk.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["DeleteObject called on a versioned bucket"] --> B{"Version ID specified?"}
+    B -->|No| C["Delete marker created — becomes the new 'latest' version"]
+    C --> D["Normal GET now returns 404"]
+    C --> E["All prior versions still exist and are still billed"]
+    D --> F["Remove the delete marker -> object reappears"]
+    B -->|Yes, specific version| G["That exact version is permanently deleted"]
+`}
+  caption="Delete behaviour on a versioned bucket is fundamentally different from an unversioned one — an unqualified delete is reversible (it's just a marker), while a version-qualified delete is permanent."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- "Folders" are a LIST-time illusion from `Prefix` + `Delimiter` producing `CommonPrefixes` — no folder object is ever stored, and "renaming" one means copying and deleting every object under it (O(n))
+- Since December 2020, S3 gives strong read-after-write consistency for all object operations — but bucket-level config (policies, CORS, lifecycle) is still eventually consistent
+- Object limits: 0 bytes to 50 TB, single PUT capped at 5 GB, keys up to 1,024 bytes, user metadata up to 2 KB
+- Versioning turns delete into a reversible "delete marker" rather than permanent removal — but every version, including overwritten ones, is billed at full storage cost until cleaned up
+- Pair versioning with a `NoncurrentVersionExpiration` lifecycle rule from the moment you enable it, not after the bill surprises you
+- Multipart upload is mandatory past 5 GB and recommended past 100 MB — it enables parallelism and per-part retry instead of restarting a failed upload from zero
+- Incomplete multipart uploads are invisible in a normal object LIST but still billed — always set `AbortIncompleteMultipartUpload`
+- Presigned URLs and public bucket exposure get only an introduction here — the deeper access-control and security mechanics live in the `s3-advanced-ops` module
+
+</QuickRevision>

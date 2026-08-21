@@ -1,0 +1,184 @@
+---
+slug: "aws-lambda"
+title: "AWS Lambda"
+section: "aws"
+module: "core-services"
+order: 4
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["amazon-s3-basics"]
+tags: ["aws", "serverless", "compute"]
+englishDefinition: "Lambda is AWS's event-driven serverless compute service — you supply function code and AWS handles provisioning, scaling, and patching, billing per millisecond of actual execution with automatic multi-AZ availability and no charge when the function is idle."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda is AWS's event-driven serverless compute service — you supply function code and AWS handles provisioning, scaling, and patching, billing per millisecond of actual execution with automatic multi-AZ availability and no charge when the function is idle.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Lambda me aap sirf function ka code likhte ho, AWS usko run karta hai jab bhi koi event trigger hota hai — server provision, patch, scale karna aapki responsibility nahi hai. "Serverless" ka matlab ye nahi ki server exist hi nahi karta — server hai, bas wo aapki chinta nahi hai. Sabse bada business point: **sirf execution time ka paisa lagta hai** — code nahi chal raha to zero cost, jabki EC2 me idle instance bhi paisa leta hai.
+
+### Kyun zaroori hai
+
+Ek contact form API din me 50 baar hit ho aur har call 200ms le, to total compute sirf 10 second/day hai — lekin EC2 me poore din (86,400 seconds) ka paisa lagta, **99.99% waste**. Server management ka bojh (OS patching, monitoring, log rotation) bhi business logic nahi hai, lekin time isi me jaata hai. Traffic spike pe Auto Scaling Group configure karna, warm-up jhelna — Lambda me AWS seconds me hi thousands of concurrent executions handle kar leta hai. Aur event-driven kaam ("S3 me file aaye to thumbnail banao") ke liye 24×7 polling server rakhna waste hai — Lambda directly event pe trigger hota hai.
+
+### Execution model — cold start vs warm start
+
+Invocation aane pe Lambda pehle check karta hai ki warm execution environment available hai ya nahi. **Warm start** me seedha handler call ho jaata hai, latency 1-10ms, aur INIT code (handler ke bahar ka) skip ho jaata hai. **Cold start** me naya environment banta hai: Firecracker microVM boot (~125ms), runtime bootstrap, deployment package download, aur **INIT phase** — handler ke bahar ka code (imports, DB pool, SDK clients) chalta hai, ye 10 second tak chal sakta hai. Total cold start latency 100ms se 2 second tak, runtime aur package size pe depend karta hai. Invocation ke baad environment **freeze** hota hai (destroy nahi) — kuch minutes tak preserved rehta hai, agli invocation aayi to unfreeze ho jaata hai (warm start), warna eventually destroy.
+
+**Critical implication:** ek execution environment ek waqt me sirf **ek** request handle karta hai. 100 concurrent requests = 100 separate environments, jinke beech memory share nahi hoti. Isliye SDK clients aur DB connections **INIT phase** me banao, handler ke andar nahi — warna har invocation pe naya client banega, slow aur expensive.
+
+```javascript
+// Sahi — INIT phase me, cold start pe sirf ek baar
+const AWS = require('aws-sdk');
+const s3 = new AWS.S3();
+let dbConnection = null;
+
+exports.handler = async (event) => {
+    if (!dbConnection) {
+        dbConnection = await createConnection(); // sirf pehli baar
+    }
+    const result = await dbConnection.query(...);
+    return { statusCode: 200, body: JSON.stringify(result) };
+};
+```
+
+Cold start kam karne ke tareeke: **Provisioned Concurrency** (pre-warmed environments, cold start practically zero, extra cost), package size kam karo (modular SDK v3 imports), memory badhao (zyada memory = zyada CPU = fast init), aur scheduled ping se "warming" — ye ab **anti-pattern** hai, scale-out cold starts solve nahi karta.
+
+### Memory ↔ CPU — counter-intuitive insight
+
+Lambda me CPU directly set nahi hoti, sirf memory set karte ho aur CPU proportionally allocate hoti hai — **1,769 MB pe exactly 1 vCPU**, range 128 MB se 10,240 MB. Isse ek counter-intuitive result nikalta hai: zyada memory dena kabhi **sasta** pad sakta hai. Cost = memory × duration hai. 128 MB pe function 10 second le raha ho (128×10 = 1280 units) aur 1024 MB pe CPU 8 guna badhne se duration 1 second ho jaaye (1024×1 = 1024 units) — cost kam ho gaya, latency 10x better. Lekin ye sirf **CPU-bound** functions pe kaam karta hai — I/O-bound (network wait) function me memory badhane se duration kam nahi hoga, sirf cost badhega. Guess karne ke bajaye **AWS Lambda Power Tuning** tool se optimal point nikala jaata hai.
+
+### Timeouts aur limits — numbers yaad rakho
+
+Max timeout **900 seconds (15 minutes)**, default 3 second. Deployment package: 50 MB zipped, **250 MB unzipped** (layers included). Synchronous payload limit **6 MB**, asynchronous **256 KB**. Default concurrency per region **1,000** (soft limit). 6 MB limit ka practical asar: bade files kabhi Lambda ke through nahi bhejte — presigned URL pattern use karte hain (client seedha S3 pe upload karta hai).
+
+### Concurrency — Reserved vs Provisioned
+
+**Reserved concurrency** ek function ke liye concurrency reserve karti hai — free hai, aur ye dual-purpose hai: guarantee (koi doosra function isko starve nahi karega) aur hard cap (downstream protection — jaise RDS ke max_connections ko exceed hone se rokna). **Provisioned concurrency** environments pre-warm karke rakhti hai, cold start practically khatam ho jaata hai, lekin paid hai — idle rehne pe bhi charge. Reserved concurrency ko **0** set karna function ko poori tarah disable kar deta hai — emergency kill switch.
+
+### Triggers — push vs poll
+
+**Push-based** (service Lambda ko invoke karti hai): API Gateway/ALB (synchronous), S3/SNS/EventBridge (asynchronous — Lambda apne aap **2 automatic retries** karta hai). **Poll-based** (Lambda service khud poll karti hai — Event Source Mapping): SQS (visibility timeout ke baad wapas queue me, `maxReceiveCount` ke baad DLQ), Kinesis/DynamoDB Streams (shard-based, by default record **block** kar deta hai jab tak succeed na ho — "poison pill" problem, isliye `BisectBatchOnFunctionError` aur `MaximumRetryAttempts` configure karna zaroori hai).
+
+**Idempotency zaroori hai** kyunki async retries aur at-least-once delivery ki wajah se same event do baar process ho sakta hai — event se ek unique ID nikaal ke DynamoDB me conditional put se duplicate detect karna common pattern hai.
+
+### Execution Role vs Resource-based Policy — do alag concepts
+
+**Execution Role** batata hai Lambda **kya kar sakta hai** (outbound — jaise S3 se read). **Resource-based policy** batati hai **kaun Lambda ko invoke kar sakta hai** (inbound — jaise S3 service ko is function ko trigger karne ki permission). Console se trigger add karne pe AWS automatically resource-based policy add karta hai; IaC (Terraform/CDK) me ye manually add karna padta hai (`AWS::Lambda::Permission`) — ye ek bahut common bug hai jisme trigger dikhta hai but function invoke hi nahi hota.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Secrets ko environment variables me mat rakho — jisko bhi `lambda:GetFunctionConfiguration` permission hai wo unhe console me plaintext dekh sakta hai. Secrets Manager ya SSM Parameter Store (SecureString) use karo, aur value ko **INIT phase** me fetch karke cache karo taaki har invocation pe API call na ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek contact-form-handler function Python 3.12 pe arm64 architecture (20% sasta) ke saath chalta hai, 256 MB memory, 10 second timeout, API Gateway se synchronous trigger, aur **reserved concurrency 10** (form spam se bill protect karta hai). Execution role sirf specific SES identity ARN pe `ses:SendEmail` deta hai. Code me SES client INIT phase me banta hai (har invocation pe naya nahi), user ka email `ReplyToAddresses` me jaata hai na ki `From` me (kyunki `From` verified identity honi chahiye), aur user ko generic error message milta hai jabki actual error sirf structured JSON logs me — information disclosure se bachaav ke liye. Ek doosra function — image thumbnail generator — S3 ke `originals/` prefix pe ObjectCreated se asynchronously trigger hota hai, aur uske IAM role me sirf `thumbnails/` prefix pe write permission hai, `originals/` pe nahi — isse infinite loop physically impossible ho jaata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Max timeout: 900 seconds (15 min); default: 3 seconds
+- Memory range: 128 MB – 10,240 MB; 1,769 MB = exactly 1 vCPU
+- Deployment package: 50 MB zipped, 250 MB unzipped (with layers)
+- Synchronous payload limit: 6 MB; asynchronous: 256 KB
+- Default concurrency per region: 1,000 (soft limit); burst: 1,000 per 10 seconds per function
+- Pricing: $0.20 per 1M requests + ~$0.0000166667 per GB-second (x86); arm64/Graviton2 ~20% cheaper
+- Free tier (perpetual): 1M requests/month + 400,000 GB-seconds/month
+- Billing granularity: 1 millisecond (used to be 100ms blocks)
+- Async invocation: 2 automatic retries, max event age 6 hours
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Cold start is almost a guaranteed question — the strong answer names the Firecracker microVM boot, runtime bootstrap, and INIT phase explicitly, and pairs it with concrete mitigations (Provisioned Concurrency, smaller packages, memory tuning) rather than a vague "it happens sometimes." The memory-to-cost relationship is a favorite trick question — the strong answer shows the counter-intuitive math (more memory can mean lower total cost on CPU-bound work) and correctly caveats that it doesn't apply to I/O-bound functions. Reserved vs Provisioned concurrency gets confused constantly — the clean answer separates "guarantee + cap, free" from "pre-warmed, paid." A live-scenario favorite: "Lambda to RDS is hitting too many connections" — the strong debugging answer reaches for RDS Proxy or reserved concurrency, not just "increase max_connections."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+SDK clients aur DB connections handler ke andar banana instead of INIT phase me — har invocation pe naya client aur naya connection, slow aur expensive.
+
+</Mistake>
+
+<Mistake>
+
+Default 3-second timeout chhod dena jab function ko 4+ seconds lagte hain — random, hard-to-debug failures aate hain. Timeout ko realistic p99 duration ka ~1.5x rakho.
+
+</Mistake>
+
+<Mistake>
+
+Secrets ko plain environment variables me rakhna — `lambda:GetFunctionConfiguration` permission wale console me plaintext dekh sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+S3 ObjectCreated event pe Lambda ko usi bucket me output likhwaana — infinite loop ban jaata hai aur bill exponentially badhta hai. Alag bucket ya prefix filter use karo.
+
+</Mistake>
+
+<Mistake>
+
+IaC (Terraform/CDK) me resource-based policy add karna bhool jaana — trigger configure to dikhta hai, lekin Lambda ko invoke karne ki permission nahi hoti, isliye function chalta hi nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Invocation arrives] --> B{Warm environment available?}
+    B -->|Yes - Warm Start| C[Handler called directly]
+    C --> D[1-10ms latency]
+    B -->|No - Cold Start| E[Firecracker microVM boot ~125ms]
+    E --> F[Runtime bootstrap]
+    F --> G[INIT phase: imports, DB pool, SDK clients]
+    G --> H[Handler invoked]
+    H --> I[100ms - 2s latency]
+    D --> J[Response returned]
+    I --> J
+    J --> K[Environment freezes, not destroyed]
+    K -->|Next invocation soon| B
+    K -->|No traffic for a while| L[Environment destroyed]
+`}
+  caption="Cold start pays the full INIT-phase cost once per environment; warm invocations skip everything except the handler, which is why reusing SDK clients and DB connections across invocations matters so much."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Lambda bills per millisecond of actual execution; zero cost when idle — the core reason it exists for spiky/low-traffic workloads
+- Cold start = new execution environment (Firecracker boot + runtime + INIT code); warm start reuses one and skips INIT — 1-10ms vs 100ms-2s
+- One execution environment handles exactly one request at a time — no shared memory across concurrent invocations
+- Memory sets CPU proportionally (1,769 MB = 1 vCPU); more memory can lower total cost on CPU-bound functions, not I/O-bound ones
+- Reserved concurrency = free guarantee + hard cap (downstream protection); Provisioned concurrency = paid pre-warming (kills cold start)
+- Push-based triggers (API Gateway, S3, SNS) vs poll-based (SQS, Kinesis, DynamoDB Streams) have different retry semantics — async gets 2 automatic Lambda retries, poll-based follows the source's own retry rules
+- Execution role = what Lambda can do (outbound); resource-based policy = who can invoke Lambda (inbound) — IaC often forgets the latter
+- Idempotency is mandatory for async/poll-based triggers because retries and at-least-once delivery mean duplicate events are expected, not exceptional
+
+</QuickRevision>

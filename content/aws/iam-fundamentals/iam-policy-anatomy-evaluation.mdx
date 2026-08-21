@@ -1,0 +1,207 @@
+---
+slug: "iam-policy-anatomy-evaluation"
+title: "IAM Policy Anatomy & Evaluation Logic"
+section: "aws"
+module: "iam-fundamentals"
+order: 2
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["iam-mental-model"]
+tags: ["aws", "iam", "policies"]
+englishDefinition: "An IAM policy is a JSON document made of statements — each with an Effect, Action, Resource, and optional Condition — that either grants (identity-based, resource-based) or limits (permissions boundary, SCP, RCP, session policy) permissions; on every request AWS evaluates all applicable policies through a fixed precedence order where any explicit Deny wins unconditionally."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+An IAM policy is a JSON document — one or more statements, each with an Effect (Allow/Deny), Action, Resource, and optional Condition — attached either to an identity (user/group/role) or a resource. AWS evaluates every applicable policy on every request through a fixed precedence order, and any single explicit Deny anywhere overrides any number of Allow statements.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Policy JSON ka structure — har field ka matlab
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowReadOnClientData",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::jmfs-client-data",
+        "arn:aws:s3:::jmfs-client-data/*"
+      ],
+      "Condition": {
+        "IpAddress": { "aws:SourceIp": "203.0.113.0/24" }
+      }
+    }
+  ]
+}
+```
+
+- **Version** — policy *language* version, not your policy's version. Always `2012-10-17` (latest); the older `2008-10-17` doesn't support policy variables like `${aws:username}`.
+- **Statement** — array of rules, each evaluated independently.
+- **Sid** — optional label for debugging; doesn't need to be unique on identity policies, but should be on some resource policies.
+- **Effect** — `Allow` or `Deny`.
+- **Action** — `service:ApiName`, case-insensitive matching, CamelCase convention.
+- **Resource** — ARN(s); some actions don't support resource-level permissions and need `"*"`.
+- **Condition** — optional, this is the policy's `WHERE` clause.
+
+The full element table also includes `Id` (overall policy ID, mostly resource policies), `Principal`/`NotPrincipal` (required in resource policies), and `Action`/`NotAction`, `Resource`/`NotResource` pairs. `NotAction` means "everything except these actions" — used with `Allow` it's dangerous (a new AWS service launches next year and gets auto-allowed), but with `Deny` it's the *safe* fail-closed pattern: `{"Effect":"Deny","NotAction":["s3:GetObject","s3:ListBucket"],"Resource":"*"}` means "deny everything except these two" — new services are automatically denied too. `NotResource` combined with `Allow` is almost always a bug: `{"Effect":"Allow","Action":"s3:*","NotResource":"arn:aws:s3:::secret-bucket/*"}` actually grants access to *every S3 resource in the world* except that one bucket, including other accounts' public buckets. Rule of thumb: `NotAction`/`NotResource` only pair safely with `Deny`.
+
+Wildcards: `*` matches zero-or-more characters, `?` matches exactly one — this is not regex. `Action` wildcards always work (`s3:Get*` matches `GetObject`, `GetBucketPolicy`, everything); `Resource` wildcards can sit anywhere inside an ARN; `Condition` values only honor wildcards with `StringLike`/`ArnLike` operators — `StringEquals` treats `*` as a literal asterisk. A subtle trap: `s3:Get*` also matches `s3:GetBucketPolicy`, which is a reconnaissance-useful read, and `iam:Get*` lets anyone read all your policies — "harmless read" wildcards often expose sensitive metadata.
+
+### Identity-based vs resource-based — two perspectives
+
+**Identity-based** policy attaches to a user/group/role: perspective is "what can *I* do" — no `Principal` field (the principal is whoever the policy is attached to). **Resource-based** policy attaches to a resource: perspective is "who can touch *me*" — `Principal` is compulsory. Not every service supports resource policies — S3, KMS, SQS, SNS, Lambda, Secrets Manager, ECR, EFS, API Gateway, EventBridge, and IAM role trust policies do; DynamoDB, EC2, RDS traditionally don't.
+
+The rule that matters most: **same account** — identity policy OR resource policy allowing is enough (union, either one works). **Cross account** — BOTH are required: the source account's identity policy must allow, AND the target account's resource policy must allow. This is an AND, not an OR, and it's the reason behind the majority of cross-account debugging sessions. One exception worth knowing: for an IAM role's trust policy, if the trust policy grants a whole account (`arn:aws:iam::111122223333:root` as Principal), the target account is effectively saying "any identity in that account that has permission from its own side" — so it collapses back toward "either side is enough" in that narrow case.
+
+### Managed vs inline, AWS managed vs customer managed
+
+A **managed policy** is a standalone AWS object with its own ARN, attachable to multiple identities, versioned (up to 5 versions, rollback possible), edit-once-apply-everywhere. An **inline policy** is JSON embedded directly inside one identity — no ARN, no versioning, deleted when the identity is deleted. Practical rule: use managed policies 99% of the time; inline only when you want a strict 1:1 lifecycle between a policy and one identity (like a highly privileged break-glass role) so nobody accidentally attaches it elsewhere. Size limits differ and will surprise you: managed policy — **6,144 characters**; inline aggregate per entity — **user 2,048**, **role 10,240**, **group 5,120** characters. Whitespace doesn't count, so minifying saves room.
+
+Between managed policies themselves: **AWS managed** (`ReadOnlyAccess`, `AmazonS3FullAccess`) are written and maintained by AWS — convenient because AWS updates them as new services launch, but risky because AWS can silently expand permissions on identities that reference them, and they're always over-permissive since they're written for every customer at once (`AmazonS3FullAccess` means every bucket in the account, not the one you needed). **Customer managed** policies are yours, version-controlled by you. Production rule: AWS managed policies are for prototyping only; production uses customer managed, except for service-linked roles and narrow service-specific policies like `AWSLambdaBasicExecutionRole` (grants only CloudWatch Logs). In regulated environments — financial services in particular — an AWS managed policy silently gaining permissions can become a compliance audit finding, since "what does this role actually have" stops being deterministic.
+
+### Condition operators and the `IfExists` trap
+
+Categories: String (`StringEquals`, `StringLike`, ...), Numeric, Date, Boolean (`Bool`), Binary, IP (`IpAddress`, CIDR), ARN (`ArnEquals`, `ArnLike`), `Null` (key present or not), and set operators `ForAllValues:`/`ForAnyValue:` for multi-valued keys. The `...IfExists` suffix means "if this key is present in the request, compare it; if it's absent, treat the condition as passed" — this avoids accidentally denying requests where the key isn't even applicable.
+
+A classic misuse is the MFA condition. Writing `"Condition": {"BoolIfExists": {"aws:MultiFactorAuthPresent": "false"}}` with `Deny` looks correct but is subtle: AWS service-principal requests (like an EC2-originated AssumeRole) never carry that key at all, so `IfExists` treats them as passing and *they get denied anyway* if the intent was to allow them through. Conversely using plain `Bool` (no `IfExists`) with `"true"` and `Allow` also denies those same requests. The correct pattern depends on context — human console access benefits from `BoolIfExists: false` + `Deny`, but needs explicit service-role exceptions layered in, and must be tested before deploying.
+
+### Evaluation precedence — the exact order
+
+The full, accurate order AWS follows on every request:
+
+1. **Explicit `Deny` anywhere** → DENY, immediately, final.
+2. **SCP** (Organizations) allows? No → DENY.
+3. **RCP** (Resource Control Policy) allows? No → DENY.
+4. **Resource-based policy** explicitly allows? Sometimes sufficient on its own (same account, IAM principal).
+5. **Identity-based policy** allows? No (and step 4 also didn't) → DENY.
+6. **Permissions boundary** allows (if set)? No → DENY.
+7. **Session policy** allows (if passed)? No → DENY.
+8. Everything passes → **ALLOW**.
+
+A non-obvious edge case: when the principal and resource are in different accounts, steps 4 and 5 are **both** required. And if a permissions boundary is set on a role but access is coming through a resource-based policy, the boundary still applies — there's no way to bypass a boundary via resource policy.
+
+### Why default deny, not default allow
+
+This is the security principle of fail-safe defaults (Saltzer & Schroeder, 1975). If AWS defaulted to allow, every new resource would be instantly accessible until explicitly blocked, and every new AWS service launch (50+ per year) would silently grant access to everyone by default — one missing policy would mean a data breach, while one extra policy is just an inconvenience. Default deny puts the asymmetry in the safer direction: a mistake results in "doesn't work," which gets fixed in 10 minutes, not "data leaked," which becomes a regulatory filing. SQL Server is also default-deny, but it has a `public` role that grants some baseline permissions to everyone by default — a known anti-pattern. IAM has no equivalent — no implicit grants at all. The one blind spot: the root user is exempt from default-deny (implicit `*:*`), and resource-based policies can grant cross-account access entirely from the other account's side, without anything changing in your own account — invisible to you unless you're watching for it. That's exactly why `aws:ResourceOrgID` conditions and RCPs exist.
+
+### Why explicit Deny can't be overridden
+
+If Deny were overridable, every security control would become a mere suggestion: a security team writes "only 3 roles can touch the PII bucket" as a Deny, and any developer could attach a new Allow to their own identity and bypass it. Deny-wins gives a **monotonic guarantee** — you can look at one policy and say "this access will never happen," without reading the other 400 policies in the account. This property is what Access Analyzer's automated reasoning is built on. The cost is debuggability: you can stare at 20 Allow statements wondering why access is denied, when the real reason is a Deny buried in an SCP you can't even see. That's a deliberate trade-off — debuggability sacrificed for a hard guarantee, which is the right call in security.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`NotAction`/`NotResource` paired with `Allow` is one of the most dangerous patterns in IAM — it silently grants access to every future AWS service or resource that didn't exist when you wrote the policy. Pair them with `Deny` instead, where the same "everything except X" logic becomes fail-closed.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+In a production setup, every identity-based policy for application roles was written as customer-managed (never AWS-managed, to keep permissions deterministic for compliance review), inline policies were reserved for exactly one break-glass admin role, and every S3 access policy carefully separated the bucket-level ARN (for `s3:ListBucket`) from the object-level `/*` ARN (for `s3:GetObject`) — missing one of these two is the single most common IAM mistake, because `aws s3 ls` fails while `aws s3 cp` still works, and it takes a confusing 20 minutes to diagnose. Cross-account access to a shared data bucket required both sides: the consuming account's identity policy allowing `s3:GetObject`, and the bucket owner's resource policy allowing that account's principal — dropping either side broke access with a generic `AccessDenied`.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Managed policy size limit: **6,144 characters**
+- Inline policy aggregate limit: **user 2,048**, **role 10,240**, **group 5,120** characters
+- Managed policy versions retained: **5** (with rollback)
+- Policy language version to always use: **2012-10-17**
+- Evaluation precedence has **8 ordered steps**, with explicit Deny checked first and winning unconditionally
+- AWS launches roughly **50+ new services/features per year** — the reason default-allow would be untenable
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Walk me through IAM's exact evaluation precedence" is a near-guaranteed senior-level question — the strong answer names all 8 steps in order, starting with explicit Deny, and explicitly calls out that SCP/RCP/boundary/session policy only *limit*, never *grant*. A close second is "why can't Deny be overridden" — the strong answer frames it as a monotonic security guarantee (you can prove an access will never happen without reading every other policy), not just "because AWS said so." Interviewers also probe with the classic `s3:ListBucket` vs `s3:GetObject` ARN scenario (bucket ARN vs bucket ARN + `/*`) to see if the candidate has actually hit this in practice, not just read about it.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Giving only the `arn:aws:s3:::bucket/*` object-level ARN in a policy and forgetting the bucket-level `arn:aws:s3:::bucket` ARN needed for `s3:ListBucket`. Result: `aws s3 cp` works but `aws s3 ls` fails, and it's not obvious why.
+
+</Mistake>
+
+<Mistake>
+
+Pairing `NotAction` or `NotResource` with `Effect: Allow`. This grants access to everything not listed — including AWS services that don't exist yet — the opposite of the intended restriction. Only pair these elements with `Deny`.
+
+</Mistake>
+
+<Mistake>
+
+Using `BoolIfExists: {"aws:MultiFactorAuthPresent": "false"}` with `Deny` without adding explicit exceptions for AWS service principals. Since the MFA key is absent entirely on service-originated requests, `IfExists` treats the condition as passed and denies traffic that was never meant to be blocked.
+
+</Mistake>
+
+<Mistake>
+
+Leaning on AWS managed policies (`AmazonS3FullAccess`, `PowerUserAccess`) in production. They're broader than needed by design, and AWS can expand their permissions without your consent — making compliance audits non-deterministic.
+
+</Mistake>
+
+<Mistake>
+
+Assuming same-account rules ("identity OR resource policy is enough") also apply cross-account. Cross-account access requires an explicit Allow on both the identity-policy side and the resource-policy side — missing either one produces the same generic `AccessDenied`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[API Request arrives] --> B{Explicit Deny anywhere? identity, resource, SCP, RCP, boundary, session}
+    B -->|Yes| Z[DENY - final, cannot be overridden]
+    B -->|No| C{SCP allows?}
+    C -->|No| Z
+    C -->|Yes| D{RCP allows?}
+    D -->|No| Z
+    D -->|Yes| E{Resource-based policy explicitly allows?}
+    E -->|Yes, same-account IAM principal| G{Permissions boundary allows if set?}
+    E -->|No / not applicable| F{Identity-based policy allows?}
+    F -->|No| Z
+    F -->|Yes| G
+    G -->|No| Z
+    G -->|Yes| H{Session policy allows if passed?}
+    H -->|No| Z
+    H -->|Yes| Y[ALLOW]
+`}
+  caption="The exact 8-step IAM evaluation precedence — explicit Deny short-circuits everything else, and grants (resource/identity policy) only matter after every limiting layer (SCP, RCP, boundary, session policy) has passed."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A policy is JSON: Version, Statement array, each statement has Sid (optional), Effect, Action/NotAction, Resource/NotResource, Condition (optional)
+- `NotAction`/`NotResource` are only safe with `Deny` — with `Allow` they grant access to everything unlisted, including future AWS services
+- Identity-based policy = "what can I do" (no Principal field); resource-based policy = "who can touch me" (Principal required); same-account needs either one, cross-account needs both
+- Managed policies (6,144 char limit, versioned, reusable) are preferred over inline (per-entity limits: user 2,048 / role 10,240 / group 5,120, no versioning, 1:1 lifecycle only)
+- AWS managed policies are for prototyping; customer managed policies are for production, since AWS can silently expand AWS-managed permissions
+- Evaluation order: explicit Deny → SCP → RCP → resource-based policy → identity-based policy → permissions boundary → session policy → Allow
+- Default deny (fail-safe) beats default allow because a missing Allow just breaks something, while an accidental grant leaks data
+- Explicit Deny can never be overridden — this gives a monotonic guarantee at the cost of harder debugging
+
+</QuickRevision>

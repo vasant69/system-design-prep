@@ -1,0 +1,365 @@
+---
+slug: "iam-debugging-troubleshooting"
+title: "Debugging IAM: Access Denied, Errors & Limits"
+section: "aws"
+module: "iam-advanced-ops"
+order: 4
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["iam-policy-anatomy-evaluation"]
+tags: ["aws", "iam", "troubleshooting"]
+englishDefinition: "Debugging IAM in production means reading the exact ending of an AccessDenied error message, walking a fixed checklist (identity, attached policies, simulator, resource policy, SCP, CloudTrail), and understanding IAM's operational shape — its cost model, real quotas, and eventually-consistent replication — well enough to tell a genuine authorization gap from a transient propagation delay."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Debugging IAM in production means reading the exact ending of an AccessDenied error message, walking a fixed checklist (identity, attached policies, simulator, resource policy, SCP, CloudTrail), and understanding IAM's operational shape — its cost model, real quotas, and eventually-consistent replication — well enough to tell a genuine authorization gap from a transient propagation delay.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### `AccessDenied` ko systematically debug karna — ye topic ki spine hai
+
+Modern AWS error messages kaafi acche ho gaye hain. Anatomy:
+
+```
+An error occurred (AccessDenied) when calling the GetObject operation:
+User: arn:aws:sts::123456789012:assumed-role/PaymentRole/pod-abc123
+is not authorized to perform: s3:GetObject
+on resource: arn:aws:s3:::jmfs-reports/2026/august.csv
+because no identity-based policy allows the s3:GetObject action
+```
+
+**Aakhri line sabse important hai.** Possible endings aur unka matlab:
+
+| Message ending | Kya karna hai |
+|---|---|
+| `no identity-based policy allows...` | Role/user ki policy me action missing hai |
+| `no resource-based policy allows...` | Cross-account hai — target resource ki policy dekho |
+| `with an explicit deny in an identity-based policy` | Kahin explicit Deny hai — sab attached policies grep karo |
+| `with an explicit deny in a service control policy` | **Organizations SCP** block kar rahi hai — IAM me kuch nahi milega |
+| `with an explicit deny in a permissions boundary` | Boundary ceiling se bahar |
+| `with an explicit deny in a VPC endpoint policy` | VPC endpoint ki apni policy hai |
+| `no session policy allows...` | AssumeRole me pass ki gayi session policy restrictive hai |
+
+**Debug checklist (is order me):**
+
+```bash
+# 1. Main kaun hoon actually?
+aws sts get-caller-identity
+
+# 2. Is identity par kya laga hai?
+aws iam list-attached-role-policies --role-name PaymentRole
+aws iam list-role-policies --role-name PaymentRole
+aws iam get-role --role-name PaymentRole    # PermissionsBoundary field dekho
+
+# 3. Simulate karo — asli call maare bina
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::123456789012:role/PaymentRole \
+  --action-names s3:GetObject \
+  --resource-arns arn:aws:s3:::jmfs-reports/2026/august.csv
+
+# 4. Resource ki policy dekho
+aws s3api get-bucket-policy --bucket jmfs-reports
+
+# 5. SCP check (org management account se)
+aws organizations list-policies-for-target --target-id 123456789012 \
+  --filter SERVICE_CONTROL_POLICY
+
+# 6. CloudTrail me exact event
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=GetObject \
+  --max-results 5
+```
+
+**Encoded authorization message** — kuch services (EC2, mostly) encoded failure message dete hain:
+
+```bash
+aws sts decode-authorization-message --encoded-message "<long-base64-blob>" \
+  --query DecodedMessage --output text | jq .
+```
+
+Isme exact matched/unmatched statements dikhte hain — ye debug ka nuclear option hai. Iske liye `sts:DecodeAuthorizationMessage` permission chahiye.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`simulate-principal-policy` **SCPs ko account nahi karta** by default, aur resource-based policies ko bhi incompletely handle karta hai. Agar simulate kehta hai "allowed" lekin real call fail ho rahi hai, to 90% chance SCP hai. Aur simulate kabhi-kabhi actual condition context miss karta hai (jaise `aws:SourceVpce`) kyunki wo real request context se aata hai. Simulator ek guide hai, gospel nahi.
+
+</Callout>
+
+<Hinglish>
+
+### Common IAM/STS errors — full list
+
+| Error | Kya galat hai | Fix |
+|---|---|---|
+| `AccessDenied` | Authorization fail | Upar wala checklist |
+| `UnauthorizedOperation` | EC2 ka AccessDenied version, often encoded | `decode-authorization-message` |
+| `InvalidClientTokenId` | Access key ID exist nahi karti, ya session token missing/mismatched | Key deleted? Wrong partition? `AWS_SESSION_TOKEN` set hai? |
+| `SignatureDoesNotMatch` | Signature calculation galat | **Sabse common: system clock skew >5 min.** NTP sync karo |
+| `ExpiredToken` / `ExpiredTokenException` | Temporary credentials expire ho gayi | Refresh karo; SDK me static creds ki jagah provider function do |
+| `RegionDisabledException` | Opt-in region me STS activate nahi hai | IAM console → Account settings → STS region enable |
+| `MalformedPolicyDocument` | JSON valid hai lekin IAM grammar galat | Missing `Version`? `Principal` identity policy me? `Resource` missing? |
+| `NoSuchEntity` | Role/user/policy exist nahi karta — **ya abhi propagate nahi hua** | Retry with backoff |
+| `LimitExceeded` | Quota hit | Kaunsa? Aksar 5-policy-versions ya 10-managed-policies |
+| `DeleteConflict` | Role/user delete nahi ho raha | Pehle policies detach karo, instance profile se hatao |
+| `Rate exceeded` / `ThrottlingException` | 600 TPS STS limit | Credentials cache karo |
+| `PackedPolicyTooLarge` | Session policy + tags 2048 chars se zyada | Policy chhoti karo ya managed ARNs pass karo |
+| `InvalidIdentityToken` | OIDC/SAML token invalid ya expired | Token ki `aud`, `iss`, expiry check karo |
+| `IDPRejectedClaim` | SAML/OIDC claim trust policy condition se match nahi hui | `sub`/`aud` conditions dekho |
+
+</Hinglish>
+
+<Callout type="trap">
+
+`SignatureDoesNotMatch` par log ghanton keys check karte hain. **Pehle clock check karo.** SigV4 me timestamp signature ka part hai aur AWS ±5 minute skew tolerate karta hai. Docker containers, VMs jo suspend/resume hue hain, aur galat timezone wale systems — ye sabse common culprits hain. `date -u` chalao aur `curl -sI https://s3.amazonaws.com | grep -i date` se compare karo.
+
+</Callout>
+
+<Hinglish>
+
+### `iam:PassRole` — debugging me ye escalation vector yaad rakhna
+
+Jab tum kisi AWS service ko role "dete" ho — Lambda banate waqt execution role, EC2 launch karte waqt instance profile — to tum us role ki permissions us service ko de rahe ho. `iam:PassRole` wo permission hai jo ye allow karti hai.
+
+Escalation scenario: developer ke paas `lambda:CreateFunction` + `iam:PassRole` (Resource: `*`) hai, aur account me ek `AdminRole` hai jise Lambda assume kar sakti hai. Developer Lambda banata hai execution role = AdminRole, code me `process.env` se credentials nikaalta hai, invoke karta hai — ab wo effectively admin hai, bina kabhi `AdministratorAccess` hue.
+
+**Sahi tareeka — hamesha PassRole ko scope karo:**
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "iam:PassRole",
+  "Resource": "arn:aws:iam::123456789012:role/app/lambda/*",
+  "Condition": {
+    "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" }
+  }
+}
+```
+
+Audit karte waqt in sabko "IAM write access = admin access" group me treat karo: `PassRole` ke alawa `iam:CreatePolicyVersion` (existing policy ka naya version bana ke `--set-as-default`), `iam:AttachUserPolicy`, `iam:PutUserPolicy`, `iam:UpdateAssumeRolePolicy`, `iam:CreateAccessKey`, aur `lambda:UpdateFunctionCode` (existing privileged Lambda ka code badal do) — sab escalation paths hain jo audit me miss ho jaate hain. `PassRole` kabhi CloudTrail me alag event nahi banata — parent operation (`CreateFunction`) ke andar authorize hota hai, isliye "kisne kaun sa role pass kiya" audit query mushkil hai — `requestParameters.role` field dekhna padta hai, jiska naam har service me alag hai.
+
+### IAM Access Analyzer — teeno modes
+
+**1. External access analyzer (FREE)** — automated reasoning se batata hai kaunse resources tumhare account/org ke **bahar** se accessible hain (S3, IAM roles, KMS keys, Lambda, SQS, Secrets Manager, EFS, ECR, RDS snapshots, SNS).
+
+**2. Unused access analyzer (PAID — $0.20 per role/user per month)** — kaunse roles/users use hi nahi ho rahe, aur kaunse actions grant hain lekin kabhi call nahi hue. Least-privilege journey ka backbone hai.
+
+**3. Policy validation + custom policy checks** — validation FREE hai (`aws accessanalyzer validate-policy`). Custom policy checks PAID hain — CI me chalte hain aur prove karte hain ki nayi policy purani se zyada permissive nahi hai.
+
+### Agar khud ko lock out kar lo
+
+| Scenario | Recovery |
+|---|---|
+| Apni hi user/role se admin permissions hata di | Root user se login karo — root ko koi identity policy rok nahi sakti |
+| S3 bucket policy me galat Deny lagayi | Root user bucket policy delete kar sakta hai |
+| KMS key policy me sabko deny kar diya | **Sabse buri situation** — sirf AWS Support hi help kar sakta hai, wo bhi manual process |
+| SCP ne poore account ko block kar diya | Management account se SCP hatao — wahan SCPs lagti hi nahi |
+| Root ka MFA device kho gaya | AWS Support account recovery — din lag sakte hain |
+
+**Prevention — break-glass role:** har account me ek `BreakGlassAdmin` role banao — `AdministratorAccess` attached, trust policy sirf ek hardware-MFA-protected identity ke liye, CloudTrail alarm on assume, aur har SCP/restrictive resource policy me isko exception list me rakho. Trust policy ko us role se hi manage mat karo — agar accidentally tod di to wo assume nahi ho payegi; root/management account se manage karo, backup version control me.
+
+### Policy size limit hit ho jaye to
+
+**Strategies:** (1) **Path-based wildcards** — `arn:aws:s3:::jmfs-payments-*/*` jaisi naming convention se ek line 50 buckets cover karti hai; (2) **Tag-based access control (ABAC)** — sabse powerful, ek policy saari teams ke liye kaam karti hai:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"],
+  "Resource": "arn:aws:dynamodb:*:*:table/*",
+  "Condition": {
+    "StringEquals": { "aws:ResourceTag/Team": "${aws:PrincipalTag/Team}" }
+  }
+}
+```
+
+(3) Policy ko todo aur multiple managed policies attach karo; (4) Groups ka use (users ke liye).
+
+</Hinglish>
+
+<Callout type="trap">
+
+ABAC ke saath **tag governance** zaroori hai — kaun tags laga sakta hai. Agar koi apni resource par `Team: finance` tag laga sakta hai to wo finance ka data access kar lega. Tag-setting permissions ko lock karo:
+
+```json
+{
+  "Effect": "Deny",
+  "Action": ["dynamodb:TagResource", "dynamodb:UntagResource"],
+  "Resource": "*",
+  "Condition": { "ForAnyValue:StringEquals": { "aws:TagKeys": ["Team", "DataClass"] } }
+}
+```
+
+ABAC bina tag governance ke security theatre hai.
+
+</Callout>
+
+<Hinglish>
+
+### Cost aur real limits
+
+**IAM khud 100% FREE hai.** Users, groups, roles, policies, access keys — koi charge nahi. **STS bhi free hai.** Paisa in cheezon ka lagta hai: Access Analyzer unused access ($0.20/role-user/month), CloudTrail S3 data events ($0.10 per 100,000 events), AWS Config rules, VPC interface endpoint for STS (~$0.01/hr per AZ + $0.01/GB — 3 AZ ≈ $22/month). Sabse common surprise bill: VPC interface endpoints — 12 services × 3 AZs = 36 ENIs ≈ $260/month sirf idle rehne ka.
+
+**Hard limits jo bhoolna mehenga padta hai:** users per account **5,000** (hard, badh nahi sakti), access keys per user **2**, MFA devices per user/root **8**, managed policy size **6,144 chars**, inline policy aggregate per role **10,240 chars**, session duration **900s–43,200s**. **STS request quota: 600 requests/second per account per region** — shared across AssumeRole, GetCallerIdentity, GetSessionToken, sab. **Adjustable (soft) quotas** — customer managed policies (1,500 default → 10,000 max), roles per account (1,000 → 10,000). Quota increase requests **sirf us-east-1** se submit ho sakte hain, chahe tum ap-south-1 me kaam kar rahe ho.
+
+### Eventually consistent — practical impact
+
+IAM ka data poore duniya me replicate hota hai. Role banate ho, wo write ek jagah hota hai aur phir sab regions me propagate hota hai — **typically seconds, occasionally 10+ seconds.** Practical failures:
+
+```typescript
+// ❌ Ye flaky hai
+await iam.send(new CreateRoleCommand({ ... }));
+await lambda.send(new CreateFunctionCommand({ Role: roleArn }));
+// → InvalidParameterValueException: role abhi region me propagate nahi hua
+```
+
+Handling — exponential backoff retry:
+
+```typescript
+async function retryOnEventualConsistency<T>(fn: () => Promise<T>, tries = 6): Promise<T> {
+  const retryable = new Set([
+    "InvalidParameterValueException", "AccessDenied",
+    "InvalidClientTokenId", "NoSuchEntity", "MalformedPolicyDocument"
+  ]);
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e: any) {
+      if (i === tries - 1 || !retryable.has(e.name)) throw e;
+      await new Promise(r => setTimeout(r, 2 ** i * 1000)); // 1,2,4,8,16s
+    }
+  }
+  throw new Error("unreachable");
+}
+```
+
+SQL Server me `COMMIT` ke baad turant `SELECT` kar sakte ho — ACID guarantee hai. IAM me ye guarantee **nahi** hai, aur ye sabse zyada CI/CD me kaatta hai kyunki create-and-immediately-use pattern wahan normal hai. CDK/CloudFormation ye internally handle karta hai.
+
+### IAM strongly consistent kyun nahi bana sakte
+
+Trade-off CAP theorem ka classic case hai. Agar IAM strongly consistent hota to har API call ko us-east-1 me control plane se sync check karna padta — Mumbai se S3 call → ~200ms extra latency **har request par**, aur us-east-1 outage = poore duniya me har AWS API call fail. Eventually consistent design me: policies har region replicate hoti hain, evaluation **local** hoti hai, us-east-1 down → naye roles nahi ban sakte lekin **existing access chalti rehti hai**, latency ~0. Ye "availability over consistency" ka choice hai, authorization ke liye ye sahi hai.
+
+**Revocation bhi eventually consistent hai** — ek role ki permissions hata do to already-issued temporary credentials turant naye evaluation se change ho jaati hain (evaluation har request par hoti hai), lekin propagation delay tab bhi lagta hai. Immediate revocation ke liye:
+
+```bash
+aws iam put-role-policy --role-name CompromisedRole \
+  --policy-name RevokeOldSessions \
+  --policy-document '{
+    "Version":"2012-10-17",
+    "Statement":[{
+      "Effect":"Deny","Action":"*","Resource":"*",
+      "Condition":{"DateLessThan":{"aws:TokenIssueTime":"2026-08-06T10:30:00Z"}}
+    }]
+  }'
+```
+
+</Hinglish>
+
+<Callout type="trap">
+
+Ye revoke-policy role par **permanently reh jaati hai** jab tak tum hatao nahi. Agar tum ise bhool gaye aur 6 mahine baad koi confused ho raha hai ki purane sessions kyun fail ho rahe hain — wo yahi hai. Incident ke baad cleanup checklist me isko daalo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek production incident me ek `GetObject` call intermittently `AccessDenied` de raha tha. Debug checklist follow kiya: `get-caller-identity` se confirm kiya assumed role sahi tha; `list-attached-role-policies` me `s3:GetObject` present tha; `simulate-principal-policy` "allowed" bol raha tha — lekin real call fail ho raha tha. Yahi wo classic simulator-vs-reality gap tha. `list-policies-for-target` se Organizations management account se check kiya to ek recently-added region-lock SCP mil gayi jo request ko block kar rahi thi kyunki ek naya EC2 launch template galti se `us-west-2` me deploy ho gaya tha. Simulator ne SCP account hi nahi ki — root cause milne me yahi step decisive tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- IAM and STS are both **$0** — cost comes from what surrounds them: Access Analyzer unused-access ($0.20/role-user/month), CloudTrail S3 data events ($0.10 per 100k events), VPC interface endpoint for STS (~$22/month for 3 AZs)
+- STS request quota: **600 requests/second per account per region**, shared across AssumeRole, GetCallerIdentity, GetSessionToken
+- Hard limits: **5,000 users/account** (not adjustable), 2 access keys/user, 6,144 char managed policy size, 10,240 char inline policy aggregate per role
+- Session duration range: 900s (15 min) to 43,200s (12 hours); role chaining caps at 3,600s regardless of the target role's max
+- IAM propagation delay: typically seconds, occasionally 10+ seconds — always retry create-then-use patterns
+- Quota increase requests must be submitted from **us-east-1**, even for resources in other regions
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Walk me through debugging an AccessDenied in production" is close to guaranteed at the intermediate-to-senior level — the strong answer is the exact ordered checklist (read the error's last line, `get-caller-identity`, list attached policies + boundary, simulate, check the resource policy if cross-account, check SCPs last since the simulator misses them, decode if EC2-encoded). A second very common angle is "why is IAM eventually consistent, and what breaks because of it" — the CAP-theorem framing (availability over consistency, ~200ms round-trip avoided, blast radius of a control-plane outage bounded) is what separates a senior answer from a junior one that just says "AWS does that sometimes."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Trusting `aws iam simulate-principal-policy` as a complete answer — it doesn't account for SCPs by default and handles resource-based policies incompletely. When simulate says "allowed" but the real call fails, an SCP is the most likely cause.
+
+</Mistake>
+
+<Mistake>
+
+Granting `iam:PassRole` with `Resource: "*"` to a developer who also has `lambda:CreateFunction` or similar — this is a hidden path to full admin access even though the developer was never granted `AdministratorAccess` directly.
+
+</Mistake>
+
+<Mistake>
+
+Spending an hour debugging `SignatureDoesNotMatch` by re-checking access keys before checking the system clock — clock skew beyond ±5 minutes is by far the most common cause, especially on containers and suspended/resumed VMs.
+
+</Mistake>
+
+<Mistake>
+
+Deploying a resource immediately after creating its IAM role or policy without a retry/backoff wrapper — IAM's eventual consistency means `NoSuchEntity` or `InvalidParameterValueException` will intermittently appear in CI/CD, and this is expected behavior, not a bug to work around with a hardcoded `sleep`.
+
+</Mistake>
+
+<Mistake>
+
+Leaving a `RevokeOldSessions` (TokenIssueTime deny) policy attached to a role indefinitely after an incident — it silently blocks any session issued before that timestamp forever, confusing whoever investigates it months later.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[AccessDenied error] --> B{Read the LAST line of the message}
+    B -->|no identity-based policy allows| C[Check attached policies on the role/user]
+    B -->|no resource-based policy allows| D[Cross-account — check target resource policy]
+    B -->|explicit deny in a permissions boundary| E[Check the boundary ceiling]
+    B -->|explicit deny in a service control policy| F[Check SCPs from management account]
+    B -->|ambiguous / EC2 encoded| G[sts decode-authorization-message]
+    C --> H[aws iam simulate-principal-policy to confirm]
+    D --> H
+    E --> H
+    H -->|simulate says allowed but real call fails| F
+    F --> I[Root cause found]
+`}
+  caption="The debugging flow: read the error's exact ending first, then work the checklist — and remember the simulator never accounts for SCPs, so a false 'allowed' almost always points there."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Always read the exact last line of an `AccessDenied` message first — it tells you which of six layers (identity policy, resource policy, boundary, SCP, VPC endpoint policy, session policy) is responsible
+- Debug order: `get-caller-identity` → attached policies + boundary → `simulate-principal-policy` → resource policy → SCP → CloudTrail
+- `simulate-principal-policy` does not account for SCPs by default — a false "allowed" almost always means an SCP is the real blocker
+- `iam:PassRole` with `Resource: "*"` is a hidden privilege-escalation path; scope it with `iam:PassedToService` and specific role ARNs
+- `SignatureDoesNotMatch` — check the system clock before anything else; AWS tolerates only ±5 minutes of skew
+- IAM and STS are free; the real IAM-adjacent bill comes from Access Analyzer unused-access, CloudTrail data events, and VPC interface endpoints
+- IAM is eventually consistent by design (CAP theorem — availability over consistency) — always retry create-then-use patterns with exponential backoff
+- Immediate session revocation needs an explicit `aws:TokenIssueTime` deny policy — remember to remove it after the incident, or it blocks valid sessions forever
+
+</QuickRevision>

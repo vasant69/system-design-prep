@@ -1,0 +1,170 @@
+---
+slug: "amazon-ses"
+title: "Amazon SES (Simple Email Service)"
+section: "aws"
+module: "core-services"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["aws-lambda"]
+tags: ["aws", "email"]
+englishDefinition: "SES is AWS's managed email sending and receiving service — it handles the deliverability engineering (DKIM signing, IP reputation, bounce/complaint processing) that a self-hosted mail server would require, at $0.10 per 1,000 emails, starting every new account in a restricted 'sandbox' mode."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+SES is AWS's managed email sending and receiving service — it handles the deliverability engineering (DKIM signing, IP reputation, bounce/complaint processing) that a self-hosted mail server would require, at $0.10 per 1,000 emails, starting every new account in a restricted "sandbox" mode.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+SES se application se transactional emails (OTP, password reset, order confirmation) aur bulk emails (newsletters) bhej sakte ho, bina apna mail server chalaye — SES API (recommended) ya SMTP interface se. Apna khud ka mail server chalana matlab apni khud ki courier company kholna — gaadiyan, drivers sab chahiye, aur sabse mushkil, har city me **reputation** banani padti hai taaki log parcel accept karein. SES ek established courier hai jiski reputation Gmail/Outlook/Yahoo ke saath already bani hui hai — bas ek shart hai: bar bar galat address pe bheja ya log complain karein, to blacklist ho jaate ho. **Email delivery ka asli challenge technical nahi, reputation ka hai.**
+
+### Kyun zaroori hai
+
+Apna SMTP server chalana painful hai — Postfix, TLS, DKIM signing, DNS records, blacklist monitoring, sab full-time job hai. EC2 pe outbound port 25 **by default blocked** hai (spam prevention). Naya IP se bhejoge to Gmail/Outlook spam folder me daal denge — reputation banane me hafte lagte hain, SES ke shared IP pool ki reputation already established hai. Aur SES **$0.10 per 1,000 emails** hai, jo SendGrid/Mailgun se ~8-9 guna sasta hai.
+
+### Sending flow
+
+Application SES ko `SendEmail` call karta hai (SigV4 signed). SES check karta hai `From` address verified hai ya nahi — nahi to `MessageRejected`. Sandbox me ho to recipient bhi verified honi chahiye, warna reject. Sending quota check hoti hai, phir MIME message construct hokar SES apni **private key se DKIM sign** karta hai. Suppression list check hoti hai (purane hard bounces/complaints se auto-populate), phir SES apne IP pool se recipient ke mail server ko SMTP deliver karta hai. Wahan **SPF** (sending IP authorized hai?), **DKIM** (signature valid?), aur **DMARC** (SPF/DKIM aligned hain?) check hote hain, aur outcome inbox/spam/bounce/complaint me se koi ek hota hai. Bounce/Complaint/Delivery events Configuration Set ke through Event Destination (SNS/EventBridge) tak jaate hain, jahan se aapka Lambda database update aur suppression handle karta hai.
+
+### Sandbox vs Production
+
+Har naya SES account **sandbox** me hota hai — sirf verified recipients ko bhej sakte ho, 200 emails/24 hours, 1 email/second. Production access ke liye AWS Support request me batana padta hai ki aap **bounces/complaints kaise handle karoge** — ye sabse important point hai. Ek gotcha: sandbox/production status **per-region** hai — us-east-1 me production access liya to ap-south-1 me abhi bhi sandbox hoge.
+
+### SPF, DKIM, DMARC — teeno ki alag jimmedari
+
+**SPF** (TXT record) batata hai kaun se IPs domain ki taraf se bhej sakte hain — recipient server Return-Path domain ka SPF record check karta hai. Limitation: forwarding pe **toot jaata hai** (forwarding server ka IP alag hoga), aur sirf 10 DNS lookups tak allowed hai.
+
+**DKIM** (CNAME records) message pe cryptographic signature lagata hai jo prove karta hai email authentic hai aur tamper nahi hui. SES private key se sign karta hai, recipient DNS se public key nikaal ke verify karta hai. Ye **forwarding survive karta hai** kyunki signature message ke saath travel karti hai — isliye DKIM SPF se zyada reliable hai. SES teen CNAMEs deta hai kyunki wo key rotation automatically support karta hai.
+
+**DMARC** (TXT record) in dono ke upar policy layer hai — batata hai fail hone pe kya karna hai aur reports bhejta hai. Iski **asli value alignment hai**: SPF envelope sender check karta hai, jabki user ko `From` header dikhta hai — ye alag cheezein hain. Ek attacker apne domain se SPF pass karke `From` me victim ka domain daal sakta hai. DMARC enforce karta hai ki SPF ya DKIM ka domain `From` header se match kare. Rollout hamesha `p=none` (sirf monitor) se shuru hota hai, phir `p=quarantine`, phir `p=reject` — seedha `p=reject` lagana khatarnaak hai, legitimate senders (CRM, HR tool) bhi block ho sakte hain.
+
+```
+_dmarc.myproject.com  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@myproject.com; pct=100"
+```
+
+**Custom MAIL FROM domain** ye connect karta hai: default me SES ka MAIL FROM `amazonses.com` hota hai, matlab SPF `amazonses.com` ke against check hota hai, aapke domain ke nahi — DMARC SPF alignment fail ho jaata hai. Fix: custom MAIL FROM (`mail.myproject.com`) configure karo (MX + TXT record), ab SPF aapke subdomain ke against check hota hai aur relaxed alignment me pass ho jaata hai.
+
+### Bounce aur Complaint handling — sabse important operational topic
+
+**Hard bounce** — address permanently invalid, turant suppress karo, dobara mat bhejo. **Soft bounce** (SES "Transient") — temporary (mailbox full), limited retries theek hai. **Complaint** — user ne "Report Spam" dabaya, sabse serious signal. AWS ke thresholds: bounce rate ≥5% pe review, **≥10% pe sending pause**; complaint rate ≥0.1% pe review, **≥0.5% pe pause** — matlab 1,000 emails me sirf 5 log spam report karein to problem ho jaati hai. Isliye ek proper pipeline chahiye: Configuration Set → SNS → Lambda subscriber jo sirf **Permanent** bounces suppress karta hai (Transient nahi) aur complaints ko hamesha suppress karta hai, dono ko apne DB aur SES ki **account-level suppression list** dono me record karta hai (defence in depth).
+
+### Configuration Sets — blast radius contain karna
+
+Configuration set rules ka group hai — event destinations, IP pool, TLS policy, sending kill switch. Best practice: transactional aur marketing emails ke liye **alag configuration sets** — dono ki reputation alag track hoti hai, aur agar marketing problem create kare to sirf uska sending disable kiya ja sakta hai jabki critical transactional emails (password reset) chalte rahein.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Contact form me user ka email `From` field me daalna sabse common galti hai — SES sirf **verified identities** se bhejne deta hai, isliye `MessageRejected` aayega. User ka email `Reply-To` header me daalo, `From` me apni verified identity (jaise `noreply@myproject.com`) rakho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real setup me **domain identity** verify hui (email identity nahi, kyunki domain se kisi bhi address se bhej sakte hain aur full domain-level DKIM milta hai). DNS me teen DKIM CNAMEs, custom MAIL FROM ke liye MX + SPF TXT record, aur `_dmarc` TXT record daale gaye. Configuration set `"transactional-emails"` ka event destination ek SNS topic hai jo Bounce, Complaint, Delivery, aur Reject events track karta hai; TLS policy `Require` hai; open/click tracking **disabled** hai kyunki transactional emails (OTP jaisa) me iska koi business value nahi, sirf deliverability risk hai. Ek Lambda SNS subscriber hai jo sirf `Permanent` bounces suppress karta hai (Transient nahi), dono ko DynamoDB aur SES ki account-level suppression list me record karta hai. IAM policy me `ses:SendEmail` sirf specific identity ARN pe hai, saath `ses:FromAddress` condition se `From` address bhi lock kiya gaya hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Cost: $0.10 per 1,000 emails — roughly 8-9x cheaper than SendGrid (~$90) or Mailgun (~$75) at 100,000 emails/month
+- Sandbox: 200 emails/24 hours, 1 email/second; Production (starting): 50,000+/day, 14+ emails/second
+- Bounce rate thresholds: under 2% healthy, ≥5% under review, **≥10% sending paused**
+- Complaint rate thresholds: under 0.1% healthy, ≥0.1% under review, **≥0.5% sending paused**
+- Dedicated IP: ~$24.95/month per IP (only worth it at consistent high volume)
+- Max recipients per message: 50; max message size: 40 MB
+- DKIM: 3 CNAME records (SES supports automatic key rotation)
+- Recommended CloudWatch alarm thresholds: bounce rate >3%, complaint rate >0.08% — ahead of the pause thresholds
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Why SES over your own SMTP server" gets a much stronger answer when it names port-25 blocking on EC2 and the IP-warming problem, not just "it's managed." SPF/DKIM/DMARC is the area's densest topic — the strong answer explains what each one actually verifies (authorized IP vs message integrity vs alignment-and-policy) rather than reciting three acronyms, and specifically calls out that DMARC's value is alignment — SPF checks the envelope sender, DMARC checks it matches the `From` header a user actually sees. Bounce/complaint handling is the most operationally-tested area — a strong answer distinguishes hard vs soft bounces (only hard bounces get permanently suppressed) and names the concrete pause thresholds. The custom MAIL FROM domain point is a genuine differentiator: most candidates verify a domain and set up DKIM but never realize the default MAIL FROM domain silently breaks SPF alignment for DMARC.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sandbox me testing karke production-ready samajhna — sandbox sirf verified recipients ko bhejta hai; production access alag se request karni padti hai, aur wo per-region hai.
+
+</Mistake>
+
+<Mistake>
+
+Contact form me user ka email `From` field me daalna — `MessageRejected` aayega kyunki SES sirf verified identities se bhejta hai. User ka email `Reply-To` me daalo.
+
+</Mistake>
+
+<Mistake>
+
+Bounce/complaint handling bilkul na karna — sabse serious galti, kyunki bounce rate 10% ya complaint rate 0.5% cross hone pe AWS poora sending pause kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Custom MAIL FROM domain configure na karna — SPF default `amazonses.com` ke against check hota hai, aapke domain ke nahi, isliye DMARC SPF alignment fail ho jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Soft (temporary) bounces ko permanently suppress kar dena — mailbox full jaisa issue temporary hai; sirf `Permanent` bounces ko turant suppress karna chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App as Application
+    participant SES as Amazon SES
+    participant DNS as Recipient DNS
+    participant Mail as Recipient Mail Server (Gmail/Outlook)
+    participant SNS as SNS -> Lambda
+
+    App->>SES: SendEmail (SigV4 signed)
+    SES->>SES: Verify identity, check sandbox/quota
+    SES->>SES: DKIM sign with private key
+    SES->>Mail: SMTP delivery
+    Mail->>DNS: Fetch SPF record, DKIM public key
+    Mail->>Mail: Check SPF, DKIM, DMARC alignment
+    Mail-->>SES: Inbox / Spam / Bounce / Complaint
+    SES->>SNS: Bounce/Complaint/Delivery event (via Configuration Set)
+    SNS->>App: Lambda updates DB, adds to suppression list
+`}
+  caption="Every send is authenticated three ways at the recipient's mail server — SPF for the sending IP, DKIM for message integrity, DMARC for alignment — and the outcome feeds back through Configuration Set events so bounces and complaints can be suppressed automatically."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- SES's core value is reputation, not infrastructure — an established sender identity that Gmail/Outlook already trust
+- Every new SES account starts in sandbox (verified recipients only, 200/day, 1/sec) and production access is per-region
+- SPF authorizes sending IPs (breaks on forwarding), DKIM cryptographically signs the message (survives forwarding), DMARC enforces that SPF/DKIM align with the `From` header users actually see
+- Custom MAIL FROM domain (not the default `amazonses.com`) is required for SPF to pass DMARC alignment
+- `From` must be a verified identity — user-supplied addresses go in `Reply-To`, never `From`
+- Bounce rate ≥10% or complaint rate ≥0.5% triggers an account-level sending pause — only hard/permanent bounces get suppressed forever, soft bounces get limited retries
+- Configuration Sets separate transactional from marketing sending so one category's reputation problem doesn't take down the other
+- Account-level suppression list is a safety net — it auto-suppresses hard bounces and complaints even if application logic has a bug
+
+</QuickRevision>

@@ -1,0 +1,175 @@
+---
+slug: "amazon-route-53"
+title: "Amazon Route 53"
+section: "aws"
+module: "core-services"
+order: 1
+difficulty: "beginner"
+readingTime: 14
+prerequisites: []
+tags: ["aws", "dns", "networking"]
+englishDefinition: "Route 53 is AWS's DNS web service — it translates human-readable domain names into IP addresses, handles domain registration, and provides health-check-based routing policies (failover, latency-based, weighted, geolocation) with a 100% availability SLA, AWS's only service to carry one."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Route 53 is AWS's DNS web service — it translates human-readable domain names into IP addresses, handles domain registration, and provides health-check-based routing policies (failover, latency-based, weighted, geolocation) with a 100% availability SLA, AWS's only service to carry one.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Route 53 ka basic kaam simple hai: jab koi user browser me `www.myproject.com` type kare, Route 53 usko batata hai "iska actual IP address ye hai" ya "ye CloudFront distribution pe jao." Iske teen main kaam hain — **domain registration** (domain kharidna), **DNS hosting/routing** (domain ko IP ya AWS resource se map karna), aur **health checking** (endpoint zinda hai ya nahi, us hisaab se traffic route karna). Naam "53" isliye hai kyunki DNS port 53 pe chalta hai.
+
+### Kyun exist karta hai
+
+Chaar problems jo DNS (aur generally Route 53) solve karta hai: insaan IP address yaad nahi rakh sakta (`142.250.192.46` vs `google.com`); IP addresses badalte rehte hain aur DNS ek indirection layer deta hai; ek hi domain se multiple servers pe traffic bhejna hota hai; aur failover — primary down ho to traffic automatically secondary pe jaana chahiye. Normal registrars (GoDaddy) se bhi ye ho sakta tha, lekin Route 53 ki teen khaas cheezein hain: 100% availability SLA, ALIAS records (AWS resources ke saath native integration, zone apex pe kaam karta hai), aur advanced routing policies jo normal registrars nahi dete.
+
+### DNS resolution — poora flow, step by step
+
+Ye almost guaranteed interview question hai. User browser me domain type karta hai:
+
+1. **Browser cache** check hota hai.
+2. **OS cache / hosts file** check hota hai.
+3. **Recursive resolver** (ISP ka DNS ya 8.8.8.8) — ye aapka "agent" hai, poori khoj khud karega.
+4. **Root nameserver** se poocha jaata hai — root bolta hai ".com TLD servers se pooch."
+5. **TLD nameserver** batata hai authoritative nameservers kaun hain — Route 53 ke 4 NS.
+6. **Authoritative nameserver (Route 53)** apne hosted zone me dekhta hai, routing policy evaluate karta hai, final answer deta hai.
+7. Resolver answer ko **TTL** ke hisaab se cache karta hai, browser ko de deta hai.
+
+30-second summary jo interview me bolna hai: "Browser cache → OS cache → recursive resolver → root → TLD → authoritative nameserver → answer, aur har layer TTL ke hisaab se cache karti hai."
+
+### Hosted Zone, Record Types, aur ALIAS vs CNAME
+
+Hosted zone ek "folder" hai jisme ek domain ke saare records rehte hain — **public** (poore internet pe resolve) ya **private** (sirf associated VPCs ke andar). Public hosted zone banate hi charge start ho jaata hai ($0.50/month), chahe usme ek record na ho.
+
+Record types jo must-know hain: A (IPv4), AAAA (IPv6), CNAME (doosre domain naam ko point), ALIAS (Route 53-specific, AWS resource ko point), MX (mail server), TXT (SPF/DKIM/DMARC), NS, SOA.
+
+**ALIAS vs CNAME ye sabse zyada poocha jaane wala sawaal hai.** CNAME zone apex pe kaam nahi karta — RFC 1034 ke hisaab se jis naam pe CNAME hai, us naam pe koi aur record exist nahi kar sakta, aur apex pe SOA/NS records mandatory hote hain, isliye conflict ho jaata. ALIAS AWS ka proprietary extension hai jo apex pe kaam karta hai, sirf AWS resources ko point kar sakta hai (CloudFront, ELB, S3 website, API Gateway), aur AWS resources pe alias queries **free** hain — CNAME queries paid hain. ALIAS resolution bhi ek round trip bachata hai kyunki Route 53 khud target resolve karke A record return karta hai.
+
+### Routing Policies — saat yaad rakhne hain
+
+**Simple** (ek record, client random pick, health check support nahi), **Weighted** (traffic percentage me baanto — A/B testing, canary deployment), **Latency-based** (measured network latency ke hisaab se, geography se nahi), **Failover** (primary down → secondary), **Geolocation** (country/continent ke hisaab se — compliance ke liye), **Geoproximity** (physical distance + bias, Traffic Flow feature chahiye), **Multivalue Answer** (8 tak healthy IPs, load balancer ka replacement NAHI hai).
+
+Geolocation vs latency confusion classic trap hai: geolocation user ke location pe decide karta hai (Germany user hamesha EU jaayega, chahe slow ho), latency-based actual measured latency pe (ho sakta hai Germany user ke liye us-east-1 hi tez ho). Compliance ke liye geolocation, performance ke liye latency.
+
+### Health Checks aur failover ka time nikaalna
+
+AWS ke global health checkers (~15+ locations) endpoint ko periodically ping karte hain — default interval 30 second, failure threshold default 3. 18%+ checkers healthy bolein to endpoint healthy mana jaata hai (false positives kam karne ke liye). Failover ka total time: `detection time (interval × threshold) + DNS TTL`. Example: 30×3 + 60 = ~150 seconds. Isliye failover setups me TTL kam rakhte hain (60 second ya kam).
+
+### TTL — trade-off jo interview me bolna hai
+
+Low TTL (60s) = fast propagation lekin zyada queries/cost. High TTL (86400s) = kam queries lekin change karne me time lagta hai. Practical tip: migration se 48 ghante pehle TTL ko 60 second pe la do, migration ke baad wapas badha do.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"DNS propagation me 24-48 ghante lagte hain" — ye statement misleading hai. Route 53 me change 60 seconds ke andar globally propagate ho jaata hai (API status INSYNC). Jo delay hota hai wo **downstream resolvers ki cached entries** ki wajah se hai — agar purana record 86400 second TTL ke saath cache hua tha, resolver 24 ghante tak purana answer dega. Ye distinction bolna interview me strong signal deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real setup me domain register kiya, public hosted zone auto-bana, ACM certificate **us-east-1** me request kiya (CloudFront ke liye mandatory), aur apex domain (`myproject.com`) ke liye ALIAS A + AAAA record CloudFront pe point kiya, `www` subdomain ke liye bhi. SES ke liye TXT + CNAME records (domain verification, DKIM ke 3 CNAMEs, custom MAIL FROM ke liye MX + SPF TXT, DMARC TXT) add kiye. Final record structure ek table jaisi dikhti hai: apex → CloudFront ALIAS, ACM validation CNAME, DKIM CNAMEs, MX + SPF + DMARC TXT — sab ek hi hosted zone me. `Z2FDTNDATAQYW2` — CloudFront ka global fixed hosted zone ID, har distribution ke liye same — ye number bolna interviewer ko impress karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Hosted zone: $0.50/month per zone (first 25), $0.10 after
+- Standard DNS queries: $0.40 per million; latency/geo/geoproximity queries: $0.60-0.70 per million
+- ALIAS query to AWS resource: **free**
+- Health check (AWS endpoint): $0.50/month; non-AWS endpoint: $0.75/month
+- Traffic Flow policy record: $50/month per record — genuinely expensive
+- Domain registration: $12-15/year for .com
+- Failover detection + DNS propagation: ~150 seconds with default settings (30s interval × 3 threshold + 60s TTL)
+- Health checker consensus threshold: 18%+ of global checkers must report healthy
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"DNS resolution kaise hota hai, step by step batao" is an almost-guaranteed question — the model answer is the 7-step chain (browser cache → OS cache → recursive resolver → root → TLD → authoritative nameserver → answer), summarized in one breath with the TTL-caching detail included. A close second is "ALIAS aur CNAME me kya difference hai" — the strong answer names the RFC 1034 reason (CNAME can't coexist with mandatory SOA/NS records at the zone apex), not just "ALIAS is AWS-only." Interviewers also probe with a live scenario: "you changed a DNS record but users still see the old site" — the strong debugging answer starts with `dig` directly against the Route 53 nameserver to isolate whether the problem is Route 53 or downstream caching.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Forgetting to update nameservers at the registrar after creating a hosted zone — the zone and records are correct, but the domain still points at the old registrar's nameservers, so nothing resolves.
+
+</Mistake>
+
+<Mistake>
+
+Deleting and recreating a hosted zone for the same domain — the new zone gets a completely different set of 4 NS values, silently breaking anything still pointing at the old ones.
+
+</Mistake>
+
+<Mistake>
+
+Trying to put a CNAME at the zone apex — Route 53 will reject it. Use ALIAS instead.
+
+</Mistake>
+
+<Mistake>
+
+Migrating DNS with a high existing TTL still in effect — some users get the old IP for up to that TTL's duration after the change. Lower the TTL well before a planned migration, not during it.
+
+</Mistake>
+
+<Mistake>
+
+Expecting Simple routing to support health checks — it doesn't. Failover or Multivalue Answer routing is needed for health-check-based behavior.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant B as Browser
+    participant R as Recursive Resolver
+    participant Root as Root Nameserver
+    participant TLD as .com TLD Server
+    participant R53 as Route 53 (Authoritative)
+
+    B->>R: Resolve www.myproject.com
+    R->>Root: Who handles .com?
+    Root-->>R: Ask the .com TLD servers
+    R->>TLD: Who is authoritative for myproject.com?
+    TLD-->>R: Route 53 nameservers (ns-*.awsdns-*.com)
+    R->>R53: What is www.myproject.com?
+    R53-->>R: Evaluate routing policy + health checks -> IP
+    R-->>B: IP address (cached for TTL seconds)
+    Note over B,R53: Every hop's answer is cached per its TTL
+`}
+  caption="The full DNS resolution chain — each hop caches its answer for the record's TTL, which is why 'propagation delay' is really just cache expiry downstream, not a slow Route 53."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Route 53 = DNS + domain registration + health-check-based routing, with a 100% availability SLA
+- Resolution order: browser cache → OS cache → recursive resolver → root → TLD → authoritative nameserver (Route 53)
+- ALIAS works at the zone apex and is free for AWS resource targets; CNAME cannot be used at the apex (RFC 1034 — conflicts with mandatory SOA/NS)
+- 7 routing policies: Simple, Weighted, Latency-based, Failover, Geolocation, Geoproximity, Multivalue Answer — Multivalue is not a load balancer replacement
+- Failover time ≈ (health check interval × failure threshold) + DNS TTL — lower TTL for faster failover
+- "24-48 hour DNS propagation" is really downstream resolver cache expiry, not Route 53 being slow (Route 53 itself propagates in ~60 seconds)
+- Domain registration and DNS hosting are independent — you can buy a domain at GoDaddy and host DNS on Route 53
+
+</QuickRevision>

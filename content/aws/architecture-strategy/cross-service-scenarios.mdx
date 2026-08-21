@@ -1,0 +1,152 @@
+---
+slug: "cross-service-scenarios"
+title: "Cross-Service AWS Scenario Questions"
+section: "aws"
+module: "architecture-strategy"
+order: 4
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["aws-service-comparisons"]
+tags: ["aws", "interview-strategy", "architecture"]
+englishDefinition: "Cross-service scenario questions present a problem that spans multiple AWS services at once — a private bucket that needs CDN access, a site that's serving stale content, an access-denied error with no obvious cause, disaster recovery across five services — and require reasoning across the whole chain rather than a single service's mechanics."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Cross-service scenario questions present a problem that spans multiple AWS services at once — a private bucket that needs CDN access, a site that's serving stale content, an access-denied error with no obvious cause, disaster recovery across five services — and require reasoning across the whole chain rather than a single service's mechanics.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye interview ka sabse tough round hota hai — koi bhi ek service ka fact yaad karna kaafi nahi hai, multiple services ko jodke sochna padta hai. Neeche best scenarios hain, poore reasoning chain ke saath.
+
+### Scenario: S3 bucket private hai, CloudFront se serve karna hai
+
+Ye classic design question hai. Answer **Origin Access Control (OAC)** se shuru hota hai. Pehle S3 pe Block Public Access ke chaaron settings ON karo aur koi bhi public bucket policy/ACL hata do. CloudFront distribution me origin ke taur pe S3 ka **REST endpoint** do — website endpoint nahi, kyunki OAC website endpoint ke saath kaam hi nahi karta. Origin access me OAC create karo signing enabled ke saath. Uske baad bucket policy me CloudFront service principal ko `s3:GetObject` allow karo, aur condition me `AWS:SourceArn` daalo jo apni specific distribution ka ARN ho — ye condition critical hai, iske bina duniya ka koi bhi CloudFront distribution us bucket se padh sakta hai (**confused deputy problem**). Ek side effect handle karna padta hai: REST endpoint `/folder/` pe automatically `index.html` serve nahi karta aur missing objects pe 403 deta hai, 404 nahi — iske liye CloudFront me default root object set karo aur ek CloudFront Function likho jo directory-style URIs ko `index.html` pe rewrite kare.
+
+### Scenario: Deploy kiya lekin users ko purana version dikh raha hai
+
+Ye ek debugging chain hai, layer by layer neeche jaana padta hai. Pehle **browser** — hard reload/incognito me test karo, browser cache ho sakta hai. Phir **CloudFront** — response me `X-Cache` aur `Age` headers dekho; Hit hai aur Age zyada hai to CloudFront cache stale hai. Phir **S3** — object ka LastModified/ETag dekho ki naya file actually upload hua ya deploy pipeline hi fail ho gayi. Agar S3 pe naya hai lekin CloudFront purana de raha hai to object ka `Cache-Control` metadata check karo — missing hai to CloudFront Default TTL (24h) use ho raha hoga. Aur **DNS layer** bhi check karo — `dig` se verify karo domain sahi distribution pe point kar raha hai, purani distribution to nahi. Immediate fix: affected paths invalidate karo. Permanent fix: build me content hashing lagao — hashed assets 1-year immutable cache-control ke saath, `index.html` short TTL pe — phir har deploy pe sirf `index.html` invalidate karna padta hai.
+
+### Scenario: Lambda S3 se read kar raha hai aur "Access Denied" aa raha hai, jabki bucket policy allow karti hai
+
+Access Denied ke kaafi possible causes hote hain, order me check karo. Pehle **execution role** — `s3:GetObject` hai aur resource ARN sahi hai? Ek bahut common galti hai bucket ARN (`arn:aws:s3:::my-bucket`) likhna jabki objects ke liye object ARN (`arn:aws:s3:::my-bucket/*`) chahiye — dono alag hote hain. Doosra, **explicit deny** — bucket policy, SCP, ya permission boundary me kahin explicit deny to nahi, kyunki deny hamesha allow ko override karta hai. Teesra, **encryption** — object SSE-KMS se encrypted hai to role ko `kms:Decrypt` bhi chahiye us key pe, aur key policy me bhi role allowed hona chahiye — ye sabse commonly missed cause hai. Chautha, **cross-account** — bucket doosre account me hai to dono taraf permission chahiye. Paanchva, **VPC endpoint policy** — Lambda VPC me hai aur S3 gateway endpoint use kar raha hai to us endpoint ki policy bhi allow karni chahiye. Ek practical gotcha: S3 event se aane wali object key **URL-encoded** hoti hai — filename me space ho aur decode na kiya jaaye to key hi galat ban jaati hai. Debug ke liye CloudTrail me us specific `GetObject` call ka error code dekho aur IAM Policy Simulator chalao.
+
+### Scenario: Poora site down hai — kahan se debug shuru karoge?
+
+**Outside-in** approach — user ke perspective se shuru karke andar jaana. Pehle **DNS** — `dig myproject.com` se resolve check karo, aur `dig @ns-xxx.awsdns-01.com` se directly Route 53 se poochho taaki pata chale problem Route 53 me hai ya downstream resolver caching me. Registrar ke NS records bhi verify karo. DNS theek hai to **CloudFront** — distribution Deployed hai? Certificate expire to nahi hua? CloudWatch me 5xx error rate dekho aur `x-edge-result-type` se pata karo error edge pe hai ya origin pe. Phir **origin** — S3 bucket exist karta hai, bucket policy accidentally change to nahi hui, OAC intact hai? API bhi down hai to **Lambda** — CloudWatch me Errors, Throttles, Duration metrics aur logs me exception dhoondho. Saath me **AWS Health Dashboard** bhi check karo — regional service issue to nahi. Sabse important step: **recent changes** dekho — kya deploy hua, kya IAM policy badli, kya certificate expire hua. Zyadatar outages recent change se hote hain, isliye CloudTrail me last 24 ghante ke config changes dekhna sabse fast route hota hai.
+
+### Scenario: Architecture me DR (disaster recovery) kaise add karoge
+
+Ye sabse cross-cutting scenario hai kyunki har service ka apna DR consideration hai. **S3** pe Cross-Region Replication enable karo doosre region ke bucket pe — dono taraf versioning mandatory hai, strict RTO ho to Replication Time Control (15-minute SLA) bhi laga sakte ho. **CloudFront** me **origin group** configure karo primary + secondary S3 bucket ke saath, taaki primary 5xx de to automatic failover ho — application-level pe transparent. **Lambda** dono regions me Infrastructure as Code se deploy karo taaki code drift na ho. **Route 53** pe agar API regional hai to failover routing policy health checks ke saath, TTL 60 second (failover time = interval x threshold + TTL, ~150 sec). **SES** ke liye dono regions me identity verify karo aur dono me production access lo — SES ka production status per-region hota hai, ye cheez log DR planning me bhool jaate hain aur disaster ke time pata chalta hai secondary region sandbox me hai. Aur poore setup ko periodically **test** karo, kyunki untested DR effectively no DR hai.
+
+### Scenario: Architecture me user authentication add karna hai
+
+**Amazon Cognito** natural fit hai. User Pool banega jo user directory aur sign-up/sign-in flows handle karega, MFA aur password policies ke saath, social/SAML identity providers bhi integrate ho sakte hain. Frontend Cognito se authenticate karke ek **JWT** leta hai, jo **API Gateway ke JWT authorizer** se validate hota hai — taaki invalid tokens Lambda tak pahunchein hi na, matlab unauthenticated requests ke liye compute ka paisa nahi dena padta. Lambda ke andar token se user ID milta hai jo authorization decisions ke liye use hota hai (jaise presigned URL me key prefix me user ID force karna). Protected static frontend ke liye CloudFront Function ya Lambda@Edge se token presence check kiya ja sakta hai — CloudFront Function me full JWT signature verification nahi ho sakti (bahut limited hai), uske liye Lambda@Edge chahiye hoga. Ek alternative — Cognito Identity Pool se temporary AWS credentials lekar frontend directly S3 pe scoped access ke saath kaam kare — lekin presigned URL pattern usually prefer hota hai kyunki authorization logic backend me centralized rehta hai aur audit karna aasan hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Har scenario me ek common thread hai: answer kabhi bhi ek hi service tak simit nahi rehta. "S3 Access Denied" answer bhi IAM role, encryption key policy, VPC endpoint policy, aur cross-account permissions — chaar alag services — cover karta hai. Yehi cross-service thinking hai jo ye round test karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real debugging session me "poora site down hai" scenario is exact order me handle hota hai: pehle `dig myproject.com` se DNS confirm kiya, phir directly Route 53 nameserver se query karke resolver-caching se Route 53 ko isolate kiya, CloudFront distribution status aur `x-edge-result-type` check kiya, aur end me CloudTrail me last 24 ghante ke config changes dekhe — jahan pata chala ki ek accidental bucket policy change hi root cause tha, jo agar seedha "Lambda logs dekhta hoon" se shuru karta to bahut der se milta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- DR failover time formula: **(health check interval x failure threshold) + DNS TTL** — e.g. 30 x 3 + 60 = ~150 seconds
+- S3 Replication Time Control SLA (when strict RTO needed): **15 minutes**
+- Presigned URL max expiry (relevant when scoping temporary access): **7 days**, though Lambda-issued ones expire with the role session
+- SES production access is **per-region** — a common DR-planning miss
+- IAM Access Denied debugging order: execution role -> explicit deny -> encryption (KMS) -> cross-account -> VPC endpoint policy
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Cross-service scenario questions exist specifically to catch candidates who memorized isolated service facts without ever reasoning about how those services fail or interact together in a real system. An interviewer asking "why is Access Denied happening even though the bucket policy allows it" isn't testing S3 knowledge alone — they're testing whether the candidate can hold IAM, KMS, VPC networking, and cross-account permissions in their head simultaneously and check them in a sensible order. The strongest signal is a candidate who narrates a systematic order of investigation (layer by layer, or outside-in) rather than guessing at a single likely cause — the order itself demonstrates a mental model of the whole system, which is what these questions are actually probing for.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Answering with only one service in mind — e.g., for the "Access Denied" scenario, jumping straight to "the bucket policy must be wrong" and stopping there, missing that the execution role, KMS key policy, or a VPC endpoint policy are equally likely culprits.
+
+</Mistake>
+
+<Mistake>
+
+Skipping the "recent changes" step in a debugging scenario. Most real outages trace back to something that changed recently (a deploy, an IAM policy edit, a certificate expiry) — not checking CloudTrail for recent config changes wastes time on the most likely cause last, not first.
+
+</Mistake>
+
+<Mistake>
+
+Treating DR as a single-service problem (usually just "S3 replication") and forgetting that Lambda, Route 53, and especially SES (whose production access is per-region) all need their own DR consideration — an incomplete DR answer signals the candidate hasn't designed for a real failure.
+
+</Mistake>
+
+<Mistake>
+
+Not distinguishing between similar-sounding root causes — e.g., confusing a bucket-ARN-vs-object-ARN mistake (`arn:aws:s3:::my-bucket` vs `arn:aws:s3:::my-bucket/*`) with a missing KMS permission; both produce "Access Denied" but require completely different fixes.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Start["Site is down - where do you start?"] --> DNS["DNS layer:
+    dig the domain, then dig
+    directly against Route 53"]
+    DNS -->|resolves fine| CF["CloudFront layer:
+    distribution status,
+    cert expiry, 5xx rate,
+    x-edge-result-type"]
+    CF -->|edge is healthy| Origin["Origin layer:
+    S3 bucket policy, OAC intact"]
+    Origin -->|origin looks fine| Lambda["Compute layer:
+    Lambda Errors, Throttles,
+    Duration, log exceptions"]
+    Lambda --> Health["Cross-check: AWS Health
+    Dashboard for regional issues"]
+    Health --> Changes["Most important step:
+    CloudTrail - what changed
+    in the last 24 hours?"]
+`}
+  caption="The outside-in debugging order for 'the whole site is down' — each layer is ruled out before moving inward, and the last, most important step is always checking recent changes."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Private S3 + CloudFront: OAC + REST endpoint (not website endpoint) + bucket policy with an `AWS:SourceArn` condition to prevent the confused-deputy problem
+- Stale content after deploy: check browser cache, CloudFront `X-Cache`/`Age`, S3 object metadata, DNS — permanent fix is content hashing, not repeated invalidation
+- Access Denied checklist order: execution role ARN scope -> explicit deny -> KMS key policy -> cross-account permissions -> VPC endpoint policy
+- Whole-site-down debugging: outside-in (DNS -> CloudFront -> origin -> compute), then always check recent CloudTrail changes last
+- DR touches every service independently: S3 replication, CloudFront origin groups, multi-region Lambda via IaC, Route 53 failover routing, and SES production access per-region
+- Authentication: Cognito User Pool issues a JWT, API Gateway's JWT authorizer validates it before Lambda ever runs, keeping unauthenticated requests free
+- The pattern across every scenario: never answer with a single service in mind — name the full chain of services and check them in a deliberate order
+
+</QuickRevision>

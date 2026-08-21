@@ -1,0 +1,212 @@
+---
+slug: "s3-storage-classes-lifecycle"
+title: "S3 Storage Classes & Lifecycle Policies"
+section: "aws"
+module: "s3-fundamentals"
+order: 2
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["s3-mental-model"]
+tags: ["aws", "s3", "cost-optimization"]
+englishDefinition: "S3 storage classes trade per-GB price against retrieval fee, retrieval latency, and minimum storage duration — cheaper classes are not simply 'cheaper,' they impose costs that can make them more expensive than Standard for small or frequently-accessed objects. Lifecycle policies automate moving objects between classes (transition) or deleting them (expiration) based on object age, prefix, size, or tags."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 storage classes trade per-GB price against retrieval fee, retrieval latency, and minimum storage duration — cheaper classes are not simply "cheaper," they impose costs that can make them more expensive than Standard for small or frequently-accessed objects. Lifecycle policies automate moving objects between classes (transition) or deleting them (expiration) based on object age, prefix, size, or tags.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`s3-mental-model` topic me humne dekha ki S3 ka bill 8 alag meters se banta hai. Storage class choice un meters me se teen ko directly control karta hai — storage rate, retrieval fee, aur transition charge. Ye topic un teeno ko deeply dekhta hai.
+
+### Saare storage classes — ek table jo yaad rakhne layak hai
+
+⚠️ Ye rates ap-south-1 (Mumbai), Aug 2026 ke hain — production budget ke liye AWS Pricing Calculator se verify karo.
+
+| Class | Storage $/GB-mo | Min duration | Min billable size | Retrieval | Kab use karo |
+|---|---|---|---|---|---|
+| **Standard** | $0.025 | — | — | Free | Active data, under 30 din purana |
+| **Intelligent-Tiering** | $0.025 → $0.0138 → Glacier tiers | — | — | Free (frequent/infrequent tiers) | Access pattern unknown ho |
+| **Standard-IA** | $0.014 | 30 days | 128 KB | $0.01/GB | Backup, monthly reports |
+| **One Zone-IA** | $0.011 | 30 days | 128 KB | $0.01/GB | Re-creatable data (thumbnails, transcoded copies) |
+| **Glacier Instant Retrieval** | $0.005 | 90 days | 128 KB | $0.03/GB | Quarterly-access archives, medical images |
+| **Glacier Flexible Retrieval** | $0.004 | 90 days | 40 KB | $0.01-0.03/GB + per-request | Backups, 1-5 min expedited se 5-12 hrs |
+| **Glacier Deep Archive** | $0.00099 | 180 days | 40 KB | $0.02/GB | 7-saal compliance retention |
+| **Express One Zone** | ~$0.11 | 1 hour | 512 KB | Free | ML training, checkpoints, hot cache |
+
+### Asli trade-off: per-GB price poori kahani nahi hai
+
+Interview me sabse strong signal ye bolna hai: **kabhi bhi sirf per-GB rate dekh kar storage class choose mat karo.** Teen hidden costs hain jo cheap class ko expensive bana sakte hain:
+
+**1. Minimum billable object size.** Standard-IA me 128 KB minimum hai — matlab agar tumhare paas 10 KB ke 1 million objects hain, tum **128 KB × 1M** ke liye pay karoge, actual 10 GB ke bajaye 128 GB ke liye! Standard me 10 GB × $0.025 = $0.25 hota; IA me 128 GB × $0.014 = $1.79. IA "sasta" hone ke bajaye **7x mehnga** ho gaya. Chhote objects Standard me hi rakho, ya compact karke bade objects banao.
+
+**2. Minimum storage duration.** Standard-IA/One Zone-IA me 30 din ka minimum hai, Glacier Instant Retrieval me 90 din, Deep Archive me 180 din — agar object usse pehle delete/overwrite/transition karo, **bacha hua duration bhi bill hoga.** Ek object jo 10 din me delete ho jaata hai IA me, phir bhi 30 din ka storage charge lagega.
+
+**3. Retrieval fee.** Standard-IA me har GB padhne ka $0.01 lagta hai. Agar access pattern predictable nahi hai aur galti se ek bada dataset scan ho jaaye, retrieval fees storage savings se zyada ho sakti hain.
+
+### Lifecycle policies — transition aur expiration
+
+Lifecycle rules do cheezein karti hain: **transition** (storage class badalna) aur **expiration** (delete karna) — automatically, age/prefix/size/tag ke rules ke hisaab se.
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "ReportsArchival",
+      "Status": "Enabled",
+      "Filter": {
+        "And": {
+          "Prefix": "reports/",
+          "ObjectSizeGreaterThan": 131072,
+          "Tags": [{ "Key": "Retention", "Value": "long" }]
+        }
+      },
+      "Transitions": [
+        { "Days": 30, "StorageClass": "STANDARD_IA" },
+        { "Days": 90, "StorageClass": "GLACIER_IR" },
+        { "Days": 365, "StorageClass": "DEEP_ARCHIVE" }
+      ],
+      "Expiration": { "Days": 2555 }
+    },
+    {
+      "ID": "CleanupNoncurrentVersions",
+      "Status": "Enabled",
+      "Filter": {},
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30, "NewerNoncurrentVersions": 3 },
+      "Expiration": { "ExpiredObjectDeleteMarker": true }
+    },
+    {
+      "ID": "AbortStuckUploads",
+      "Status": "Enabled",
+      "Filter": {},
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}
+```
+
+Rules jo yaad rakhne hain: Standard se Standard-IA jaane me **minimum 30 din wait karna padta hai**; transitions hamesha ek direction me jaate hain (Standard → IA → Glacier), ulta nahi ho sakta; **har transition ka bhi per-object charge hai** (Standard-IA me ~$0.01/1,000 objects, Glacier classes me ~$0.05/1,000 — ⚠️ verify karo); lifecycle asynchronous hai, "Days: 30" ka matlab *eventually* 30 din baad hai, exact nahi; aur ek bucket me maximum **1,000 rules** allowed hain.
+
+**Chhote objects ko Glacier bhejna paisa barbaad karta hai.** 10 KB ka object Glacier Deep Archive me bhejo to storage $0.00099 × 0.04 GB (40 KB minimum billable) = $0.00004/month, lekin transition ka one-time charge $0.00005 hai — **ek hi baar ka transition charge poore ek+ mahine ke storage se zyada hai.** Plus Glacier har object par 32-40 KB ka metadata overhead bhi charge karta hai. Isliye lifecycle rule me hamesha `ObjectSizeGreaterThan` filter lagao — typically 128 KB ya usse zyada.
+
+Do lifecycle rules **har bucket par day-1 se honi chahiye**, chahe koi bhi archival strategy ho na ho: `AbortIncompleteMultipartUpload` (7 din baad, warna failed uploads invisible storage cost banate hain — is topic ki detail agle topic me hai) aur versioned buckets me `NoncurrentVersionExpiration` (warna purane versions hamesha ke liye bill hote rehte hain).
+
+### Intelligent-Tiering — automatic tiering jo insurance jaisa hai
+
+Intelligent-Tiering objects ko access pattern ke hisaab se **automatically** move karta hai — 30 din access na ho to Frequent se Infrequent Access tier ($0.0138/GB) me, 90 din me Archive Instant Access ($0.005/GB) me. Optional deep tiers bhi enable ho sakte hain (90/180 days ke Archive Access aur Deep Archive Access). Access hote hi object **turant wapas Frequent tier me** aa jaata hai, **koi retrieval fee nahi lagti** — ye Standard-IA se bada fundamental fark hai. Cost sirf ek monitoring fee: **$0.0025 per 1,000 objects per month** (128 KB se chhote objects is fee se exempt hain, lekin wo hamesha Frequent tier me rehte hain — koi saving nahi milti unhe).
+
+**Break-even math jo interview me bolna impressive hai:** monitoring fee = $0.0000025 per object per month. Standard aur IA tier ka difference $0.025 − $0.0138 = $0.0112 per GB per month. Ek object ke liye worth hoga agar `object_size_GB × $0.0112 > $0.0000025`, jo solve karke milta hai object size > **~228 KB**. Practical rule: **average object 250 KB se bade hain to Intelligent-Tiering worth hai; chhote objects par ye ek loss hai.**
+
+Intelligent-Tiering ka asli fayda sirf cost saving nahi, **risk removal** hai — retrieval fee na hone ki wajah se, agar access pattern kabhi unpredictable nikle (ek unexpected full-dataset scan), koi bill-shock nahi aata. Manually Standard-IA me daalna is risk ko expose karta hai; Intelligent-Tiering ise "insurance premium" ki tarah khatam kar deta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Intelligent-Tiering: zero retrieval fee, automatic movement, koi access-pattern guessing nahi karni",
+    "Manual class + lifecycle: predictable savings agar access pattern genuinely stable hai, thoda zyada control",
+  ]}
+  cons={[
+    "Intelligent-Tiering: chhote objects (<250 KB) par monitoring fee hi saving kha jaata hai",
+    "Manual Standard-IA/Glacier: ek galat guess (unexpected access) par retrieval fees storage savings se zyada ho sakti hain",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+`jmfs-reports` bucket par lifecycle policy is tarah design hui: `reports/` prefix ke objects jo 128 KB se bade hain aur `Retention: long` tag rakhte hain — 30 din me Standard-IA, 90 din me Glacier Instant Retrieval, 365 din me Deep Archive, aur 7 saal (2555 din) baad expire. Chhote objects (128 KB se kam) is rule se explicitly exclude kiye gaye taaki minimum-billable-size trap na lage. Har bucket par (bina exception) do baseline rules hamesha on rakhi gayin: `AbortIncompleteMultipartUpload` 7 din, aur versioned buckets me `NoncurrentVersionExpiration` 30 din, 3 versions tak.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Standard: $0.025/GB-mo, no min duration/size, free retrieval
+- Standard-IA: $0.014/GB-mo, 30-day min duration, 128 KB min billable size, $0.01/GB retrieval
+- Glacier Instant Retrieval: $0.005/GB-mo, 90-day min, 128 KB min size, $0.03/GB retrieval
+- Glacier Deep Archive: $0.00099/GB-mo, 180-day min, 40 KB min size — cheapest, but 12+ hour retrieval
+- Intelligent-Tiering monitoring fee: $0.0025 per 1,000 objects/month; objects under 128 KB exempt (but no savings either)
+- Intelligent-Tiering break-even: worth it only for objects roughly larger than ~228 KB
+- IA "savings" trap example: 1M objects × 10 KB in Standard-IA bills as 128 GB, not 10 GB — ~7x the honest cost
+- Max lifecycle rules per bucket: 1,000; Standard → Standard-IA transition requires a minimum 30-day wait
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Kaunsi storage class use karoge aur kyun" is a near-guaranteed question — the weak answer just recites per-GB prices; the strong answer names all three hidden costs (minimum billable size, minimum duration, retrieval fee) and gives a concrete number, like the 10 KB-object-in-IA math that turns a "cheaper" class 7x more expensive. A close second: "Intelligent-Tiering hamesha use karni chahiye kya?" — the strong answer is the ~228 KB break-even math, framed as "it's insurance against unpredictable access, not free money for tiny objects." Interviewers also probe lifecycle mechanics directly — knowing transitions are one-directional and that a transition itself has a per-object charge (which can exceed a small object's monthly storage cost) is a strong signal.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Choosing Standard-IA or Glacier purely by comparing per-GB rate to Standard, without accounting for minimum billable object size — for objects well under 128 KB, the "cheaper" class can end up several times more expensive than Standard.
+
+</Mistake>
+
+<Mistake>
+
+Transitioning small objects (a few KB) straight into Glacier Deep Archive — the one-time per-object transition charge plus the 32-40 KB metadata overhead can exceed a full month of that object's actual storage cost.
+
+</Mistake>
+
+<Mistake>
+
+Deleting or transitioning an object before its storage class's minimum duration elapses (30/90/180 days) and being surprised the bill still charges for the remaining minimum-duration period.
+
+</Mistake>
+
+<Mistake>
+
+Assuming Intelligent-Tiering is free money for every workload — for small objects (well under the ~228 KB break-even), the monitoring fee outweighs any tier-based savings.
+
+</Mistake>
+
+<Mistake>
+
+Writing a lifecycle rule expecting a Glacier object to transition back to Standard automatically — transitions are one-directional; moving "back up" a tier requires a manual restore/copy, not a lifecycle rule.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Object PUT"] --> B["Frequent Access tier — $0.025/GB"]
+    B -->|"30 days no access"| C["Infrequent Access tier — $0.0138/GB"]
+    C -->|"access happens — instant, no fee"| B
+    C -->|"90 days no access"| D["Archive Instant Access — $0.005/GB"]
+    D -->|"optional, 90+ days"| E["Archive Access"]
+    D -->|"optional, 180+ days"| F["Deep Archive Access"]
+    G["Monitoring fee: $0.0025 / 1,000 objects / month"] -.-> B
+`}
+  caption="S3 Intelligent-Tiering moves objects between tiers automatically based on access, with zero retrieval fee — the only cost is a small monitoring fee, which is why it only pays off for objects roughly above ~228 KB."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Per-GB price is not the whole cost story — minimum billable size (128 KB for IA classes), minimum storage duration (30-180 days), and retrieval fees can flip which class is actually cheaper
+- A 10 KB object in Standard-IA bills as if it were 128 KB — small objects belong in Standard or should be compacted first
+- Lifecycle rules do two things: transition (change storage class) and expiration (delete); transitions are one-directional and each transition itself has a small per-object charge
+- Always filter lifecycle transitions with `ObjectSizeGreaterThan` (~128 KB) — sending tiny objects to Glacier can cost more in transition fees than it saves
+- Two lifecycle rules belong on every bucket from day one: `AbortIncompleteMultipartUpload` and (if versioned) `NoncurrentVersionExpiration`
+- Intelligent-Tiering charges no retrieval fee and moves objects automatically — worth it for objects roughly above ~228 KB; for smaller objects the $0.0025/1,000-object monitoring fee outweighs the savings
+- Intelligent-Tiering is best framed as risk removal (insurance against unpredictable access patterns), not just a cost-saving toggle
+
+</QuickRevision>

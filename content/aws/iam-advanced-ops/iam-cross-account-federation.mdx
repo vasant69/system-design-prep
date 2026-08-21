@@ -1,0 +1,260 @@
+---
+slug: "iam-cross-account-federation"
+title: "Cross-Account Access & Federation (OIDC/SAML)"
+section: "aws"
+module: "iam-advanced-ops"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["iam-roles-sts-credentials"]
+tags: ["aws", "iam", "federation"]
+englishDefinition: "Cross-account access lets a principal in one AWS account act in another, either by assuming a role (recommended) or through a resource-based policy; federation (OIDC/SAML) extends this to identities outside AWS entirely — like a GitHub Actions workflow or a corporate IdP — by exchanging a signed token for temporary AWS credentials without ever storing a long-lived access key."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Cross-account access lets a principal in one AWS account act in another, either by assuming a role (recommended) or through a resource-based policy; federation (OIDC/SAML) extends this to identities outside AWS entirely — like a GitHub Actions workflow or a corporate IdP — by exchanging a signed token for temporary AWS credentials without ever storing a long-lived access key.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Cross-account access ke do tareeke
+
+**Tareeka 1 — Role assumption (recommended):**
+
+```
+Account A ka user ──sts:AssumeRole──► Account B ka role ──► Account B ke resources
+```
+
+Account B role banata hai, trust policy me Account A ko allow karta hai; Account A apne user/role ko `sts:AssumeRole` permission deta hai. Credentials temporary hoti hain, CloudTrail me clean audit trail milta hai.
+
+**Tareeka 2 — Resource-based policy (direct access):**
+
+```
+Account A ka user ──direct API call──► Account B ka S3 bucket
+                                        (bucket policy me A allowed)
+```
+
+Sirf un services me possible jo resource policies support karte hain (S3, KMS, SQS, SNS, Lambda, aur kuch aur). Koi AssumeRole call nahi, seedha access.
+
+**Kaunsa better?** Role assumption, kyunki: (1) ek jagah (role) par sab permissions define hain, har resource par alag policy nahi; (2) session duration limit hai; (3) session tags aur session policies se extra control milta hai; (4) CloudTrail me `AssumeRole` event ek clean audit checkpoint deta hai. Resource policy tab better hai jab access **bahut narrow** hai (ek bucket, read-only) aur AssumeRole ka overhead nahi chahiye — jaise cross-account CloudTrail log delivery.
+
+Ek classic S3 gotcha: Account A ne Account B ke bucket me object daala, to object ka owner **A** hai, aur B usko padh nahi sakta — ye "cross-account write ownership" problem hai. Ab default nahi hai kyunki S3 Object Ownership setting "Bucket owner enforced" (naye buckets me default) ACLs disable kar deti hai aur ownership automatically bucket owner ko de deti hai — purane buckets me ye setting check zaroor karna.
+
+### Confused deputy — do flavours
+
+"Deputy" = ek entity jiske paas tumse zyada permissions hain aur jo tumhare kehne par kaam karti hai. "Confused" = usse dhokha dekar galat resource par kaam karwa lena.
+
+**Flavour 1 — Cross-service (AWS service deputy):** S3 tumhare SNS topic ko notify karta hai. S3 service principal ke paas broad permissions hain — agar tumhari SNS topic policy sirf `"Principal": {"Service": "s3.amazonaws.com"}` kehti hai, to **duniya ke kisi bhi** account ka S3 bucket tumhare topic par publish kar sakta hai, kyunki service principal sabke liye same hai. Fix: `aws:SourceAccount` + `aws:SourceArn`.
+
+**Flavour 2 — Cross-account (third-party deputy):** SaaS vendor ke paas tumhare account ka role assume karne ka right hai, aur 500 doosre customers ka bhi. Agar attacker vendor ko tumhara account ID + role name feed kar de, vendor confuse hokar tumhare data par attacker ke behalf par kaam kar sakta hai. Fix: `sts:ExternalId`.
+
+Ye AWS ka design flaw nahi hai — AWS ne intentionally service principals ko generic rakha hai (per-customer service principals scale nahi karte). Responsibility resource owner par daali hai ki wo condition lagaye.
+
+### `aws:SourceArn`, `aws:SourceAccount`, `aws:PrincipalOrgID` — kab lagti hain
+
+Ye teeno confused deputy ke different flavours solve karte hain.
+
+**`aws:SourceAccount` / `aws:SourceArn`** — jab koi AWS service tumhare resource ko tumhare behalf par access karta hai:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Service": "s3.amazonaws.com" },
+  "Action": "SNS:Publish",
+  "Resource": "arn:aws:sns:ap-south-1:123456789012:alerts",
+  "Condition": {
+    "StringEquals": { "aws:SourceAccount": "123456789012" },
+    "ArnLike": { "aws:SourceArn": "arn:aws:s3:::jmfs-uploads" }
+  }
+}
+```
+
+**`aws:PrincipalOrgID`** — poori organization ko allow karo bina har account ID likhe:
+
+```json
+"Condition": { "StringEquals": { "aws:PrincipalOrgID": "o-a1b2c3d4e5" } }
+```
+
+Naya account org me add hoga to automatically covered ho jaayega — enterprise setups me lifesaver hai. Related keys: `aws:PrincipalOrgPaths` (specific OU), `aws:ResourceOrgID`, `aws:PrincipalIsAWSService`.
+
+### OIDC/SAML federation — GitHub Actions ka example
+
+**OIDC federation** ka matlab: external identity provider ek signed JWT deta hai, AWS uska signature verify karta hai (provider ki public JWKS se) aur claims ko conditions me check karta hai, phir role ki credentials de deta hai. **Koi access key store nahi karni padti.**
+
+GitHub Actions ka setup:
+
+```bash
+# 1. OIDC provider register karo (ek baar per account)
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
+
+Trust policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:jmfs/payment-service:ref:refs/heads/main"
+      }
+    }
+  }]
+}
+```
+
+`sub` claim me repo aur branch encode hote hain — isse tum exactly define kar sakte ho ki kaunsi repo ki kaunsi branch se deploy ho sakta hai.
+
+**SAML federation** conceptually same hai, sirf assertion XML me aati hai aur `AssumeRoleWithSAML` use hota hai. SAML response ki limit **100,000 characters** (base64) hai.
+
+### `aws:ViaAWSService` aur `aws:CalledVia` — kab matter karte hain
+
+Jab ek AWS service tumhare behalf par doosri service call karta hai, to request context alag hota hai.
+
+**`aws:ViaAWSService`** (Bool) — kya request kisi AWS service ke through aayi? Example: Athena tumhare behalf par S3 padh raha hai → `true`.
+
+**`aws:CalledVia`** (multi-valued string) — services ki **chain** jo beech me thi, jaise `["athena.amazonaws.com"]` ya `["cloudformation.amazonaws.com", "lambda.amazonaws.com"]`. `aws:CalledViaFirst` / `aws:CalledViaLast` chain ka pehla/aakhri element dete hain.
+
+Use case — "DynamoDB sirf Athena ke through access ho, direct nahi":
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "dynamodb:Query",
+  "Resource": "arn:aws:dynamodb:*:*:table/SensitiveData",
+  "Condition": {
+    "ForAnyValue:StringEquals": { "aws:CalledVia": "athena.amazonaws.com" }
+  }
+}
+```
+
+Ulta use case — IP restriction lagate waqt AWS services ko exempt karna:
+
+```json
+"Condition": {
+  "NotIpAddress": { "aws:SourceIp": ["203.0.113.0/24"] },
+  "Bool": { "aws:ViaAWSService": "false" }
+}
+```
+
+</Hinglish>
+
+<Callout type="trap">
+
+`sub` condition me `StringLike` with `repo:jmfs/*` likhoge to **koi bhi branch, koi bhi PR** us role ko assume kar sakti hai — including ek fork se aayi PR jo malicious code chalati hai. Ye 2023-24 me real supply chain attacks ka vector tha. Hamesha `sub` ko specific branch/environment tak pin karo, aur `aud` claim check karna kabhi mat bhoolo — bina `aud` ke koi bhi GitHub repo tumhara role assume kar sakti hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek Node.js payment service ka CI/CD pipeline GitHub Actions se deploy hota hai. Setup: OIDC provider ek baar account me register kiya (`token.actions.githubusercontent.com`, client ID `sts.amazonaws.com`, thumbprint pinned), ek `DeployPaymentService` role banaya jiski trust policy `sub` ko `repo:jmfs/payment-service:ref:refs/heads/main` tak pin karti hai aur `aud` ko `sts.amazonaws.com` tak — matlab sirf `main` branch se, sirf `payment-service` repo se, deploy ho sakta hai. GitHub Actions workflow me koi `AWS_ACCESS_KEY_ID` secret store nahi kiya — `aws-actions/configure-aws-credentials` action seedha `AssumeRoleWithWebIdentity` karta hai runtime par. Zero long-lived credentials CI system me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- External ID length: **2 to 1,224 characters**, alphanumeric + `+=,.@:/-`
+- SAML response (base64) limit: **100,000 characters**
+- OIDC providers per account: default **100**, adjustable to **700**
+- OIDC provider thumbprint for GitHub Actions: `6938fd4d98bab03faadb97b34396831e3780aea1`
+- Role assumption is preferred over resource-based policy for cross-account access whenever more than one permission or a clean audit checkpoint is needed
+- `aws:CalledVia` only populates for AWS-documented supported services (Athena, CloudFormation, DynamoDB, KMS, Lambda, and a limited list) — unsupported services silently never match
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Explain the confused deputy problem" is a favorite advanced question — the strong answer names both flavours (cross-service via a generic service principal, cross-account via a shared third-party role) and the specific condition key that fixes each (`SourceArn`/`SourceAccount` vs `ExternalId`). A close second is "walk me through setting up GitHub Actions to deploy to AWS without storing credentials" — interviewers are listening for the `sub`/`aud` condition pinning, not just "use OIDC," since the sloppy wildcard version is the exact mistake that causes real supply-chain incidents.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Pinning the GitHub Actions trust policy's `sub` claim with `StringLike: "repo:org/*"` instead of a specific branch or environment — this lets any branch, including a PR from a fork, assume the deployment role.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting the `aud` claim condition entirely in an OIDC trust policy — without it, any GitHub repository in the world (not just yours) can attempt to assume the role, since only the `sub` was scoped.
+
+</Mistake>
+
+<Mistake>
+
+Using `StringEquals` on `aws:SourceArn` when the calling AWS service only populates a partial ARN — the condition silently fails and the integration breaks. `ArnLike` with a trailing wildcard is safer; check the specific service's docs for what it actually sends.
+
+</Mistake>
+
+<Mistake>
+
+Letting the External ID be generated by the third-party vendor instead of by you — a vendor-supplied External ID may be guessable or reused across customers, defeating its purpose as an unguessable shared secret.
+
+</Mistake>
+
+<Mistake>
+
+Writing objects into another account's S3 bucket without setting `bucket-owner-full-control`, on a bucket where the newer "Bucket owner enforced" Object Ownership setting isn't active — the bucket owner ends up unable to read objects the other account wrote.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant GH as GitHub Actions Workflow
+    participant OIDC as GitHub OIDC Provider
+    participant STS as AWS STS
+    participant Role as DeployPaymentService Role
+
+    GH->>OIDC: Request signed JWT (repo, branch, workflow claims)
+    OIDC-->>GH: Signed JWT (sub, aud claims)
+    GH->>STS: AssumeRoleWithWebIdentity(JWT)
+    STS->>Role: Verify JWT signature against registered OIDC provider
+    Role-->>STS: Check trust policy: aud == sts.amazonaws.com AND sub == repo:jmfs/payment-service:ref:refs/heads/main
+    STS-->>GH: Temporary credentials (AccessKeyId, SecretAccessKey, SessionToken)
+    Note over GH,Role: No long-lived AWS access key ever stored in GitHub
+`}
+  caption="OIDC federation for CI/CD: a signed, short-lived JWT from GitHub is exchanged for temporary AWS credentials — the trust policy's sub/aud conditions are the only thing standing between 'any GitHub Actions run' and 'this exact repo and branch.'"
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Cross-account access: role assumption (preferred, clean audit trail, session control) vs resource-based policy (only for narrow, single-service access)
+- Confused deputy has two flavours — cross-service (fixed by `SourceArn`/`SourceAccount`) and cross-account third-party (fixed by `ExternalId`)
+- `aws:PrincipalOrgID` allows a whole AWS Organization without listing every account ID — new accounts are automatically covered
+- OIDC federation exchanges a signed JWT for temporary credentials — zero stored access keys, but the trust policy's `sub` and `aud` conditions are the entire security boundary
+- Always pin `sub` to a specific repo + branch/environment; a wildcard `sub` is a known supply-chain attack vector
+- External ID must be generated by the resource owner (you), not the vendor, and just needs to be unguessable, not secret
+- `aws:CalledVia`/`aws:ViaAWSService` let you require that a resource is only reached through a specific service chain (e.g., DynamoDB only via Athena)
+- S3 cross-account writes need `bucket-owner-full-control`, or the newer "Bucket owner enforced" Object Ownership setting, or the writer's account ends up owning objects the bucket owner can't read
+
+</QuickRevision>

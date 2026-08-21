@@ -56,10 +56,22 @@ guide.md` supersede it as the source of truth for current state.
   focus): 38/38 topics, 7 modules (relational-fundamentals,
   indexing-performance, transactions-integrity, bfsi-data-modeling,
   scaling-bfsi, security-compliance, bfsi-case-studies). Done.
-- **AWS**: not started as a site section yet. **Source material has been
-  provided by the user** in `AWS/` at the repo root (NOT under `content/`
-  — that's the raw source, not site content) — see "Next task: AWS"
-  below. Do not invent an AWS syllabus; read what's there first.
+- **AWS** (`aws` slug): 26/26 topics, 6 modules (core-services,
+  architecture-strategy, iam-fundamentals, iam-advanced-ops,
+  s3-fundamentals, s3-advanced-ops). Done — converted/adapted from the
+  user-provided source material in `AWS/` at the repo root (that folder
+  is raw source, kept for reference/backup, not read by the app at
+  runtime). This section is different from System Design/Databases in
+  one important way: content was **adapted from existing rich source
+  material** (the user's own first-person interview-prep notes), not
+  invented from a syllabus — see `docs/content-authoring-guide.md` if
+  another section ever needs this same "convert existing material"
+  approach again. Two real MDX bugs were found and fixed here that are
+  worth knowing about for future content: a bare `<2%`/`<30 din` (raw
+  `<` followed by a digit, including inside a markdown table cell) broke
+  a build the same way `<Tag>` would — MDX doesn't distinguish "looks
+  like a comparison operator" from "looks like a JSX tag start"; wrap
+  such comparisons in words ("under 2%") or backticks.
 - **Git & GitHub** (`git` slug): appears to be built by a **different,
   concurrent process** editing this same repo — not something this
   session created. Leave it alone; don't revert or "clean it up" unless
@@ -197,63 +209,19 @@ you notice files changed that you didn't touch:
   as-is" when asked, which is a reasonable default going forward too, but
   it was still worth asking the first time rather than assuming.
 
-## Next task: AWS section
+## Next task: none queued
 
-The user is providing source content directly rather than asking for an
-invented syllabus — **read `AWS/` at the repo root before writing
-anything**, don't design a curriculum from scratch like System
-Design/Databases did. As of this note, `AWS/` contains:
-
-```
-AWS/FiveAmazonServices/aws-interview-prep.md          (~3600 lines)
-AWS/FiveAmazonServices/AWS-Interview-Prep-Hinglish.md (~4450 lines)
-AWS/IAM/aws-iam-deep-dive.md                          (~3700 lines)
-AWS/IAM/IAM.pdf                                       (~30 MB)
-AWS/S3/aws-s3-deep-dive.md                            (~4200 lines)
-AWS/S3/S3_pdf.pdf                                     (~33 MB)
-```
-
-Observed structure (from headers only — these were not fully read yet,
-by design, to leave context budget for the session that does the real
-work):
-
-- `FiveAmazonServices/aws-interview-prep.md` and
-  `AWS-Interview-Prep-Hinglish.md` share **identical heading structure**
-  (worth diffing to confirm if one is a superset/revision of the other
-  before treating both as separate sources) and already follow an
-  A-through-I per-service format very close to this site's own schema:
-  A. Simple Explanation, B. Why It Exists / Problem It Solves, C. How It
-  Actually Works (Internal Flow), D. Key Concepts & Terminology,
-  E. Real-World Configuration, F. Common Mistakes & Gotchas, G. Cost
-  Model, H. Security Best Practices, I. Interview Q&A — covering, in
-  order: Route 53, CloudFront, S3, (presumably Lambda and SES follow,
-  matching the title "Route 53, CloudFront, S3, Lambda, SES").
-- `IAM/aws-iam-deep-dive.md` and `S3/aws-s3-deep-dive.md` share a
-  **different** structure from each other than from the above: Ek Line Me
-  → Problem Statement → Vocabulary Table → Mental Model → Questions &
-  Answers → Hands-On Lab, and are noticeably CLI-command-heavy (real `aws`
-  CLI invocations throughout, not just prose).
-- **S3 is covered in both `FiveAmazonServices/*` and its own
-  `S3/aws-s3-deep-dive.md`** — these likely overlap and need reconciling
-  (pick one as canonical per sub-topic, or treat the deep-dive as a
-  separate "advanced" topic building on the intro one) rather than
-  duplicating content.
-- Two large PDFs (`IAM.pdf`, `S3_pdf.pdf`) exist alongside their markdown
-  counterparts — likely the original slide/course material the `.md`
-  files were transcribed from. Probably reference-only; confirm with the
-  user whether they contain anything not already in the markdown before
-  spending context reading them (30MB PDFs are expensive to read).
-
-Suggested first steps in the session that picks this up: read the four
-markdown files properly (they're large — read in chunks, or delegate to
-an Explore/general-purpose agent to summarize structure and flag overlaps
-first), propose a module/topic breakdown to the user for confirmation
-(per this project's established pattern — see
-`docs/content-authoring-guide.md` step 4), **converting/adapting the
-user's own material** into this site's `.mdx` schema rather than writing
-fresh content from scratch, since the source is unusually close to the
-target format already. Then follow the standard parallel-agent workflow
-in `docs/content-authoring-guide.md`.
+AWS is done (see "Current content state" above). No section is currently
+queued as "next" — System Design, Database Design, and AWS are all
+complete. Remaining untouched placeholders are **API Design** and
+**English Learning** (`enabled: false` in `config/sections.config.ts`),
+and Phase 2/3 stubs (Interview Mode, Revision queue, Progress dashboard)
+are still "coming soon" pages. None of these have been requested yet —
+don't start on them unless the user asks. The raw AWS source material
+originally analyzed here has since been adapted into `content/aws/` and
+is preserved at `AWS/` at the repo root purely for reference; see
+`docs/content-authoring-guide.md` for the source-adaptation pattern used
+if a future section needs the same "convert existing material" approach.
 
 ## Working style notes for this project specifically
 

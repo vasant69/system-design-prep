@@ -1,0 +1,197 @@
+---
+slug: "amazon-cloudfront"
+title: "Amazon CloudFront"
+section: "aws"
+module: "core-services"
+order: 2
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["amazon-route-53"]
+tags: ["aws", "cdn", "networking"]
+englishDefinition: "CloudFront is AWS's CDN — it caches content at 700+ global edge locations so requests don't have to travel back to the origin, cutting latency, absorbing traffic away from the origin, and adding free DDoS protection (Shield Standard) in front of it."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+CloudFront is AWS's CDN — it caches content at 700+ global edge locations so requests don't have to travel back to the origin, cutting latency, absorbing traffic away from the origin, and adding free DDoS protection (Shield Standard) in front of it.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+CloudFront ka kaam simple hai: content (HTML, CSS, JS, images, videos, API responses) duniya bhar ke **edge locations** pe cache karke rakhna, taaki user ki request origin tak baar baar na jaaye. Do fayde milte hain — latency kam (300ms ki jagah 50ms) aur origin ka load kam (90%+ requests edge se hi serve). Ek teesra fayda jo log bhool jaate hain: security — CloudFront ke saamne Shield Standard free lagta hai.
+
+### Kyun zaroori hai
+
+Speed of light physics ka problem hai — Mumbai se us-east-1 tak ek round trip me hi ~200-250ms lag jaata hai, aur 30 assets wale page pe ye compound hoke seconds ban jaata hai. Data ko user ke paas laana hi solution hai. Ek aur underrated reason: **S3 static website hosting HTTPS support nahi karta** — custom domain pe SSL chahiye to CloudFront lagana hi padega. Aur CloudFront se S3 origin fetch **free** hai, jabki S3 se direct transfer ~$0.09/GB — CDN paisa bachata bhi hai.
+
+### Request lifecycle — full flow
+
+DNS resolve hoke CloudFront ka anycast IP milta hai (BGP routing se nearest edge, DNS-based nahi). TLS **edge pe terminate** hoti hai, origin pe nahi. Phir CloudFront apna **cache key** (URL path + configured headers/cookies/query strings) banake edge cache check karta hai. Miss hone pe seedha origin nahi jaata — pehle **Regional Edge Cache** (~13 worldwide, badi cache, kam popular content bhi der tak rakhta hai) check hota hai, taaki chhoti edge caches se hui evictions origin tak na pahunchein. Wahan bhi miss ho aur Origin Shield enabled ho to ek aur dedicated caching layer origin ke region me hoti hai. Fir origin se fetch hota hai (OAC ke case me SigV4-signed), response cache hota hai, aur user ko jaata hai. Response header `X-Cache: Miss from cloudfront` (pehli baar) ya `Hit from cloudfront` batata hai kya hua. Har stage pe optional trigger laga sakte ho — viewer request, origin request, origin response, viewer response — jahan CloudFront Function ya Lambda@Edge chal sakta hai.
+
+### Cache key — sabse important concept
+
+Default me cache key sirf hostname + URL path hota hai. Isme headers, cookies, query strings add kar sakte ho — golden rule: **cache key jitna specific, hit ratio utna kam**. Agar marketing params (`utm_source`, `fbclid`) bhi cache key me chale gaye to same file ki alag-alag copies ban jaati hain aur hit ratio tabah ho jaata hai.
+
+**Cache Policy vs Origin Request Policy — ye sabse tricky distinction hai.** Cache policy decide karti hai cache key me kya jaayega (caching pe seedha asar), origin request policy decide karti hai origin ko kya forward hoga (caching pe koi asar nahi). Jo bhi cache policy me hai wo automatically origin ko bhi jaata hai — origin request policy usme extra add karti hai. Example: origin ko analytics ke liye `User-Agent` chahiye, lekin agar wo cache policy me daala to har browser version ki alag cache entry banegi. Solution — `User-Agent` ko **origin request policy** me daalo, cache policy me nahi. AWS ke managed policies yaad rakho: `Managed-CachingOptimized` (URL-only key, compression on), `Managed-CachingDisabled` (APIs ke liye), `Managed-AllViewer`/`Managed-CORS-S3Origin` (origin request side).
+
+TTL ka logic: origin ka `Cache-Control` header aaye to `final_ttl = max(MinTTL, min(origin_ttl, MaxTTL))`; na aaye to Default TTL (24 ghante) use hota hai. **MinTTL ek floor hai** — origin ke `max-age=0` ko bhi override kar sakta hai.
+
+### Invalidation vs versioning
+
+Purana content refresh karna ho to do tarike hain. **Invalidation** — path ko cache se hataana; pehle 1000 paths/month free, phir $0.005 per path, 60 sec–minutes lagte hain. **Versioning** — file ka naam hi badalna (`app.a3f2b1.js`), free aur instant, aur ye default hona chahiye. Practical pattern: hashed static assets ko `max-age=31536000, immutable`, sirf `index.html` ko `max-age=0, must-revalidate` — deploy ke baad sirf `/index.html` invalidate karna padta hai. `/*` wildcard invalidation AWS ek hi path count karta hai lekin poori cache uda deta hai, jo traffic spike cause kar sakta hai.
+
+### OAC — S3 ko private rakhna
+
+Problem: bucket public karke serve karoge to log CloudFront bypass karke seedha S3 URL hit kar sakte hain — cache bypass, cost, aur koi WAF protection nahi. Solution: bucket **private** rakho, sirf CloudFront ko access do — ye **Origin Access Control (OAC)** karta hai. Ye purane **OAI** se better hai: SSE-KMS support karta hai, saare HTTP methods (na sirf GET/HEAD), aur har request ko SigV4 se sign karta hai. Bucket policy me Principal `cloudfront.amazonaws.com` service hota hai, aur condition me **specific distribution ARN** hona zaroori hai — warna koi bhi doosra CloudFront distribution bucket read kar sakta hai (confused deputy problem).
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontServicePrincipalReadOnly",
+      "Effect": "Allow",
+      "Principal": { "Service": "cloudfront.amazonaws.com" },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::my-project-frontend/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::111122223333:distribution/E1ABCDEFGHIJKL"
+        }
+      }
+    }
+  ]
+}
+```
+
+Private content directly users ko dena ho to **Signed URLs** (ek specific file) ya **Signed Cookies** (poori policy, multiple files — HLS video jaise 100s segments ke liye better) use karo, dono me expiry mandatory hai.
+
+### CloudFront Functions vs Lambda@Edge
+
+CloudFront Functions JavaScript me hai, edge pe hi chalta hai, sub-millisecond execution, 2 MB memory, 10 KB code, network access nahi — lightweight kaam (URL rewrite, header manipulation, cache key normalization) ke liye. Lambda@Edge Node/Python hai, Regional Edge Cache pe chalta hai, network access hai, viewer + **origin** dono triggers support karta hai, aur **hamesha us-east-1 se deploy** hota hai — heavy kaam (origin selection, external API call, image resizing) ke liye. Classic use case: SPA routing — jab user directly `/dashboard` pe aata hai to S3 me wo path exist nahi karta (403 aata hai kyunki private bucket ka `ListBucket` permission nahi hai). Ek CloudFront Function jo extension-less URIs ko `/index.html` pe rewrite karta hai, isse fix ho jaata hai — Lambda@Edge overkill hota, 6 guna mehnga.
+
+### SSL certificate — us-east-1 ka classic gotcha
+
+**CloudFront ke liye ACM certificate hamesha `us-east-1` (N. Virginia) me hona chahiye**, chahe origin kahin bhi ho — kyunki CloudFront ek global service hai aur AWS ne global services (IAM, CloudFront) ka control plane us-east-1 me rakha hai. Iske ulta, **ALB ke liye cert ALB ke apne region me** hona chahiye — ye interview ka favourite trap hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Price Class 100 choose karne se India ke users ki site **fail nahi hoti** — bas Europe/US edge se serve hoti hai, jo slower hai. Ye availability ka issue nahi hai, ye ek **performance trade-off** hai. India-focused audience ke liye Price Class All ya 200 chahiye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek real setup me origin **S3 REST endpoint** tha (`my-project-frontend.s3.ap-south-1.amazonaws.com`), website endpoint nahi — kyunki OAC sirf REST endpoint ke saath kaam karta hai. Viewer protocol policy `Redirect HTTP to HTTPS`, allowed methods sirf GET/HEAD/OPTIONS, alternate domain names `myproject.com` + `www.myproject.com` ke saath ACM cert **us-east-1** me, Price Class All (India audience). Deployment script me hashed assets `max-age=31536000, immutable` ke saath jaate hain aur `index.html` `max-age=0, must-revalidate` ke saath, aur deploy ke baad sirf `/index.html` `/` invalidate hota hai — cost efficient. Custom error responses (403 aur 404 dono) `/index.html` pe 200 status ke saath map kiye taaki React Router client-side routing handle kar sake, 10 second ki chhoti error caching TTL ke saath. Response Headers Policy se AWS ke managed `SecurityHeadersPolicy` (HSTS, X-Frame-Options, CSP) attach kiya, manually CloudFront Function likhne ki zaroorat nahi padi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Data transfer out to internet: ~$0.085–$0.17/GB (India/Asia mehnga)
+- HTTP/HTTPS requests: ~$0.0075–$0.0090 per 10,000
+- CloudFront → S3/EC2 origin fetch: **free**
+- Invalidation: first 1,000 paths/month free, then $0.005 per path
+- Dedicated IP SSL: **$600/month** (SNI free hai aur 99.9% clients support karte hain)
+- Free tier (perpetual): 1 TB data transfer out + 10 million requests + 2 million CloudFront Functions invocations/month
+- Compression: text assets 60-80% size reduction
+- Target cache hit ratio: **85%+** (CloudWatch `CacheHitRate` metric)
+- CloudFront Functions cost ~1/6th of Lambda@Edge per invocation
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"CloudFront kyun lagaya" ka strong answer sirf latency nahi bolta — S3 static website HTTPS support nahi karta custom domain pe, isliye CloudFront mandatory ban jaata hai. Cache Policy vs Origin Request Policy ye area ka sabse tricky sawaal hai — jawab me example dena zaroori hai (User-Agent origin ko chahiye but cache key me nahi). OAC ka jawab sirf "S3 ko private rakhta hai" na bolke `AWS:SourceArn` condition wali confused-deputy problem tak jaana chahiye. SSL cert ka us-east-1 rule aur ALB se uska contrast ek classic gotcha-question hai. Invalidation vs versioning me strong answer content-hashed build pipeline describe karta hai, sirf definitions nahi. CloudFront Functions vs Lambda@Edge me deciding factor bolna zaroori hai — lightweight/edge-only vs heavy/network-access — sirf feature table yaad rakhna kaafi nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+S3 website endpoint (public, HTTP-only) use karna jab REST endpoint + OAC chahiye tha — OAC sirf REST endpoint (`bucket.s3.region.amazonaws.com`) ke saath kaam karta hai, website endpoint ke saath nahi.
+
+</Mistake>
+
+<Mistake>
+
+ACM certificate ko origin ke region me banana (jaise Mumbai) — CloudFront ke dropdown me wo dikhega hi nahi. Certificate hamesha us-east-1 me banao.
+
+</Mistake>
+
+<Mistake>
+
+Cache key me saare query strings, headers, cookies forward kar dena — cache hit ratio ~0% ho jaata hai, CDN ka fayda mila hi nahi lekin bill aa gaya.
+
+</Mistake>
+
+<Mistake>
+
+CloudFront lagane ke baad bhi S3 bucket public chhod dena — log directly S3 URL hit karke CloudFront bypass kar dete hain, WAF/Shield ka protection nahi milta, aur direct S3 transfer mehnga bhi hai.
+
+</Mistake>
+
+<Mistake>
+
+Har deploy pe `/*` invalidate karna — poori cache khali ho jaati hai, agla har request origin pe jaati hai, traffic spike aur cost dono badhte hain. Content-hashed versioning use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant U as User
+    participant E as Edge Location
+    participant REC as Regional Edge Cache
+    participant O as Origin (S3/ALB)
+
+    U->>E: GET /images/logo.png
+    E->>E: Build cache key, check edge cache
+    alt Cache Hit
+        E-->>U: Response (X-Cache: Hit from cloudfront)
+    else Cache Miss
+        E->>REC: Check regional edge cache
+        alt Regional Hit
+            REC-->>E: Content
+            E-->>U: Response (cached at edge now)
+        else Regional Miss
+            REC->>O: Origin fetch (SigV4 signed via OAC)
+            O-->>REC: Response
+            REC-->>E: Content (cached regionally)
+            E-->>U: Response (X-Cache: Miss from cloudfront)
+        end
+    end
+`}
+  caption="Regional Edge Cache sits between the small, hot edge locations and the origin — it absorbs evictions from edge caches so origin traffic stays low even when a popular object gets bumped from a nearby edge."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- CloudFront caches at 700+ edge locations; Regional Edge Cache (~13) is the mid-tier buffer that absorbs edge evictions before hitting origin
+- Cache key = default hostname + path; adding headers/cookies/query strings raises specificity but lowers hit ratio
+- Cache Policy controls the cache key (affects caching); Origin Request Policy controls what's forwarded to origin (doesn't affect caching) — whatever's in the cache policy is auto-forwarded
+- OAC (not legacy OAI) keeps S3 private, signs every request with SigV4, and needs an `AWS:SourceArn` condition to avoid the confused-deputy problem
+- ACM certificate for CloudFront must be in us-east-1 regardless of origin region; ALB certificates stay in their own region
+- Prefer versioning (content-hashed filenames, free, instant) over invalidation (costs after 1,000 paths/month, takes minutes) for cache busting
+- CloudFront Functions: lightweight, edge-only, sub-millisecond, viewer triggers only. Lambda@Edge: heavier, regional-edge-cache, network access, also supports origin triggers
+- Price Class 100 doesn't break access for excluded regions — it just routes them to a farther, slower edge
+
+</QuickRevision>
