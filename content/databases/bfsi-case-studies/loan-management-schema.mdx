@@ -1,0 +1,241 @@
+---
+slug: "loan-management-schema"
+title: "Design a Loan Management System Schema"
+section: "databases"
+module: "bfsi-case-studies"
+order: 3
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["core-banking-schema", "interest-accrual-time-series"]
+tags: ["case-study", "bfsi", "lending"]
+englishDefinition: "Design the database schema for a loan management system - tracking a loan from application through disbursement, EMI (equated monthly installment) repayment schedule, interest accrual, and closure, including handling of late payments and prepayment."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Bajaj Finserv", "ICICI Bank"]
+---
+
+<SimpleDefinition>
+
+Design the database schema for a loan management system - tracking a loan from application through disbursement, EMI (equated monthly installment) repayment schedule, interest accrual, and closure, including handling of late payments and prepayment.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Loan management ek core banking ledger se related lekin distinctly different problem hai. Ledger mein har transaction independent tha (ek transfer, ek deposit). Yahan ek loan ka poora lifecycle ek **pre-committed schedule** ke against track hota hai — jab loan approve hota hai, ek 12, 24, ya 60-month repayment plan already fix ho jaata hai, aur har mahine ka payment usi plan ke against match hota hai. Is case study ka core design insight yahi hai: **schedule ek separate, stable, stored entity honi chahiye — on-the-fly compute nahi.**
+
+### Requirements Clarification
+
+Functional requirements:
+- Loan application submit karna aur approve/reject karna
+- Approved loan ko disburse karna (principal amount customer ko transfer)
+- Ek EMI repayment schedule generate karna — kitni installments, har ek ki due date, aur uska principal/interest split
+- Payments record karna specific installments ke against
+- **Prepayment/foreclosure** handle karna — customer poora ya partial ek saath pay kar de, remaining schedule adjust ho
+- Overdue status track karna — kaun se installments due date cross kar chuke hain bina payment ke
+
+Non-functional requirements — aur yahan asli stakes hain:
+- **Amortization schedule ki correctness sabse critical hai.** Yeh System Design principle nahi hai, seedha paisa hai — agar schedule galat generate hui, to bank customer se galat amount collect karega, jo ek direct financial aur regulatory problem hai. Isliye is schema ka sabse zyada scrutiny wala part woh table hai jo schedule store karta hai — usme koi ambiguity nahi ho sakti.
+
+### Key Entities & Relationships
+
+Teen core entities:
+
+- **LoanAccount** — ek specific loan ka master record: principal amount, interest rate, tenure (months), current status (`active`, `closed`, `foreclosed`, `defaulted`).
+- **RepaymentSchedule** — ek row **per EMI installment**, loan approval ke time hi poori generate ho jaati hai. Har row mein: `due_date`, `principal_component`, `interest_component`, `status` (`pending`, `paid`, `overdue`). Yeh table ka design decision is poore case study ka heart hai — agle section mein detail se dekhte hain kyun.
+- **Payment** — customer se actual mein aaya paisa, ek specific `RepaymentSchedule` row ke against record hota hai.
+
+Relationships: `LoanAccount` → `RepaymentSchedule` ek 1:N hai (ek loan ke tenure jitni installments), aur `RepaymentSchedule` → `Payment` bhi conceptually 1:N ho sakta hai (partial payments ki wajah se — ek installment do partial payments se bhi clear ho sakta hai).
+
+### Schema Design
+
+```sql
+CREATE TABLE loan_account (
+    loan_id             BIGINT PRIMARY KEY,
+    customer_id          BIGINT NOT NULL REFERENCES customer(customer_id),
+    principal_amount      DECIMAL(18, 2) NOT NULL CHECK (principal_amount > 0),
+    interest_rate         DECIMAL(6, 4) NOT NULL,   -- annual rate at disbursement
+    tenure_months         INT NOT NULL CHECK (tenure_months > 0),
+    status                VARCHAR(20) NOT NULL DEFAULT 'active',
+    disbursed_at           TIMESTAMP,
+    created_at             TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE repayment_schedule (
+    installment_id        BIGINT PRIMARY KEY,
+    loan_id                 BIGINT NOT NULL REFERENCES loan_account(loan_id),
+    installment_number       INT NOT NULL,
+    due_date                 DATE NOT NULL,
+    emi_amount                DECIMAL(18, 2) NOT NULL,
+    principal_component       DECIMAL(18, 2) NOT NULL,
+    interest_component        DECIMAL(18, 2) NOT NULL,
+    status                    VARCHAR(20) NOT NULL DEFAULT 'pending',   -- pending, paid, overdue, superseded
+    CONSTRAINT uq_loan_installment UNIQUE (loan_id, installment_number)
+);
+
+CREATE TABLE payment (
+    payment_id             BIGINT PRIMARY KEY,
+    installment_id           BIGINT NOT NULL REFERENCES repayment_schedule(installment_id),
+    amount_paid               DECIMAL(18, 2) NOT NULL CHECK (amount_paid > 0),
+    paid_at                    TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_schedule_due_status ON repayment_schedule (due_date, status);
+CREATE INDEX idx_schedule_loan ON repayment_schedule (loan_id, installment_number);
+```
+
+Notice `principal_component` aur `interest_component` dono explicitly stored hain per row, na ki sirf `emi_amount`. Yeh deliberate hai — agle section mein iska "why" cover karte hain.
+
+### Query Patterns & Indexing
+
+**1. "Is loan ki next due installment"** — `WHERE loan_id = ? AND status = 'pending' ORDER BY due_date LIMIT 1`. Composite index `(loan_id, installment_number)` ise directly serve karta hai kyunki installment_number hi effectively chronological order hai.
+
+**2. "Saari overdue installments across all loans"** — yeh collections team ke liye sabse important query hai, aur ek daily batch job/dashboard chalata hai. Query shape: `WHERE due_date < CURRENT_DATE AND status = 'pending'`. Isko efficiently serve karne ke liye `(due_date, status)` pe ek composite index chahiye — bina iske, is query ko poore `repayment_schedule` table (jo saare loans ke saare installments hold karta hai, bahut bada table) ko scan karna padega. Yeh exact query pattern hai jahan Composite & Covering Indexes topic ka principle directly apply hota hai: query jo columns filter karti hai, unhi pe composite index banao, order matters (equality/range column jo most selective ho pehle).
+
+**3. "Poori amortization schedule ek loan ki"** — simple `WHERE loan_id = ? ORDER BY installment_number`, already covered by `(loan_id, installment_number)` index.
+
+### Scaling/Integrity Considerations
+
+Amortization ka concept thoda conceptually samajhna zaroori hai schema design ke liye (finance lecture nahi, sirf itna ki schema ko justify kar sake): EMI amount **har mahine same** rehta hai, lekin uske andar principal aur interest ka split waqt ke saath badalta hai — shuru mein zyada interest, kam principal (kyunki outstanding principal zyada hai), tenure ke end tak zyada principal, kam interest (kyunki outstanding kam ho chuka hai). Yehi wajah hai ki `RepaymentSchedule` ko **loan approval ke time hi ek baar generate karke store** karna chahiye, har baar on-the-fly compute nahi:
+
+- Ek **stable reference** chahiye jise actual payments match kar sakein — agar schedule har query pe dobara compute ho (rounding, floating point, ya calculation logic version differences ki wajah se), to do alag computations slightly different number de sakte hain, aur payment matching ambiguous ho jaata hai.
+- Interest Accrual (Time-Series) topic ka principle yahan directly apply hota hai: **rate/basis store karo, sirf final result nahi.** Har installment row mein `interest_component` explicitly stored hai — agar kal koi regulatory audit ya customer dispute aaye ("yeh EMI ka interest itna kyun hai"), schema exactly bata sakta hai ki us specific installment ka split kya tha, without needing to re-run a calculation that might have since changed (bug fix, rate rounding logic update, etc.).
+
+Scaling angle: `repayment_schedule` table `loan_account` se kaafi bada hota hai (har loan ki N installments), lekin yeh core ledger jaisi write-heavy nahi hai — writes sirf loan creation (schedule generation, bulk insert) aur payment-driven status updates pe hoti hain. Is table ke liye vertical scaling aur achhi indexing usually kaafi hai; sharding zaroorat hi nahi padti typical scale pe, kyunki per-loan data naturally chhota aur bounded hai (tenure_months rows max).
+
+### Follow-Up Questions
+
+**"Customer prepayment/foreclosure karta hai — kaise handle karoge?"** — Yahan bhi wahi immutability principle apply hota hai jo poore module mein repeat hua hai: purani `repayment_schedule` rows ko delete ya edit NAHI karte. Iske bajaye:
+
+1. Remaining unpaid installments ko `status = 'superseded'` mark karo (delete nahi).
+2. Naya remaining principal calculate karo (outstanding principal minus prepaid amount).
+3. Agar loan poora close ho raha hai, `loan_account.status = 'closed'` set karo aur koi naya schedule row nahi chahiye.
+4. Agar partial prepayment hai (tenure kam karna ya EMI kam karna), ek **naya set of `repayment_schedule` rows** generate karo (naye `installment_number` sequence ke saath, ya ek `schedule_version` column add karke), jo purane superseded rows ko replace karte hain logically, lekin data mein dono versions preserve rehte hain.
+
+Yeh approach ensure karta hai ki agar kal audit ho, poora history dikhta hai — original schedule kya thi, prepayment kab hua, aur naya schedule kya bana — koi silent overwrite nahi.
+
+**"Amortization schedule mein rounding errors kaise handle karoge?"** — Har EMI ka principal+interest split calculate karte waqt rounding (paise level pe) errors accumulate ho sakte hain across installments. Standard practice: last installment mein ek chhota "balancing" adjustment karo taaki total principal collected exactly loan ke principal amount ke barabar ho — is adjustment ko bhi explicitly ek column ya note se track karo, silent mismatch na ho.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein agar "loan schedule kaise store karoge" jaisa sawaal aaye, seedha "main EMI formula se calculate kar lunga har baar" mat bolo. Explicitly bolo ki schedule ek stored, generated-once table honi chahiye — yeh ek stable reference deta hai jo payments match karne, disputes resolve karne, aur audits pass karne ke liye zaroori hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / Bajaj Finserv">
+
+Retail lending platforms at banks and NBFCs like HDFC Bank and Bajaj Finserv generate the full EMI schedule at the moment a loan is approved and disbursed — not on demand. This is precisely why a loan statement or app screen can instantly show "12 of 36 EMIs paid, next due on [date]" without recomputing any amortization math on the fly; it is a straightforward lookup against pre-generated rows.
+
+</RealWorld>
+
+<RealWorld company="ICICI Bank">
+
+When a customer forecloses a loan early, the outstanding schedule is not deleted — the remaining installment rows are marked superseded, and the closure amount (remaining principal plus any applicable foreclosure charge) is recorded as a distinct event. This lets ICICI Bank's systems answer both "what would this customer have paid under the original plan" and "what did they actually pay" from the same schema, which matters for both customer service and regulatory reporting.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A typical retail loan (personal, auto, home) generates 12 to 360 RepaymentSchedule rows depending on tenure (1 to 30 years)
+- Early installments on a long-tenure loan can be 70-80% interest and only 20-30% principal; this ratio inverts by the final installments
+- Collections dashboards at NBFC scale commonly query overdue installments across millions of active loans daily — the (due_date, status) index is what keeps this query fast
+- A rounding discrepancy of even a few paise per installment, uncorrected, can accumulate to a meaningfully wrong final payoff amount over a 360-month tenure
+- Loan management systems at large lenders track tens of millions of active RepaymentSchedule rows at any given time
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt: "design the schema for a loan/EMI system." Weak answers store only `emi_amount` and compute the principal/interest split on demand whenever needed. Strong answers explicitly argue for generating and storing the full RepaymentSchedule at approval time, storing principal_component and interest_component per row (not just the total), and explain why: payments need a stable target to match against, and disputes/audits need to see exactly what was calculated for each installment without depending on logic that might change later. Bringing up prepayment handling (supersede rather than delete) proactively is a strong signal that you're applying the same immutability principle consistently across the schema, not just where explicitly asked.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Computing the EMI principal/interest split on the fly every time it's needed instead of storing it per installment — makes payment matching ambiguous and audits impossible to verify against historical calculation logic.
+
+</Mistake>
+
+<Mistake>
+
+Storing only `emi_amount` per installment without the separate `principal_component` and `interest_component` — loses the exact breakdown a regulator or disputing customer needs to see.
+
+</Mistake>
+
+<Mistake>
+
+Deleting or overwriting RepaymentSchedule rows on prepayment/foreclosure instead of marking them superseded — destroys the audit trail of what the original plan was.
+
+</Mistake>
+
+<Mistake>
+
+Missing a composite index on `(due_date, status)` for the overdue-installments query — forces a full table scan across every loan's every installment for a query the collections team runs constantly.
+
+</Mistake>
+
+<Mistake>
+
+Ignoring rounding accumulation across many installments — small per-EMI rounding errors can silently compound into a meaningfully wrong total over a long tenure if not corrected in the final installment.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    LOAN_ACCOUNT ||--o{ REPAYMENT_SCHEDULE : "has"
+    REPAYMENT_SCHEDULE ||--o{ PAYMENT : "receives"
+    LOAN_ACCOUNT {
+        bigint loan_id PK
+        bigint customer_id FK
+        decimal principal_amount
+        decimal interest_rate
+        int tenure_months
+        string status
+    }
+    REPAYMENT_SCHEDULE {
+        bigint installment_id PK
+        bigint loan_id FK
+        int installment_number
+        date due_date
+        decimal principal_component
+        decimal interest_component
+        string status
+    }
+    PAYMENT {
+        bigint payment_id PK
+        bigint installment_id FK
+        decimal amount_paid
+        timestamp paid_at
+    }
+`}
+  caption="RepaymentSchedule is generated once at loan approval, storing the principal/interest split per installment; Payment records link actual money received back to a specific installment."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Three core tables: LoanAccount (master loan record), RepaymentSchedule (one row per EMI, generated once at approval), Payment (records against specific installments)
+- RepaymentSchedule is generated and stored at approval time, not computed on demand — payments need a stable reference to match against
+- Store principal_component and interest_component per installment explicitly, not just emi_amount — needed for disputes and regulatory audits
+- Amortization intuition: early installments are interest-heavy, later ones are principal-heavy, even though the EMI amount stays constant
+- Overdue-installments query (for collections) needs a composite index on (due_date, status) to avoid scanning every loan's every installment
+- Prepayment/foreclosure marks remaining installments as superseded rather than deleting them — same immutability principle used across the module
+- Handle rounding accumulation explicitly, often via a balancing adjustment on the final installment
+- This case study's core lesson: a pre-committed schedule belongs in its own stable, stored table, not recomputed each time it's needed
+
+</QuickRevision>

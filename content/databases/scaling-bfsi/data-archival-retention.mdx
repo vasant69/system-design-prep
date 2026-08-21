@@ -1,0 +1,154 @@
+---
+slug: "data-archival-retention"
+title: "Data Archival & Regulatory Retention"
+section: "databases"
+module: "scaling-bfsi"
+order: 4
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["audit-trail-immutable-log"]
+tags: ["scalability", "compliance", "bfsi"]
+englishDefinition: "Data archival is the practice of moving old data out of a primary hot operational database into cheaper, still-accessible cold storage. In BFSI systems this is driven specifically by regulatory retention requirements, which mean transaction and audit data can never simply be deleted — only relocated to somewhere cheaper but still queryable."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "SBI"]
+---
+
+<SimpleDefinition>
+
+Data archival is the practice of moving old data out of a primary hot operational database into cheaper, still-accessible cold storage. In BFSI systems this is driven specifically by regulatory retention requirements, which mean transaction and audit data can never simply be deleted — only relocated to somewhere cheaper but still queryable.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek bank ke `Transaction` table ke saath ek fundamental tension hai: yeh table **hamesha ke liye grow** karta hai — har din lakhon naye transactions add hote hain, kabhi kam nahi hote — lekin zyaadatar queries sirf **recent** data touch karte hain (last few months ke statement, current-month reconciliation). Agar tum naive approach lo — sab kuch ek hi "hot" operational database mein rakho forever — to table itna bada ho jaata hai ki indexes bloat ho jaate hain, backups slow ho jaate hain, aur query performance gradually degrade hoti hai, chahe zyaadatar queries recent data hi touch kar rahi ho.
+
+Obvious solution lagta hai — purana data delete kar do. Lekin BFSI mein yeh **allowed nahi hai**. Regulators (jaise RBI India mein) mandate karte hain ki transaction records ko ek minimum number of years tak retain kiya jaaye — audit, dispute resolution, aur legal compliance ke liye. Isliye data **kabhi simply delete nahi hota, sirf relocate hota hai** — yeh core distinction hai jo iss topic ko define karta hai.
+
+### Practical archival pattern: date-based partitioning
+
+Yahan partitioning topic se seedha connection hai — agar `Transaction` table already **date se partitioned** hai (jaise ek partition per month), to purani partitions ko move karna operationally easy ban jaata hai. Ek partition already ek logical, self-contained chunk hai — usse pura ka pura ek cheaper storage tier mein move kiya ja sakta hai, ek slow row-by-row `DELETE`/migration ki jagah, jo production database pe locks aur load create karta.
+
+```sql
+-- Example: monthly partitioned transaction table
+CREATE TABLE transaction (
+    transaction_id BIGINT,
+    account_id BIGINT,
+    amount DECIMAL(18,2),
+    txn_date DATE,
+    -- ...
+) PARTITION BY RANGE (txn_date);
+
+CREATE TABLE transaction_2024_01 PARTITION OF transaction
+    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+```
+
+Ek scheduled job (jaise quarterly) purani partitions ko identify karta hai (e.g., 2+ years old), unhe ek archival warehouse mein bulk-copy karta hai, aur phir primary database se **detach** kar deta hai (delete nahi — bas primary "hot" database se hata do, kyunki data already safely archive ho chuka hai).
+
+### "Still accessible" ka matlab
+
+Yahan ek critical requirement hai jo often miss ho jaati hai: archived data "gone" nahi hai — regulators ko audit request pe yeh data **queryable** hona chahiye, chahe slower response time ke saath. Isliye common pattern hai ek **separate archival database/data warehouse** maintain karna — same schema (ya ek simplified, read-optimized version) ke saath — na ki data literally delete kar dena primary se without a queryable copy anywhere. Query path archived data ke liye deliberately slower ho sakta hai (cold object storage, batch query engine jaise a data lake query tool) — yeh acceptable hai kyunki archival queries rare aur non-time-critical hote hain (audit requests, historical disputes), unlike live operational queries.
+
+### Kya archive karo vs kya hot rakho
+
+- **Hot (primary DB)**: recent transactions (last few months/year), sab kuch jo active operational queries touch karte hain — statement generation for recent period, fraud checks, dispute resolution for recent transactions.
+- **Cold/archived**: older transactions jo regulatory retention ke liye rakhne zaroori hain lekin operationally rarely queried jaate hain.
+
+Yeh split explicit design decision hai, aur retention period BFSI mein legally mandated hota hai — engineering team apne aap decide nahi karti "kitna purana data rakhna hai," compliance/legal team ke saath yeh number confirm karna padta hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Archival ka matlab "delete kar do jab regulator allow kare" nahi hai — matlab hai "hot database se hatao, lekin queryable rehne do kahin aur." In dono steps ko confuse karna — khaas kar accidentally data delete kar dena jo abhi retention window mein hai — ek serious compliance violation hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Large Indian banks typically ek "hot" operational database rakhte hain jisme recent 1-2 saal ka transaction data hota hai, aur ek separate data warehouse/archival system jisme older records rehte hain — regulatory audits ke waqt yeh archival system query kiya jaata hai, jo primary operational database se completely alag infrastructure pe ho sakta hai (often slower, cheaper storage tier).
+
+</RealWorld>
+
+<RealWorld company="SBI">
+
+Public sector banks jaise SBI, jinke paas decades ka historical transaction data hai, monthly/quarterly partitions ko age ke basis pe automatically archive karne wale scheduled jobs use karte hain — yeh manual process nahi hota, kyunki manually track karna ki kaunsi partition kab archive honi chahiye, human error-prone hai jo regulatory non-compliance ka risk create karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Indian banking regulations typically require retaining transaction records for several years — exact numbers vary by regulation and record type, so always confirm the specific requirement with compliance rather than assuming a fixed number
+- Date-partitioned archival (moving a whole partition) vs row-by-row migration: partition detach/move can be an order of magnitude faster and far less disruptive to the live database
+- Cold storage cost vs hot database storage: cold object storage/warehouse tiers are typically several times cheaper per GB than provisioned hot database storage
+- Archival query latency: acceptable to be seconds to minutes (batch/warehouse query), vs milliseconds expected from the hot operational path
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer often poochte hain: "Transaction table 500 million rows ho gaya hai aur query performance degrade ho rahi hai, kya karoge?" Weak answer sirf "purana data delete kar do" bolta hai — yeh BFSI mein galat hai, regulatory violation hai. Strong answer explicitly bolta hai: data delete nahi hoga, **archive** hoga — date-based partitioning se purani partitions ko ek separate, still-queryable cold storage/warehouse mein move karo, primary se detach karo. Yeh distinction (archive vs delete) senior-level BFSI-specific awareness dikhata hai jo generic system design answer se alag hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Purana transaction data delete kar dena performance ke liye — BFSI mein yeh regulatory retention requirements violate karta hai, chahe data operationally "useless" lage.
+
+</Mistake>
+
+<Mistake>
+
+Archival ko "queryable nahi rehna chahiye" samajh lena — archived data ko sirf backup/dump mein daal dena jahan se audit request ke waqt query karna practically impossible ho.
+
+</Mistake>
+
+<Mistake>
+
+Table ko date-partitioned na rakhna, jisse purana data archive karna ek slow, disruptive row-by-row migration ban jaata hai instead of a clean partition move.
+
+</Mistake>
+
+<Mistake>
+
+Retention period engineering team khud assume kar le, compliance/legal team se confirm kiye bina — galat retention period se ya to premature deletion (violation) ya unnecessary storage cost hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A[Live Transaction table\n(date-partitioned, hot DB)] -->|"partition age > retention threshold\n(scheduled job)"| B[Bulk copy to\narchival warehouse]
+    B --> C[Detach old partition\nfrom primary DB]
+    B --> D["Archival DB / warehouse\n(same or simplified schema,\nstill queryable)"]
+    D -->|"slower, batch query path"| E[Regulatory audit\n/ historical dispute request]
+`}
+  caption="Old partitions are bulk-copied to an archival warehouse and detached from the hot primary — never simply deleted, since regulatory audits must still be able to query them."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Archival = moving old data out of the hot operational DB into cheaper, still-accessible cold storage — never deleting it
+- Core tension: Transaction tables grow forever, but most queries only touch recent data; regulators still require keeping years of history
+- Date-based partitioning makes archival operationally easy — move/detach a whole old partition instead of a slow row-by-row migration
+- "Still accessible" is a hard requirement — archived data must remain queryable (even if slower) for regulatory audit requests
+- Common pattern: a separate archival database/warehouse with the same or simplified schema, not literal deletion from primary
+- Indian banking regulations require retaining transaction records for several years — exact numbers vary, confirm with compliance rather than assuming
+- Never let engineering unilaterally decide retention periods — this is a legal/compliance-driven number
+- Archival query path can be deliberately slower (cold storage, batch engine) since these queries are rare and non-time-critical
+
+</QuickRevision>

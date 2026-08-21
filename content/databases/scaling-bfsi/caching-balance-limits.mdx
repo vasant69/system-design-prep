@@ -1,0 +1,162 @@
+---
+slug: "caching-balance-limits"
+title: "Caching Strategy for Account Balance & Limits"
+section: "databases"
+module: "scaling-bfsi"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["core-banking-schema"]
+tags: ["scalability", "caching", "bfsi"]
+englishDefinition: "Caching financial data like account balance or transaction limits follows the same general principles as any system, but the cost of serving stale data is much higher — showing a slightly out-of-date balance can directly cause an overdraft or an incorrectly declined legitimate payment, unlike a typical web application where stale data is a minor inconvenience."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Paytm", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+Caching financial data like account balance or transaction limits follows the same general principles as any system, but the cost of serving stale data is much higher — showing a slightly out-of-date balance can directly cause an overdraft or an incorrectly declined legitimate payment, unlike a typical web application where stale data is a minor inconvenience.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+System Design section ke Caching topic mein general caching patterns (cache-aside, write-through, write-back, TTL, eviction) already cover ho chuke hain — yahan unhe repeat nahi karenge. Is topic ka focus hai: BFSI mein **kya cache karna genuinely safe hai, aur kya nahi**, aur yeh decision kyun typical web app se bahut different hai.
+
+Typical web app mein agar cached data thoda stale ho (jaise ek product ka price 2 minute purana dikhe), worst case ek minor inconvenience hai. Banking mein stale financial data ka worst case bahut zyada severe hai — customer overdraft kar sakta hai (jitna paisa hai usse zyada nikaal sakta hai), ya ek legitimate transaction galti se decline ho sakta hai. Isliye "cache karna hai ya nahi" ka decision field-by-field, bahut deliberately lena padta hai.
+
+### Genuinely safe to cache
+
+Kuch data types cache karne mein low risk hai:
+
+- **Account metadata** — account type, branch, product details, account opening date. Yeh rarely change karta hai, aur agar thoda stale bhi ho (few minutes ka short TTL, cache-aside pattern), impact minimal hai — worst case ek UI thoda outdated info dikhaega, koi money-related decision iske upar directly nahi hota.
+
+Yeh standard cache-aside pattern se implement hota hai — short TTL ke saath, cache miss pe database se fetch karke populate karo.
+
+### Genuinely dangerous to cache naively
+
+- **Current balance** — isse naively cache karna risky hai. Agar cache stale ho aur customer ka actual balance kam ho chuka ho (kisi doosre transaction se), lekin cache abhi bhi purana higher balance dikha raha ho, to customer usse spend kar sakta hai jo actually available nahi hai — ya ek legitimate transaction ko wrongly approve/decline kiya ja sakta hai based on stale numbers.
+
+Iska sahi pattern do options mein se ek hai:
+
+1. **Authoritative check ke liye cache use hi mat karo** — actual debit-time balance check hamesha primary database se ho, real-time, without cache layer.
+2. Cache ko sirf **fast pre-check ya UI display hint** ke roop mein use karo — jaise app open karte hi turant "approx balance" dikhana user experience ke liye — lekin jab actual money move ho raha ho (withdrawal, transfer), us waqt system explicitly source of truth (primary DB) se re-verify karta hai before committing the transaction. Cache sirf UX ke liye hai, decision ke liye nahi.
+
+### Nuanced middle case: daily transaction limits / velocity checks
+
+Ab ek interesting case aata hai — daily limits, jaise "max 10 UPI transactions per day" ya "max ₹1,00,000 per day." Yeh cache jaisa lagta hai lekin actually different hai.
+
+Zyaadatar systems yeh implement karte hain ek fast in-memory counter se — jaise Redis `INCR` command ek daily-expiring key pe:
+
+```
+INCR daily_txn_count:account_id:2026-08-21
+EXPIRE daily_txn_count:account_id:2026-08-21 86400
+```
+
+Yahan ek important distinction hai: yeh Redis counter **database value ka cache nahi hai** — yeh khud hi is check ka **primary/authoritative store** hai. Database mein koi "source of truth" count nahi rakha jaata jisse Redis periodically sync kare — Redis counter khud hi live, authoritative count hai. Iska reason simple hai: agar yeh check har transaction pe database ko hit kare (count row lock karke read-increment-write), to yeh itna slow ho jaayega ki high-throughput payment system ke liye impractical ban jaayega. Redis `INCR` atomic hai aur extremely fast — isliye yeh check ka **primary mechanism** ban jaata hai, na ki ek optional caching layer.
+
+Yeh distinction interview mein bolna zaroori hai: "yeh caching a DB value nahi hai — yeh limit-check system ka primary store hai," kyunki agar tum galti se isse "cache" bolte ho, to interviewer soch sakta hai tum ek fallback/consistency strategy discuss karoge jaise "cache miss pe DB se fetch karo" — jabki yahan reality yeh hai ki yeh counter khud authoritative hai, aur end-of-day ya periodically iska summary database mein persist ho sakta hai reporting/audit ke liye, lekin real-time check ke liye Redis hi source of truth hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Account metadata cache karne se read load significantly kam hota hai bina kisi real risk ke", "Redis INCR-based limit counters extremely fast hain — high-throughput payment checks ke liye practically zaroori hain", "Cache-as-UI-hint pattern balance display fast rakhta hai bina correctness compromise kiye"]}
+  cons={["Current balance naively cache karna overdraft/wrongly-declined-payment jaisa dangerous bug create kar sakta hai", "In-memory limit counters (Redis) ke liye persistence/replication strategy chahiye — agar Redis crash ho aur data loss ho, limit enforcement temporarily broken ho sakta hai", "Har data type ke liye alag caching decision lena extra design effort maangta hai — 'cache everything with a TTL' jaisa blanket approach yahan kaam nahi karta"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Paytm">
+
+Paytm jaise high-throughput UPI apps mein, app open karte hi jo balance dikhta hai woh often ek fast cached/pre-fetched value hota hai (achhi UX ke liye), lekin jaise hi customer actual payment karta hai, system real-time primary database se balance re-verify karta hai before debiting — cached value sirf display ke liye hai, decision ke liye nahi.
+
+</RealWorld>
+
+<RealWorld company="Razorpay">
+
+Payment gateways jaise Razorpay mein daily/per-merchant transaction velocity limits (fraud prevention ke liye bhi) typically Redis-based counters se enforce hoti hain — yeh checks itni high-frequency par chalte hain (har transaction pe) ki database-backed check impractical hoga; Redis counter yahan primary enforcement mechanism hai, database sirf periodic reconciliation/audit ke liye use hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Redis INCR operation: sub-millisecond latency, capable of handling tens of thousands of ops/sec on a single instance — essential for per-transaction velocity checks
+- A stale balance cache with even a 1-2 second TTL can, under high-frequency transaction patterns, be enough to allow an overdraft before the true balance propagates
+- Account metadata cache TTL: often minutes (5-15 min) is safe, since branch/account-type data changes rarely
+- Daily limit counter key expiry: typically set to 86400 seconds (24 hours) aligned to a reset boundary (midnight or rolling 24h window)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer ka classic trap question: "balance ko Redis mein cache kar do performance ke liye — thik hai?" Weak answer seedha "haan, TTL laga do" bol deta hai. Strong answer explicitly pushback karta hai: balance ke liye naive caching dangerous hai, aur ya to (a) authoritative check hamesha DB se ho, ya (b) cache sirf display/pre-check hint ho jo actual transaction se pehle re-verify hota hai. Aur agar daily limits ka topic aaye, ek bahut strong signal hai yeh explicitly distinguish karna ki Redis counter yahan "cache" nahi, primary store hai — yeh nuance zyaadatar candidates miss karte hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Current balance ko naive cache-aside pattern se cache karna jaise koi bhi normal data — replication/cache lag ke wajah se overdraft ya wrongly-declined payment ban sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Daily transaction limit check ko "just cache the DB count" jaisa treat karna, jabki reality mein in-memory counter (Redis INCR) khud primary mechanism hai — agar isse cache maan ke DB-first design karo, system bahut slow ho jaayega.
+
+</Mistake>
+
+<Mistake>
+
+Balance display cache ko galti se transaction-approval decision ke liye bhi use kar lena — display aur authoritative-decision paths ko explicitly alag rakhna zaroori hai.
+
+</Mistake>
+
+<Mistake>
+
+Sab financial data ko ek hi blanket caching strategy se treat karna (jaise "sab kuch 5-min TTL ke saath cache karo") bina yeh consider kiye ki alag fields ki staleness-tolerance bilkul different hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+Redis-based limit counters ko persistence/replication strategy ke bina production mein daalna — agar Redis crash ho jaaye bina proper persistence ke, limit enforcement temporarily unreliable ho sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["What's being cached?"] --> B["Account metadata\n(type, branch, product)"]
+    A --> C["Current balance"]
+    A --> D["Daily transaction limit /\nvelocity check"]
+
+    B --> B1["Safe: cache-aside,\nshort TTL"]
+    C --> C1["Dangerous to cache naively:\nauthoritative check always\nhits primary DB,\ncache only as UI display hint"]
+    D --> D1["Not a cache — Redis INCR\nIS the primary store for\nthis check (too slow via DB)"]
+`}
+  caption="Three different caching decisions for three types of BFSI data, each with a different risk profile and a different correct pattern."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- BFSI caching principle: staleness cost is much higher than a typical web app — a stale balance can cause an overdraft or wrongly-declined payment
+- Safe to cache: account metadata (type, branch, product) — rarely changes, low risk if briefly stale, standard cache-aside with short TTL
+- Dangerous to cache naively: current balance — either skip caching for the authoritative check (always hit primary DB), or use cache only as a display/pre-check hint re-verified before money moves
+- Daily limits/velocity checks (e.g. max 10 UPI txns/day): implemented via a fast in-memory counter (Redis INCR with daily-expiring key)
+- Key distinction: that Redis counter is NOT a cache of a DB value — it IS the primary store for that check, because a DB-backed check would be too slow per-transaction
+- This distinction ("cache vs primary store") is the senior-level interview signal for this topic
+- General caching theory (write-through, eviction, TTL) applies as background — the real work here is deciding what's safe to cache per field, not re-deriving cache theory
+
+</QuickRevision>

@@ -1,0 +1,160 @@
+---
+slug: "cqrs-ledger-read-write"
+title: "CQRS for Ledger Read/Write Separation"
+section: "databases"
+module: "scaling-bfsi"
+order: 3
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["double-entry-ledger-schema"]
+tags: ["scalability", "architecture", "bfsi"]
+englishDefinition: "CQRS (Command Query Responsibility Segregation) separates the data model used for writes (commands, like posting a new ledger entry) from the data model used for reads (queries, like fetching an account's current balance). The write side is typically optimized for correctness and normalization, while the read side is a denormalized projection optimized for query speed."
+interviewFrequency: "medium"
+companies: ["HDFC Bank", "Paytm", "Amazon"]
+---
+
+<SimpleDefinition>
+
+CQRS (Command Query Responsibility Segregation) separates the data model used for writes (commands, like posting a new ledger entry) from the data model used for reads (queries, like fetching an account's current balance). The write side is typically optimized for correctness and normalization, while the read side is a denormalized projection optimized for query speed.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ledger schema topic mein humne dekha ki `LedgerEntry` table ek **append-only**, normalized structure hai — har financial event ek naya immutable row banata hai, aur kabhi update/delete nahi hota (auditability ke liye critical). Ab problem yeh hai: agar customer apna "current balance" poochta hai, aur system har baar us account ke **saare** historical ledger entries sum karke balance calculate kare, to yeh — account jitna purana ho, transactions jitni zyada ho — utna hi slow ho jaata hai. Millions of historical rows sum karna har single balance-check request pe, obviously scale nahi karega.
+
+### CQRS ka core idea
+
+**CQRS** iska solution hai: writes aur reads ke liye **alag data models** use karo.
+
+- **Write side (Command)**: normalized, append-only `LedgerEntry` table wahi rehti hai jaisi ledger schema topic mein design hui — correctness aur auditability ke liye optimized, har write ek naya immutable entry.
+- **Read side (Query)**: ek separate, **denormalized** "current balance" ya "account summary" table/materialized view — jisme already-computed balance directly stored hota hai, taaki read query ek simple `SELECT balance FROM account_summary WHERE account_id = ?` ho, na ki millions of rows sum karna.
+
+Read-side table ko update kaise kiya jaata hai? Har baar jab naya ledger entry post hota hai, read-side projection ko bhi update karna padta hai — yeh update transactions module ke **outbox pattern** ya **CDC (Change Data Capture)** se propagate ho sakta hai, jahan ledger write ek event emit karta hai jo read-model ko refresh karta hai.
+
+### Senior-level nuance: sab kuch eventually consistent nahi hota
+
+Yahan ek common misconception hai ki "CQRS matlab read side hamesha eventually consistent hota hai (thoda lag ke saath update hota hai)." Yeh **balance** ke case mein galat approach hai. Account balance itni critical field hai ki zyaadatar systems isse **synchronously** update karte hain — same transaction mein jisme `LedgerEntry` insert hota hai, `account_summary.balance` bhi usi atomic transaction ke andar update hota hai. Kyun? Kyunki agar balance thoda bhi stale ho (even for a few hundred milliseconds), customer double-spend kar sakta hai, ya ek legitimate transaction galti se decline ho sakta hai.
+
+Lekin har read projection itni critical nahi hoti. Jaise ek "spending-by-category dashboard" (is mahine tumne food pe kitna spend kiya) — yeh async/eventually consistent rehna bilkul acceptable hai, kyunki agar yeh dashboard kuch minutes purana data dikhaye, koi real harm nahi hota.
+
+Toh asli senior-level insight yeh hai: **"CQRS doesn't mean everything is eventually consistent — you choose consistency per read-model based on how critical accuracy is."** Balance jaisa critical read-model synchronous rehta hai (same-transaction update), jabki analytics/dashboard jaise less-critical read-models async ho sakte hain (outbox/CDC ke through, thodi delay ke saath).
+
+### Yeh design mein kaise implement hota hai
+
+Practically, ek `posting_service` function socho jo transfer process karta hai:
+
+```sql
+BEGIN;
+
+INSERT INTO ledger_entry (account_id, amount, entry_type, transaction_id)
+VALUES (:account_id, :amount, 'DEBIT', :txn_id);
+
+UPDATE account_summary
+SET balance = balance - :amount, updated_at = now()
+WHERE account_id = :account_id;
+
+COMMIT;
+```
+
+Dono statements ek hi transaction mein hain — isliye balance kabhi ledger se out-of-sync nahi ho sakta, chahe system crash ho jaaye beech mein (transaction pura rollback ho jaayega). Yeh CQRS ka "synchronous read model" variant hai — alag table hai (query-optimized), lekin update timing synchronous hai.
+
+Iske contrast mein, spending-dashboard jaisi cheez ek separate async consumer se update hoti hai jo ledger_entry table pe CDC/outbox events consume karta hai — thoda delay ho sakta hai, aur yeh theek hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein jab CQRS discuss karo, turant "eventually consistent" mat bol do sab read models ke liye — explicitly bolo "balance jaisa critical field synchronous rehta hai, less-critical projections async ho sakte hain." Yeh nuance senior candidates ko differentiate karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Paytm">
+
+Paytm jaisi high-volume payments platform mein, wallet balance ka write aur read dono ek tightly-coupled, synchronous path pe hote hain — kyunki balance galat dikhna directly customer trust aur financial correctness ko affect karta hai. Lekin "monthly spending summary" ya "cashback earned this month" jaise less-critical views async pipelines (Kafka-based CDC) se update hote hain, jo eventual consistency accept kar sakte hain.
+
+</RealWorld>
+
+<RealWorld company="HDFC Bank">
+
+Core banking mein `account_balance` field aksar ek denormalized, frequently-updated column hoti hai jo har transaction posting ke saath synchronously update hoti hai — yeh technically ledger entries se derive-able hai, lekin har read pe derive karna impractical hai, isliye yeh explicitly maintain hoti hai as part of the same atomic write.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Summing millions of historical ledger entries on every balance read: can take seconds on an unoptimized query — completely unacceptable for a balance-check API expected to respond in tens of milliseconds
+- Denormalized balance lookup via a maintained summary table/row: typically a single indexed row read, sub-millisecond to a few milliseconds
+- Synchronous same-transaction balance update adds minimal overhead (one extra UPDATE) compared to the correctness risk of an async-updated balance
+- Async read-model lag for non-critical projections (dashboards): often seconds to minutes acceptable, depending on CDC/outbox pipeline latency
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer poochte hain: "balance query slow hai kyunki tum har baar saare transactions sum kar rahe ho — kaise fix karoge?" Yeh directly CQRS ki taraf le jaata hai. Strong answer: maintain a denormalized balance/summary read model, update it synchronously in the same transaction as the ledger write (for correctness-critical reads), and explicitly distinguish this from other, less-critical read models that can be updated asynchronously via outbox/CDC. Weak answers stop at "add a cache" without addressing that a cache alone doesn't solve the consistency requirement for money.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har balance read pe saare historical ledger entries sum karna instead of maintaining a denormalized summary — yeh scale nahi karta jaise-jaise account purana hota jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Balance ko async/eventually-consistent read model treat karna "kyunki CQRS mein reads async hote hain" — yeh galat generalization hai jo overdraft/stale-balance bugs create kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Read model ko update karna bhool jaana jab naya ledger entry insert hota hai — outbox/CDC pipeline mein failure ke case mein balance permanently stale reh sakta hai bina kisi alert ke.
+
+</Mistake>
+
+<Mistake>
+
+Sab read projections ko ek hi consistency model se treat karna — balance (critical) aur analytics dashboard (non-critical) ko same async pipeline mein daal dena, jabki inki accuracy requirements bilkul different hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    W["Write: Transfer command"] --> LE["LedgerEntry table\n(normalized, append-only)"]
+    LE -->|"same transaction\n(synchronous)"| BAL["account_summary.balance\n(denormalized read model)"]
+    LE -->|"outbox/CDC event\n(async)"| DASH["spending-by-category\ndashboard (denormalized)"]
+    BAL --> RQ["Balance check API\n(fast read)"]
+    DASH --> RQ2["Analytics dashboard\n(slightly stale, OK)"]
+`}
+  caption="Balance stays synchronous with the ledger write because staleness is dangerous; less-critical projections like a spending dashboard update asynchronously via outbox/CDC."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- CQRS separates the write model (normalized, append-only LedgerEntry) from read models (denormalized projections for fast queries)
+- Motivation: summing millions of ledger entries on every balance read doesn't scale
+- Read models are updated when new ledger entries are posted, often via outbox/CDC
+- Key senior insight: not all read models share the same consistency requirement
+- Balance/account-summary read model: kept SYNCHRONOUS with the ledger write (same transaction) because staleness risks real financial harm
+- Less-critical read models (spending dashboards, analytics): can be async/eventually consistent — staleness here is low-risk
+- CQRS != "everything is eventually consistent" — consistency choice is per read-model, based on criticality
+- Interview signal: explicitly distinguish which read models need synchronous updates vs which can be async
+
+</QuickRevision>

@@ -120,7 +120,7 @@ export default function HomePage() {
                 <p className="relative mt-1.5 text-sm leading-relaxed text-muted-foreground">{section.description}</p>
                 {section.enabled && (
                   <div className={cn("relative mt-4 flex items-center gap-1.5 text-sm font-medium", theme.text)}>
-                    {topicCount} topics
+                    {topicCount} {topicCount === 1 ? "topic" : "topics"}
                     <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
                   </div>
                 )}

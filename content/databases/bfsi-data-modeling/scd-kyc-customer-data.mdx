@@ -1,0 +1,193 @@
+---
+slug: "scd-kyc-customer-data"
+title: "Slowly Changing Dimensions for KYC & Customer Data"
+section: "databases"
+module: "bfsi-data-modeling"
+order: 4
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["core-banking-schema"]
+tags: ["data-modeling", "compliance", "bfsi"]
+englishDefinition: "Slowly Changing Dimensions (SCD) is a data warehousing pattern for tracking how a record's attributes change over time. It applies directly to KYC and customer profile data in BFSI, where regulators require knowing not just a customer's current address or details but their history of details at any point in time."
+interviewFrequency: "medium"
+companies: ["HDFC Bank", "ICICI Bank"]
+---
+
+<SimpleDefinition>
+
+Slowly Changing Dimensions (SCD) is a data warehousing pattern for tracking how a record's attributes change over time. It applies directly to KYC and customer profile data in BFSI, where regulators require knowing not just a customer's current address or details but their history of details at any point in time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh topic naturally audit trail topic se continue hota hai — lekin ek different, aur bahut specific, angle se. SCD (Slowly Changing Dimensions) originally data warehousing se aaya pattern hai, aur KYC/customer profile data pe seedha map hota hai kyunki dono ka core question same hai: **"is attribute ki value kis point in time pe kya thi?"**
+
+### Teen classic SCD types
+
+**Type 1 — Overwrite, no history.** Purani value seedha nayi value se replace ho jaati hai, koi history nahi rakhi jaati. Non-regulated data ke liye theek hai (jaise ek UI preference setting) — lekin KYC data ke liye **galat** hai, kyunki tum permanently "yeh customer ka address kya tha jab yeh transaction hui thi" jaanne ki ability kho dete ho.
+
+```sql
+-- Type 1: simply overwrite (WRONG for KYC data)
+UPDATE customer_profile SET address = 'New Address' WHERE customer_id = 123;
+```
+
+**Type 2 — New row per change, with valid_from/valid_to.** Har change ek **nayi row** insert karta hai, purani row ko close kiya jaata hai (`valid_to` set karke), aur ek `is_current` flag batata hai ki kaunsi row abhi active hai. Yeh **standard approach hai KYC/regulated customer data ke liye** — poori history preserve hoti hai, aur "kis date pe kya value thi" query easily answerable hai.
+
+**Type 3 — Sirf previous value ek extra column mein.** Jaise `current_address` aur `previous_address` do columns. Yeh sirf **ek** pichli value rakhta hai — agar address 3 baar change ho chuka hai, tumhe sirf last change dikhta hai, poori history nahi. Compliance ke liye almost hamesha **insufficient** hai — sirf mention karne layak hai as "yeh exist karta hai but rarely enough."
+
+### Type 2 SCD schema — CustomerProfile
+
+```sql
+CREATE TABLE customer_profile (
+    profile_id    BIGINT PRIMARY KEY,
+    customer_id   BIGINT NOT NULL REFERENCES customer(customer_id),
+    address       TEXT NOT NULL,
+    kyc_status    VARCHAR(20) NOT NULL,
+    valid_from    TIMESTAMP NOT NULL,
+    valid_to      TIMESTAMP,               -- NULL means "still current"
+    is_current    BOOLEAN NOT NULL DEFAULT TRUE,
+
+    CONSTRAINT chk_valid_range CHECK (valid_to IS NULL OR valid_to > valid_from)
+);
+
+CREATE INDEX idx_customer_profile_current ON customer_profile (customer_id) WHERE is_current = TRUE;
+```
+
+Yahan crucial insight yeh hai: ek "UPDATE" jo application layer se customer ka address change karta hai, dhundle se ek `UPDATE` nahi hota database mein — yeh actually **do operations** ban jaata hai, ek transaction mein:
+
+```sql
+BEGIN;
+
+-- 1. Close out the old row
+UPDATE customer_profile
+SET valid_to = now(), is_current = FALSE
+WHERE customer_id = 123 AND is_current = TRUE;
+
+-- 2. Insert the new current row
+INSERT INTO customer_profile (profile_id, customer_id, address, kyc_status, valid_from, valid_to, is_current)
+VALUES (9101, 123, 'New Address, Mumbai', 'VERIFIED', now(), NULL, TRUE);
+
+COMMIT;
+```
+
+Ab yeh query kabhi bhi answer ho sakti hai: "customer 123 ka address `2025-11-01` ko kya tha?" — `SELECT * FROM customer_profile WHERE customer_id = 123 AND valid_from <= '2025-11-01' AND (valid_to IS NULL OR valid_to > '2025-11-01')`.
+
+### Real regulatory need: "point-in-time truth"
+
+Yeh sirf theoretical exercise nahi hai. Real scenario: ek suspicious transaction flag hoti hai (AML monitoring), aur investigator ko jaanna hai — "iss transaction ke time, customer ka KYC status kya tha, aur konsa address record pe tha?" Agar sirf current state stored hai (Type 1 style), yeh question **unanswerable** hai — current address pichle 6 months mein 3 baar change ho chuka ho sakta hai, aur ab tumhe pata hi nahi ki transaction-time pe kya tha.
+
+Type 2 SCD isliye sirf ek "nice to have" nahi, balki ek **compliance requirement** hai zyada BFSI regulators ke under (RBI KYC master directions jaise frameworks explicitly customer due diligence history maintain karne ki demand karte hain). Yeh audit trail topic se related hai lekin distinct — audit trail generic "kya change hua" record karta hai, jabki SCD specifically ek entity ki **point-in-time state** ko query-efficient tareeke se reconstruct karne ke liye design kiya gaya hai (ek indexed, structured history, na ki generic field-by-field log).
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Type 2 preserves full point-in-time history, directly answers regulatory 'what was on file when' questions", "Indexed valid_from/valid_to range makes point-in-time queries efficient", "is_current flag keeps 'get current profile' queries simple and fast"]}
+  cons={["Table grows unboundedly as customers update profiles over years — needs archival strategy for old closed rows", "Every profile update becomes a 2-statement transaction instead of a simple UPDATE — more application complexity", "Joins against a Type 2 table need to be point-in-time aware, or they risk joining against the wrong historical row"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Under RBI's KYC master direction framework, banks must be able to demonstrate what customer due-diligence information (address, identity documents, risk category) was on record at any given time, not just currently. A Type 2 SCD-style `customer_profile` table is a direct, queryable answer to that requirement during a regulatory inspection or AML investigation.
+
+</RealWorld>
+
+<RealWorld company="ICICI Bank">
+
+When a customer's KYC status changes (e.g. from `PENDING` to `VERIFIED` after document re-submission, or to `FLAGGED` after a risk review), a Type 2 history lets compliance teams reconstruct exactly which transactions occurred under which KYC state — critical when a transaction made while status was `FLAGGED` needs closer scrutiny after the fact.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A customer's profile with 10-20 changes over their banking relationship: Type 1 keeps 1 row (current only), Type 2 keeps 10-20+ rows (full history)
+- Point-in-time query on an indexed `(customer_id, valid_from, valid_to)` range: typically sub-millisecond even with a customer's full history present
+- Type 2 SCD tables commonly grow 3-10x larger than their Type 1 equivalent over a multi-year customer relationship
+- Regulatory retention for KYC history in Indian banking: commonly 5-10 years after account closure, sometimes longer
+- A Type 3 SCD (previous-value column) captures exactly 1 prior state, regardless of how many times the value has actually changed — insufficient for most audit requests beyond the most recent change
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt: "how would you model a customer's KYC status so you can answer 'what was it as of a specific date'?" Weak answers propose a single mutable `kyc_status` column. Strong answers name the SCD pattern explicitly, walk through why Type 1 fails compliance, why Type 3 is usually insufficient, and present Type 2 with `valid_from`/`valid_to`/`is_current` as the standard - including the two-statement transaction needed to "update" a Type 2 row (close old, insert new) rather than a plain `UPDATE`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using Type 1 (overwrite) for KYC/regulated customer data — permanently losing the ability to answer "what was on file at time X," which is a real regulatory exposure.
+
+</Mistake>
+
+<Mistake>
+
+Implementing a Type 2 "update" as a plain `UPDATE` on the current row instead of closing the old row (`valid_to`) and inserting a new one — this silently degrades into Type 1 behavior.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting the `is_current` flag (or an equivalent efficient index) and relying on `valid_to IS NULL` scans without an index — current-profile lookups become slow as history accumulates.
+
+</Mistake>
+
+<Mistake>
+
+Joining other tables against a Type 2 dimension without being point-in-time aware — accidentally joining a transaction against the customer's *current* profile instead of the profile that was valid *at transaction time*.
+
+</Mistake>
+
+<Mistake>
+
+Treating Type 3 (single previous-value column) as sufficient for compliance — it only ever captures the single most recent prior value, not full history.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    CUSTOMER ||--o{ CUSTOMER_PROFILE : "has history of"
+    CUSTOMER {
+        bigint customer_id PK
+        string pan_number
+    }
+    CUSTOMER_PROFILE {
+        bigint profile_id PK
+        bigint customer_id FK
+        string address
+        string kyc_status
+        timestamp valid_from
+        timestamp valid_to
+        boolean is_current
+    }
+`}
+  caption="Type 2 SCD: each customer has multiple CustomerProfile rows over time, exactly one of which has is_current = true; valid_from/valid_to let you reconstruct the profile as of any past date."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- SCD (Slowly Changing Dimensions): a pattern for tracking how a record's attributes change over time
+- Type 1: overwrite, no history — wrong for KYC data, loses point-in-time truth
+- Type 2: new row per change with `valid_from`/`valid_to`/`is_current` — the standard approach for regulated customer data
+- Type 3: only the previous value in an extra column — rarely sufficient for compliance
+- A Type 2 "update" is really 2 operations in one transaction: close the old row, insert the new one
+- Real regulatory need: proving what KYC info was on file at the exact time of a specific (possibly suspicious) transaction
+- Point-in-time queries need an indexed `(customer_id, valid_from, valid_to)` range for efficiency
+- Joins against Type 2 tables must be point-in-time aware, not just "join on current row"
+
+</QuickRevision>

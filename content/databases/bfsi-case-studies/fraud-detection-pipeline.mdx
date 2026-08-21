@@ -1,0 +1,233 @@
+---
+slug: "fraud-detection-pipeline"
+title: "Design a Fraud Detection Data Pipeline"
+section: "databases"
+module: "bfsi-case-studies"
+order: 6
+difficulty: "advanced"
+readingTime: 18
+prerequisites: ["outbox-pattern-cdc"]
+tags: ["case-study", "bfsi", "fraud", "data-pipelines"]
+englishDefinition: "Design the data architecture for a fraud detection system that consumes a real-time stream of transaction events and both scores them for risk (often needing sub-second latency to block a transaction before it completes) and maintains historical feature data (spending patterns, device history, velocity counts) used to compute those risk scores."
+interviewFrequency: "high"
+companies: ["Razorpay", "Paytm", "HDFC Bank"]
+---
+
+<SimpleDefinition>
+
+Design the data architecture for a fraud detection system that consumes a real-time stream of transaction events and both scores them for risk (often needing sub-second latency to block a transaction before it completes) and maintains historical feature data (spending patterns, device history, velocity counts) used to compute those risk scores.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh case study is poore module ke doosre topics se **shape mein deliberately different** hai, aur yehi sabse important interview signal hai jo yahan test hota hai. Credit card billing, insurance claims, core banking — yeh sab fundamentally ek **single transactional schema** design karne ke problems the (tables, foreign keys, constraints). Fraud detection ek **data pipeline** problem hai — yeh test karta hai ki candidate ko pata hai ki kab OLTP-style schema design kaafi hai, aur kab problem ko **streaming/analytical architecture** ki zaroorat hai. Agar tum yahan seedha "ek Transaction table banao aur usmein ek `is_fraud` column daal do" bol dete ho, yeh turant signal deta hai ki is problem ka actual shape samajh nahi aaya.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Har transaction ko **real time mein fraud risk ke liye score** karo — often transaction process hone se **pehle ya usi waqt**, taaki suspicious transaction ko block kiya ja sake.
+- Har customer/card/device ke liye **historical behavior profile** maintain karo (spending patterns, typical transaction amounts, known devices) jo scoring ko inform kare.
+- Suspicious transactions ko flag karke ek **human review queue** mein daalo — automated system har decision khud final nahi leta, especially borderline cases mein.
+
+Non-functional requirements — yahan latency requirement particularly extreme hai:
+
+- **Real-time scoring ko tens of milliseconds ke andar hona chahiye** — yeh transaction ke authorization path ka hi ek hissa hai (ya usse tightly coupled hai). Yeh requirement **akela hi rule out kar deta hai** ki scoring step kisi bhi bade historical table ko synchronously query kare per-transaction — ek table jisme customer ke saalon ka transaction history ho, usse "last 10 minutes mein kitni transactions hui" jaisa aggregate compute karna per-request, latency budget explode kar dega.
+- Historical analysis/investigation queries (jaise "is customer ka poora fraud history dikhao") latency-sensitive nahi hain — yeh normal query latency tolerate kar sakte hain, batch/analytical workload ki tarah.
+- System ko available rehna chahiye bina poore transaction processing ko block kiye agar fraud pipeline khud fail ho jaaye — yeh ek genuine architectural concern hai jo Follow-Up mein detail mein aayega.
+
+### Key Entities & Relationships
+
+Traditional ER-style entities se zyada, yahan **architecture pieces** important hain:
+
+- **TransactionEvent** — har transaction ka lightweight event jo core ledger/payments database se **stream out** hota hai. Yeh exactly wahi CDC/outbox pattern hai jo pichle topic mein cover hua — core transactional database mein ek row insert/commit hoti hai, aur outbox table/CDC mechanism ke through yeh event asynchronously fraud pipeline tak pahunchta hai **bina core transaction path ko slow kiye**. Yeh critical hai — agar fraud pipeline directly core database pe synchronous query/trigger laga de, woh core payment path ki latency aur availability ko fraud system ki health se couple kar dega, jo ek unacceptable design hai.
+- **FraudFeatureStore** — ek fast key-value store (Redis ya similar) jo **precomputed rolling aggregates** hold karta hai. Yeh koi rigid SQL table nahi hai — is architecture ka poora point hi yeh hai ki yeh ek **key-value shape** mein hai jahan key = `customer_id` ya `card_id`, aur value = ek set of rolling features (last-10-min transaction count, 30-day average transaction amount, is-this-a-new-device flag, etc.). Yeh features stream se incrementally update hote hain jaise-jaise nayi TransactionEvents aati hain.
+- **Data Warehouse / Analytical Store** — poora historical transaction + outcome data yahan reside karta hai, model training aur after-the-fact investigation ke liye. Yeh normal query latency tolerate kar sakta hai — isko fast hone ki zaroorat nahi.
+- **FraudReviewQueue** — flagged transactions jo human analyst ko dikhni chahiye, apne standard OLTP-style table ke roop mein (yeh ek jagah hai jahan traditional schema still fit baithta hai).
+
+### Schema Design
+
+Feature store ko ek rigid SQL schema ki tarah design karna is architecture ke poore point ko miss kar dena hai — iski flexibility (naye features add karna bina migration ke, per-key TTL, sub-millisecond reads) yehi hai jo Redis-jaisa key-value store deta hai jo ek normalized relational table nahi de sakta. Conceptually:
+
+```
+Key: customer_id (or card_id)
+Value (hash/JSON):
+    txn_count_last_10min:      int
+    txn_count_last_24h:        int
+    avg_txn_amount_30d:        decimal
+    max_txn_amount_90d:        decimal
+    known_device_ids:          set<string>
+    is_new_device_this_txn:    bool (computed at read time)
+    last_txn_country:          string
+    last_updated_at:           timestamp
+TTL: rolling window per feature (e.g. 10-min counters auto-expire)
+```
+
+Doosri taraf, `FraudReviewQueue` aur `TransactionEvent` staging table ek traditional OLTP shape mein fit hote hain, kyunki inhe ACID guarantees aur relational querying chahiye:
+
+```sql
+CREATE TABLE transaction_event (
+    event_id        BIGINT PRIMARY KEY,
+    transaction_id  BIGINT NOT NULL,
+    customer_id     BIGINT NOT NULL,
+    card_id         BIGINT,
+    amount          DECIMAL(18, 2) NOT NULL,
+    merchant_id     BIGINT,
+    device_id       VARCHAR(64),
+    event_ts        TIMESTAMP NOT NULL,
+    ingested_at     TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE fraud_review_queue (
+    review_id       BIGINT PRIMARY KEY,
+    transaction_id  BIGINT NOT NULL,
+    risk_score      DECIMAL(5, 2) NOT NULL,
+    flagged_reasons TEXT,                       -- e.g. "new device + amount 5x avg"
+    status          VARCHAR(15) NOT NULL DEFAULT 'PENDING_REVIEW',  -- PENDING_REVIEW, CLEARED, CONFIRMED_FRAUD
+    flagged_at      TIMESTAMP NOT NULL DEFAULT now(),
+    resolved_at     TIMESTAMP,
+    resolved_by     BIGINT
+);
+```
+
+`transaction_event` yahan ek staging/log table hai — CDC se aane wale events yahan land karte hain before/while feature store update hota hai, aur data warehouse ke liye bhi source hai. `fraud_review_queue` woh jagah hai jahan analyst kaam karte hain, aur `status` field un transactions ko track karta hai jo abhi tak human decision ka wait kar rahi hain.
+
+### Query Patterns & Indexing
+
+**"Score this transaction now"** — yeh sabse latency-critical read hai poore system mein. Yeh **feature store se read hota hai, core OLTP database se nahi** — Redis-jaisi key-value lookup by `customer_id`/`card_id` sub-millisecond mein return hoti hai kyunki features already precomputed hain. Real-time scoring service is read ko lekar apna risk model/rules apply karta hai aur decision return karta hai — koi bhi historical `SUM`/`COUNT` query yahan is critical path pe nahi chalti.
+
+**"Investigate this customer's full history"** — yeh **data warehouse se** query hoti hai, jahan latency matter nahi karti. Ek analyst dashboard shayad complex joins, aggregations, aur time-range scans chalayega poore months/years ke data pe — is workload ke liye warehouse (columnar storage, analytical query engine) feature store se kahin better fit hai.
+
+**FraudReviewQueue queries** — standard OLTP index chahiye:
+
+```sql
+CREATE INDEX idx_review_status ON fraud_review_queue (status, flagged_at);
+```
+
+Yeh ops team ka daily queue power karta hai — "saari PENDING_REVIEW transactions, oldest first".
+
+### Scaling/Integrity Considerations
+
+Is architecture ka pura design **latency ke against explicitly optimize** karta hai alag storage layers choose karke, har ek apne access pattern ke liye:
+
+- CDC/outbox se core payments database ko fraud pipeline se **decouple** kiya jaata hai — agar fraud pipeline slow ho jaaye ya down ho jaaye, core transaction processing directly impacted nahi hota (event queue mein backlog ban sakta hai, lekin payments chalte rehte hain).
+- Feature store **freshness vs cost trade-off** ek genuine design decision hai: streaming updates (har event pe turant feature recompute) sabse fresh hote hain lekin zyada compute/infra cost aur complexity, jabki periodic batch recomputation (jaise har minute) simpler hai lekin thoda stale data de sakta hai. High-value/high-risk features (jaise "last 10-min transaction count") streaming update maangte hain, jabki kam time-sensitive features (jaise "90-day average") batch recompute se bhi chal sakte hain — dono approaches ek hi system mein co-exist kar sakte hain.
+- Data warehouse write path asynchronous hota hai aur eventual consistency acceptable hai — investigation/training workload real-time freshness nahi maangta.
+
+### Follow-Up Questions
+
+- **Feature store mein cache miss ho jaaye ek brand-new customer ke liye to?** Yeh **cold start problem** hai — naya customer/card jiska koi historical feature data nahi hai. Standard solution: conservative, **rule-based fallback scoring** use karo jab feature store empty/sparse ho (jaise "first transaction se zyada amount ho aur naya device ho, to extra scrutiny"), instead of either blindly approving (risky) ya blindly rejecting (bad customer experience). Jaise-jaise transactions aati hain, feature store populate hota hai aur model-based scoring normal ho jaata hai.
+- **Fraud pipeline khud down ho jaaye to poore transaction processing ko block na kare, iske liye kya karein?** Yeh ek genuine business trade-off hai jo explicitly discuss karna chahiye — **fail open vs fail closed**. Fail open ka matlab hai: agar fraud scoring unavailable hai, transaction ko allow kar do (with stricter downstream rules/monitoring, jaise lower per-transaction limits ya faster manual review triggers) — business continuity priority. Fail closed ka matlab hai: agar scoring unavailable hai, transaction block/hold kar do jab tak scoring wapas available na ho — safety priority, lekin customer experience aur revenue impact hota hai. Zyada production payment systems **fail open with compensating controls** choose karte hain (kyunki total outage business ke liye directly costly hai), lekin final decision risk appetite aur regulatory requirement pe depend karta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Streaming feature updates - scoring hamesha near-real-time data pe based hota hai, better fraud catch rate", "Feature store lookup sub-millisecond hai - authorization path ki latency budget mein aasani se fit hota hai", "Complex/expensive feature updates spread out hoti hain continuously, ek bada periodic batch spike nahi"]}
+  cons={["Zyada infra complexity aur cost - streaming pipeline (Kafka/similar) chalana aur maintain karna batch job se harder hai", "Feature freshness bugs debug karna harder hai ek streaming system mein batch se, kyunki state continuously mutate ho raha hai", "Batch recomputation simpler aur cheaper hai unn features ke liye jinhe true real-time freshness ki zaroorat nahi"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Razorpay">
+
+Payment gateways jaise Razorpay real-time risk engines chalate hain jo har transaction ko authorization ke saath-saath score karte hain — velocity checks (ek hi card se kitni transactions kitni jaldi), device fingerprinting, aur merchant-category risk sab milakar ek composite score banate hain, sab kuch tens-of-milliseconds latency budget ke andar. Yeh exactly wahi feature-store-driven real-time scoring pattern hai — koi bhi historical database query is critical path pe nahi chalti.
+
+</RealWorld>
+
+<RealWorld company="Paytm / HDFC Bank">
+
+Bank aur wallet fraud teams "velocity rules" ka use karte hain jaise "agar ek card se 10 minutes mein 5+ transactions ho ya total amount ek threshold cross kare, to extra verification trigger karo (OTP, ya temporary hold)". Yeh rules exactly `FraudFeatureStore` ke rolling aggregates (`txn_count_last_10min`) pe based hote hain — jo real-world proof hai ki yeh precomputed, incrementally-updated feature approach koi academic concept nahi, production fraud systems ka core hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Target real-time fraud scoring latency: typically tens of milliseconds (often under 50-100 ms) as part of the authorization path
+- Feature store read latency (Redis-style key-value lookup): typically sub-millisecond to low single-digit milliseconds
+- Rolling window granularity for velocity features: commonly 1-min, 10-min, 1-hour, 24-hour, and 30/90-day windows, computed in parallel
+- Cold-start rate: new customers/devices with no feature history can be a meaningful fraction of daily transaction volume, especially for growing platforms
+- CDC/outbox event lag from core transaction commit to fraud pipeline ingestion: typically sub-second to a few seconds, decoupled from the authorization path itself
+- Data warehouse query latency for investigation/training workloads: seconds to minutes is acceptable, unlike the real-time scoring path
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer yahan explicitly dekhna chahta hai ki candidate ek single-table "add an is_fraud column" jawab se aage badh sakta hai ya nahi. Strong candidates pehle problem ko **do alag latency profiles mein split** karte hain — real-time scoring (tens of milliseconds, feature store se) vs historical investigation (seconds-minutes acceptable, warehouse se) — aur phir explain karte hain ki yeh split hi architecture decide karta hai: ek fast key-value feature store scoring ke liye, ek analytical warehouse investigation/training ke liye, aur CDC/outbox se core payments database ko dono se decouple karna. Bonus signal: cold-start aur fail-open/fail-closed jaise genuine trade-offs proactively discuss karna, bajaye sirf "we'll use machine learning" jaise vague jawab ke.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Fraud scoring ko is problem ko ek simple single-table OLTP schema ki tarah treat karna ("Transaction table mein ek is_fraud column daal do") — yeh real-time latency aur historical-analysis dono requirements ko miss kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Real-time scoring step ko directly core historical transaction table pe query chalane dena — bade table pe per-transaction aggregation, tens-of-milliseconds latency budget ke saath fundamentally incompatible hai.
+
+</Mistake>
+
+<Mistake>
+
+Fraud pipeline ko core payments/ledger database se synchronously couple karna (bina CDC/outbox jaise decoupling ke) — agar fraud pipeline slow/down ho jaaye, core transaction processing bhi directly impacted ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Feature store ko ek rigid, normalized SQL table ki tarah design karna, jab actual zaroorat ek flexible key-value shape ki hai jo naye features easily add kare aur per-key TTL support kare.
+
+</Mistake>
+
+<Mistake>
+
+Cold-start (naya customer, koi feature history nahi) aur fraud-pipeline-down (fail open vs fail closed) jaise edge cases discuss hi na karna — yeh dono genuine production concerns hain jo interview mein explicitly expect kiye jaate hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Core Payments DB<br/>(transaction committed)"] -->|"outbox/CDC event"| B["Event Stream<br/>(e.g. Kafka)"]
+    B --> C["Feature Store Updater<br/>(incremental aggregates)"]
+    B --> D["Data Warehouse<br/>(full history, async)"]
+    C --> E[("FraudFeatureStore<br/>key-value, Redis-style")]
+    F["Incoming Transaction"] -->|"real-time read"| E
+    E --> G["Scoring Service<br/>(tens of ms)"]
+    G -->|"suspicious"| H["FraudReviewQueue<br/>(human analyst)"]
+    G -->|"clear"| I["Transaction proceeds"]
+    D -->|"slow, tolerant queries"| J["Investigation / Model Training"]
+    style E fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    style G fill:#1e293b,stroke:#fbbf24,color:#e2e8f0
+    style D fill:#1e293b,stroke:#34d399,color:#e2e8f0
+`}
+  caption="Two decoupled paths: a fast feature-store read for real-time scoring (tens of ms), and a slow data-warehouse path for investigation/training - CDC/outbox keeps both off the core payments database's critical path."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- This is a data pipeline problem, not a single transactional schema - the key interview signal is recognizing when OLTP schema design isn't enough
+- Real-time scoring reads from a fast key-value FraudFeatureStore (Redis-style), never the core OLTP database or a large historical table
+- FraudFeatureStore holds precomputed rolling aggregates (velocity counts, averages, device flags), keyed by customer_id/card_id, updated incrementally as events stream in
+- CDC/outbox streams transaction events out of the core ledger without adding latency to the core transaction path
+- A separate data warehouse holds full historical transaction+outcome data for investigation and model training - can tolerate normal query latency
+- Streaming feature updates vs periodic batch recomputation is a genuine freshness-vs-cost trade-off, not a solved problem
+- Cold start (new customer, no feature history) needs a conservative rule-based fallback, not a blind approve or reject
+- Fail open (allow with stricter downstream controls) vs fail closed (block until scoring recovers) is a real business trade-off when the fraud pipeline itself goes down
+
+</QuickRevision>

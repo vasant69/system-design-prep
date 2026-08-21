@@ -1,0 +1,195 @@
+---
+slug: "encryption-at-rest-transit"
+title: "Encryption at Rest & in Transit for Financial Data"
+section: "databases"
+module: "security-compliance"
+order: 1
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["core-banking-schema"]
+tags: ["security", "compliance", "bfsi"]
+englishDefinition: "Encryption at rest protects data while it is stored on disk (database files, backups, snapshots), and encryption in transit protects data while it moves over the network (client to server, application to database, replication traffic between primary and replica). These are two distinct, both-required layers for financial data, complemented by column-level/field-level encryption for the most sensitive individual fields."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+Encryption at rest protects data while it is stored on disk (database files, backups, snapshots), and encryption in transit protects data while it moves over the network (client to server, application to database, replication traffic between primary and replica). These are two distinct, both-required layers for financial data, complemented by column-level/field-level encryption for the most sensitive individual fields.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Bahut se engineers "encryption" ko ek single checkbox samajhte hain — "hamara data encrypted hai" bol dete hain aur maan lete hain ki kaam ho gaya. BFSI systems mein yeh dangerous assumption hai, kyunki encryption ek layer nahi, **kam se kam do alag layers** hain, aur dono independently fail ho sakte hain. Interview mein agar tum in dono ko explicitly separate karke discuss karte ho, strong signal jaata hai.
+
+### At-rest vs in-transit — dono kyun chahiye, ek nahi
+
+**Encryption at rest** ka matlab hai: jab data disk pe pada hai — database ki data files, WAL/redo logs, backups, snapshots — tab woh encrypted form mein stored hai, plaintext nahi. **Encryption in transit** ka matlab hai: jab data network pe move kar raha hai — client se application server tak, application se database tak, ya primary se replica tak replication traffic — tab woh TLS jaisi mechanism se protected hai.
+
+Yeh dono independent failure modes cover karte hain:
+
+- Agar sirf **at-rest** encryption hai lekin **in-transit** nahi, to koi attacker jo primary-to-replica replication traffic intercept kar le (jaise ek misconfigured network segment ya compromised internal network pe), woh plaintext data dekh sakta hai jab woh wire pe travel kar raha hota hai — chahe disk pe woh data encrypted hi kyun na ho.
+- Agar sirf **in-transit** hai lekin **at-rest** nahi, to ek stolen backup disk, ek leaked database snapshot, ya ek misconfigured cloud storage bucket jisme raw `.bak` file padi ho, seedha plaintext customer data expose kar deta hai — network encryption ne yahan kuch bhi protect nahi kiya kyunki data kabhi network pe travel hi nahi kiya, woh directly disk se leak hua.
+
+BFSI audits mein yeh ek common finding hota hai: replication traffic (primary-to-replica, ya cross-datacenter) TLS ke bina chal raha hota hai jabki client-facing API endpoints sab HTTPS pe hain — team ne "encryption" ka checkbox tick kar diya without covering internal traffic.
+
+### Transparent Data Encryption (TDE) — database-level at-rest ka standard
+
+At-rest encryption ka standard mechanism **Transparent Data Encryption (TDE)** hai — poori database file (data files, logs, backups) encrypted hoti hai disk-level pe, aur yeh queries ke liye "transparent" hai, matlab application code ko kuch bhi change nahi karna padta, koi query syntax change nahi hoti. TDE storage engine level pe operate karta hai — jab tak data memory mein hai (query execution ke waqt), woh decrypted hai; disk pe jaate hi encrypted ho jaata hai.
+
+```sql
+-- Conceptual — actual syntax varies by database engine
+ALTER DATABASE core_banking SET ENCRYPTION ON;
+```
+
+TDE ka trade-off: yeh **all-or-nothing** hai — poori database encrypted hoti hai, individual columns ko differently treat nahi kar sakta. Isliye extra-sensitive fields (PAN number, card number, biometric data) ke liye ek aur layer chahiye hoti hai.
+
+### Column-level/field-level encryption — extra protection, extra cost
+
+Field-level encryption specific columns ko encrypt karta hai (jaise `pan_number`, `card_number`), even TDE ke upar — taaki agar koi database admin ya application bug bhi raw value dekhe, to bhi woh ciphertext hi dikhe, plaintext nahi.
+
+Lekin yahan ek real trade-off hai jo interview mein pucha jaata hai: **encrypted column ko normally query nahi kar sakte**. Ek encrypted `card_number` column pe range query (`WHERE card_number BETWEEN ...`) ya even simple equality lookup (`WHERE card_number = ?`) normal indexing se kaam nahi karta, kyunki standard (randomized) encryption same plaintext ko har baar different ciphertext deta hai. Do options hain:
+
+- **Deterministic encryption** — same plaintext hamesha same ciphertext deta hai, isliye equality lookup possible hai (`WHERE card_number_encrypted = encrypt(?)`), lekin range queries abhi bhi nahi ho sakte, aur deterministic encryption thoda weaker hai (pattern analysis se vulnerable, kyunki repeated values same ciphertext dikhate hain).
+- **Separate hash column** — plaintext ka ek one-way hash (jaise HMAC-SHA256) ek alag column mein store karo sirf lookup ke liye, jabki actual value randomized encryption se protected rahe. Lookup query hash column pe chalti hai, actual encrypted value sirf display/decrypt ke liye retrieve hoti hai.
+
+Isi wajah se field-level encryption **blanket apply nahi hoti** — sirf genuinely sensitive fields pe use hoti hai (PAN, card number, biometric), na ki har column pe, kyunki har encrypted column apne saath query complexity aur performance cost laata hai.
+
+### Key management — encryption utni hi achhi hai jitni key protection
+
+Encryption ka poora security model key ki secrecy pe depend karta hai — agar key hi compromised ho jaaye, encrypted data bhi utna hi exposed hai jitna plaintext. Isliye keys kabhi encrypted data ke saath, same server ya same database pe store nahi hoti. Standard practice hai ek dedicated **Hardware Security Module (HSM)** ya cloud **Key Management Service (KMS)** use karna, jo keys ko generate, rotate, aur access-control karta hai separately — application ko sirf "decrypt karne ki permission" milti hai runtime pe, actual key kabhi application code ya database backup mein embedded nahi hoti.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "TDE is transparent — zero application code changes, encrypts entire database including backups",
+    "Field-level encryption adds a strong extra layer for the most sensitive individual fields",
+    "Deterministic encryption / hash columns allow encrypted fields to still support equality lookups",
+  ]}
+  cons={[
+    "TDE alone does not protect data in transit or data visible to anyone with valid database query access",
+    "Field-level encryption breaks normal range queries and often requires extra columns/logic for lookups",
+    "Deterministic encryption is weaker against pattern analysis than fully randomized encryption",
+    "Key management adds real operational complexity (HSM/KMS, rotation, access policies)",
+  ]}
+/>
+
+<Callout type="trap">
+
+TDE encrypts data at rest, but once a query runs and the application (or a database admin with query access) reads the row, the value comes back decrypted. TDE does not protect against insider access, SQL injection, or a compromised application — that is exactly the gap field-level encryption and row-level access control (see the next topic) exist to close.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Core banking databases typically run TDE on the full database (covering account balances, transaction history, customer records), while a small set of extra-sensitive fields — PAN number, Aadhaar-linked identifiers, card numbers — get an additional field-level encryption layer with a separate hash column for lookups. Replication traffic between the primary data center and the disaster-recovery site runs over TLS, since RBI-regulated institutions are routinely audited on exactly this kind of gap.
+
+</RealWorld>
+
+<RealWorld company="Razorpay">
+
+As a payment aggregator, Razorpay's systems handle card numbers and bank account details flowing through multiple services (checkout, settlement, reconciliation) — every hop between those services runs over TLS, and card data specifically undergoes field-level (often tokenization-backed) encryption so that even internal services mostly handle a token rather than the raw card number, minimizing how many places ever touch plaintext card data at all (a pattern closely related to, but distinct from, database-level field encryption).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>TDE performance overhead: typically low single-digit percent CPU overhead on modern hardware with AES-NI acceleration — rarely the bottleneck</li>
+<li>Field-level encryption overhead: meaningfully higher per-field cost (encrypt/decrypt on every read/write) — this is why it's reserved for a handful of fields, not applied blanket</li>
+<li>Key rotation cadence for HSM/KMS-backed keys in regulated BFSI environments: commonly annual or per compliance-mandated cycle, with re-encryption or key-wrapping strategies to avoid full data re-encryption</li>
+<li>A stolen unencrypted backup disk/snapshot: one of the most common real-world data breach root causes in audits — this is exactly what at-rest encryption is designed to neutralize</li>
+<li>TLS handshake overhead for in-transit encryption: negligible for connection-pooled application-to-database traffic, since connections are long-lived rather than per-query</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common interviewer trap is asking "is your data encrypted?" expecting a yes/no — the strong answer separates it into layers: at rest (TDE for the whole database), in transit (TLS for every network hop, including internal replication, not just client-facing traffic), and field-level for the specific highly sensitive columns. If pushed on "why not encrypt every column," the correct answer is the query trade-off — encrypted columns can't support normal indexing/range queries, so it's a deliberate, narrow choice, not a default. Also expect a follow-up on key management: encryption without proper key isolation (HSM/KMS, keys never colocated with data) is security theater.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Treating "encryption" as a single checkbox instead of two separate required layers — assuming at-rest encryption alone covers replication traffic or client connections, which it does not.
+
+</Mistake>
+
+<Mistake>
+
+Applying field-level encryption to every column "to be safe," breaking normal indexing and query patterns across the schema instead of reserving it for genuinely sensitive fields like PAN or card number.
+
+</Mistake>
+
+<Mistake>
+
+Storing encryption keys alongside the encrypted data (same database, same server, or even the same backup) — this defeats the purpose, since compromising the data store also compromises the key.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting internal traffic — securing client-to-server HTTPS but leaving primary-to-replica or service-to-service database traffic unencrypted on the assumption that "internal network is safe."
+
+</Mistake>
+
+<Mistake>
+
+Using standard randomized encryption on a field that needs equality lookups without a hash column or deterministic scheme, then discovering in production that `WHERE card_number = ?` simply cannot work anymore.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Client_Side["Client Side"]
+        A[Mobile/Web Client]
+    end
+    subgraph App_Layer["Application Layer"]
+        B[Application Server]
+    end
+    subgraph DB_Layer["Database Layer"]
+        C[(Primary DB - TDE at rest)]
+        D[(Replica DB - TDE at rest)]
+    end
+    subgraph Storage["Backup Storage"]
+        E[Encrypted Backups]
+    end
+    A -->|TLS in transit| B
+    B -->|TLS in transit| C
+    C -->|TLS in transit - replication| D
+    C -->|encrypted backup| E
+    F[HSM / KMS - keys] -.->|serves decrypt keys, never stores data| C
+    F -.-> D
+`}
+  caption="Two independent encryption layers: TLS protects every network hop (client-to-app, app-to-db, replication), while TDE protects data files and backups at rest — keys live separately in an HSM/KMS, never alongside the encrypted data."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Encryption at rest (disk/files/backups) and encryption in transit (network) are two separate, both-required layers
+- A gap in either layer is a real failure mode: unencrypted replication traffic leaks data in transit even with TDE on; a stolen backup leaks data at rest even with TLS everywhere
+- TDE (Transparent Data Encryption) encrypts the whole database transparently to queries — no application changes needed, but it's all-or-nothing
+- Field-level/column-level encryption adds protection for specific highly sensitive fields (PAN, card number, biometric data), not applied blanket
+- Encrypted columns can't support normal range queries; even equality lookups need deterministic encryption or a separate hash column
+- Keys must live outside the encrypted data store — HSM or KMS, with proper rotation and access control
+- TDE does not protect against a compromised application or a user with valid query access reading decrypted results
+
+</QuickRevision>

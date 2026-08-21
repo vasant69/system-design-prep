@@ -1,0 +1,150 @@
+---
+slug: "read-replicas-reporting"
+title: "Read Replicas for Reporting Without Impacting OLTP"
+section: "databases"
+module: "scaling-bfsi"
+order: 1
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["core-banking-schema"]
+tags: ["scalability", "replication", "bfsi"]
+englishDefinition: "Read replicas are asynchronously-replicated copies of a primary database, used to route read-heavy analytical and reporting queries away from the primary that handles live online transaction processing (OLTP). In BFSI systems this separation exists because a single expensive report should never be able to slow down or lock resources needed for live payments."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Read replicas are asynchronously-replicated copies of a primary database, used to route read-heavy analytical and reporting queries away from the primary that handles live online transaction processing (OLTP). In BFSI systems this separation exists because a single expensive report should never be able to slow down or lock resources needed for live payments.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Socho ek bank ka end-of-day batch report chal raha hai — branch-wise transaction summary, jo din bhar ke crores transactions scan karta hai. Yeh report agar usi database pe chale jo live ATM withdrawals aur UPI payments process kar raha hai, to ek genuinely dangerous situation ban sakti hai: ek heavy analytical query CPU, I/O, aur locks consume karti hai jo actually live transactions ko chahiye. Result — ATM withdrawal slow ho jaata hai, ya worse, timeout ho jaata hai, sirf isliye kyunki koi analyst ek report chala raha tha. Ek report kabhi bhi live payment processing ko degrade nahi kar sakta — yeh ek hard rule hai jo BFSI systems mein negotiable nahi hai.
+
+### Read replica solution
+
+Iska standard fix hai **read replicas** — primary database ki async-replicated copies, jo sirf reads serve karte hain, writes nahi. Primary pe jo bhi write hota hai (naya transaction insert, balance update), woh ek replication stream (System Design section ke Replication topic mein cover hua mechanism — WAL shipping ya binlog replication) ke through replica(s) tak propagate hota hai. Reporting aur analytics queries ab primary ko touch hi nahi karte — woh replica pe route ho jaate hain, aur primary sirf OLTP load handle karta hai.
+
+Yeh separation implement karna technically simple hai — connection routing layer (application code ya a proxy like ProxySQL/PgBouncer) decide karta hai ki query kis destination pe jaani chahiye. Real complexity trade-off mein hai, replication lag mein.
+
+### Replication lag ka real trade-off
+
+Async replication ka matlab hai replica primary se thoda **peeche** rehta hai — kuch milliseconds se lekar (heavy load mein) kuch seconds tak ka lag ho sakta hai. Iska matlab reports thodi si **stale data** pe run hote hain.
+
+Zyaadatar reporting use cases ke liye yeh bilkul theek hai:
+
+- End-of-day branch performance report — kal ka data hai, kuch second stale hona irrelevant hai.
+- Monthly account statement — historical data, replication lag matter hi nahi karta.
+- Regulatory MIS reports — batch jobs hote hain, freshness ki requirement loose hoti hai.
+
+Lekin kuch queries ke liye stale data **bilkul acceptable nahi** hai:
+
+- Customer ATM se withdrawal kar raha hai — system ko uski **current, authoritative balance** check karni hai. Agar yeh check replica pe chali aur replica lag ke wajah se thodi purani balance dikhaye, to overdraft ho sakta hai — customer se zyada paisa nikal sakta hai jitna uske paas actually hai.
+- Fraud detection real-time check — agar galat (stale) data pe based ho, to ek fraudulent transaction slip through ho sakta hai.
+
+### Line kahan draw karein
+
+Simple rule: agar query ka result seedha **money movement decide karta hai** (approve/deny a debit, check available balance before a withdrawal), woh **hamesha primary** pe chalni chahiye — chahe primary thoda busy ho, correctness yahan non-negotiable hai. Agar query sirf **dikhane/analyze karne** ke liye hai (dashboard, statement, report), replica ekdum safe hai, aur primary ka load bachata hai jo actually zaroori hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Primary ka load kam hota hai — heavy reporting queries OLTP ko affect nahi karti", "Replicas ko independently scale kar sakte ho reporting workload ke hisaab se", "Read-heavy dashboards/analytics ke liye near-linear read scalability"]}
+  cons={["Replication lag ke wajah se replica data thoda stale hota hai (typically ms se seconds)", "Application/routing layer ko explicitly decide karna padta hai kaunsi query kahan jaaye — galat routing se stale-balance jaisi bugs ban sakti hain", "Extra infrastructure aur monitoring (replication lag alerting) ka overhead"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking systems mein typically ek primary database live transactions ke liye hoti hai, aur ek ya zyada **read replicas** specifically reporting/MIS team ke liye provision ki jaati hain. End-of-day settlement reports, branch-wise reconciliation, aur regulatory submissions replica se generate hote hain — agar yeh reports primary pe chalte, to peak banking hours mein live transaction latency spike ho sakta tha.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon jaisi high-scale systems mein bhi yehi pattern hai — order/payment writes primary pe jaate hain, lekin seller dashboards, analytics, aur recommendation pipelines read replicas ya dedicated data warehouses se serve hote hain. Principle same hai chahe domain e-commerce ho ya banking: heavy read workloads ko write-critical path se isolate karo.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical async replication lag: single-digit milliseconds under normal load, but can stretch to seconds under heavy write bursts or network issues
+- A single unoptimized end-of-day report scanning millions of rows can hold locks/consume I/O for minutes if run directly on the OLTP primary
+- Most cloud-managed databases (RDS, Cloud SQL) support 1-5 read replicas out of the box without custom replication setup
+- Replication lag monitoring threshold in production banking systems: often alarmed if lag exceeds a few seconds, since anything beyond that risks stale-data incidents on borderline queries
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar poochte hain: "reporting queries live transaction processing ko slow kar rahe hain, kya karoge?" Weak answer sirf "read replica add kar do" bol ke ruk jaata hai. Strong answer mein tum explicitly bologe: (1) kaunsi queries replica pe safe hain vs kaunsi primary pe hi chalni chahiye (balance checks, debit approvals), (2) replication lag ka trade-off aur uska monitoring, aur (3) yeh mention karoge ki routing decision application layer ya proxy mein explicit honi chahiye — accidental stale-read on a money-critical path ek production incident hai, na ki minor bug.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Saari reads blindly replica pe route kar dena, including current-balance checks before a withdrawal — replication lag ke wajah se overdraft jaisa dangerous bug ban sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Reporting queries ko directly primary pe chalne dena "kyunki simple hai" — peak hours mein yeh live transactions ko slow ya timeout kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Replication lag ko monitor na karna — agar replica bahut zyada peeche chala jaaye (network issue, heavy write burst), to reports silently bahut purana data dikhane lagte hain bina kisi alert ke.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki replica hamesha "close enough" hai without defining kaunsi queries ke liye kitna staleness acceptable hai — yeh decision explicit honi chahiye, per-query-type, na ki ek blanket assumption.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant ATM as ATM / UPI App
+    participant Primary as Primary DB (OLTP)
+    participant Replica as Read Replica
+    participant Report as Reporting Job
+
+    ATM->>Primary: Withdrawal request (check current balance)
+    Primary-->>ATM: Authoritative balance, approve/deny
+    Primary->>Replica: Async replication stream
+    Report->>Replica: End-of-day branch report query
+    Replica-->>Report: Report data (may be slightly stale)
+`}
+  caption="Live balance checks always hit the primary; reporting/analytics queries route to the replica, which trails the primary by async replication lag."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Read replicas are async-replicated copies of the primary, used only for reads, isolating reporting load from live OLTP transactions
+- The core risk without this separation: a heavy report can slow down or lock live payment processing on the same database
+- Async replication means replicas lag behind the primary by ms to seconds
+- Safe on a replica: statements, dashboards, end-of-day/MIS reports — staleness doesn't matter
+- NOT safe on a replica: current balance checks before a withdrawal, fraud checks, anything that gates money movement — must hit the primary
+- Routing decision (which query goes where) must be explicit in the application/proxy layer, not accidental
+- Monitor replication lag in production — unbounded lag turns "slightly stale" into "dangerously stale"
+
+</QuickRevision>

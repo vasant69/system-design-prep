@@ -1,0 +1,214 @@
+---
+slug: "normalization-denormalization"
+title: "Normalization & When to Denormalize"
+section: "databases"
+module: "relational-fundamentals"
+order: 2
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["er-modeling-schema-basics"]
+tags: ["data-modeling", "fundamentals"]
+englishDefinition: "Normalization is the process of organizing a schema to reduce data redundancy and avoid update, insert, and delete anomalies, carried out through a sequence of normal forms (1NF through BCNF). Denormalization is the deliberate, selective reintroduction of redundancy to optimize read performance, typically in reporting or read-heavy layers rather than the core transactional schema."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Normalization is the process of organizing a schema to reduce data redundancy and avoid update, insert, and delete anomalies, carried out through a sequence of normal forms (1NF through BCNF). Denormalization is the deliberate, selective reintroduction of redundancy to optimize read performance, typically in reporting or read-heavy layers rather than the core transactional schema.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Normalization ka poora point ek cheez hai: **same fact ko database mein sirf ek jagah store karo**. Agar ek fact (jaise ek branch ka address) 10,000 rows mein repeat ho raha hai, to woh fact update karna 10,000 writes maangta hai — aur agar ek bhi row miss ho gayi, data inconsistent ho jaata hai. BFSI systems mein yeh sirf "messy data" ka issue nahi hai — yeh galat balance, galat interest calculation, ya audit mismatch ban sakta hai.
+
+### Ek concrete BFSI example jo normal forms samjhaata hai
+
+Socho ek poorly designed `Transaction` table:
+
+```sql
+CREATE TABLE transaction_bad (
+    transaction_id BIGINT PRIMARY KEY,
+    account_id BIGINT,
+    account_type VARCHAR(20),
+    branch_id BIGINT,
+    branch_name VARCHAR(100),
+    branch_address VARCHAR(200),
+    amount DECIMAL(19,4),
+    txn_date DATE
+);
+```
+
+Yeh table kaam to karti hai, lekin problem yeh hai ki `branch_name` aur `branch_address` har us account ke har transaction row mein repeat ho rahe hain jo us branch se belong karta hai. Agar branch shift ho jaaye (naya address), to tumhe **har transaction row** update karni padegi jisme woh branch_id hai — miss ek row, aur ab do transactions same branch ke liye do alag addresses dikha rahe hain. Isse **update anomaly** kehte hain.
+
+### 1NF — Atomic values, no repeating groups
+
+First Normal Form maangta hai ki har column mein ek hi atomic value ho — koi comma-separated list ya nested array nahi. Jaise agar `Account` table mein ek column `nominee_names` ho jisme `"Ramesh, Priya"` store ho raha ho, yeh 1NF violate karta hai. Fix: alag `Nominee` table banao (jaisa pichle topic mein dekha).
+
+### 2NF — No partial dependency on a composite key
+
+Second Normal Form apply hota hai jab primary key **composite** ho (multiple columns milke). Agar `(account_id, txn_date)` composite key hai kisi summary table mein, aur `account_type` sirf `account_id` pe depend karta hai (`txn_date` pe nahi), to `account_type` ko us table se nikaal ke `Account` table mein rakhna chahiye — yeh **partial dependency** hai jo redundancy create karti hai.
+
+### 3NF — No transitive dependency
+
+Third Normal Form kehta hai: non-key columns sirf primary key pe depend karne chahiye, kisi **doosre non-key column** pe nahi. Upar wale `transaction_bad` example mein: `branch_address` depend karta hai `branch_name` pe, aur `branch_name` depend karta hai `branch_id` pe — yeh **transitive dependency** hai (`transaction_id` → `branch_id` → `branch_address`). Fix: alag `Branch` table banao, aur `Transaction` mein sirf `branch_id` foreign key rakho.
+
+```sql
+CREATE TABLE branch (
+    branch_id BIGINT PRIMARY KEY,
+    branch_name VARCHAR(100),
+    branch_address VARCHAR(200)
+);
+
+CREATE TABLE transaction_good (
+    transaction_id BIGINT PRIMARY KEY,
+    account_id BIGINT NOT NULL REFERENCES account(account_id),
+    branch_id BIGINT NOT NULL REFERENCES branch(branch_id),
+    amount DECIMAL(19,4) NOT NULL,
+    txn_date DATE NOT NULL
+);
+```
+
+Ab branch address ek hi jagah store hai — update karo ek row, sab transactions automatically naya address "dekhte" hain (via join).
+
+### BCNF — thoda stricter version of 3NF
+
+Boyce-Codd Normal Form ek edge case handle karta hai jo 3NF miss kar deta hai: jab ek table mein multiple overlapping candidate keys hon aur ek non-key attribute kisi aise column pe depend kare jo khud candidate key nahi hai. Interview mein BCNF ka intuition level samajhna kaafi hai: "har determinant ek candidate key honi chahiye" — practical BFSI schemas mein yeh rarely ek separate concern banta hai agar 3NF sahi se follow kiya gaya ho.
+
+### Ab dusra side — denormalization
+
+Normalization correctness deta hai, lekin ek cost pe: **joins**. Agar ek dashboard query ko customer name, account type, branch name, aur last 50 transactions ek saath dikhaani hai, to fully normalized schema mein yeh 3-4 table joins maangta hai — har request pe. High-traffic read-heavy screens (jaise mobile app ka "recent transactions" tab) pe yeh latency add karta hai.
+
+Isliye deliberately **denormalize** karte hain specific jagah pe — jaise ek `transaction_history_view` ya reporting table jisme `customer_name` aur `branch_name` already transaction row ke saath copy kiye hue hain, taaki read query ko join na karna pade.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Reads become much faster — no joins needed, single table scan",
+    "Simpler queries for reporting/analytics and dashboards",
+    "Good fit for read replicas or OLAP-style tables that are rebuilt periodically",
+  ]}
+  cons={[
+    "Data can go stale if the denormalized copy isn't kept in sync (e.g. customer changes name, old transactions still show the old name)",
+    "Writes become more complex — one logical update may need to touch multiple denormalized copies",
+    "Storage cost increases — same fact stored in multiple places",
+    "Risk of silent inconsistency between the source of truth and the denormalized copy",
+  ]}
+/>
+
+<Callout type="warning">
+
+Golden rule for BFSI systems: the **OLTP core banking schema** (the one actual transactions write to) should stay normalized — correctness and auditability matter more than raw read speed there. Denormalization belongs in **read replicas, reporting tables, or materialized views**, kept in sync via CDC (Change Data Capture) or scheduled ETL — never as the primary write path for money-moving operations.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Core banking ka `Transaction` ledger normalized rehta hai — sirf `account_id` aur `branch_id` foreign keys store karta hai, kabhi customer name ya branch address directly nahi. Lekin customer-facing mobile app ke "Statement" screen ke peeche aksar ek separate, denormalized read model hota hai (ek read replica ya materialized view pe) jisme customer name aur branch name already joined hue hote hain — yeh screen ko fast render karne deta hai bina har request pe 3-table join chalaye.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon jaisi e-commerce/analytics-heavy companies mein order aur inventory ka OLTP schema highly normalized hota hai, lekin analytics/BI team ke liye ek separate data warehouse (denormalized, star-schema style) banaya jaata hai jahan fact tables mein dimension attributes (product name, customer segment) directly denormalized hote hain — kyunki analytics queries ko join-heavy normalized schema pe chalana slow aur expensive hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3NF-normalized `Transaction` table with a branch update: 1 row changed in `Branch`, zero rows changed in `Transaction` — versus a denormalized design needing potentially millions of row updates
+- A denormalized read model with a sync lag of even a few seconds can show stale customer names on a dashboard — acceptable for a UI label, never acceptable for the actual balance
+- Typical join cost avoided by denormalizing a hot read path: 2-4 table joins removed per query on high-traffic screens
+- CDC-based sync lag for keeping a denormalized reporting table fresh: usually seconds to low minutes, depending on pipeline
+- Storage overhead of denormalization: proportional to redundancy — a repeated `branch_name` string across millions of rows can add real GBs at scale
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewers often push you toward denormalization by asking "how would you make this dashboard query faster?" — the strong answer is not "just denormalize everything," it's identifying **which layer** should be denormalized. Show you understand the split: the transactional write path (core banking ledger) stays normalized for correctness, while a read-optimized copy (replica, materialized view, or reporting table) can be denormalized, with an explicit sync mechanism (CDC, scheduled job) and an accepted staleness window. Being asked to justify 3NF vs denormalization for a specific table is a classic follow-up — always name the actual anomaly (update/insert/delete) the normalized form prevents.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Denormalizing the core OLTP banking ledger itself (the table transactions actually write to) instead of a separate read-optimized copy — this makes every write more complex and risks the source-of-truth data going inconsistent.
+
+</Mistake>
+
+<Mistake>
+
+Treating normalization as an all-or-nothing checklist to "reach 3NF" without understanding *why* each normal form exists — the goal is eliminating a specific anomaly, not chasing a label.
+
+</Mistake>
+
+<Mistake>
+
+Denormalizing without a defined sync strategy — copying `customer_name` onto a transaction row but never updating it when the customer's name changes, leading to silent stale data.
+
+</Mistake>
+
+<Mistake>
+
+Assuming denormalization is always "the performance fix" — sometimes the real fix is a missing index or a bad query plan, not restructuring the schema.
+
+</Mistake>
+
+<Mistake>
+
+Ignoring BCNF edge cases (overlapping candidate keys) and assuming 3NF alone guarantees zero redundancy — rare in practice, but worth knowing exists.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    BRANCH ||--o{ TRANSACTION : "processed at"
+    ACCOUNT ||--o{ TRANSACTION : "belongs to"
+    BRANCH {
+        bigint branch_id PK
+        string branch_name
+        string branch_address
+    }
+    ACCOUNT {
+        bigint account_id PK
+        string account_type
+    }
+    TRANSACTION {
+        bigint transaction_id PK
+        bigint account_id FK
+        bigint branch_id FK
+        decimal amount
+        date txn_date
+    }
+`}
+  caption="Normalized 3NF design: branch_name and branch_address live only in Branch, referenced via branch_id — no transitive dependency, no update anomaly."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Normalization reduces redundancy by ensuring each fact lives in exactly one place — avoids update/insert/delete anomalies
+- 1NF: atomic values, no repeating groups; 2NF: no partial dependency on a composite key; 3NF: no transitive dependency between non-key columns; BCNF: every determinant must be a candidate key
+- Classic BFSI anomaly: repeating branch address on every transaction row means a branch move requires updating every matching row
+- Denormalization deliberately reintroduces redundancy to speed up reads — belongs in reporting tables, read replicas, or materialized views
+- Cost of denormalization: staleness risk and more complex writes to keep copies in sync
+- Rule of thumb: OLTP core banking tables stay normalized (correctness first); denormalization lives in the read/reporting layer
+- Always pair denormalization with an explicit sync mechanism (CDC, scheduled ETL) and an accepted staleness window
+
+</QuickRevision>

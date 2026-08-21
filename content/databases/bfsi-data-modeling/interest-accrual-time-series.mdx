@@ -1,0 +1,189 @@
+---
+slug: "interest-accrual-time-series"
+title: "Modeling Interest Accrual & Time-Series Financial Data"
+section: "databases"
+module: "bfsi-data-modeling"
+order: 5
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["core-banking-schema"]
+tags: ["data-modeling", "bfsi"]
+englishDefinition: "Interest accrual is money that grows continuously or periodically based on a rate and a time period - savings account interest, loan interest, fixed deposit maturity value. This topic covers the schema patterns used to track it accurately, without floating-point drift or double-counting, and how it connects to the double-entry ledger."
+interviewFrequency: "medium"
+companies: ["HDFC Bank", "ICICI Bank", "Bajaj Finserv"]
+---
+
+<SimpleDefinition>
+
+Interest accrual is money that grows continuously or periodically based on a rate and a time period - savings account interest, loan interest, fixed deposit maturity value. This topic covers the schema patterns used to track it accurately, without floating-point drift or double-counting, and how it connects to the double-entry ledger.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interest accrual pehli nazar mein simple lagta hai — "har din balance pe rate apply karo aur add kar do" — lekin real core banking mein yeh utna hi risky hai jitna ek mutable `balance` column tha ledger topic mein. Same underlying reasoning apply hoti hai: **auditability, correctness, aur re-computability** ke bina, ek "simple periodic job" jo directly balance mein interest add kar de, disaster ban sakta hai.
+
+### Seedha "add to balance" job kyun galat hai
+
+Socho ek naive cron job: har raat, har savings account ka balance uthao, daily rate apply karo, result ko seedha balance mein add kar do. Yeh problems create karta hai:
+
+- **Not auditable** — agar kal koi pooche "iss account ko October mahine mein kitna interest mila, aur kis rate pe?", is design mein koi trace nahi hai. Sirf ek bada number hai jisme interest kabhi-na-kabhi mix ho chuka hai.
+- **Not correctable** — agar pata chale ki 15 din tak galat rate use hui (jaise ek rate-change bug ki wajah se), to exact affected amount identify karna aur sirf uss part ko correct karna almost impossible hai jab interest already balance mein mix ho chuka hai.
+- **Double-counting risk** — agar job retry ho jaaye (crash ke baad), aur idempotency check na ho, to same din ka interest do baar add ho sakta hai.
+
+### DailyInterestAccrual table pattern
+
+Solution wahi principle hai jo LedgerEntry mein tha — **har accrual period apna record banaye**, na ki directly balance modify kare:
+
+```sql
+CREATE TABLE daily_interest_accrual (
+    accrual_id      BIGINT PRIMARY KEY,
+    account_id       BIGINT NOT NULL REFERENCES account(account_id),
+    accrual_date     DATE NOT NULL,
+    principal_used    DECIMAL(18, 2) NOT NULL,   -- balance used for this day's calc
+    rate_applied      DECIMAL(6, 4) NOT NULL,     -- annual %, e.g. 3.5000
+    amount_accrued    DECIMAL(18, 4) NOT NULL,    -- extra precision for small daily amounts
+    posted_to_ledger  BOOLEAN NOT NULL DEFAULT FALSE,
+    posted_at         TIMESTAMP,
+
+    CONSTRAINT uq_account_date UNIQUE (account_id, accrual_date)
+);
+
+CREATE INDEX idx_accrual_pending ON daily_interest_accrual (account_id) WHERE posted_to_ledger = FALSE;
+```
+
+Har din, har account ke liye ek row insert hoti hai — `principal_used`, `rate_applied`, aur us din ka `amount_accrued`. Yeh raw accrual rows abhi tak balance ko touch nahi karte. Phir, ek schedule pe (India mein savings accounts ke liye typically **quarterly**), ek posting job accumulated unposted accruals ko utha ke ek **single LedgerEntry** banata hai (ledger topic se — debit "Interest Expense" account, credit customer's savings account) aur un accrual rows ko `posted_to_ledger = TRUE` mark kar deta hai.
+
+Yeh do-step design (accrue daily, post periodically) exactly wahi separation hai jo double-entry pattern mein thi — raw events pehle record hote hain, phir woh ek ledger-affecting operation mein consolidate hote hain, aur dono steps independently auditable hain.
+
+### Rate aur principal store karna, sirf result nahi
+
+Yahan ek subtle but critical design choice hai: `daily_interest_accrual` sirf `amount_accrued` store nahi karta — yeh **`rate_applied` aur `principal_used`** bhi store karta hai, har row mein, alag se. Kyun? Kyunki agar kabhi pata chale ki ek specific period ke liye rate galat thi (jaise ek config bug ki wajah se 15 din tak purani rate use hui jab nayi rate lagni chahiye thi), tumhe **exactly** pata chal jaata hai kaunsi rows affected hain (`WHERE rate_applied = <wrong_rate> AND accrual_date BETWEEN ...`), aur tum sirf unko targeted correction entries se fix kar sakte ho — bina poore account ki history ko touch kiye. Agar sirf result store hota (`amount_accrued`, bina rate/principal ke), to yeh root-cause tracing possible hi nahi hota.
+
+### Time-series data: volume aur partitioning
+
+`daily_interest_accrual` ek classic **time-series** table hai — har account, har din, ek row. Ek bank ke saath 5 crore savings accounts, yeh table **5 crore rows per day** grow karta hai. Yeh volume automatically pichle module ke **partitioning** topic ko relevant bana deta hai — aisi tables typically `accrual_date` pe **partition** hoti hain (monthly ya quarterly partitions), taaki:
+
+- Query performance maintain rahe (recent partitions hi zyada query hoti hain)
+- Purani, already-posted partitions **archive** ki ja sakein aggressively — ek baar interest ledger mein post ho chuka, aur regulatory retention window (jaise India mein typically kayi saal) satisfy ho chuka, to woh partition cold storage mein move ho sakta hai without touching active operational tables.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein interest accrual discuss karte waqt, seedha "har din balance pe rate apply karke add kar do" mat bolo. `DailyInterestAccrual` table pattern bolo — daily accrual record, periodic posting to ledger, aur explicitly rate/principal store karna auditability ke liye. Yeh same "record, don't overwrite" principle hai jo double-entry ledger mein tha, applied to a different problem.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Indian savings accounts typically compute interest daily on the closing balance but credit (post) it quarterly. This is a direct real-world instance of the accrue-daily, post-periodically pattern — the bank must track daily accruals precisely even though the customer only sees a lump-sum credit every quarter, so that the quarterly figure is fully explainable and auditable down to the day.
+
+</RealWorld>
+
+<RealWorld company="Bajaj Finserv">
+
+NBFCs and lenders like Bajaj Finserv accrue loan interest daily against the outstanding principal, which changes with each EMI payment or prepayment. Storing `principal_used` per accrual row (not just the resulting interest amount) is essential here, since the principal itself changes over the loan's life and any dispute over interest charged requires reconstructing exactly what principal and rate applied on a specific day.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A bank with 50M savings accounts generates roughly 50M `daily_interest_accrual` rows per day — 1.5B+ rows per month
+- Interest posting (quarterly for Indian savings accounts) consolidates ~90 days of accrual rows into a single `LedgerEntry` pair per account
+- Extra decimal precision on `amount_accrued` (e.g. `DECIMAL(18,4)` instead of `DECIMAL(18,2)`) matters because daily accrual on a small balance can be a fraction of a paisa — rounding too early causes systemic drift over millions of accounts
+- Time-series accrual tables are commonly partitioned monthly or quarterly, keeping each partition to a manageable size for query and archival
+- Once posted and past the regulatory retention window, accrual partitions are frequently moved to cold/archival storage, often reducing active table size by 80%+ 
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt: "how would you calculate and credit savings account interest?" Weak answers describe a nightly job that mutates balance directly. Strong answers separate accrual (a daily record per account, storing rate and principal used, not just the amount) from posting (a periodic job that consolidates accruals into a proper `LedgerEntry`), explain why storing rate/principal enables targeted correction if a rate was wrong, and connect the resulting high-volume time-series table to partitioning and archival strategy.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Directly adding computed interest to a mutable `balance` column via a nightly job, with no per-period record of how the amount was derived.
+
+</Mistake>
+
+<Mistake>
+
+Storing only the final `amount_accrued` without the `rate_applied` and `principal_used` that produced it — makes correcting a wrong-rate period impossible to isolate.
+
+</Mistake>
+
+<Mistake>
+
+Running the accrual or posting job without an idempotency guard (e.g. a unique constraint on `account_id + accrual_date`) — a retry after a crash can double-count a day's interest.
+
+</Mistake>
+
+<Mistake>
+
+Using insufficient decimal precision for daily accrual amounts — rounding a fraction-of-a-paisa daily accrual too early causes small but systemic drift across millions of accounts.
+
+</Mistake>
+
+<Mistake>
+
+Leaving a high-volume time-series accrual table unpartitioned — query performance degrades and archival of already-posted data becomes an all-or-nothing operation instead of a clean partition drop.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    ACCOUNT ||--o{ DAILY_INTEREST_ACCRUAL : "accrues"
+    DAILY_INTEREST_ACCRUAL ||--o| LEDGER_ENTRY : "posted as"
+    ACCOUNT {
+        bigint account_id PK
+        decimal current_rate
+    }
+    DAILY_INTEREST_ACCRUAL {
+        bigint accrual_id PK
+        bigint account_id FK
+        date accrual_date
+        decimal principal_used
+        decimal rate_applied
+        decimal amount_accrued
+        boolean posted_to_ledger
+    }
+    LEDGER_ENTRY {
+        bigint entry_id PK
+        bigint account_id FK
+        string entry_type
+        decimal amount
+    }
+`}
+  caption="Interest accrues daily as its own auditable record (rate and principal preserved per row); a periodic posting job consolidates unposted accruals into a proper double-entry LedgerEntry pair."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never add computed interest directly to a mutable balance via a periodic job — same auditability/correctness problem as the ledger anti-pattern
+- `DailyInterestAccrual` table: one row per account per period, storing `principal_used`, `rate_applied`, and `amount_accrued` separately
+- Accrual happens daily/periodically as its own record; posting to the ledger happens on a schedule (e.g. quarterly for Indian savings accounts)
+- Storing rate and principal (not just the result) enables targeted correction if a period used a wrong rate
+- Posting consolidates accrued-but-unposted rows into a proper `LedgerEntry` debit/credit pair, tying back to double-entry design
+- High-volume time-series accrual tables are typically partitioned by date and archived aggressively once posted
+- Use extra decimal precision for daily accrual amounts to avoid systemic rounding drift across millions of accounts
+- Guard the accrual/posting jobs with idempotency (e.g. unique `account_id + accrual_date`) to prevent double-counting on retry
+
+</QuickRevision>

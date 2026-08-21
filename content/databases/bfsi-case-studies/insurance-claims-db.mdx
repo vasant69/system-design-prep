@@ -1,0 +1,275 @@
+---
+slug: "insurance-claims-db"
+title: "Design an Insurance Claims Processing Database"
+section: "databases"
+module: "bfsi-case-studies"
+order: 5
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["core-banking-schema"]
+tags: ["case-study", "bfsi", "insurance"]
+englishDefinition: "Design the database schema for an insurance claims processing system - tracking a policy, the claims filed against it through a multi-stage approval workflow (filed, under review, documents requested, approved/rejected, paid), and the documents/evidence attached to each claim."
+interviewFrequency: "medium"
+companies: ["LIC", "Bajaj Allianz", "HDFC Ergo"]
+---
+
+<SimpleDefinition>
+
+Design the database schema for an insurance claims processing system - tracking a policy, the claims filed against it through a multi-stage approval workflow (filed, under review, documents requested, approved/rejected, paid), and the documents/evidence attached to each claim.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Is section ke ab tak ke case studies mein — credit card authorization, core banking transfers — hero metric latency aur throughput tha. Insurance claims processing **fundamentally different profile** hai, aur yehi is topic ka sabse important interview signal hai: claims processing **real-time hot path nahi hai**. Koi POS terminal synchronously wait nahi kar raha. Iski jagah, correctness, **auditability**, aur poori workflow history matter karte hain — kyunki ek claim reject hone ke mahino baad customer complaint kar sakta hai, ya regulator poochh sakta hai "yeh decision kaise aur kab liya gaya". Agar interview mein tum yeh contrast explicitly bol dete ho — "yeh throughput-first system nahi hai, yeh audit-first system hai" — turant senior-level signal jaata hai.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Customer ek **Policy** hold karta hai (health, motor, life, etc.).
+- Customer ek incident ke against **Claim** file kare us policy pe.
+- Claim ek **multi-step review workflow** se guzre — filed, under review, possibly documents requested (multiple back-and-forth rounds), approved ya rejected.
+- Agar approved ho, ek **payout** process ho — yeh directly ledger/payment schema patterns se connect hota hai jo pehle case studies mein cover hua.
+- Claim ke saath **supporting documents/evidence** attach ho (bills, photos, reports, ID proofs).
+
+Non-functional requirements — yahan priority dusre case studies se explicitly alag hai:
+
+- **Correctness aur auditability sabse important hain**, raw throughput nahi. Ek insurance company shayad ek din mein kuch hazaar claims process karti hai, credit card ke lakhon transactions/second ke comparison mein — yeh comparatively **low-volume, low-throughput** workload hai.
+- **Full history reconstructable honi chahiye** — sirf current status kaafi nahi hai. "Yeh claim kab file hui, kab documents maange gaye, kaunse reviewer ne kab decision liya" — yeh sab traceable hona chahiye, customer transparency aur regulatory dispute dono ke liye.
+- Regulatory turnaround time compliance — insurance regulators (India mein IRDAI) aksar mandate karte hain ki claims ek fixed window ke andar decide ho (jaise 30 din), isliye SLA tracking bhi ek core requirement hai.
+- Consistency important hai lekin latency utni critical nahi — ek claim status update turant globally visible hona zaroori nahi hai millisecond-level pe, jaisa payment authorization mein tha.
+
+### Key Entities & Relationships
+
+- **Policy** — customer ka active insurance contract. Fields: `policy_number`, `policy_type`, `coverage_amount`, `start_date`, `end_date`, `customer_id`.
+- **Claim** — ek incident ke against filed request. Fields: `status` (current state), `incident_date`, `incident_description`, `filed_date`, `claimed_amount`, `approved_amount`.
+- **ClaimStatusHistory** — ek **append-only log** har status transition ka. Yeh directly audit trail / SCD Type 2 patterns se connect hota hai jo earlier topics mein cover hua — poori workflow history reconstructable honi chahiye, na sirf current status. Har row: `claim_id`, `old_status`, `new_status`, `changed_at`, `changed_by`, `notes`.
+- **ClaimDocument** — attached evidence. Important schema design choice: actual files (PDFs, images) typically **object storage** (S3/blob storage) mein rehte hain, database mein sirf **metadata/reference** stored hota hai — `document_id`, `claim_id`, `document_type`, `storage_url`, `uploaded_at`. Database ko blobs store karne ke liye use karna anti-pattern hai — bloat, backup slow, aur relational engines files serve karne ke liye optimize nahi hain.
+
+Relationships: ek Policy ke multiple Claims (1:N), ek Claim ki multiple ClaimStatusHistory entries over time (1:N, append-only), aur ek Claim ke multiple ClaimDocuments (1:N).
+
+### Schema Design
+
+```sql
+CREATE TABLE policy (
+    policy_id       BIGINT PRIMARY KEY,
+    policy_number   VARCHAR(20) UNIQUE NOT NULL,
+    customer_id     BIGINT NOT NULL REFERENCES customer(customer_id),
+    policy_type     VARCHAR(20) NOT NULL,        -- HEALTH, MOTOR, LIFE, etc.
+    coverage_amount DECIMAL(18, 2) NOT NULL,
+    start_date      DATE NOT NULL,
+    end_date        DATE NOT NULL
+);
+
+CREATE TABLE claim (
+    claim_id            BIGINT PRIMARY KEY,
+    policy_id           BIGINT NOT NULL REFERENCES policy(policy_id),
+    status               VARCHAR(20) NOT NULL,     -- FILED, UNDER_REVIEW, DOCS_REQUESTED, APPROVED, REJECTED, PAID
+    incident_date        DATE NOT NULL,
+    incident_description TEXT,
+    filed_date            TIMESTAMP NOT NULL DEFAULT now(),
+    claimed_amount        DECIMAL(18, 2) NOT NULL,
+    approved_amount       DECIMAL(18, 2),           -- NULL until decided; can differ from claimed_amount
+    decision_deadline     DATE                       -- regulatory SLA tracking
+);
+
+CREATE TABLE claim_status_history (
+    history_id    BIGINT PRIMARY KEY,
+    claim_id      BIGINT NOT NULL REFERENCES claim(claim_id),
+    old_status    VARCHAR(20),
+    new_status    VARCHAR(20) NOT NULL,
+    changed_at    TIMESTAMP NOT NULL DEFAULT now(),
+    changed_by    BIGINT,             -- reviewer/agent id, or NULL for system-generated transitions
+    notes         TEXT
+);
+
+CREATE TABLE claim_document (
+    document_id    BIGINT PRIMARY KEY,
+    claim_id       BIGINT NOT NULL REFERENCES claim(claim_id),
+    document_type  VARCHAR(30) NOT NULL,   -- BILL, PHOTO, MEDICAL_REPORT, ID_PROOF, etc.
+    storage_url    TEXT NOT NULL,          -- reference to object storage, not the file itself
+    uploaded_at    TIMESTAMP NOT NULL DEFAULT now()
+);
+```
+
+`claim.status` ek "current state" column hai — fast lookups ke liye zaroori hai — lekin **kabhi bhi source of truth nahi** poori history ke liye. Har baar status change ho, ek naya row `claim_status_history` mein insert hota hai; purane rows kabhi update nahi hote. Yeh exact wahi append-only audit trail pattern hai jo SCD Type 2 mein dekha tha — current-state table fast reads ke liye, history table full traceability ke liye.
+
+### Query Patterns & Indexing
+
+**"Saari claims jo abhi documents ka wait kar rahi hain"** — yeh ek ops team ka queue hai, jo reviewers roz dekhte hain. Status-indexed query:
+
+```sql
+CREATE INDEX idx_claim_status ON claim (status);
+
+SELECT * FROM claim WHERE status = 'DOCS_REQUESTED' ORDER BY filed_date;
+```
+
+**"Is claim ki poori history"** — customer support ya dispute resolution ke liye, `ClaimStatusHistory` ko `claim_id` aur timestamp se order karke:
+
+```sql
+CREATE INDEX idx_history_claim_time ON claim_status_history (claim_id, changed_at);
+
+SELECT * FROM claim_status_history WHERE claim_id = ? ORDER BY changed_at;
+```
+
+**"Claims jo regulatory decision deadline ke paas hain"** — SLA tracking ke liye, date-indexed query jo un claims ko surface kare jinka `decision_deadline` jald aane wala hai aur abhi bhi `FILED`/`UNDER_REVIEW`/`DOCS_REQUESTED` state mein hain:
+
+```sql
+CREATE INDEX idx_claim_deadline_status ON claim (decision_deadline, status);
+
+SELECT * FROM claim
+WHERE status IN ('FILED', 'UNDER_REVIEW', 'DOCS_REQUESTED')
+  AND decision_deadline <= CURRENT_DATE + INTERVAL '5 days'
+ORDER BY decision_deadline;
+```
+
+Yeh teeno queries operational dashboards power karti hain — ops team ka daily queue, customer-facing history view, aur compliance/SLA monitoring, teeno alag access patterns hain isliye alag indexes justify karte hain (write overhead insert-heavy nahi hai yahan, jo claims workload ke low-throughput nature ke saath fine trade-off hai).
+
+### Scaling/Integrity Considerations
+
+Yeh explicitly contrast-worthy point hai: is poore module ke doosre case studies (credit card, core banking) mein scaling concern throughput aur latency the — millions of transactions/second, sub-second authorization. Insurance claims workload **comparatively low-volume aur low-throughput** hai — ek mid-size insurer shayad din mein kuch hazaar claims process karta hai, credit card transactions ke comparison mein orders of magnitude kam. Isliye is design ka emphasis explicitly **correctness aur auditability** pe hai, raw scale pe nahi.
+
+Iska matlab yeh nahi hai ki integrity concerns nahi hain — bilkul hain, bas alag shape ke:
+
+- **ClaimStatusHistory kabhi edit nahi honi chahiye, sirf append** — agar ek galat status transition record ho gayi, fix ek naya correcting row hai, purana row edit karna nahi. Yeh regulatory audit requirement bhi hai — history immutable honi chahiye.
+- **claim.status aur ClaimStatusHistory ka latest row hamesha consistent hone chahiye** — inhe ek hi database transaction mein update karo (status column update + history row insert, dono atomic).
+- Documents object storage mein hain, lekin `ClaimDocument.storage_url` reference database mein hai — agar object storage se file delete ho jaaye but reference reh jaaye (ya vice versa), dono systems ke beech consistency ek real operational concern hai, jise periodic reconciliation ya soft-delete pattern se handle karte hain.
+
+### Follow-Up Questions
+
+- **Claim reject hone ke baad reopen ho to?** Purane status history rows kabhi edit nahi hote — naya status transition row insert hota hai (`REJECTED` -> `UNDER_REVIEW` reopened), poori purani history intact rehti hai as-is. Yeh append-only principle ka hi extension hai — history "kya hua" ka record hai, "ab kya sahi hai" ka nahi.
+- **Partial approval kaise model karein?** Jab claimed amount se kam amount approve hota hai (jaise customer ne ₹50,000 claim ki, insurer ne ₹35,000 approve ki, kisi exclusion clause ki wajah se), `claim.approved_amount` field `claimed_amount` se independently store hoti hai — dono values database mein rehte hain, aur `ClaimStatusHistory` ka `notes` field decision ka reasoning capture kar sakta hai (jaise "partial approval — X exclusion applied"). Yeh design choice hi transparency ke liye zaroori hai — customer ko exactly pata chalna chahiye kitna claim kiya tha, kitna mila, aur kyun.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Full auditability - regulator/customer dispute me poori history turant reconstructable", "Correcting mistakes ek naya row se hota hai, purana record kabhi lost nahi hota", "Current-state column (claim.status) fast queue queries deta hai bina history table join kiye"]}
+  cons={["Extra storage - har status change ek naya row banata hai, table samay ke saath badhta rehta hai", "Do jagah consistency maintain karni padti hai (claim.status aur latest history row) - dono ko ek transaction mein update karna zaroori hai", "Query 'full history' thoda zyada complex hai simple current-status lookup se"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Ergo / Bajaj Allianz">
+
+Health insurance claims mein "cashless" flow ek achha real-world example hai multi-step workflow ka — hospital pehle pre-authorization request bhejta hai, insurer usse review karta hai (kabhi additional medical documents maangta hai), phir approve/reject karta hai, aur discharge ke baad final bill settlement hoti hai. Yeh poora flow `FILED` -> `UNDER_REVIEW` -> `DOCS_REQUESTED` -> `APPROVED` -> `PAID` states se exactly map hota hai, aur har step customer ko app mein dikhta hai — jo sirf isliye possible hai kyunki poori history ek queryable table mein hai.
+
+</RealWorld>
+
+<RealWorld company="LIC">
+
+Life insurance claims (death claims) mein regulatory turnaround time particularly strict hote hain — IRDAI guidelines claim settlement ke liye specific timelines mandate karte hain. Isi wajah se `decision_deadline`-indexed query jaisa SLA tracking real production systems mein critical operational dashboard hota hai — ops teams roz dekhte hain kaunsi claims deadline ke close hain, taaki regulatory penalty na lage.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Claims workload volume: typically thousands per day for a mid-size insurer — orders of magnitude lower than payment/card transaction volumes
+- Regulatory claim decision turnaround (India, IRDAI-style norms): often around 30 days from complete document submission
+- Average back-and-forth document request rounds per claim: commonly 1-3 before a final decision
+- ClaimStatusHistory rows per claim: typically 4-8 (filed, under review, docs requested x N, approved/rejected, paid)
+- Document storage: actual files in object storage (often GBs-TBs across a claims portfolio); database only stores lightweight metadata references (KBs)
+- A claims database prioritizes auditability and correctness over raw throughput - a deliberate contrast to the payments/card case studies in this module
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar simple-sounding prompt deta hai: "design a schema for insurance claims". Weak candidates seedha ek `Claim` table banate hain with a `status` column aur ruk jaate hain. Strong candidates proactively point out karte hain ki sirf current status kaafi nahi hai — poori workflow history (multiple document-request rounds, kab kisne decision liya) reconstructable honi chahiye, aur iske liye ek append-only `ClaimStatusHistory` table zaroori hai. Ek aur strong signal: explicitly bolna ki yeh workload **audit-first hai, throughput-first nahi** — yeh module ke doosre case studies (payments, cards) se deliberately different profile hai, aur design decisions (jaise heavier write pattern with history rows being acceptable) usi contrast se justify hote hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sirf `claim.status` ko current value rakh ke overwrite karte rehna, bina koi history track kiye — customer dispute ya regulatory audit ke time poora workflow reconstruct nahi ho paata.
+
+</Mistake>
+
+<Mistake>
+
+`ClaimStatusHistory` ke purane rows ko edit karna jab galti fix karni ho, delete/update se — audit trail immutable honi chahiye, fix hamesha ek naya correcting row hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Actual document files (PDFs, images) ko database mein blob column mein store karna, object storage use karne ke bajaye — database bloat hota hai, backups slow hote hain, aur relational engines file-serving ke liye optimize nahi hote.
+
+</Mistake>
+
+<Mistake>
+
+`claim.status` update aur `ClaimStatusHistory` insert ko do alag, non-atomic operations ki tarah treat karna — agar beech mein crash ho jaaye, dono out of sync ho sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Is system ko payments/cards jaisa throughput-first system treat karna aur unnecessary complexity add karna (jaise aggressive caching/sharding) jab actual bottleneck kabhi throughput nahi, correctness aur auditability hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    POLICY ||--o{ CLAIM : "has"
+    CLAIM ||--o{ CLAIM_STATUS_HISTORY : "logs"
+    CLAIM ||--o{ CLAIM_DOCUMENT : "attaches"
+    POLICY {
+        bigint policy_id PK
+        string policy_number
+        bigint customer_id FK
+        string policy_type
+        decimal coverage_amount
+    }
+    CLAIM {
+        bigint claim_id PK
+        bigint policy_id FK
+        string status
+        date incident_date
+        decimal claimed_amount
+        decimal approved_amount
+        date decision_deadline
+    }
+    CLAIM_STATUS_HISTORY {
+        bigint history_id PK
+        bigint claim_id FK
+        string old_status
+        string new_status
+        timestamp changed_at
+        bigint changed_by
+    }
+    CLAIM_DOCUMENT {
+        bigint document_id PK
+        bigint claim_id FK
+        string document_type
+        text storage_url
+    }
+`}
+  caption="ClaimStatusHistory is append-only - the claim's full workflow history must be reconstructable, not just its current status. ClaimDocument stores object-storage references, not the files themselves."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Insurance claims processing is audit-first, not throughput-first - a deliberate contrast to payments/card case studies in this module
+- Claim.status gives a fast current-state lookup; ClaimStatusHistory is the append-only source of full workflow truth
+- Never edit old ClaimStatusHistory rows - corrections are always new rows, history stays immutable
+- ClaimDocument stores metadata/references (storage_url) - actual files live in object storage, not the database
+- Status update and history-row insert must happen in one atomic transaction to avoid drift
+- Regulatory decision-deadline SLA tracking needs a date-indexed query on claim (decision_deadline, status)
+- Reopening a rejected claim means a new status-history row, never editing the rejection record
+- Partial approval is modeled with approved_amount stored independently from claimed_amount, with reasoning in history notes
+
+</QuickRevision>

@@ -1,0 +1,192 @@
+---
+slug: "query-execution-plans"
+title: "Reading Query Execution Plans"
+section: "databases"
+module: "indexing-performance"
+order: 3
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["index-internals-oltp"]
+tags: ["indexing", "performance", "sql"]
+englishDefinition: "A query execution plan is the step-by-step strategy a database's query optimizer chooses to execute a given SQL query — which indexes to use, in what order to join tables, whether to scan the full table or use an index. It is viewable via EXPLAIN or EXPLAIN ANALYZE, and is the essential tool for diagnosing why a query is slow."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+A query execution plan is the step-by-step strategy a database's query optimizer chooses to execute a given SQL query — which indexes to use, in what order to join tables, whether to scan the full table or use an index. It is viewable via `EXPLAIN` or `EXPLAIN ANALYZE`, and is the essential tool for diagnosing why a query is slow.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne indexes ke baare mein theoretically baat ki hai — kaunsa index banao, kis order mein columns rakho. Lekin production mein sabse zaroori skill yeh hai: **jab koi query slow ho, to yeh kaise pata karo ki kyun slow hai?** Yahan `EXPLAIN` aur `EXPLAIN ANALYZE` kaam aate hain — yeh database se poochte hain "tum yeh query kaise execute karoge?"
+
+### EXPLAIN vs EXPLAIN ANALYZE
+
+- `EXPLAIN` sirf **planned** strategy dikhata hai — query optimizer kya karega, bina actually query run kiye.
+- `EXPLAIN ANALYZE` query ko **actually run** karta hai aur real timing bhi dikhata hai (kitne rows actually match hue, kitna time laga har step mein) — isliye yeh zyada reliable diagnostic hai, lekin caution: yeh actual query execute karta hai, isliye production pe heavy write query pe `EXPLAIN ANALYZE` chalane se pehle soch lo.
+
+### Plan mein kya dhoondhna hai
+
+**1. Scan type** — sabse pehli aur sabse important cheez:
+
+- **Seq Scan (full table scan)** — database poora table row-by-row padh raha hai. Chhoti tables (ya jab query 30%+ rows match kare) ke liye yeh actually optimal hota hai — surprising lagta hai, lekin agar most rows match hi karni hain, to index overhead se seedha scan karna cheaper hai. Lekin bade tables (crores rows) pe, agar sirf chand rows match honi hain, to Seq Scan disaster hai.
+- **Index Scan** — index se matching rows ke locations dhoondhta hai, phir har row ko table se fetch karta hai (extra lookup step).
+- **Index-Only Scan** — best case, jaise pichle topic mein covered — index se hi poora answer mil jaata hai, table ko touch karne ki zaroorat nahi.
+
+**2. Join strategy** — jab multiple tables join ho rahi hon:
+
+- **Nested Loop Join** — outer table ke har row ke liye, inner table mein match dhoondha jaata hai. Chhote result sets ke liye fine, lekin dono tables bade hon to expensive ho jaata hai (roughly O(n×m)).
+- **Hash Join** — ek table se hash table banti hai memory mein, phir dusri table ke rows usse match kiye jaate hain. Bade unsorted datasets ke liye zyada efficient.
+- **Merge Join** — dono tables already sorted hon (aksar index ki wajah se) to dono ko ek saath "merge" karke match kiya jaata hai — bahut efficient jab dono sides pehle se sorted hon.
+
+Optimizer khud decide karta hai kaunsa strategy use karna hai, based on estimated row counts, available indexes, aur table statistics.
+
+### Classic real-world debugging story
+
+Ek query jo pehle fast thi, achanak slow ho jaati hai — production mein yeh bahut common pattern hai. Wajah aksar yeh hoti hai: table grow hua, lekin optimizer ke paas **stale statistics** hain. Har database internally table ke baare mein statistics maintain karta hai (row count, value distribution, cardinality estimates) — inhi ke basis pe optimizer decide karta hai ki index use karna sasta hai ya seq scan. Agar yeh statistics purani hain (table 10 guna badh gaya lekin stats update nahi hue), optimizer galat decision le sakta hai — jaise ek index available hone ke bawajood bhi seq scan choose kar lena, kyunki usko lagta hai table abhi bhi chhota hai.
+
+Fix: `ANALYZE` command (Postgres) ya equivalent (MySQL mein `ANALYZE TABLE`) chala ke statistics refresh karo. Production systems mein yeh usually auto-vacuum/auto-analyze jobs se automatically hota hai, lekin bahut bada bulk insert/delete hone ke baad manually trigger karna zaroori pad sakta hai.
+
+### BFSI scenario — walkthrough
+
+Socho ek query hai:
+
+```sql
+SELECT * FROM Transaction
+WHERE account_id = 12345
+ORDER BY transaction_date DESC
+LIMIT 10;
+```
+
+Staging environment mein yeh query 1000 rows wale table pe instant chalti hai — koi issue dikhta nahi. Production mein deploy hone ke baad, `Transaction` table mein 50 crore (500 million) rows hain, aur query **timeout** hone lagti hai.
+
+`EXPLAIN ANALYZE` chalane pe pata chalta hai:
+
+```
+Seq Scan on transaction  (cost=0.00..8500000.00 rows=5 width=120) (actual time=45000.00..45012.00 rows=10 loops=1)
+  Filter: (account_id = 12345)
+  Rows Removed by Filter: 499999990
+```
+
+Yeh clearly dikha raha hai: database poore 50 crore rows padh raha hai, sirf 10 return karne ke liye — kyunki `account_id` pe **koi index nahi hai**. Staging mein yeh issue nazar hi nahi aaya kyunki 1000 rows pe seq scan bhi milliseconds mein complete ho jaata hai — problem sirf scale pe zaahir hoti hai.
+
+Fix simple hai:
+
+```sql
+CREATE INDEX idx_txn_account_date ON Transaction (account_id, transaction_date DESC);
+```
+
+Isi query ko dobara `EXPLAIN ANALYZE` karne pe plan badal jaata hai `Index Scan using idx_txn_account_date` mein, actual time milliseconds mein aa jaata hai. Yeh exact scenario interviews mein bahut common hai — "staging mein fast, production mein slow kyun" ek classic diagnostic question hai, aur `EXPLAIN` iska direct jawab hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`EXPLAIN ANALYZE` actually query ko execute karta hai — `SELECT` ke liye generally safe hai, lekin agar tum galti se ek `UPDATE`/`DELETE` query pe `EXPLAIN ANALYZE` chala do bina transaction wrap kiye, woh actually data modify kar dega. Production debugging session mein hamesha `BEGIN; EXPLAIN ANALYZE ...; ROLLBACK;` pattern use karo write queries ke liye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Statement-generation microservice ka ek query staging mein perfectly fast tha, lekin production rollout ke pehle hafte mein hi timeout dena shuru kar diya. Root cause analysis `EXPLAIN ANALYZE` se turant clear ho gaya — `account_id` pe index missing tha, aur staging ka chhota dataset issue ko mask kar raha tha. Yeh exact category ka bug BFSI teams mein itna common hai ki bahut si teams ab CI pipeline mein hi "naye query ke liye plan check" automated karti hain before production deploy.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+High-traffic order search query occasionally slow ho jaati thi peak sale events ke time, jab table statistics stale ho jaate the bulk order-insert ke baad. Team ne `EXPLAIN ANALYZE` se dekha ki optimizer Hash Join ke bajaye expensive Nested Loop choose kar raha tha kyunki stats purane the aur row-count estimate galat tha — manual `ANALYZE` trigger karne se plan turant sahi ho gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Seq Scan on a 500M-row table for a highly selective filter: can take tens of seconds to minutes, vs single-digit milliseconds with the right index</li>
+<li>Nested Loop join cost grows roughly with rows(outer) x rows(inner) — becomes very expensive once both sides are large</li>
+<li>Stale statistics are a common root cause when a query "used to be fast" — auto-analyze thresholds (e.g. 10% of table changed) sometimes lag behind sudden bulk inserts</li>
+<li>EXPLAIN itself has near-zero cost (just plan generation); EXPLAIN ANALYZE cost equals actually running the query</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very realistic interview scenario: "this query is fast in staging but times out in production — how do you debug it?" The strong answer path is: run `EXPLAIN ANALYZE` on production (safely, read-only), look for Seq Scan on a large table where an index should apply, check `rows` estimated vs `actual` (a big mismatch signals stale statistics), and only then propose a fix — usually a missing index or a stats refresh, not a guess. Interviewers specifically reward candidates who reach for the diagnostic tool before proposing a fix, rather than guessing "just add an index" blind.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Guessing at a fix ("let's add an index") without first running `EXPLAIN`/`EXPLAIN ANALYZE` to confirm what the optimizer is actually doing.
+
+</Mistake>
+
+<Mistake>
+
+Testing query performance only in staging with a tiny dataset — a full table scan looks instant on 1,000 rows and catastrophic on 500 million.
+
+</Mistake>
+
+<Mistake>
+
+Running `EXPLAIN ANALYZE` on a write query (UPDATE/DELETE) in production without wrapping it in a transaction and rolling back — it actually executes the write.
+
+</Mistake>
+
+<Mistake>
+
+Assuming a Seq Scan is always bad — on a small table, or when most rows match the filter, a Seq Scan can genuinely be the optimizer's correct choice.
+
+</Mistake>
+
+<Mistake>
+
+Ignoring stale statistics as a cause of sudden slowdowns — a table that grew or changed shape dramatically needs a fresh `ANALYZE` for the optimizer to make good decisions again.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Query["Slow query in production"] --> Explain["Run EXPLAIN ANALYZE"]
+    Explain --> Check{Seq Scan on large table?}
+    Check -- Yes --> Rows{actual rows vs estimated rows way off?}
+    Rows -- Yes --> Stale["Stale statistics: run ANALYZE"]
+    Rows -- No --> Missing["Missing index: CREATE INDEX on filter column"]
+    Check -- No --> Join{Expensive join strategy?}
+    Join -- Yes --> JoinFix["Check join columns are indexed, refresh stats"]
+    Join -- No --> Other["Investigate query shape / LIMIT / sort"]
+`}
+  caption="A practical diagnostic flow starting from EXPLAIN ANALYZE output, working toward the likely root cause."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>EXPLAIN shows the planned strategy; EXPLAIN ANALYZE actually runs the query and shows real timings</li>
+<li>Seq Scan = full table scan (fine for small tables or high-match-rate queries, bad on large selective queries)</li>
+<li>Index Scan fetches matching rows via index then looks up the table; Index-Only Scan skips that lookup entirely</li>
+<li>Join strategies: Nested Loop (small sets), Hash Join (large unsorted sets), Merge Join (both sides pre-sorted)</li>
+<li>"Fast in staging, slow in production" is usually a missing index or stale statistics, revealed instantly by EXPLAIN ANALYZE</li>
+<li>Stale statistics can make the optimizer pick a Seq Scan even when a usable index exists — fix with ANALYZE</li>
+<li>Always wrap EXPLAIN ANALYZE on write queries in a transaction with ROLLBACK in production</li>
+</ul>
+
+</QuickRevision>

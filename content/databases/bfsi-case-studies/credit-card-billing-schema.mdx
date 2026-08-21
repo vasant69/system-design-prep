@@ -1,0 +1,287 @@
+---
+slug: "credit-card-billing-schema"
+title: "Design a Credit Card Transaction & Billing System"
+section: "databases"
+module: "bfsi-case-studies"
+order: 4
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["interest-accrual-time-series"]
+tags: ["case-study", "bfsi", "credit-cards"]
+englishDefinition: "Design the database schema for a credit card system - tracking a card's available credit limit in real time as transactions authorize and settle, generating monthly statements, calculating interest on unpaid balances, and handling the distinct authorization-then-settlement flow that differentiates card transactions from a simple debit."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Design the database schema for a credit card system - tracking a card's available credit limit in real time as transactions authorize and settle, generating monthly statements, calculating interest on unpaid balances, and handling the distinct authorization-then-settlement flow that differentiates card transactions from a simple debit.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Debit card aur credit card dikhne mein similar lagte hain — dono se POS terminal pe swipe karke payment ho jaata hai. Lekin schema design ke level pe yeh do fundamentally different problems hain. Debit card mein paisa turant tumhare apne account se nikalta hai. Credit card mein bank tumhe **udhaar** de raha hai, aur woh udhaar do alag steps mein hota hai — pehle "authorize" (hold), phir din-hafton baad "settle" (actual money movement). Yeh authorization-settlement split hi is poore case study ka core hai, aur yahi wo jagah hai jahan zyada candidates schema flat bana dete hain aur is critical distinction ko miss kar dete hain.
+
+### Requirements Clarification
+
+Functional requirements:
+
+- Card ek transaction ko **authorize** kare available credit ke against, real time mein — POS terminal ya online checkout ko turant approve/decline chahiye.
+- Authorized transactions **settle** hon ek monthly billing cycle mein — actual merchant settlement, jo authorization ke kuch din baad hota hai.
+- Har billing cycle ke end pe ek **statement** generate ho — total amount due, minimum due, due date.
+- Agar customer poora due amount pay nahi karta, carried-forward balance pe **interest** calculate ho agle cycle se.
+- Refunds aur disputes handle ho — merchant refund, ya customer chargeback/dispute raise kare.
+
+Non-functional requirements — yahan priority explicitly bolna chahiye:
+
+- **Authorization latency extremely low honi chahiye** — POS terminal customer ke saamne synchronously wait kar raha hai. Agar authorization slow hai, checkout line mein delay hota hai, customer experience kharab hoti hai, aur merchants complain karte hain.
+- **Availability bhi critical hai** — agar authorization service down hai, har card decline ho jaata hai, jo business impact bhi hai aur customer trust bhi todta hai.
+- **Correctness non-negotiable hai** — kisi bhi haal mein card ki spending, uski credit limit se zyada nahi jaani chahiye, chahe **concurrent simultaneous swipes** ho rahe hon (ek hi card do jagah, do terminals pe, almost same second mein — jaise fraud ya genuinely fast back-to-back purchases). Yeh exact wahi "lost update" race condition hai jo locking/concurrency topics mein cover hoti hai — do transactions parallel mein same row read karke, dono stale value pe based decision le lete hain, aur combined result limit se upar chala jaata hai.
+- Auditability — RBI/regulatory requirement bhi hai ki har transaction, statement, aur interest calculation traceable ho.
+
+Interviewer se yahan explicitly confirm karna chahiye ki authorization path **synchronous aur latency-sensitive** hai, jabki statement generation **asynchronous batch** hai — yeh distinction poore design ko shape karta hai.
+
+### Key Entities & Relationships
+
+- **Card** — ek issued credit card. Key fields: `credit_limit` (total sanctioned limit), `available_credit` (kitna abhi spend karne layak bacha hai — yeh maintained column hai, computed-on-the-fly nahi, jiski wajah aage explain karenge).
+- **Transaction** — har authorization/settlement attempt. Critical field: `status`, jo `AUTHORIZED` ya `SETTLED` (ya `DECLINED`, `EXPIRED`, `REVERSED`) ho sakta hai. Yeh do states **alag isliye** hain kyunki authorization sirf ek **hold** hai available credit pe — actual merchant ko paisa turant nahi milta. Merchant apna batch settlement din baad submit karta hai (kabhi kabhi 1-3 din baad), aur tabhi actual money movement hota hai. Agar authorization kabhi settle hi nahi hoti (customer ne cancel kar diya, ya merchant ne submit nahi kiya), woh **expire** ho jaati hai aur uska hold release hota hai.
+- **StatementCycle** — ek billing period (jaise 1st se 30th). Fields: `total_due`, `minimum_due`, `due_date`, `previous_balance`, `interest_charged`.
+- **Payment** — customer ne statement ke against kitna pay kiya, kab.
+
+Relationships: ek Card ke multiple Transactions (1:N), ek Card ke multiple StatementCycles over time (1:N), ek StatementCycle ke multiple settled Transactions us period ke andar (1:N), aur ek StatementCycle ke multiple Payments (1:N, kyunki customer partial payments bhi kar sakta hai).
+
+### Schema Design
+
+```sql
+CREATE TABLE card (
+    card_id          BIGINT PRIMARY KEY,
+    account_id       BIGINT NOT NULL REFERENCES account(account_id),
+    credit_limit     DECIMAL(18, 2) NOT NULL,
+    available_credit DECIMAL(18, 2) NOT NULL,   -- maintained, not derived on read
+    status           VARCHAR(10) NOT NULL DEFAULT 'ACTIVE',
+    created_at       TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE card_transaction (
+    transaction_id    BIGINT PRIMARY KEY,
+    card_id           BIGINT NOT NULL REFERENCES card(card_id),
+    merchant_id       BIGINT NOT NULL,
+    auth_amount       DECIMAL(18, 2) NOT NULL,
+    settled_amount    DECIMAL(18, 2),               -- NULL until settled, can differ from auth_amount
+    status            VARCHAR(10) NOT NULL CHECK (status IN ('AUTHORIZED', 'SETTLED', 'DECLINED', 'EXPIRED', 'REVERSED')),
+    authorized_at     TIMESTAMP NOT NULL,
+    settled_at        TIMESTAMP,
+    statement_cycle_id BIGINT REFERENCES statement_cycle(cycle_id)
+);
+
+CREATE TABLE statement_cycle (
+    cycle_id          BIGINT PRIMARY KEY,
+    card_id           BIGINT NOT NULL REFERENCES card(card_id),
+    period_start      DATE NOT NULL,
+    period_end        DATE NOT NULL,
+    previous_balance  DECIMAL(18, 2) NOT NULL DEFAULT 0,
+    total_due         DECIMAL(18, 2) NOT NULL,
+    minimum_due       DECIMAL(18, 2) NOT NULL,
+    interest_charged  DECIMAL(18, 2) NOT NULL DEFAULT 0,
+    due_date          DATE NOT NULL
+);
+
+CREATE TABLE payment (
+    payment_id     BIGINT PRIMARY KEY,
+    cycle_id       BIGINT NOT NULL REFERENCES statement_cycle(cycle_id),
+    amount         DECIMAL(18, 2) NOT NULL,
+    paid_at        TIMESTAMP NOT NULL DEFAULT now()
+);
+```
+
+Notice `available_credit` Card table pe ek **maintained column** hai — is decision ka reasoning Query Patterns section mein aata hai. Aur `card_transaction.settled_amount` deliberately `auth_amount` se alag column hai, kyunki settlement amount authorization amount se differ kar sakta hai (tips, currency conversion — Follow-Up Questions mein detail mein).
+
+### Query Patterns & Indexing
+
+**"Available credit right now"** — yeh sabse latency-critical query hai poore system mein, kyunki POS terminal synchronously wait kar raha hai. Do options hain:
+
+1. Har baar `SUM` karo saari `AUTHORIZED` + `SETTLED` transactions ka aur `credit_limit` se subtract karo. Yeh **correct hai lekin slow** — ek active card pe hazaaron historical transactions ho sakti hain, aur har authorization attempt pe poori history scan karna authorization latency ko unacceptable bana dega.
+2. `Card.available_credit` ko ek **maintained column** rakho jo har authorization/settlement/expiry pe transactionally update hoti hai. Read simple `SELECT available_credit FROM card WHERE card_id = ?` ban jaata hai — O(1), index (primary key) se turant.
+
+Production systems option 2 use karte hain — real-time authorization latency requirement isse practically mandate karta hai. `card_id` primary key already ek natural index hai is lookup ke liye.
+
+**"Generate this cycle's statement"** — yeh ek **batch job** hai, authorization path pe nahi hai, isliye heavier query acceptable hai. Query: sab `SETTLED` transactions us `card_id` aur date-range ke liye aggregate karo. Iske liye composite index chahiye:
+
+```sql
+CREATE INDEX idx_txn_card_status_date
+    ON card_transaction (card_id, status, settled_at);
+```
+
+Yeh index dono query patterns ko support karta hai — "is card ki saari settled transactions is period mein" (statement generation) aur "is card ki saari authorized-but-not-settled transactions" (expiry job ke liye, status filter pe).
+
+### Scaling/Integrity Considerations
+
+Yahan pe wahi "lost update" race condition aati hai jo locking/concurrency topics mein cover hoti hai, aur yeh is case study ka sabse important integrity concern hai. Socho: ek card ka `available_credit` ₹1,000 hai, aur do transactions **almost simultaneously** aati hain — ek ₹700 ki, ek ₹600 ki, dono alag terminals se (ek fraud scenario ka classic pattern, ya genuinely fast back-to-back purchases). Dono transactions parallel mein `available_credit` read karte hain (`₹1,000`), dono independently decide karte hain "yeh approve ho sakta hai", aur dono commit ho jaate hain — total ₹1,300 spend ho gaya ek ₹1,000 limit pe. Yeh limit-never-exceed invariant ka direct violation hai.
+
+Do standard solutions hain:
+
+1. **Pessimistic locking** — authorization ke waqt `SELECT ... FOR UPDATE` chalao Card row pe, taaki dusri concurrent transaction wait kare jab tak pehli commit/rollback na ho jaaye:
+
+```sql
+BEGIN;
+SELECT available_credit FROM card WHERE card_id = ? FOR UPDATE;
+-- check available_credit >= auth_amount in application code
+UPDATE card SET available_credit = available_credit - :auth_amount WHERE card_id = ?;
+COMMIT;
+```
+
+2. **Atomic conditional update** — ek single `UPDATE` statement jo condition aur mutation dono ek atomic step mein kare, aur rows-affected check karo:
+
+```sql
+UPDATE card
+SET available_credit = available_credit - :auth_amount
+WHERE card_id = :card_id AND available_credit >= :auth_amount;
+-- application checks: rows_affected == 1 ? approve : decline
+```
+
+Doosra approach generally **better hai high-throughput authorization ke liye** — koi explicit lock hold nahi hota, database ka atomic `UPDATE` khud hi the check-and-mutate ko ek single indivisible step banata hai, jo lock-hold-and-release ke latency overhead se bachata hai. `FOR UPDATE` approach zyada explicit hai aur complex multi-step logic ke liye better fit ho sakta hai, lekin zyada contention create karta hai agar ek hi row pe bahut saari concurrent requests aa rahi hon.
+
+Statement generation aur interest calculation batch jobs hain — yeh authorization path se completely decoupled hain, isliye inhe scale karna alag concern hai (parallelize by card_id range, ya queue-based processing), aur yeh availability/latency-sensitive nahi hain jaisa authorization hai.
+
+### Follow-Up Questions
+
+- **Settlement amount authorization amount se differ kare to?** Common scenarios: restaurant tips (authorization ek estimate hota hai, final bill zyada), currency conversion (foreign transaction, exchange rate settlement ke time thoda alag ho sakta hai), ya partial shipment (e-commerce order jisme sirf kuch items ship hue). Design mein `settled_amount` ko `auth_amount` se separate column rakhna isliye zaroori hai — settlement ke time, hold release karo original `auth_amount` ka, aur naya deduction karo actual `settled_amount` ka. Agar settled amount zyada hai to additional available_credit check bhi lagta hai us extra amount ke liye.
+- **Authorization kabhi settle hi nahi hoti to?** Merchants ke paas typically ek fixed window hota hai (jaise 7 din) settlement submit karne ke liye. Ek **expiry batch job** periodically un `AUTHORIZED` transactions ko dhoondta hai jinki `authorized_at` window se purani hai aur unhe `EXPIRED` mark karke unka hold `available_credit` mein wapas release karta hai — taaki customer ka credit unnecessarily blocked na rahe.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Sabse common interview trap: candidate seedha bol deta hai "authorization ka matlab hi transaction ho gaya" — yeh galat hai. Authorization sirf ek **hold** hai; actual merchant settlement alag event hai, days later ho sakta hai, aur kabhi ho hi nahi sakta (expire ho jaaye). Yeh distinction miss karna turant signal deta hai ki candidate ne real card networks (Visa/Mastercard authorization-clearing-settlement flow) ka mental model nahi banaya.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Indian credit card statements ek fixed monthly cycle follow karte hain (jaise "5th se 4th" billing period), aur due date typically cycle-end ke 18-21 din baad hoti hai. Minimum due amount total outstanding ka ek percentage hota hai (aksar 5%), aur agar poora due pay nahi hota, remaining balance pe monthly interest (aksar 3-3.5% per month, jo annualized 40%+ tak ho sakta hai) charge hota hai — yeh exactly wahi `statement_cycle.interest_charged` field hai jo carried-forward balance pe compute hota hai.
+
+</RealWorld>
+
+<RealWorld company="Amazon Pay ICICI Card">
+
+Online checkout pe jab tum Amazon pe apna credit card use karte ho, authorization turant hoti hai (order confirm hone se pehle) — lekin actual settlement tab hota hai jab order **ship** hota hai, jo kabhi kabhi din baad hota hai. Isi wajah se pending orders ka amount tumhare card statement mein turant nahi dikhta, balki "available credit" mein turant block ho jaata hai — yeh exactly authorization-vs-settlement split ka real-world manifestation hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Target authorization latency: typically sub-second (often under 200-500 ms end-to-end) — POS terminal customer ke saamne synchronously wait kar raha hai
+- Merchant settlement window: typically 1-7 days after authorization before a merchant batch-submits for clearing
+- Authorization-to-expiry window (if never settled): commonly 7-30 days depending on card network/merchant category
+- Typical Indian credit card interest rate on carried balance: roughly 3-3.5% per month (40%+ annualized)
+- Minimum due amount: typically ~5% of total outstanding balance
+- A single active card can accumulate thousands of transaction rows over its lifetime — statement generation batch jobs must scan by indexed date range, never a full table scan
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer yahan do cheezein specifically test karta hai. Pehla: kya candidate authorization aur settlement ko do alag states/events ki tarah model karta hai, ya sab kuch ek single "transaction happened" event maan leta hai. Doosra: jab authorization race condition puchha jaaye ("do simultaneous swipes ek hi card pe"), kya candidate concrete solution deta hai — atomic conditional `UPDATE` with rows-affected check, ya `SELECT FOR UPDATE` — bajaye vague "we'll handle concurrency" jaise jawab ke. Strong candidates proactively bolte hain ki `available_credit` ek maintained column hona chahiye, na ki har baar computed, kyunki authorization latency requirement isse demand karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Authorization aur settlement ko ek hi event maan lena — real card systems mein yeh do alag steps hain, days apart ho sakte hain, aur authorization kabhi settle na bhi ho sakti hai (expire).
+
+</Mistake>
+
+<Mistake>
+
+`available_credit` ko har authorization check pe saari transactions `SUM` karke compute karna, ek maintained column ke bajaye — real-time authorization latency requirement ke saath yeh scale nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Concurrent authorization race condition ignore karna — sirf application-level "check then update" (do separate steps, bina lock ya atomic condition ke) likhna, jo lost-update se limit-exceed allow kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+`settled_amount` ko `auth_amount` jaisa hi treat karna, alag column na rakhna — tips, currency conversion, aur partial shipments jaise real cases mein settlement amount authorization se differ karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Expired-but-never-settled authorizations ko release karne ka koi batch job na rakhna — customer ka available credit unnecessarily block hota reh jaata hai un transactions ke liye jo kabhi settle hi nahi hongi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    CARD ||--o{ CARD_TRANSACTION : "has"
+    CARD ||--o{ STATEMENT_CYCLE : "has"
+    STATEMENT_CYCLE ||--o{ CARD_TRANSACTION : "includes settled"
+    STATEMENT_CYCLE ||--o{ PAYMENT : "receives"
+    CARD {
+        bigint card_id PK
+        decimal credit_limit
+        decimal available_credit
+        string status
+    }
+    CARD_TRANSACTION {
+        bigint transaction_id PK
+        bigint card_id FK
+        decimal auth_amount
+        decimal settled_amount
+        string status
+        timestamp authorized_at
+        timestamp settled_at
+        bigint statement_cycle_id FK
+    }
+    STATEMENT_CYCLE {
+        bigint cycle_id PK
+        bigint card_id FK
+        date period_start
+        date period_end
+        decimal total_due
+        decimal minimum_due
+        decimal interest_charged
+        date due_date
+    }
+    PAYMENT {
+        bigint payment_id PK
+        bigint cycle_id FK
+        decimal amount
+        timestamp paid_at
+    }
+`}
+  caption="Transaction.status separates AUTHORIZED (a hold on available_credit) from SETTLED (actual merchant clearing, linked to a statement cycle) — this split is the core of the design."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Credit card transactions have two distinct states: AUTHORIZED (a hold) and SETTLED (actual merchant clearing, days later) — never model them as one event
+- `available_credit` must be a maintained column on Card, updated transactionally — computing it via SUM on every authorization is too slow for real-time latency needs
+- Concurrent simultaneous swipes on the same card are a classic lost-update race — solve with an atomic conditional UPDATE (check rows-affected) or SELECT FOR UPDATE
+- `settled_amount` is a separate column from `auth_amount` — tips, currency conversion, and partial shipments make them legitimately differ
+- Statement generation is a batch job aggregating SETTLED transactions per billing period — can tolerate heavier queries since it's off the synchronous authorization path
+- An expiry batch job releases holds for authorizations that never settle within the merchant's window
+- Composite index on (card_id, status, settled_at) supports both statement generation and the expiry-job scan
+- Interest is charged only on the carried-forward (unpaid) balance from the previous cycle, computed during statement generation
+
+</QuickRevision>

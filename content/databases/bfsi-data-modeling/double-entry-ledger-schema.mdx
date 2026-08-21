@@ -1,0 +1,193 @@
+---
+slug: "double-entry-ledger-schema"
+title: "Double-Entry Ledger Schema Design"
+section: "databases"
+module: "bfsi-data-modeling"
+order: 1
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["er-modeling-schema-basics", "acid-bank-transfer"]
+tags: ["data-modeling", "ledger", "bfsi"]
+englishDefinition: "Double-entry bookkeeping is a ledger design principle where every financial transaction is recorded as two linked entries - a debit and a matching credit - so that debits always equal credits system-wide, rather than treating an account balance as a single mutable number."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "Paytm", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+Double-entry bookkeeping is a ledger design principle where every financial transaction is recorded as two linked entries - a debit and a matching credit - so that debits always equal credits system-wide, rather than treating an account balance as a single mutable number.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh poore BFSI data modeling section ka sabse important schema pattern hai. Agar tumhe sirf ek cheez yaad rakhni ho is module se, to yeh hai. Har fintech/banking interview mein kabhi na kabhi yeh poocha jaata hai — "wallet/account balance kaise store karoge?" — aur zyada candidates galat answer dete hain kyunki naive approach itni obvious lagti hai ki sahi lagti hai.
+
+### Naive approach: `balance = balance - 100`
+
+Zyada log seedha soch lete hain: `Account` table mein ek `balance` column rakho, aur transaction hone par `UPDATE Account SET balance = balance - 100 WHERE account_id = 1` chala do. Yeh production banking system ke liye fundamentally galat design hai, teen alag reasons se:
+
+- **Not auditable** — agar kal balance galat lage (customer complaint kare "mera paisa kahan gaya"), to is single mutable number se pata hi nahi chalta ki balance abhi jo bhi value hai, woh KYUN hai. Koi history nahi, koi trace nahi. Ek number hai jo bas change hota rehta hai — jaise ek whiteboard jise baar-baar mita ke naya number likha jaaye.
+- **Not safely retriable** — network timeout ho gaya, client ne retry kiya, aur agar idempotency handle nahi hai to woh same `UPDATE balance - 100` do baar chal jaayega — customer se galti se double paisa kat jaayega. Ek mutable balance column apne aap mein koi natural retry-safety nahi deta.
+- **Transfer ko atomically represent nahi kar sakta as ek coherent record** — ek transfer do accounts ko touch karta hai (paise kahin se nikle, kahin gaye). Agar tumhare paas sirf do independent `balance` columns hain jo do alag `UPDATE`s se change hote hain, to woh "transfer" ek single record ke roop mein kahin exist hi nahi karta — sirf do unrelated mutations hain jo (hopefully) same DB transaction mein hui.
+
+### Double-entry alternative: LedgerEntry table
+
+Real accounting systems (aur real core banking systems) is problem ko **double-entry bookkeeping** se solve karte hain — ek principle jo centuries purana hai (double-entry accounting) lekin database schema design mein directly translate hota hai. Idea simple hai: har transaction kam se kam **do rows** create karta hai ek `LedgerEntry` table mein — ek **debit** row aur ek matching **credit** row — dono ek common `transaction_id`/reference se linked.
+
+- Har `LedgerEntry` row mein hota hai: `account_id`, `amount`, `entry_type` (`debit` ya `credit`), aur `transaction_id` jo isse doosri matching entry se link karta hai.
+- **Account ka actual balance ek stored mutable number nahi hai** — woh **computed** hota hai us account ke saare ledger entries ke sum se (ya, performance ke liye, ek materialized "running balance" jo hamesha provably reconstructable ho un entries se — matlab agar zaroorat pade to tum kabhi bhi entries se dobara calculate karke verify kar sakte ho ki materialized balance sahi hai).
+
+```sql
+CREATE TABLE ledger_entry (
+    entry_id        BIGINT PRIMARY KEY,
+    transaction_id  BIGINT NOT NULL,       -- links the debit + credit pair
+    account_id      BIGINT NOT NULL REFERENCES account(account_id),
+    entry_type      VARCHAR(6) NOT NULL CHECK (entry_type IN ('debit', 'credit')),
+    amount          DECIMAL(18, 2) NOT NULL CHECK (amount > 0),
+    currency        VARCHAR(3) NOT NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT now(),
+
+    CONSTRAINT uq_txn_account_type UNIQUE (transaction_id, account_id, entry_type)
+);
+
+CREATE INDEX idx_ledger_entry_account ON ledger_entry (account_id, created_at);
+```
+
+Ek transfer of 500 rupees, account A se account B mein, do rows banata hai — same `transaction_id`, opposite `entry_type`:
+
+```sql
+-- Rahul transfers ₹500 from account A (101) to account B (202)
+INSERT INTO ledger_entry (entry_id, transaction_id, account_id, entry_type, amount, currency)
+VALUES
+    (9001, 5001, 101, 'debit',  500.00, 'INR'),
+    (9002, 5001, 202, 'credit', 500.00, 'INR');
+```
+
+Dono rows ek hi database transaction (BEGIN/COMMIT) ke andar insert hoti hain — ya to dono commit hongi ya koi bhi nahi (yehi ACID atomicity yahan use ho rahi hai, jo tumne pichle topic mein dekha). Ab account A ka balance is query se compute hota hai: `SUM(CASE WHEN entry_type = 'credit' THEN amount ELSE -amount END) WHERE account_id = 101`.
+
+### Golden invariant: debits = credits, system-wide
+
+Double-entry ka poora point ek single invariant maintain karna hai: **`SUM(saari debit entries) hamesha equal hona chahiye `SUM(saari credit entries)`, poore system mein**, kisi bhi point in time pe. Har valid transaction ismein contribute karta hai equal debit aur equal credit — isliye agar system healthy hai, yeh sum hamesha match karega.
+
+Yeh property itni powerful hai ki isse ek automated safety net ban jaata hai: production BFSI systems mein aksar ek **nightly reconciliation job** chalti hai jo yeh exact invariant check karti hai — total debits vs total credits, system-wide. Agar mismatch mile, to iska matlab hai kahin ek bug hai (ek row without matching pair insert ho gayi, ek partial failure ho gaya jo transaction boundary se bahar leak ho gaya, ya koi manual data-fix script galat chal gayi) — aur team ko turant pata chal jaata hai, customer ke complain karne se pehle.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview mein agar "wallet balance kaise design karoge" jaisa question aaye, seedha `balance` column proposal mat do. Pehle double-entry LedgerEntry design bolo, phir explicitly bolo ki balance ek derived/computed value hai — yeh interviewer ko turant senior-level signal deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Paytm / Razorpay">
+
+Payment platforms jaise Paytm wallet ya Razorpay ka merchant settlement ledger internally double-entry pattern use karte hain — har payment, refund, ya settlement kam se kam ek debit-credit pair banata hai. Isse Razorpay apne merchants ko exact, auditable statement de sakta hai ki har rupee kahan se aaya aur kahan gaya, bina ek single mutable balance number pe depend kiye.
+
+</RealWorld>
+
+<RealWorld company="HDFC Bank">
+
+Core banking systems mein "passbook entry" jo customer dekhta hai (debit/credit with running balance) actually ek materialized view hai underlying ledger entries ka. Agar kabhi dispute ho ("yeh transaction maine kiya hi nahi"), bank us specific ledger entry pair ko trace karke poori transaction ki history dikha sakta hai — yeh sirf isliye possible hai kyunki balance ek single overwritten number nahi, ek append-only entries ka sum hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A single transfer = minimum 2 `LedgerEntry` rows (1 debit + 1 credit); complex transactions (fees, tax, split payments) can produce 4-6+ rows
+- Reconciliation job on a large bank: can process 50M+ ledger entries nightly, comparing `SUM(debit)` vs `SUM(credit)` per currency
+- Ledger entry tables are typically append-only and grow indefinitely — often the single largest table in a core banking database (billions of rows over years)
+- Materialized running balance lookup: O(1) read vs O(n) `SUM()` over all historical entries for that account — most systems maintain both, with the sum as the source of truth for verification
+- A debit/credit mismatch of even ₹0.01 system-wide is treated as a P1 incident in most banking reconciliation systems
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic prompt: "Design the schema for a digital wallet / bank account balance." Weak answers stop at a single `balance` column with an `UPDATE`. Strong answers explicitly reject that as non-auditable and non-retriable, then walk through the `LedgerEntry` table, show a debit+credit INSERT for a transfer, explain that balance is computed (not stored, or stored-but-reconstructable), and proactively bring up the debits-equal-credits invariant and reconciliation as the mechanism that catches bugs before customers do. Bonus points for mentioning idempotency keys tied to `transaction_id` to make retries safe.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Treating account balance as a single mutable column updated via `UPDATE balance = balance - X` — no audit trail, no safe retry, no atomic transfer representation.
+
+</Mistake>
+
+<Mistake>
+
+Writing only one row per transaction (e.g. just a "transaction" row with an amount) instead of a linked debit+credit pair — this cannot represent which account gained and which lost value as a structural invariant.
+
+</Mistake>
+
+<Mistake>
+
+Inserting the debit row and credit row in separate database transactions instead of one atomic transaction — a crash between the two leaves an unmatched, invariant-breaking entry.
+
+</Mistake>
+
+<Mistake>
+
+Skipping the nightly (or continuous) reconciliation job that checks `SUM(debits) = SUM(credits)` — without it, bugs that break the invariant go undetected until a customer or auditor finds them.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting a `currency` column on `LedgerEntry` and silently assuming every entry is in the same currency — this breaks the invariant check the moment multi-currency transactions are introduced.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    ACCOUNT ||--o{ LEDGER_ENTRY : "has"
+    TRANSACTION ||--|{ LEDGER_ENTRY : "consists of"
+    ACCOUNT {
+        bigint account_id PK
+        string account_number
+        string currency
+    }
+    TRANSACTION {
+        bigint transaction_id PK
+        string description
+        timestamp created_at
+    }
+    LEDGER_ENTRY {
+        bigint entry_id PK
+        bigint transaction_id FK
+        bigint account_id FK
+        string entry_type
+        decimal amount
+        string currency
+    }
+`}
+  caption="Every transaction produces a matched pair of LedgerEntry rows (one debit, one credit) — account balance is computed from these entries, never stored as the sole source of truth."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never model account balance as a single mutable column updated via `UPDATE balance = balance - X` — not auditable, not retry-safe, can't represent a transfer atomically
+- Double-entry pattern: every transaction creates at least 2 `LedgerEntry` rows (1 debit + 1 credit), linked by a shared `transaction_id`
+- Each `LedgerEntry` row: `account_id`, `amount`, `entry_type`, `transaction_id`, `currency`
+- Account balance is computed (sum of entries) or maintained as a materialized value that's provably reconstructable from entries
+- Golden invariant: `SUM(debits) = SUM(credits)`, system-wide, at all times
+- A nightly reconciliation job checks this invariant to catch bugs before customers or regulators do
+- Debit + credit rows must be inserted in the same atomic DB transaction — never separately
+- This is the single most important schema pattern in BFSI data modeling — expect it in almost every fintech schema-design interview
+
+</QuickRevision>

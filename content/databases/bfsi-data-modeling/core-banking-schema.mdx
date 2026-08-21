@@ -1,0 +1,209 @@
+---
+slug: "core-banking-schema"
+title: "Core Banking Schema: Accounts, Customers & Transactions"
+section: "databases"
+module: "bfsi-data-modeling"
+order: 2
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["double-entry-ledger-schema"]
+tags: ["data-modeling", "bfsi"]
+englishDefinition: "The core entity set every core banking system needs is Customer, Account, Product (account type/scheme), Branch, and Transaction/LedgerEntry, related together into one coherent schema - this topic pulls together ER modeling and ledger design into a single working core banking model."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "SBI"]
+---
+
+<SimpleDefinition>
+
+The core entity set every core banking system needs is Customer, Account, Product (account type/scheme), Branch, and Transaction/LedgerEntry, related together into one coherent schema - this topic pulls together ER modeling and ledger design into a single working core banking model.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne do pieces alag-alag dekhe: ER modeling (entities, relationships, cardinality) aur double-entry ledger design (LedgerEntry, debit/credit invariant). Yeh topic un dono ko ek saath laake ek real **core banking schema** banata hai — woh schema jo literally har bank ke backend mein kisi na kisi form mein exist karta hai.
+
+### Poora entity set
+
+Ek core banking system ko minimum yeh entities chahiye:
+
+- **Customer** — KYC details (name, PAN, address, DOB)
+- **Account** — ek financial account, balance jo LedgerEntry se derive hota hai, ek Product se linked
+- **AccountHolder** — junction table (Customer aur Account ke beech N:M, joint accounts ke liye — pichle module mein cover kiya)
+- **Product** — account "type" ya "scheme" (regular savings, salary account, senior citizen savings, current account) apni interest rate aur rules ke saath
+- **Branch** — physical ya logical branch jahan account open hua
+- **LedgerEntry** — double-entry transaction records (pichle topic se)
+
+Yeh sab entities milke ek coherent picture banate hain — koi bhi ek akela entity poori story nahi batata.
+
+### Product entity kyun hardcoded string nahi hai
+
+Common naive mistake: `Account` table mein ek `account_type VARCHAR` column daal do (jaise `'SAVINGS'`, `'CURRENT'`, `'SALARY'`), aur interest rate calculation application code mein `if account_type == 'SAVINGS'` jaisi conditionals se handle karo.
+
+Yeh scale nahi karta. Real bank ke paas **dono products** hote hain jo bahut similar hain lekin different rules follow karte hain — regular savings account, salary account (zero balance requirement), senior citizen savings (higher interest rate), current account (no interest, overdraft allowed). Naya product launch karna (jaise "student savings account with 6% interest") agar `account_type` string aur application code mein hardcoded hai, to matlab **code deploy** chahiye har naye product ke liye.
+
+Isliye standard practice hai: **Product apna ek separate entity hai**, apni khud ki table:
+
+```sql
+CREATE TABLE product (
+    product_id       BIGINT PRIMARY KEY,
+    product_code      VARCHAR(20) UNIQUE NOT NULL,   -- 'SAV_SENIOR', 'CUR_BIZ'
+    product_name      VARCHAR(100) NOT NULL,
+    interest_rate     DECIMAL(5, 2),                  -- annual %, NULL for current accounts
+    min_balance        DECIMAL(18, 2) DEFAULT 0,
+    overdraft_allowed  BOOLEAN DEFAULT FALSE,
+    is_active         BOOLEAN DEFAULT TRUE
+);
+```
+
+Ab `Account` table sirf ek `product_id` foreign key rakhta hai. Naya product launch karna matlab hai **ek naya row insert karna** `product` table mein — koi schema change nahi, koi code deploy nahi. Yeh "modeling business rules as data, not code" ka classic example hai, aur senior interview mein yeh proactively bolna strong signal deta hai.
+
+### Branch: real modeling decision, discussion-worthy
+
+`Branch` entity ek interesting case hai jahan seedha "obviously correct" answer nahi hai — yeh ek genuine design decision hai jo discuss karne layak hai.
+
+Traditional core banking sochta hai: har `Customer` ka ek "home branch" hota hai (`Customer.home_branch_id`), aur har `Account` bhi ek branch se linked hota hai jahan woh open hua tha. Yeh legacy thinking se aata hai — jab banking sirf physical branches se hoti thi, aur customer literally ek specific branch pe registered hota tha.
+
+Lekin aaj, jab zyada banking digital hai (net banking, UPI, mobile app), yeh question genuinely open hai:
+
+- Kya customer **abhi bhi** ek branch se belong karta hai, ya branch sirf ek **historical fact** hai (jahan account originally opened hua tha, audit/compliance ke liye relevant, but not an operational constraint)?
+- Kya `Branch` ko `Account` se link karna chahiye (branch jahan account opened) ya `Customer` se (home branch), ya dono?
+- Digital-first neobanks (jaise many fintech apps) mein "branch" concept **completely absent** ho sakta hai — sirf ek logical/regulatory entity ke roop mein exist karta hai (jaise "which regulatory jurisdiction does this account fall under").
+
+Sahi answer context pe depend karta hai: agar system ek traditional bank hai jahan physical branch operations still matter (cash deposit, in-branch service), to Branch ek real operational entity hai. Agar yeh ek digital-first product hai, to Branch sirf metadata ho sakta hai — regulatory/audit purpose ke liye rakha gaya, operational decisions ke liye nahi use hota. Interview mein iss nuance ko explicitly discuss karna — "yeh depends on whether this is branch-first or digital-first banking" — senior-level thinking dikhata hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Product-as-data allows launching new account types without a deploy", "Branch as historical metadata keeps schema simple for digital-first products", "Clear separation of Customer identity vs Account ownership vs Product rules"]}
+  cons={["Product-as-data needs a rules engine or config-driven logic layer instead of simple conditionals — more upfront complexity", "Treating branch as pure metadata can break compliance workflows that genuinely need branch-level operational data", "More tables/joins to maintain referential integrity across"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Indian banks routinely launch dozens of savings account variants (women's savings, senior citizen, salary, student, NRI) — each with different interest rates and minimum balance rules. Because these are modeled as `Product` rows rather than hardcoded types, product/marketing teams can configure and launch a new scheme largely through the product management system, without engineering needing to ship new account-type-specific code.
+
+</RealWorld>
+
+<RealWorld company="SBI">
+
+SBI operates over 20,000 branches, and its core banking platform historically tied both customers and accounts to a "home branch" for cash and passbook services. As digital banking (YONO app, UPI, net banking) has grown, branch has increasingly become a piece of historical/regulatory metadata rather than an operational routing constraint for most transactions — a real-world example of the branch-as-legacy-concept discussion.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A large Indian retail bank commonly runs 30-80+ active account "products" at once (savings variants, current variants, FD schemes)
+- Core `Customer` table: often 30-50+ columns once KYC, contact, and compliance fields are included
+- `Account` to `Product`: typically N:1 (many accounts share one product configuration)
+- `Customer` to `Account` to `Branch`: a full core banking schema commonly spans 15-25+ interlinked tables in production, not just the 5-6 core entities shown here
+- Launching a new product via a `Product` table row: can go live in hours (config change); via hardcoded `account_type` logic: typically a multi-week release cycle
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common senior-level prompt: "design the core schema for a bank's accounts and transactions." The strong signal isn't drawing 3 boxes — it's recognizing that `Product` deserves its own table (not a hardcoded type string), that `Branch` is a genuine open design question worth discussing rather than assuming, and that the whole schema should tie back to the double-entry ledger for transactions rather than a mutable balance column. Framing this as "put it all together" from ER modeling + ledger design, rather than inventing something new, shows you can synthesize concepts under pressure.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Hardcoding `account_type` as a string column and branching on it in application code instead of modeling `Product` as its own entity — every new product requires a code deploy.
+
+</Mistake>
+
+<Mistake>
+
+Assuming `Branch` is always a required, operationally meaningful entity without questioning whether the product is branch-first or digital-first banking.
+
+</Mistake>
+
+<Mistake>
+
+Storing `balance` directly on the `Account` table without tying it back to `LedgerEntry` as the source of truth — reintroducing the mutable-balance problem from the ledger topic.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting the `AccountHolder` junction table and modeling Customer-to-Account as a direct 1:N foreign key, breaking joint accounts.
+
+</Mistake>
+
+<Mistake>
+
+Putting interest rate or product rules only in application config/code instead of the `Product` table, losing the audit trail of "what rate applied when."
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    CUSTOMER ||--o{ ACCOUNT_HOLDER : "links to"
+    ACCOUNT ||--o{ ACCOUNT_HOLDER : "links to"
+    PRODUCT ||--o{ ACCOUNT : "defines rules for"
+    BRANCH ||--o{ ACCOUNT : "opened at"
+    ACCOUNT ||--o{ LEDGER_ENTRY : "has"
+    CUSTOMER {
+        bigint customer_id PK
+        string pan_number
+        string name
+    }
+    ACCOUNT {
+        bigint account_id PK
+        string account_number
+        bigint product_id FK
+        bigint branch_id FK
+    }
+    PRODUCT {
+        bigint product_id PK
+        string product_code
+        decimal interest_rate
+        boolean overdraft_allowed
+    }
+    BRANCH {
+        bigint branch_id PK
+        string branch_code
+        string ifsc
+    }
+    ACCOUNT_HOLDER {
+        bigint account_id FK
+        bigint customer_id FK
+        string role
+    }
+    LEDGER_ENTRY {
+        bigint entry_id PK
+        bigint account_id FK
+        string entry_type
+        decimal amount
+    }
+`}
+  caption="The full core banking schema: Product and Branch are modeled as their own entities (data, not hardcoded logic), Account ties everything together, and balances come from LedgerEntry."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Core entity set: Customer, Account, AccountHolder (junction), Product, Branch, LedgerEntry
+- Model `Product` as its own table (interest rate, rules, min balance) instead of a hardcoded `account_type` string — new products launch as data changes, not code deploys
+- `Branch` is a real design decision, not an obvious default — question whether it's operationally meaningful or legacy/historical metadata in a digital-first system
+- `Account` balance still comes from `LedgerEntry`, never a standalone mutable column
+- This topic is the synthesis point: ER modeling (entities + cardinality) + double-entry ledger design = one working core banking schema
+- A production core banking schema typically has 15-25+ interlinked tables, not just the 5-6 shown here
+- Proactively discussing Product-as-data and the Branch question is a strong senior-interview signal
+
+</QuickRevision>

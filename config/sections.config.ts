@@ -113,11 +113,62 @@ export const sectionsConfig: SectionConfig[] = [
   },
   {
     slug: "databases",
-    title: "Databases",
-    description: "Deep dives into specific database engines and query optimization.",
+    title: "Database Design",
+    description:
+      "Relational modeling, indexing, transactions, and scaling — taught through BFSI systems: core banking ledgers, UPI, loans, credit cards, and insurance claims.",
     icon: "Database",
-    enabled: false,
-    modules: [],
+    enabled: true,
+    modules: [
+      {
+        id: "relational-fundamentals",
+        title: "Relational Modeling Fundamentals",
+        description:
+          "ER modeling, normalization, keys and constraints, financial-safe data types, and SQL query design — the vocabulary everything else builds on.",
+        order: 1,
+      },
+      {
+        id: "indexing-performance",
+        title: "Indexing & Query Performance",
+        description:
+          "Index internals for OLTP workloads, composite and covering indexes, execution plans, partitioning, and materialized views.",
+        order: 2,
+      },
+      {
+        id: "transactions-integrity",
+        title: "Transactions, Concurrency & Integrity",
+        description:
+          "ACID and isolation levels through the lens of a bank transfer, locking strategies, idempotency at the DB layer, distributed transactions, and CDC.",
+        order: 3,
+      },
+      {
+        id: "bfsi-data-modeling",
+        title: "BFSI Data Modeling Patterns",
+        description:
+          "Double-entry ledgers, core banking schemas, immutable audit trails, KYC/customer history, interest accrual, and multi-currency design.",
+        order: 4,
+      },
+      {
+        id: "scaling-bfsi",
+        title: "Scaling BFSI Databases",
+        description:
+          "Read replicas for reporting, sharding multi-branch data, CQRS for ledgers, regulatory data retention, and balance/limit caching.",
+        order: 5,
+      },
+      {
+        id: "security-compliance",
+        title: "Security & Compliance",
+        description:
+          "Encryption, row-level security and data masking, RBI data localization, least-privilege access, and designing for auditability.",
+        order: 6,
+      },
+      {
+        id: "bfsi-case-studies",
+        title: "BFSI Case Studies",
+        description:
+          "Full schema-design walkthroughs for the systems BFSI interviews actually ask about: core banking ledgers, UPI, loans, credit cards, claims, and fraud detection.",
+        order: 7,
+      },
+    ],
   },
   {
     slug: "english-learning",

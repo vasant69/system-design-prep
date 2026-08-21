@@ -1,0 +1,183 @@
+---
+slug: "composite-covering-indexes"
+title: "Composite & Covering Indexes"
+section: "databases"
+module: "indexing-performance"
+order: 2
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["index-internals-oltp"]
+tags: ["indexing", "performance"]
+englishDefinition: "A composite index is an index built on multiple columns together, ordered in a specific sequence. A covering index is an index that contains every column a query needs, so the database can answer the query entirely from the index without touching the actual table row. The leftmost-prefix rule governs when a composite index can actually be used by a query."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Flipkart", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A composite index is an index built on multiple columns together, ordered in a specific sequence. A covering index is an index that contains every column a query needs, so the database can answer the query entirely from the index without touching the actual table row. The leftmost-prefix rule governs when a composite index can actually be used by a query.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein humne single-column indexes dekhe. Real-world queries mein aksar multiple columns pe filter/sort karna padta hai — jaise "is account ke transactions, ek specific date se" ya "is account ke transactions, sorted by date." Yahan single-column index kaafi nahi hota — isliye **composite (multi-column) index** chahiye hota hai.
+
+### Composite index kya hai
+
+Composite index simply ek B-Tree hai jo multiple columns ko ek saath, ek fixed order mein, sort karta hai. Jaise:
+
+```sql
+CREATE INDEX idx_txn_account_date
+ON Transaction (account_id, transaction_date);
+```
+
+Yeh index pehle `account_id` se sort karta hai, aur **within** har `account_id` group, `transaction_date` se sort karta hai. Socho ek phonebook ki tarah — pehle last name se sorted, phir har last name ke andar first name se sorted.
+
+### Leftmost prefix rule — interview mein sabse zyada miss hone wala concept
+
+Yeh single sabse important rule hai composite indexes ke baare mein: index sirf tab efficiently use ho sakta hai jab query us index ke columns ko **left se shuru karke, bina gap ke** use kare.
+
+`idx_txn_account_date (account_id, transaction_date)` ke saath:
+
+- `WHERE account_id = ?` — index use ho sakta hai (sirf leftmost column use ho raha hai, valid prefix).
+- `WHERE account_id = ? AND transaction_date = ?` — index poora use ho sakta hai (dono columns, left se right).
+- `WHERE transaction_date = ?` (bina `account_id` ke) — index **efficiently use nahi ho sakta**, kyunki index `account_id` se sorted hai pehle — `transaction_date` values poore index mein bikhre hue hain, sorted nahi. Database ko yahan full scan (ya poore index ka scan) karna padega.
+
+Yeh column order matter karta hai — agar tumne galti se index `(transaction_date, account_id)` order mein bana diya, to "get transactions for this account" query (jo sabse common query hai) is index ko efficiently use nahi kar payegi. Real design decision: **jo column equality filter mein sabse zyada use hota hai (aur jiski cardinality zyada hai), usko pehle rakho.**
+
+### Covering index — ek level upar
+
+Normally, jab database ek non-clustered index se ek matching row dhoondh leta hai, use ek extra step karna padta hai — **table lookup** (ya "bookmark lookup") — actual row se baaki columns fetch karne ke liye jo index mein nahi the. Yeh extra disk read hai, aur high-volume query pe cost add karta hai.
+
+**Covering index** yeh extra step eliminate kar deta hai — agar index mein hi query ke saare needed columns (filter columns + select columns) present hain, database seedha index se hi answer de sakta hai, table ko touch kiye bina. Isse "index-only scan" kehte hain (Postgres terminology).
+
+Example: query hai
+
+```sql
+SELECT transaction_date, amount
+FROM Transaction
+WHERE account_id = ?;
+```
+
+Agar composite index ho:
+
+```sql
+CREATE INDEX idx_txn_covering
+ON Transaction (account_id, transaction_date, amount);
+```
+
+To database `account_id` se filter kar sakta hai, aur `transaction_date` + `amount` bhi seedha isi index se return kar sakta hai — actual table row ko touch karne ki zaroorat hi nahi. Yeh significantly faster hai, especially jab table row wide ho (bahut saare columns) aur disk se random-access lookup expensive ho.
+
+### Real cost — yeh speculative nahi hona chahiye
+
+Composite aur covering indexes single-column indexes se **wider** hote hain — matlab har entry mein zyada bytes store hote hain, aur write path pe zyada maintenance cost. Har naya `INSERT`/`UPDATE` jo indexed columns mein se kisi ko touch kare, poori composite index entry recompute/reposition honi padti hai.
+
+Isliye rule hai: composite/covering indexes ko **specific, known, hot query patterns** ke liye design karo — jo query production mein baar-baar chalti hai aur measurably slow hai. Speculatively "shayad kaam aa jaaye" soch ke wide composite indexes mat banao — yeh sirf write cost badhata hai bina guaranteed benefit ke. Ek achha starting point hamesha `EXPLAIN ANALYZE` se actual query patterns dekhna hai (agla topic isi pe hai).
+
+</Hinglish>
+
+<Callout type="trap">
+
+Column order in a composite index is not "just a detail" — it decides which queries the index can actually serve. `(account_id, transaction_date)` and `(transaction_date, account_id)` are structurally different indexes with very different use cases, even though they list the same two columns.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Statement generation ke liye classic query hai: "is account ke transactions, is date range mein, sorted by date." Ek composite index `(account_id, transaction_date)` isko efficiently serve karta hai — `account_id` equality filter leftmost pe, aur `transaction_date` range filter dusre position pe (leftmost-prefix rule follow karta hai kyunki range filter composite index ke sequential part ke liye ideal hai). Agar sirf date pe filter kiya jaaye (bina account_id ke, jaise "internal reconciliation report"), yeh index kaam nahi aayega — uske liye alag index chahiye hoga.
+
+</RealWorld>
+
+<RealWorld company="Flipkart">
+
+Order history page ("my orders," sorted by most recent") jaisi query pattern ke liye composite index `(customer_id, order_date DESC)` common hai. Covering yeh index ko aur bhi effective banata hai agar order-list page ko sirf order ID, date, aur status chahiye — un teeno columns ko index mein include karke, database order list poori tarah index se hi serve kar sakta hai, actual `orders` table row ko touch kiye bina.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Index-only scan (covering index) vs regular index scan + table lookup: often 2-5x faster on wide tables with random-access disk patterns</li>
+<li>A 3-column composite index typically takes noticeably more storage than 3 separate single-column indexes combined-ish, but serves far more query shapes efficiently</li>
+<li>Leftmost-prefix violation (filtering on a non-leading column only) often forces a full index scan or full table scan — no meaningful speedup over having no index at all</li>
+<li>Adding columns to a covering index beyond what's truly needed increases write cost linearly with index width, for zero extra read benefit</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common interview probe: "you have a composite index on `(A, B)` — will a query filtering only on `B` use it?" The correct answer is a clear "generally no, because of the leftmost-prefix rule" followed by explaining why (the index is physically sorted by `A` first). Bonus points for immediately proposing the fix: either reorder the index if `B`-only queries are common too, or add a separate index on `B`. Also expect follow-ups on covering indexes: "how would you make this specific query even faster without changing the query itself?" — the answer is checking if a covering index eliminates the table lookup.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Assuming a composite index on `(account_id, transaction_date)` will help a query that filters only on `transaction_date` — it won't, because of the leftmost-prefix rule.
+
+</Mistake>
+
+<Mistake>
+
+Building wide covering indexes speculatively for "queries that might come up" instead of for measured, known hot query patterns — this adds real write cost for uncertain benefit.
+
+</Mistake>
+
+<Mistake>
+
+Getting the column order backwards — putting the less-selective or less-commonly-filtered column first, which limits how many query shapes the index can actually serve.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that a covering index needs to include SELECT-ed columns too, not just WHERE-clause columns, to actually achieve an index-only scan.
+
+</Mistake>
+
+<Mistake>
+
+Treating composite indexes as free just because they combine "only" two or three columns — write amplification still applies on every insert/update.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    IDX["Composite index (account_id, transaction_date, amount)"]
+    Q1["WHERE account_id = ?"] -->|leftmost prefix OK| IDX
+    Q2["WHERE account_id = ? AND transaction_date = ?"] -->|leftmost prefix OK| IDX
+    Q3["WHERE transaction_date = ? (no account_id)"] -->|prefix violated| SCAN["Full scan required"]
+    IDX -->|SELECT transaction_date, amount also in index| COVER["Index-only scan, no table lookup"]
+`}
+  caption="A query must use the composite index's columns left-to-right without gaps to benefit from it — and gets an index-only scan bonus if all selected columns are also present in the index."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Composite index = multi-column index, sorted by column order left to right</li>
+<li>Leftmost-prefix rule: a query can use the index only if it filters starting from the leftmost column, without skipping columns</li>
+<li>Column order decides which query shapes the index can serve — put the most commonly-filtered, highest-cardinality column first</li>
+<li>Covering index includes every column a query needs, enabling an index-only scan (no table row lookup)</li>
+<li>Index-only scans are faster because they skip the extra disk read back to the table row</li>
+<li>Composite/covering indexes are wider and cost more to maintain on writes than single-column indexes</li>
+<li>Build them for specific, measured hot query patterns — not speculatively</li>
+</ul>
+
+</QuickRevision>

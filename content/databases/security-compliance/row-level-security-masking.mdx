@@ -1,0 +1,190 @@
+---
+slug: "row-level-security-masking"
+title: "Row-Level Security & Data Masking"
+section: "databases"
+module: "security-compliance"
+order: 2
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["encryption-at-rest-transit"]
+tags: ["security", "compliance", "bfsi"]
+englishDefinition: "Row-level security (RLS) is a database-enforced set of rules restricting which rows a given user, role, or application can see or modify, even if it issues an unrestricted-looking query. Data masking is presenting a partially obscured version of sensitive data - such as only the last 4 digits of a card number - to users or roles that don't need the full value. Together they form complementary database-level access controls."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Razorpay", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Row-level security (RLS) is a database-enforced set of rules restricting which rows a given user, role, or application can see or modify, even if it issues an unrestricted-looking query. Data masking is presenting a partially obscured version of sensitive data — such as only the last 4 digits of a card number — to users or roles that don't need the full value. Together they form complementary database-level access controls.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Encryption ne data ko unauthorized people se protect kiya jab woh disk pe ya network pe ho. Lekin ek bilkul different problem hai: ek **authorized** application ya user, jo valid credentials se query chala raha hai, kitna dekh sakta hai? Agar application ka role har row dekh sakta hai chahe woh kisi bhi tenant/customer ki ho, to encryption yahan kuch nahi karega — query legitimately data return karegi, sirf galat scope mein. Yeh exact gap **Row-Level Security (RLS)** aur **data masking** close karte hain.
+
+### RLS — multi-tenant safety ko application se database tak le jaana
+
+Pichle multi-tenant topic mein humne dekha ki shared-table design mein har query ko `tenant_id` se filter karna padta hai. Application-level approach mein yeh responsibility application code pe hoti hai — har developer, har query mein, hamesha `WHERE tenant_id = ?` yaad rakhe. Yeh fragile hai: ek naya developer ek admin dashboard query likhta hai, `WHERE tenant_id` bhool jaata hai, aur production mein ek tenant doosre tenant ka data dekh leta hai. Yeh sirf theoretical risk nahi hai — yeh real multi-tenant SaaS/fintech breaches ka sabse common root cause pattern hai.
+
+**Row-Level Security** yeh guarantee ko application se database tak move kar deta hai. Database khud, policy ke through, automatically har query ko filter kar deta hai — chahe application query mein `tenant_id` explicitly likha ho ya nahi. Yeh "application hamesha yaad rakhega" se meaningfully strong guarantee hai, kyunki ab galti application code mein nahi, database-enforced policy mein hai — aur policy centrally define aur audit hoti hai, har query mein alag se nahi.
+
+```sql
+-- PostgreSQL example: enable RLS on a shared multi-tenant table
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+
+-- Policy: a session can only see rows matching its current tenant context
+CREATE POLICY tenant_isolation_policy ON transactions
+    USING (tenant_id = current_setting('app.current_tenant_id')::bigint);
+```
+
+Is policy ke baad, chahe koi query `SELECT * FROM transactions` likhe bina koi `WHERE` clause ke, database khud silently sirf usi tenant ki rows return karega jiska `app.current_tenant_id` session variable set hai. Ek buggy ya incomplete application query bhi ab doosre tenant ka data leak nahi kar sakti, kyunki filtering database engine ke andar happen ho rahi hai, application logic pe depend nahi karti.
+
+Isi mechanism ko roles ke through bhi use karte hain — jaise ek `support_agent` role sirf un accounts ki rows dekh sake jo unke assigned region mein hain, ya ek `read_replica_reporting` role sirf non-PII columns/rows dekhe.
+
+### Data masking — "verify without exposing" ka real use case
+
+Data masking ek alag lekin related problem solve karta hai: kabhi kabhi ek role ko row dekhne ki zaroorat hoti hai, lekin poora sensitive value nahi. Do classic examples:
+
+- Ek **call-center support agent** customer ki identity verify karta hai bol ke "aapka card jo `1234` pe end hota hai" — agent ko poora 16-digit card number kabhi dekhne ki zaroorat nahi, sirf last 4 digits kaafi hain verification ke liye.
+- Ek **developer** production issue debug kar raha hai — usse masked PII dikhni chahiye (jaise `XXXX-XXXX-XXXX-1234` ya `RA***H KUMAR`), raw PAN number ya full card number nahi, kyunki debugging ke liye pattern/structure kaafi hota hai, actual sensitive value nahi.
+
+Masking implement karne ke do tareeke hain:
+
+- **Dynamic masking (database-level)** — ek view ya function jo querying role ke hisaab se value ko mask karta hai runtime pe. Jaise:
+
+```sql
+CREATE VIEW transactions_masked AS
+SELECT
+    transaction_id,
+    account_id,
+    CASE
+        WHEN current_user_role() = 'full_access' THEN card_number
+        ELSE CONCAT('XXXX-XXXX-XXXX-', RIGHT(card_number, 4))
+    END AS card_number,
+    amount
+FROM transactions;
+```
+
+- **Application-level masking** — application code khud value ko mask karta hai response bhejne se pehle (jaise API response mein `card_number` field ko mask karke bhejna).
+
+Database-level masking **zyada bulletproof** hai, kyunki yeh kisi bhi application ya query path se bypass nahi hota — chahe koi naya internal tool, ek ad-hoc analytics query, ya ek future service directly database se query kare, masking policy still apply hoti hai. Application-level masking sirf us specific application ke liye kaam karta hai jisne masking logic implement kiya — agar koi doosra service, ya ek DBA directly SQL client se query chalaye, raw value expose ho sakti hai.
+
+### RLS aur masking saath kaam karte hain
+
+Yeh dono independent hain lekin complementary — RLS decide karta hai "kaun si rows dikhengi", masking decide karta hai "un rows mein kaun se fields kitna dikhenge". Ek support agent role ke liye: RLS unhe sirf apne assigned customers ki rows dikhayega, aur masking un rows ke andar card number ko partially hide karega — dono layers milke ek strong, database-enforced access boundary banate hain jo application bugs se independent hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+RLS aur masking dono ka core value proposition same hai: enforcement application code se database policy mein move karna. Jab bhi interview mein pucha jaaye "how do you prevent a buggy query from leaking another tenant's data," RLS hi correct, senior-level answer hai — "we always remember to add WHERE tenant_id" is not a real guarantee.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+A shared core-banking reporting database serving multiple regional branch back-offices uses row-level policies so that a branch operations role only ever sees transactions tied to its own branch_id, even though the underlying table stores all branches together — an operational or reporting query written without a branch filter still cannot leak cross-branch data, because the database enforces the boundary itself.
+
+</RealWorld>
+
+<RealWorld company="Razorpay">
+
+Razorpay's merchant dashboard backend is a textbook multi-tenant case — thousands of merchants query the same underlying payments tables. Row-level security-style enforcement (whether via native database RLS or an equivalent tenant-scoping layer) ensures a query issued in the context of one merchant's session structurally cannot return another merchant's transaction rows, which matters enormously given how much financial and business-sensitive data a single leaked row could expose.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Customer support tooling at large-scale platforms like Amazon commonly uses dynamic masking so that support agents verifying an order or payment method see masked identifiers (partial card number, partial address) sufficient to confirm identity with the customer, without agents ever having standing access to full unmasked payment details — reducing the blast radius of both accidental misuse and insider risk.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>RLS policy evaluation overhead: typically small (a few percent) added query cost, since it's implemented as an implicit WHERE clause injected into the query plan</li>
+<li>A single missing WHERE tenant_id in application code: can expose up to 100% of another tenant's rows in that table — RLS caps this at zero regardless of the query</li>
+<li>Dynamic masking view overhead: negligible for typical OLTP row volumes, since it's a CASE expression evaluated per row already being fetched</li>
+<li>Typical BFSI support-agent masking pattern: show last 4 digits of card/account number, mask remaining 12+ digits</li>
+<li>Number of distinct roles needing different masking levels in a typical BFSI system: often 3-5 (full access, support/verification, analytics/reporting, external audit)</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A strong interview answer to "how would you prevent one tenant's data leaking to another in a shared multi-tenant table" is to explicitly name Row-Level Security as a database-enforced guarantee, not just "the application filters by tenant_id" — and to be able to sketch the actual `CREATE POLICY` shape. A common follow-up is "what if a support agent needs to verify a customer without seeing their full card number" — this is exactly where dynamic masking belongs, and naming the trade-off between database-level masking (bulletproof, works regardless of which application queries) versus application-level masking (bypassable by any other consumer of the same data) shows depth.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Relying entirely on "the application always adds WHERE tenant_id" instead of enforcing tenant isolation at the database level with RLS — a single missed filter in one query path leaks cross-tenant data.
+
+</Mistake>
+
+<Mistake>
+
+Implementing masking only at the application layer and assuming that's sufficient — any other service, internal tool, or direct SQL access to the same table bypasses application-level masking entirely.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that RLS policies also need to cover UPDATE and DELETE, not just SELECT — a policy that only restricts reads still lets an unauthorized role modify or delete rows it shouldn't touch.
+
+</Mistake>
+
+<Mistake>
+
+Giving developers or debugging tools standing access to fully unmasked production PII "just in case," instead of masking by default and requiring an explicit, audited elevation for the rare case full access is genuinely needed.
+
+</Mistake>
+
+<Mistake>
+
+Assuming RLS is free performance-wise and applying overly complex policies (subqueries, joins inside the policy) that silently make every query on that table slower than expected.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Query: SELECT * FROM transactions] --> B{RLS Policy Engine}
+    B -->|session tenant_id = 101| C[Rows where tenant_id = 101 only]
+    B -->|session tenant_id = 102| D[Rows where tenant_id = 102 only]
+    C --> E{Masking Layer}
+    D --> F{Masking Layer}
+    E -->|role = support_agent| G[card_number shown as XXXX-1234]
+    E -->|role = full_access| H[card_number shown in full]
+    F -->|role = support_agent| I[card_number shown as XXXX-5678]
+`}
+  caption="RLS filters which rows a session can see (tenant isolation enforced by the database itself), while masking independently controls how much of a sensitive field within those rows is revealed, based on the querying role."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Row-Level Security (RLS) enforces which rows a query can see or modify at the database level, regardless of whether the query itself includes a filter
+- RLS is what makes shared-table multi-tenancy actually safe — stronger than trusting the application to always filter by tenant_id
+- PostgreSQL RLS: ALTER TABLE ... ENABLE ROW LEVEL SECURITY, then CREATE POLICY with a USING clause tied to a session variable
+- Data masking shows a partial/obscured version of a sensitive field (e.g. last 4 digits of a card) to roles that don't need the full value
+- Real use cases: call-center identity verification without exposing full card numbers, developers debugging with masked PII instead of raw values
+- Database-level (dynamic) masking is more bulletproof than application-level masking, since it can't be bypassed by whichever application or tool queries the data
+- RLS and masking are complementary: RLS controls which rows, masking controls how much of each field within those rows
+
+</QuickRevision>

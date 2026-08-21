@@ -1,0 +1,149 @@
+---
+slug: "sharding-multi-branch"
+title: "Sharding Strategies for Multi-Branch Banking Data"
+section: "databases"
+module: "scaling-bfsi"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["partitioning-large-tables"]
+tags: ["scalability", "sharding", "bfsi"]
+englishDefinition: "Sharding is the practice of splitting data across multiple separate database servers, each holding only a subset of the data, so that write load that a single server cannot handle gets distributed. In a bank with thousands of branches and hundreds of millions of accounts, the choice of sharding key is a genuinely hard trade-off between even load distribution and keeping common queries local."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "SBI"]
+---
+
+<SimpleDefinition>
+
+Sharding is the practice of splitting data across multiple separate database servers, each holding only a subset of the data, so that write load that a single server cannot handle gets distributed. In a bank with thousands of branches and hundreds of millions of accounts, the choice of sharding key is a genuinely hard trade-off between even load distribution and keeping common queries local.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek bank jab thousands of branches aur hundreds of millions accounts ka scale hit karta hai, ek point aata hai jahan ek single database server combined write load handle nahi kar paata — chahe kitna bhi powerful hardware ho. Yahan **sharding** ka concept aata hai (System Design section ke Sharding topic ka core idea): data ko multiple separate database servers ("shards") mein split kar do, har shard sirf ek subset of data hold karta hai. Yahan is topic ka focus hai — BFSI context mein **sharding key** choose karna genuinely hard problem kyun hai.
+
+### Option 1: branch_id se shard karna
+
+Pehla intuitive option hai `branch_id` — data locality bank ki organizational structure se match karta hai, "sab kuch is branch ka is shard pe" clean lagta hai. Lekin real-world problem: branches uneven hote hain. Ek bade urban branch (Mumbai, Bangalore CBD) ke paas lakhon accounts aur crores transactions daily ho sakte hain, jabki ek chhote rural branch ke paas sirf hazaaron. Agar shard `branch_id` se ho, to kuch shards massively overloaded honge (hot shards) aur baaki underutilized — yeh **hotspot problem** hai, aur isse fix karna (resharding, splitting a hot branch's data further) operationally painful hai.
+
+### Option 2: customer_id/account_id hash se shard karna
+
+Doosra option hai `customer_id` ya `account_id` ka hash use karna sharding key ke roop mein — yeh accounts ko evenly distribute karta hai across shards, hotspot problem solve ho jaata hai. Lekin iska apna cost hai: branch-local reporting queries break ho jaati hain. "Aaj is branch pe hue saare transactions dikhao" jaisi query ab ek single shard pe nahi chal sakti — usse **fan out** karna padega har shard pe, results collect karke merge karna padega application layer mein. Yeh query complexity aur latency badhata hai significantly, especially agar shards ki count high ho.
+
+### Option 3: region-level sharding — middle ground
+
+Teesra approach hai region (state ya zone level) pe shard karna — jaise `north-zone`, `south-zone`. Yeh dono concerns ko partially balance karta hai: ek region ke andar reasonable amount of load distribution hoti hai (kyunki ek region mein multiple branches hote hain, chhote-bade dono), aur region-local queries (jaise "is state ke saare branches ka summary") ab ek ya do shards tak limited reh sakti hain. Perfect solution nahi hai — bade regions phir bhi imbalance create kar sakte hain — lekin extremes se better hai.
+
+### Asli hard problem: cross-shard transfers
+
+Yeh sirf load balancing ka problem nahi hai — sharding ek **conceptually harder** problem create karta hai jab do accounts DIFFERENT shards pe hote hain. Ek fund transfer jo pehle ek simple local ACID transaction thi (dono accounts ek hi database mein, ek `BEGIN...COMMIT` block mein debit-credit atomically ho jaata tha), ab woh possible nahi rehta agar source aur destination account alag shards pe hain. Yeh exactly wahi problem hai jo System Design section ke Distributed Transactions/Saga topic mein cover hota hai — cross-shard transfer ko ab **saga pattern** ya **2PC (two-phase commit)** se coordinate karna padta hai, jisme intermediate failure states (debit ho gaya, credit fail ho gaya) explicitly handle karne padte hain compensating transactions ke through. Yeh sharding ka real cost hai jab tum ek ledger system shard karte ho — atomicity ka guarantee jo pehle "free" tha (same database), ab explicit engineering effort maangta hai.
+
+### Realistic recommendation
+
+Isliye ek practical, senior-level insight yeh hai: zyaadatar core banking systems apna **unified ledger sharding se as long as possible avoid karte hain**. Vertical scaling (bigger hardware) + achhi indexing + partitioning (date ya branch ke basis pe, ek hi server ke andar — jo alag hai sharding se) ek single bank ke OLTP load ke liye surprisingly far chal jaata hai, kyunki ek bank ka transaction volume — jitna bada bhi lage — usually ek well-tuned single primary (with replicas for reads) handle kar sakta hai. Sharding ka use tab karo jab data genuinely **separable** ho — jaise geography ke basis pe alag-alag independent subsidiaries (ek bank ki alag country operations, jinke beech transfers rare/explicit hote hain), na ki ek single unified ledger ko arbitrarily split karke.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Write throughput scale hoti hai beyond a single server's limit", "Har shard smaller hai, isliye indexes chhote aur queries within a shard fast rehte hain", "Region-based sharding se genuinely independent subsidiaries ko cleanly isolate kiya ja sakta hai"]}
+  cons={["Cross-shard transactions (transfer between accounts on different shards) ab distributed transaction/saga coordination maangte hain — atomicity free nahi rehti", "Sharding key ka galat choice hotspots (branch_id) ya broken local queries (hash-based) create karta hai", "Resharding (jab ek shard bahut bada ho jaaye) operationally bahut painful hai — data migration, downtime risk"]}
+/>
+
+## Real World Example
+
+<RealWorld company="SBI">
+
+SBI jaisa bank jiske paas 20,000+ branches hain, agar naive `branch_id` sharding use kare, to metro branches (jaise Mumbai, Delhi CBD) ke shards heavily overloaded honge jabki chhoti rural branches ke shards mostly idle rahenge — yeh hotspot problem exactly wahi hai jo iss topic mein discuss hua.
+
+</RealWorld>
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Zyaadatar large Indian banks apna core ledger ek powerful, well-partitioned single database (ya active-passive cluster) pe rakhte hain jitna possible ho, aur sharding sirf specific separable domains ke liye reserve karte hain — jaise ek alag international subsidiary ka data, ya non-ledger data (logs, notifications) jo genuinely independent hai. Poora unified ledger sharding se avoid karna ek deliberate architectural choice hai, na ki limitation.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A single well-tuned OLTP primary (with proper indexing/partitioning) can often handle tens of thousands of transactions per second before sharding becomes strictly necessary
+- Hash-based sharding across N shards means a branch-local "today's transactions" query fans out to all N shards in the worst case
+- Cross-shard transfer via saga pattern typically adds multiple round trips (reserve → debit → credit → confirm/compensate) compared to a single local transaction's one round trip
+- Resharding a live production shard (splitting one shard into two) is a multi-hour to multi-day operation in most systems, requiring careful dual-write or migration tooling
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer ka favorite follow-up hai: "aapne `branch_id` se shard kiya — agar ek branch bahut bada ho jaaye to kya hoga?" Weak candidates yahan stuck ho jaate hain. Strong answer mein tum proactively teeno options (branch_id, hash-based, region-based) compare karoge, unke trade-offs bologe, aur sabse important — cross-shard transaction problem explicitly call out karoge, saga/2PC ka mention karoge. Bonus signal: yeh bolna ki "most real banks avoid sharding the core ledger as long as possible" dikhata hai ki tumhe sirf textbook sharding nahi, real production trade-offs bhi pata hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`branch_id` ko sharding key choose karna bina yeh consider kiye ki branches ka size bahut uneven hota hai — isse severe hotspots ban jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Hash-based sharding choose karke yeh bhool jaana ki branch-local reporting queries ab har shard pe fan-out karni padengi — query latency aur complexity dono badh jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Cross-shard fund transfer ko as a simple distributed transaction treat karna, saga pattern ya compensating transactions ki zaroorat ko ignore karke — partial failure (debit success, credit fail) ka scenario handle hi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Sharding ko premature optimization ki tarah apply karna — jab single server (with good indexing/partitioning/vertical scaling) abhi bhi comfortably load handle kar sakta tha, ledger ko unnecessarily shard karke complexity badha dena.
+
+</Mistake>
+
+<Mistake>
+
+Resharding ki cost underestimate karna — yeh assume karna ki agar ek shard bada ho jaaye to usse split karna trivial hoga, jabki production mein yeh careful migration planning maangta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Sharding key decision] --> B["branch_id: data locality,\nBUT uneven branch sizes = hotspots"]
+    A --> C["customer_id / account_id hash:\neven distribution, BUT branch-local\nqueries fan out to all shards"]
+    A --> D["region/zone: middle ground,\npartially balances both concerns"]
+    B --> E[Cross-shard transfer problem]
+    C --> E
+    D --> E
+    E --> F["Transfer between accounts on\ndifferent shards needs Saga/2PC,\nnot a simple local ACID transaction"]
+`}
+  caption="Three sharding-key options for multi-branch banking data, each with a different trade-off — and all of them create the same cross-shard transaction problem once accounts land on different shards."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Sharding splits data across multiple database servers when a single server can't handle combined write load
+- branch_id sharding: natural data locality, but uneven branch sizes create hotspots
+- customer_id/account_id hash sharding: even distribution, but breaks branch-local reporting queries (fan-out required)
+- Region/zone sharding: a middle ground balancing both concerns, not a perfect fix
+- The hard cost of sharding a ledger: cross-shard transfers can no longer be a single local ACID transaction — need saga pattern/2PC and compensating transactions
+- Realistic recommendation: avoid sharding the core ledger as long as possible — vertical scaling + partitioning/indexing goes far for a single bank's OLTP load
+- Shard only clearly separable data (e.g. independent geographic subsidiaries), not a single unified ledger
+- Resharding a hot shard later is operationally expensive — factor this into the initial key choice
+
+</QuickRevision>

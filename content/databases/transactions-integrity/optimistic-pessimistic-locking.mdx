@@ -1,0 +1,200 @@
+---
+slug: "optimistic-pessimistic-locking"
+title: "Optimistic vs Pessimistic Locking for Balance Updates"
+section: "databases"
+module: "transactions-integrity"
+order: 3
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["isolation-levels-anomalies"]
+tags: ["transactions", "concurrency"]
+englishDefinition: "Pessimistic locking acquires a lock on a row before reading or modifying it (e.g. SELECT ... FOR UPDATE), blocking other transactions until the lock is released. Optimistic locking reads without a lock, then checks at write time — typically via a version number or the original value — whether the row changed since it was read, retrying the operation if it did."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "Paytm", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+Pessimistic locking acquires a lock on a row before reading or modifying it (e.g. SELECT ... FOR UPDATE), blocking other transactions until the lock is released. Optimistic locking reads without a lock, then checks at write time — typically via a version number or the original value — whether the row changed since it was read, retrying the operation if it did.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein humne dekha ki default isolation levels (jaise Read Committed) sab race conditions prevent nahi karte. Yeh topic exactly usi gap ko cover karta hai — jab tumhe genuinely guarantee chahiye ki ek row ka read-then-write cycle safe rahe, chahe isolation level kuch bhi ho.
+
+### Motivating example — Lost Update
+
+Account A ka balance 1000 hai. Do simultaneous withdrawals aa rahe hain, dono 500-500 rupaye ke, alag-alag ATMs se ya alag devices se. Naive application code kuch is tarah likha ho sakta hai:
+
+1. Transaction 1: `SELECT balance FROM Account WHERE account_id = 'A'` → 1000 padha
+2. Transaction 2: `SELECT balance FROM Account WHERE account_id = 'A'` → 1000 padha (dono ne same time pe padha)
+3. Transaction 1: application mein calculate karta hai 1000 - 500 = 500, aur `UPDATE Account SET balance = 500 WHERE account_id = 'A'`
+4. Transaction 2: bhi calculate karta hai 1000 - 500 = 500, aur `UPDATE Account SET balance = 500 WHERE account_id = 'A'`
+
+Final balance: 500. Lekin correct balance hona chahiye tha 1000 - 500 - 500 = 0. Ek withdrawal "lost" ho gaya — bank ne effectively 500 rupaye free mein de diye. Isse **lost update anomaly** kehte hain, aur yeh sirf Read Committed hi nahi, kai cases mein Repeatable Read ke saath bhi ho sakta hai agar read aur write alag statements ho (dono transactions apna khud ka snapshot dekh rahe honge). Isko solve karne ke do standard approaches hain.
+
+### Approach 1 — Pessimistic Locking
+
+Row ko lock karo READ karte hi, before koi bhi decision lo:
+
+```sql
+BEGIN;
+
+SELECT balance FROM Account WHERE account_id = 'A' FOR UPDATE;
+-- Is point pe koi doosra transaction isi row ko FOR UPDATE se read nahi kar sakta,
+-- unhe wait karna padega jab tak yeh transaction commit/rollback na ho.
+
+UPDATE Account SET balance = balance - 500 WHERE account_id = 'A';
+
+COMMIT;
+```
+
+`FOR UPDATE` clause row-level lock le leta hai turant. Koi doosra transaction jo isi row ko `FOR UPDATE` se padhne ki koshish karega, wait karega jab tak yeh transaction commit ya rollback na ho jaaye. Isse guarantee milti hai ki dono transactions kabhi stale value pe decision nahi lenge — Transaction 2 apni SELECT tab tak block rahegi jab tak Transaction 1 commit na kar de, aur tab woh updated balance (500, na ki 1000) dekhegi.
+
+**Trade-off**: simple aur safe hai, lekin high concurrency pe **contention/blocking** create karta hai. Socho ek popular merchant account jo thousands of simultaneous payments receive kar raha hai — agar har payment ka credit `FOR UPDATE` lock leta hai, to woh saare transactions ek serial queue mein lag jaate hain, throughput drastically gir jaata hai.
+
+### Approach 2 — Optimistic Locking
+
+Row ko bina lock kiye padho, aur write ke time check karo ki row change hua ya nahi — usually ek `version` column ke through:
+
+```sql
+-- Read (no lock)
+SELECT balance, version FROM Account WHERE account_id = 'A';
+-- Maan lo: balance = 1000, version = 7
+
+-- Write with version check
+UPDATE Account
+SET balance = balance - 500, version = version + 1
+WHERE account_id = 'A' AND version = 7;
+```
+
+Application code ab dekhta hai ki UPDATE ne kitni rows affect ki. Agar `rows-affected == 1`, to update successful tha — koi conflict nahi hua. Agar `rows-affected == 0`, to iska matlab hai ki kisi aur transaction ne beech mein version already badal diya (matlab koi race hui) — application ko chahiye ki wapas SELECT karke fresh value/version padhe aur operation retry kare.
+
+**Trade-off**: koi lock nahi lagta, isliye low-contention scenarios mein throughput bahut behtar hai — zyadatar transactions pehli hi try mein succeed ho jaate hain bina kisi ko block kiye. Lekin **high contention** mein bahut saare retries hone lagte hain, jo wasted work aur added application-level complexity (retry loops, exponential backoff) ka source ban jaate hain.
+
+### Decision Framework
+
+- **Pessimistic locking** un rows ke liye jo genuinely **hot aur high-contention** hain — jaise ek popular merchant account jo continuously thousands of simultaneous payments receive karta hai. Yahan optimistic approach ka matlab hoga bahut saare retries, jo waste hi hai kyunki conflict almost guaranteed hai.
+- **Optimistic locking** common case ke liye — zyadatar individual customer accounts concurrently touch hi nahi hote often (ek customer ka account usually ek waqt mein ek hi transaction touch kar raha hota hai). Yahan lock lena unnecessary overhead hai jab conflict ki probability hi kam hai.
+
+Interview mein yeh explicit decision framework bolna — "hot row → pessimistic, low-contention row → optimistic" — strong signal hai, kyunki yeh dikhata hai ki tumhe dono ka trade-off pata hai, sirf ek "best" solution nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Pessimistic: simple to reason about, guarantees no lost updates without any retry logic", "Optimistic: high throughput under low contention, no blocking, transactions don't wait on each other"]}
+  cons={["Pessimistic: creates contention/blocking on hot rows, can serialize throughput badly", "Optimistic: wasted work and complexity (retry loops) under high contention"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Har individual customer ka savings account balance update typically optimistic-style pattern se safe hai — ek customer ka account usually ek waqt pe sirf ek transaction touch karta hai, isliye version-check approach bina kisi meaningful contention ke kaam karta hai, aur pessimistic lock ka overhead unnecessary hota.
+
+</RealWorld>
+
+<RealWorld company="Paytm / Razorpay">
+
+Ek popular e-commerce merchant ka settlement account jo Diwali sale ke din thousands of simultaneous payment credits receive kar raha ho — yahan pessimistic locking (`FOR UPDATE`) zyada practical hai. Optimistic approach yahan har payment ko multiple retries se guzaarega kyunki version almost har baar already badal chuka hoga jab tak update chalta hai — yeh wasted CPU aur latency hai jo pessimistic locking se avoid ho jaata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>`SELECT ... FOR UPDATE` row lock hold time: typically single-digit milliseconds for a simple balance update, but queues badly under high concurrent contention on the same row</li>
+<li>Optimistic locking retry rate under low contention: usually under 1% of writes need a retry</li>
+<li>Optimistic locking retry rate on a genuinely hot row (popular merchant, festive sale): can spike to 30-50%+ failed-and-retried attempts, wasting significant CPU/DB round trips</li>
+<li>Version column overhead: typically one extra INTEGER/BIGINT column (4-8 bytes) per row — negligible storage cost for the correctness guarantee it buys</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Two simultaneous withdrawals from the same account" jaisa prompt interview mein bahut common hai — interviewer dekhna chahta hai ki tum lost update anomaly identify kar paate ho ya nahi, aur uske baad dono solutions (pessimistic, optimistic) ko trade-offs ke saath explain kar paate ho. Weak answer sirf ek solution deta hai. Strong answer dono deta hai, fenced SQL examples ke saath (`FOR UPDATE` aur version-column UPDATE), aur phir ek concrete decision framework deta hai based on contention level — "hot merchant account → pessimistic; typical customer account → optimistic." Bonus: mention karo ki optimistic locking ke saath retry logic application layer mein explicitly likhni padti hai, yeh free nahi milta.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Read-then-write pattern application code mein likhna (balance padho, application mein subtract karo, phir UPDATE karo) bina kisi locking mechanism ke — yeh directly lost update anomaly ka reason banta hai under concurrency.
+
+</Mistake>
+
+<Mistake>
+
+Har row pe blindly pessimistic locking (`FOR UPDATE`) laga dena "safe rahega" soch ke — hot rows pe yeh severe contention aur throughput collapse create kar sakta hai jab pura load ek serial queue ban jaaye.
+
+</Mistake>
+
+<Mistake>
+
+Optimistic locking implement karte waqt retry logic bhool jaana — sirf version check karke fail hone pe error throw kar dena, jab ki correct behavior hai fresh data padh ke operation retry karna (with a reasonable retry limit).
+
+</Mistake>
+
+<Mistake>
+
+`UPDATE ... WHERE version = ?` ke rows-affected count ko check hi na karna — agar application yeh assume kar le ki UPDATE hamesha successful hota hai, to silently ek conflicting write miss ho jaata hai bina kisi error ke.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi locking strategy sab jagah blanket apply karna, bina yeh consider kiye ki alag-alag rows ka contention profile alag hota hai — hot merchant accounts aur typical customer accounts ko same treatment dena suboptimal hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant T1 as Withdrawal 1
+    participant DB as Account A (balance=1000)
+    participant T2 as Withdrawal 2
+
+    Note over T1,T2: Without locking - Lost Update
+    T1->>DB: READ balance (1000)
+    T2->>DB: READ balance (1000)
+    T1->>DB: WRITE balance = 500
+    T2->>DB: WRITE balance = 500
+    Note over DB: Final balance = 500 (WRONG, should be 0)
+
+    Note over T1,T2: With Pessimistic Locking (FOR UPDATE)
+    T1->>DB: SELECT ... FOR UPDATE (locks row)
+    T2->>DB: SELECT ... FOR UPDATE (blocks, waits)
+    T1->>DB: UPDATE balance = 500, COMMIT (releases lock)
+    T2->>DB: Now proceeds, reads 500
+    T2->>DB: UPDATE balance = 0, COMMIT
+    Note over DB: Final balance = 0 (CORRECT)
+`}
+  caption="Without locking, two concurrent withdrawals both read the stale balance and one update is lost. Pessimistic locking serializes access to the same row to prevent this."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Lost update anomaly: two concurrent read-then-write operations on the same row can silently overwrite each other's changes</li>
+<li>Pessimistic locking: `SELECT ... FOR UPDATE` locks the row immediately, blocking other transactions until commit/rollback</li>
+<li>Optimistic locking: read without a lock, write with a version check (`WHERE version = ?`), retry if rows-affected is 0</li>
+<li>Pessimistic trade-off: simple and safe, but creates contention/blocking on hot rows</li>
+<li>Optimistic trade-off: high throughput under low contention, but wasted retries under high contention</li>
+<li>Decision framework: pessimistic for genuinely hot, high-contention rows (popular merchant accounts); optimistic for the common case (typical customer accounts)</li>
+<li>Optimistic locking requires explicit retry logic in application code — it doesn't come for free</li>
+</ul>
+
+</QuickRevision>

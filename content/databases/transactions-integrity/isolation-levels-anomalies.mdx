@@ -1,0 +1,175 @@
+---
+slug: "isolation-levels-anomalies"
+title: "Isolation Levels & Anomalies in Money Movement"
+section: "databases"
+module: "transactions-integrity"
+order: 2
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["acid-bank-transfer"]
+tags: ["transactions", "concurrency"]
+englishDefinition: "SQL defines four standard isolation levels — Read Uncommitted, Read Committed, Repeatable Read, and Serializable — each preventing a different subset of three concurrency anomalies: dirty reads, non-repeatable reads, and phantom reads. The stricter the level, the fewer anomalies are possible, but the more transactions block or retry each other, trading throughput for correctness."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+SQL defines four standard isolation levels — Read Uncommitted, Read Committed, Repeatable Read, and Serializable — each preventing a different subset of three concurrency anomalies: dirty reads, non-repeatable reads, and phantom reads. The stricter the level, the fewer anomalies are possible, but the more transactions block or retry each other, trading throughput for correctness.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein humne dekha ki Isolation guarantee karti hai concurrent transactions ek doosre ko galat tarike se interfere na karein. Lekin "galat interference" ke exact meaning kai levels pe define hote hain — aur yeh choice database ke throughput aur correctness ke beech ek real trade-off hai. Teen anomalies samajhte hain, har ek ko ek concrete do-transaction BFSI timeline ke saath.
+
+### Anomaly 1 — Dirty Read
+
+Transaction 1 (T1) Account A se 1000 rupaye debit karta hai (balance 5000 se 4000 ho jaata hai) lekin abhi COMMIT nahi kiya. Isi waqt Transaction 2 (T2) Account A ka balance padhta hai aur 4000 dekh leta hai — uncommitted value. Ab T1 kisi wajah se ROLLBACK ho jaata hai (jaise downstream validation fail hui). Asal mein A ka balance abhi bhi 5000 hai, lekin T2 ne already 4000 ke basis pe koi decision le liya — maan lo T2 ek fraud-check service thi jisne "balance kam hai, transaction flag karo" jaisa faisla le liya galat data pe. Yeh **dirty read** hai: kisi doosre transaction ka uncommitted (aur potentially rolled-back) data padh lena.
+
+### Anomaly 2 — Non-Repeatable Read
+
+T1 ek transaction ke andar Account A ka balance do baar padhta hai — pehli baar report generate karne ke shuru mein, doosri baar validation ke liye end mein. Beech mein T2 ek transfer commit kar deta hai jo A ka balance change kar deta hai. Ab T1 ki dono reads mismatch karti hain — pehli baar 5000 dikha, doosri baar 4200. Agar T1 ki logic assume karti hai ki same transaction ke andar ek value consistent rahegi (jo reasonable assumption hai), to yeh **non-repeatable read** silently galat calculation ka reason ban sakta hai — jaise ek reconciliation report jo do alag numbers use karke galat total nikale.
+
+### Anomaly 3 — Phantom Read
+
+T1 "is mahine ke transactions" count karta hai Account A ke liye (SELECT COUNT(*) query) — kehte hain 45 aata hai. Isi transaction ke beech mein T2 ek naya transaction insert kar deta hai aur commit kar deta hai. T1 phir se same query chalata hai (maybe same transaction ke ek baad ke step mein, jaise monthly statement generate karte waqt double-check ke liye) — is baar 46 aata hai. Row set khud change ho gaya beech mein — yeh **phantom read** hai, jo non-repeatable read se related hai lekin specifically naye rows ke insert/delete se hota hai, existing row ke value change se nahi.
+
+### Isolation Levels — kaun kya prevent karta hai
+
+| Isolation Level | Dirty Read | Non-Repeatable Read | Phantom Read |
+|---|---|---|---|
+| Read Uncommitted | Possible | Possible | Possible |
+| Read Committed | **Prevented** | Possible | Possible |
+| Repeatable Read | **Prevented** | **Prevented** | Possible (mostly, DB-dependent) |
+| Serializable | **Prevented** | **Prevented** | **Prevented** |
+
+- **Read Uncommitted**: sabse loose level — koi bhi anomaly possible hai. Financial systems mein practically kabhi use nahi hota.
+- **Read Committed**: sirf committed data padhte ho, kabhi kisi ka uncommitted/in-progress change nahi dikhega. Dirty reads gone, lekin non-repeatable aur phantom reads still possible.
+- **Repeatable Read**: ek transaction ke andar ek hi row ko baar-baar padhoge to same value milegi (snapshot-style consistency). Phantom reads kuch databases mein still possible hain (jaise pure MVCC implementation ke details pe depend karta hai).
+- **Serializable**: strictest — behavior aisa hota hai jaise saare transactions ek-ek karke, sequentially chal rahe hon. Sab teeno anomalies prevented.
+
+### Sabse critical real-world point
+
+Zyadatar production databases (PostgreSQL, MySQL/InnoDB, Oracle) **default Read Committed** pe chalte hain — Serializable pe nahi. Yeh performance ke liye hai: strict isolation zyada locking/retry overhead lata hai, jo high-throughput systems (jahan thousands of transactions per second chal rahe hon) mein latency aur contention badha deta hai.
+
+Iska matlab yeh hai: application code ko explicitly handle karna padta hai un anomalies ko jo Read Committed prevent NAHI karta — non-repeatable aur phantom reads. Yehi wajah hai ki agla topic (optimistic/pessimistic locking) aur idempotency itna important ban jaate hain — woh application-level patterns hain jo default isolation level ke gaps ko cover karte hain.
+
+**Naive answer se bacho**: "bas Serializable set kar do sab jagah, safe rahega" — yeh interview mein weak signal hai kyunki yeh throughput cost ignore karta hai. Serializable transactions zyada abort/retry hoti hain under contention, aur bahut sa business logic ko itni strict isolation ki zaroorat hi nahi hoti. Real systems har specific operation ke liye **loosest isolation level jo abhi bhi safe hai** choose karte hain — jaise ek balance-read-for-display operation Read Committed pe theek chal sakta hai, lekin ek balance-check-then-debit operation ko explicit locking (agla topic) ki zaroorat padegi, chahe overall isolation level Read Committed hi kyun na ho.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Serializable: zero anomalies, easiest to reason about correctness-wise", "Read Committed: high throughput, low contention, good default for most reads"]}
+  cons={["Serializable: more aborts/retries under contention, lower throughput at scale", "Read Committed: application must explicitly handle non-repeatable and phantom reads for correctness-sensitive operations"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking reads (jaise "show me my balance" ya "show me last 10 transactions") typically Read Committed pe chalte hain — yeh operations naturally tolerant hain chhoti si staleness ki, aur high throughput zaroori hai kyunki lakhs of customers simultaneously balance check karte hain. Lekin actual debit/credit operations (jahan balance check karke usi ke basis pe deduct karna hai) explicit row-level locking use karte hain, sirf isolation level pe depend nahi karte — yeh agle topic ka core hai.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Order-processing systems mein "inventory count check karo, phir order confirm karo" jaisa flow phantom-read-sensitive hota hai — agar do customers simultaneously last available item order karne ki koshish karein, sirf isolation level (chahe Serializable ho) pe bharosa karna sab jagah practical nahi hota; iske bajaye explicit constraints (jaise inventory count pe a CHECK constraint ya conditional UPDATE) use hote hain jo bina strict isolation ke bhi correctness guarantee karte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>PostgreSQL aur MySQL/InnoDB dono ka default isolation level: Read Committed (InnoDB mein technically Repeatable Read default hai, lekin production BFSI systems aksar Read Committed explicitly configure karte hain)</li>
+<li>Serializable isolation under high contention: transaction abort/retry rate significantly badh sakta hai — kabhi kabhi double-digit percentage of transactions retry ho sakti hain hot rows pe</li>
+<li>Read Committed vs Serializable throughput difference: workload-dependent, lekin high-contention hot-row scenarios mein Serializable 30-50%+ throughput loss dikha sakta hai</li>
+<li>Typical core banking read query (balance check): milliseconds latency target, jisme Read Committed ka minimal locking overhead directly help karta hai</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar poochte hain "what's the difference between Read Committed and Serializable" — weak answer sirf definitions bol deta hai. Strong answer: har anomaly (dirty, non-repeatable, phantom) ka ek concrete two-transaction example do, phir table format mein map karo kaunsa level kya prevent karta hai, aur sabse important — proactively bolo ki production systems Read Committed default use karte hain aur application-level patterns (locking, idempotency) se gaps cover karte hain. Agar interviewer poochhe "to hum Serializable kyun nahi use karte hamesha" — yehi woh moment hai jahan throughput-vs-correctness trade-off explicitly articulate karna chahiye, "per-operation loosest-safe-level" framework ke saath.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Serializable sabse safe hai, isliye hamesha Serializable use karo" — yeh naive answer hai jo throughput cost ignore karta hai. Real systems per-operation basis pe loosest safe isolation level choose karte hain.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki default isolation level (Read Committed) automatically sab race conditions se bachaata hai — yeh sirf dirty reads prevent karta hai, non-repeatable aur phantom reads nahi.
+
+</Mistake>
+
+<Mistake>
+
+Dirty read aur non-repeatable read ko confuse karna — dirty read UNCOMMITTED data padhne se hota hai, non-repeatable read COMMITTED data ke change se same transaction ke andar hota hai. Yeh alag mechanisms hain.
+
+</Mistake>
+
+<Mistake>
+
+Balance-check-then-debit jaisi critical operation ko sirf isolation level pe chhod dena, explicit row-level locking (agla topic) ke bina — high concurrency mein lost update anomaly ban sakti hai chahe isolation level Repeatable Read ho.
+
+</Mistake>
+
+<Mistake>
+
+Phantom read ko non-repeatable read jaisa hi treat karna — phantom read specifically naye rows ke insert/delete se hota hai (row SET change hota hai), jabki non-repeatable read existing row ki VALUE change se hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant T1 as Transaction 1
+    participant DB as Database (Account A)
+    participant T2 as Transaction 2
+
+    Note over T1,T2: Dirty Read example (Read Uncommitted only)
+    T1->>DB: UPDATE balance -1000 (uncommitted)
+    T2->>DB: READ balance
+    DB-->>T2: Returns uncommitted value
+    T1->>DB: ROLLBACK
+    Note over T2: T2 acted on data that never existed
+
+    Note over T1,T2: Non-Repeatable Read example (below Repeatable Read)
+    T1->>DB: READ balance (first read: 5000)
+    T2->>DB: UPDATE balance, COMMIT
+    T1->>DB: READ balance again (second read: 4200)
+    Note over T1: Same transaction, two different values
+`}
+  caption="Two of the three isolation anomalies, shown as concrete two-transaction timelines on the same Account row."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Four isolation levels: Read Uncommitted, Read Committed, Repeatable Read, Serializable — each stricter than the last</li>
+<li>Three anomalies: dirty read (reads uncommitted data), non-repeatable read (same row, different value within one transaction), phantom read (row set changes within one transaction)</li>
+<li>Read Committed prevents only dirty reads — the most common production default</li>
+<li>Repeatable Read additionally prevents non-repeatable reads; Serializable prevents all three</li>
+<li>Most production databases default to Read Committed for throughput reasons, not Serializable</li>
+<li>Application code must handle the anomalies the default isolation level doesn't prevent — this is why locking and idempotency patterns matter</li>
+<li>"Just use Serializable everywhere" is a naive answer — real systems pick the loosest isolation level that's still safe per operation</li>
+</ul>
+
+</QuickRevision>

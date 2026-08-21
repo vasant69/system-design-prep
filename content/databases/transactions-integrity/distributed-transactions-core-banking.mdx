@@ -1,0 +1,173 @@
+---
+slug: "distributed-transactions-core-banking"
+title: "Distributed Transactions Across Core Banking Services"
+section: "databases"
+module: "transactions-integrity"
+order: 5
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["acid-bank-transfer"]
+tags: ["transactions", "distributed-systems", "microservices"]
+englishDefinition: "When a single business operation, like a fund transfer, spans multiple independently owned databases or services, a single local ACID transaction can no longer guarantee atomicity across all of them. This requires either a blocking coordination protocol like Two-Phase Commit, or an eventually-consistent pattern like Sagas, where each step is a local transaction and failures are handled with compensating actions rather than a global rollback."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Paytm", "Amazon"]
+---
+
+<SimpleDefinition>
+
+When a single business operation, like a fund transfer, spans multiple independently owned databases or services, a single local ACID transaction can no longer guarantee atomicity across all of them. This requires either a blocking coordination protocol like Two-Phase Commit, or an eventually-consistent pattern like Sagas, where each step is a local transaction and failures are handled with compensating actions rather than a global rollback.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Is module ke pehle topic mein transfer ek simple `BEGIN...COMMIT` transaction tha, ek hi database ke andar. Real modern BFSI architecture mein reality itni simple nahi rehti — samjho kyun.
+
+### Problem kahan se aata hai — monolith se microservices tak
+
+Purane core banking systems ek bada monolithic database use karte the — Customer, Account, Transaction, Rewards, Notifications sab ek hi database mein, ek hi schema ke andar. Modern architecture mein yeh split ho jaata hai independent services mein, har ek ka apna database: **core ledger service** (actual money movement, sabse critical), **rewards/cashback service** (apna alag data), **notifications service**, **fraud-check service**. Yeh split isliye hota hai taaki har team apni service independently scale, deploy, aur own kar sake — lekin iska cost yeh hai ki ab ek single ACID transaction poore business operation ko cover nahi kar sakta, kyunki har service ka apna alag database hai. Agar transfer + cashback credit + notification teeno alag databases mein hain, ek `BEGIN...COMMIT` unhe atomic nahi bana sakta — cross-database transactions SQL mein exist hi nahi karte.
+
+### Two-Phase Commit (2PC) — brief recap, aur kyun rarely used
+
+2PC ek protocol hai jisme ek **coordinator** saare participant databases se poochta hai "kya tum commit karne ke liye ready ho?" (**prepare phase**) — sab "haan" bolein tabhi coordinator sabko "ab commit karo" bolta hai (**commit phase**). Yeh theoretically atomicity deta hai cross-database, lekin practically BFSI scale pe rarely use hota hai kyunki:
+
+- **Blocking**: agar coordinator crash ho jaaye prepare phase ke baad, participants apna lock/resource hold kiye rehte hain indefinitely, unresolved state mein — yeh production mein availability-killing hota hai.
+- **Coordinator Single Point of Failure**: poora protocol ek central coordinator pe depend karta hai — agar woh down hai, poora operation stuck hai.
+- **Poor availability aur scaling**: 2PC participants ko synchronously wait karna padta hai ek doosre ka — high-throughput systems mein yeh latency aur throughput dono ko severely hurt karta hai.
+
+Isliye modern BFSI-scale systems 2PC avoid karte hain aur **Saga pattern** prefer karte hain.
+
+### Saga Pattern — ab is topic ka core
+
+Saga ka idea hai: poore operation ko chhote-chhote **local transactions** mein todo, har ek apni respective service ke apne database mein, aur unhe **events** ke through chain karo. Har local transaction apni service ke schema ke andar poori tarah ACID hai — sirf poore saga ka **overall coordination** eventually-consistent hai, atomic nahi.
+
+Key mechanism: har local transaction, apni business change ke saath-saath, **same atomic transaction** mein ek "outbox" event bhi likhta hai. Yeh guarantee karta hai ki agar business change commit hua, to event bhi guaranteed commit hua — koi race nahi ki business change ho jaaye lekin event likhna reh jaaye (ya vice versa). Yeh mechanism itna important hai ki agla poora topic isi pe hai (Outbox Pattern & CDC) — abhi ke liye samajh lo: outbox event hi woh cheez hai jo saga ke agle step ko reliably trigger karta hai.
+
+### Concrete example — transfer + cashback
+
+1. **Ledger DB (local ACID transaction)**: Account A debit, Account B credit — yeh transfer poori tarah successfully complete ho jaata hai, poore ACID guarantees ke saath, apne local database mein. Isi transaction ke andar ek outbox event bhi likha jaata hai: `"TransferCompleted"`.
+2. **Event published**: outbox se yeh event Rewards service tak deliver hota hai (relay/CDC mechanism se, agle topic mein detail).
+3. **Rewards DB (apna local ACID transaction)**: Rewards service apne database mein cashback credit karta hai, apni local transaction ke andar.
+4. **Agar Rewards step fail ho jaaye** (koi bug, service down, whatever): saga ka failure-handling ek **compensating transaction** trigger karta hai — jaise "ReverseCashback" step, jo already-applied cashback ko undo karta hai agar woh partially apply ho gaya tha.
+
+**Critical point jo interview mein clearly bolna chahiye**: agar step 3/4 fail ho, **transfer khud rollback NAHI hota**. Transfer already successfully complete ho chuka tha, aur woh correct bhi tha — customer ka paisa sahi se transfer ho gaya. Sirf cashback wala downstream step compensate hota hai. Yeh 2PC se fundamentally different philosophy hai: 2PC "sab ya kuch nahi, ek saath" try karta hai; Saga "har step apne aap mein correct hai, agar koi baad ka step fail ho to sirf uska effect undo karo, pehle wale successful steps ko chhedo mat" wala approach leta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Saga: no blocking, no coordinator SPOF, each service scales/deploys independently, high availability", "2PC: simpler mental model — true atomicity, no need to design compensating actions"]}
+  cons={["Saga: eventual consistency (temporary inconsistency window exists), requires designing compensating transactions for every step", "2PC: blocking on coordinator failure, poor availability, doesn't scale well at high throughput"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / Paytm">
+
+Modern payment platforms typically split ledger, rewards, fraud-check, aur notifications ko independent services mein — har ek apna database, apni scaling needs, apna deployment cycle. Fund transfer ka core ledger update hamesha sabse pehle aur sabse strongly consistent step hota hai (local ACID transaction), aur baaki downstream effects (cashback, SMS/push notification, fraud scoring) saga-style eventually-consistent steps ki tarah design kiye jaate hain, jinke apne compensating actions defined hote hain agar woh fail ho jaayein.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Order placement ek classic saga example hai — order create hona, payment charge hona, inventory reserve hona, shipping trigger hona, sab alag services/databases mein hote hain. Agar inventory reservation fail ho jaaye order confirm hone ke baad, poora order rollback nahi hota — ek compensating step ("refund payment," "cancel order") trigger hota hai, jab ki jo steps already successfully complete ho chuke the (jaise payment charge) unhe apne aap mein correct treat kiya jaata hai jab tak explicitly compensate na kiya jaaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>2PC coordinator failure window: participants can hold locks/resources for the duration of an unresolved prepare phase — production outages from this are a well-documented failure mode</li>
+<li>Saga eventual-consistency window: typically milliseconds to a few seconds in well-designed event-driven systems (event publish + downstream processing latency)</li>
+<li>Number of independent services touched by a single "fund transfer" business operation in a modern BFSI platform: commonly 3-6 (ledger, rewards, notifications, fraud-check, analytics, regulatory reporting)</li>
+<li>Compensating transaction design overhead: every saga step needs an explicit, tested compensating action — this is real added engineering cost vs a single local transaction</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How would you handle a transfer that also needs to credit cashback in a separate service?" — is question ka weak answer hai "use 2PC" bina trade-offs samjhe. Strong answer: pehle explain karo ki microservices split ki wajah se yeh problem hi kyun exist karta hai (independent databases), phir briefly 2PC ko mention karo aur uske blocking/SPOF issues bolo, phir majority focus Saga pattern pe do — local transactions + outbox event + compensating actions ka concrete flow. Sabse important line jo bolni chahiye: "agar downstream step fail ho, already-successful upstream step (jaise transfer) ko rollback nahi karte — sirf compensate karte hain downstream effect ko." Yeh ek nuanced, correct understanding dikhata hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Yeh assume karna ki distributed transaction problem ka solution hamesha 2PC hai — real BFSI-scale systems 2PC ko blocking aur availability issues ki wajah se largely avoid karte hain, Saga pattern prefer karte hain.
+
+</Mistake>
+
+<Mistake>
+
+Saga step fail hone pe already-successful pehle steps (jaise ledger transfer) ko bhi rollback karne ki koshish karna — Saga ka core idea hi hai ki successful local transactions apni jagah correct rehte hain, sirf downstream effect compensate hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Business change aur outbox event ko do alag transactions mein likhna (pehle business change commit karo, phir alag se event publish karo) — is beech mein crash hua to event permanently miss ho sakta hai. Dono ek hi local atomic transaction mein hone chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Compensating transaction design ko afterthought treat karna — har saga step ke liye compensating action explicitly design aur test karna utna hi important hai jitna forward path, kyunki failure handling hi saga ki real complexity hai.
+
+</Mistake>
+
+<Mistake>
+
+Microservices split karte waqt yeh sochna ki transactional guarantees automatically preserve rahenge jaisa monolith mein the — split hone ke baad cross-service atomicity ek fundamentally different (aur harder) problem ban jaati hai jise explicitly design karna padta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Ledger as Ledger DB
+    participant Outbox as Outbox (same txn)
+    participant Relay as Relay/Queue
+    participant Rewards as Rewards DB
+
+    Ledger->>Ledger: BEGIN local transaction
+    Ledger->>Ledger: Debit A, Credit B
+    Ledger->>Outbox: Insert "TransferCompleted" event (same txn)
+    Ledger->>Ledger: COMMIT (transfer + event, atomic together)
+
+    Relay->>Outbox: Poll unpublished events
+    Relay->>Rewards: Publish "TransferCompleted"
+
+    alt Rewards succeeds
+        Rewards->>Rewards: Local transaction: credit cashback, COMMIT
+    else Rewards fails
+        Rewards->>Rewards: Compensating transaction: "ReverseCashback"
+        Note over Ledger: Transfer itself is NOT rolled back - it already succeeded correctly
+    end
+`}
+  caption="A Saga: the ledger transfer is one local ACID transaction (with its outbox event committed atomically alongside it), and downstream failures trigger compensating actions rather than a global rollback."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Microservices split what used to be one monolithic database into several independently-owned databases, breaking single-transaction atomicity across the whole business operation</li>
+<li>Two-Phase Commit (2PC): coordinator-driven prepare + commit phases, gives true atomicity but is rarely used at BFSI scale (blocking, coordinator SPOF, poor availability)</li>
+<li>Saga pattern: break the operation into local ACID transactions per service, chained via events, with compensating actions for failures</li>
+<li>Each local transaction writes its business change AND an outbox event in the same atomic transaction — this reliably triggers the next saga step</li>
+<li>Concrete flow: ledger transfer (local txn) → event published → rewards service credits cashback (its own local txn) → if rewards fails, a compensating "reverse cashback" runs</li>
+<li>Critical point: if a downstream step fails, the already-successful upstream step (the transfer) is NOT rolled back — it was correct and stays correct</li>
+<li>Compensating transactions must be explicitly designed and tested for every saga step, not treated as an afterthought</li>
+</ul>
+
+</QuickRevision>

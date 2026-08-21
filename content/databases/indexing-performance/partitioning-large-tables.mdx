@@ -1,0 +1,199 @@
+---
+slug: "partitioning-large-tables"
+title: "Partitioning Large Transaction Tables"
+section: "databases"
+module: "indexing-performance"
+order: 4
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["composite-covering-indexes"]
+tags: ["indexing", "performance", "scalability"]
+englishDefinition: "Table partitioning is splitting one logically large table into smaller physical pieces (partitions) based on a partition key, while still querying it as a single logical table. It is distinct from sharding, which splits data across separate database servers entirely."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Table partitioning is splitting one logically large table into smaller physical pieces (partitions) based on a partition key, while still querying it as a single logical table. It is distinct from sharding, which splits data across separate database servers entirely — a topic covered in a later module.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Indexes bahut kaam aate hain, lekin ek point ke baad — jab table itna bada ho jaaye ki even indexed lookups, vacuum/maintenance operations, aur backups slow ho jaayein — sirf indexing kaafi nahi rehta. Yahan **partitioning** kaam aata hai: ek logically single table ko physically chhote-chhote pieces ("partitions") mein todna, lekin application ko woh ek hi table dikhti rahe.
+
+### Partitioning vs sharding — confuse mat karo
+
+Yeh distinction interview mein clarify karna zaroori hai:
+
+- **Partitioning** — ek hi database server ke andar, ek table ke data ko multiple physical partitions mein split karna. Query engine ko pata hota hai ki kaunse partitions relevant hain, aur sirf unhi ko touch karta hai.
+- **Sharding** — data ko multiple **alag database servers** mein split karna (horizontal scaling across machines). Yeh ek alag, bigger scaling problem hai, jo baad ke module mein cover hoga.
+
+Dono conceptually similar lagte hain (data ko split karna based on a key), lekin partitioning single-server optimization hai, sharding multi-server distribution hai.
+
+### BFSI ka canonical case: Transaction table
+
+Ek core banking `Transaction` table crores-arbon rows tak grow karta hai, aur roz naye rows add hote rehte hain. Yeh partitioning ke liye ekdum perfect candidate hai kyunki iska access pattern predictable hai — almost saari queries **date-range-scoped** hoti hain: "is mahine ka statement," "pichle quarter ke transactions," "aaj ke reconciliation records."
+
+### Range partitioning by date — standard approach
+
+```sql
+CREATE TABLE transaction (
+    transaction_id BIGINT,
+    account_id BIGINT,
+    transaction_date DATE,
+    amount DECIMAL(15,2)
+) PARTITION BY RANGE (transaction_date);
+
+CREATE TABLE transaction_2026_01 PARTITION OF transaction
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE transaction_2026_02 PARTITION OF transaction
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+```
+
+Har mahine ke liye ek partition — yeh financial transaction tables ke liye especially achha fit hai kyunki:
+
+- Query almost hamesha date range se scoped hoti hai, isliye optimizer sirf relevant partitions ko touch karta hai aur baaki sabko skip kar deta hai — isse **partition pruning** kehte hain. Agar query "January 2026 ke transactions" maang rahi hai, database sirf `transaction_2026_01` partition scan karega, baaki 50+ partitions ko chhoo bhi nahi payega.
+- Purane partitions ko cheaper storage tier pe move kiya ja sakta hai, ya regulatory retention requirements ke hisaab se poori tarah archive kiya ja sakta hai (BFSI mein transaction records aksar 7-10 saal tak legally retain karne padte hain — yeh ek baad ke module mein cover hoga).
+
+### List partitioning — ek alternative
+
+Kuch access patterns date-based nahi, balki **category-based** hote hain — jaise region ya branch. Wahan **list partitioning** better fit hai:
+
+```sql
+CREATE TABLE transaction PARTITION BY LIST (region) (
+    PARTITION region_north VALUES IN ('DELHI', 'PUNJAB', 'HARYANA'),
+    PARTITION region_south VALUES IN ('KARNATAKA', 'TAMIL_NADU', 'KERALA')
+);
+```
+
+Yeh tab useful hai jab queries mostly ek specific region/branch scoped hon (jaise ek regional reporting dashboard), na ki date scoped.
+
+### Real operational benefit — sirf query speed nahi
+
+Partitioning ka ek underrated benefit query performance se bhi bada hai: **archival/deletion speed**. Agar tumhe 5 saal purana data delete/archive karna ho, ek partition-based table mein poori purani partition ko **DROP** karna near-instant hai (metadata operation hai). Iske against, agar partitioning na ho, to "delete transactions older than 5 years" ek `DELETE` statement chalega jo millions ya crores rows ko row-by-row process karega — yeh hours le sakta hai, heavy locking cause kar sakta hai, aur production table pe massive load daal sakta hai.
+
+Yehi wajah hai ki BFSI mein regulatory data retention/archival workflows aksar partitioning ke around design kiye jaate hain — purani partition ko archive storage mein move karke drop kar do, ek clean, near-instant operation.
+
+### Cost — free nahi hai
+
+Partitioning schema complexity badhata hai:
+
+- Partition key choice ek high-stakes, mostly one-time decision hai — usko baad mein badalna painful hota hai (typically poore table ko re-partition karna padta hai, jo bade tables pe major operation hai).
+- Cross-partition queries (jaise "saare accounts ke across-all-time totals," bina date filter ke) ko har partition touch karna padta hai — partition pruning ka benefit nahi milta, aur agar galat partition key choose kiya to yeh common access pattern ho sakta hai.
+- Unique constraints/foreign keys partitioned tables pe kuch databases mein restrictions ke saath aate hain (jaise partition key ko unique constraint mein include karna padna).
+
+Isliye partition key choose karte waqt dominant query pattern ko dhyan se socho — galat choice baad mein reverse karna mehenga hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Partition pruning makes date-range-scoped queries dramatically faster on huge tables", "Dropping/archiving an old partition is near-instant vs a slow row-by-row DELETE", "Maintenance operations (vacuum, backup) can target individual partitions"]}
+  cons={["Schema complexity increases — partition key must be chosen carefully upfront", "Changing the partition key later requires re-partitioning the whole table", "Queries that don't filter on the partition key lose the pruning benefit and touch every partition"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking `Transaction` table partitioned by month is a near-universal pattern. Statement generation and reconciliation queries are almost always date-scoped, so partition pruning keeps them fast even as the table crosses billions of rows. When regulatory retention windows expire for the oldest data, the corresponding monthly partition is archived to cold storage and dropped — a metadata operation, not a bulk delete.
+
+</RealWorld>
+
+<RealWorld company="ICICI Bank">
+
+A regional reporting system that aggregates branch-level transaction summaries uses list partitioning by region/zone alongside the date-based partitioning on the core table (a two-dimensional partition scheme in some setups), because its dominant access pattern is "all transactions for this zone this quarter," not a pure date range.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Dropping a partition: typically milliseconds to low seconds (metadata-only operation), regardless of how many rows it contains</li>
+<li>Row-by-row DELETE of an equivalent number of old rows: can take hours and generates heavy write-ahead-log/lock contention</li>
+<li>A well-pruned partitioned query touches only the relevant partition(s) instead of scanning billions of rows across the whole table</li>
+<li>BFSI transaction tables commonly retain 7-10 years of data for regulatory compliance, spread across dozens to hundreds of partitions</li>
+<li>Re-partitioning an existing large table (changing the partition key) is a major, often downtime-involving operation — treat the initial choice as close to permanent</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common interview prompt: "the Transaction table has grown to 2 billion rows and queries are slow even with indexes — what next?" The strong answer introduces partitioning as the next scaling lever after indexing, explains partition pruning with a concrete date-range example, and proactively distinguishes it from sharding (many candidates conflate the two). Also be ready to justify the partition key choice against the table's actual query pattern — "why date and not account_id?" is a natural follow-up, and the answer should reference how most BFSI queries are date-range-scoped.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Confusing partitioning (splitting a table within one server) with sharding (splitting data across multiple servers) — these solve different problems at different scales.
+
+</Mistake>
+
+<Mistake>
+
+Choosing a partition key that doesn't match the dominant query pattern — e.g. partitioning by region when almost every query is date-scoped, losing the partition pruning benefit.
+
+</Mistake>
+
+<Mistake>
+
+Treating the partition key choice as easily reversible — changing it later typically requires re-partitioning the entire table, a major operation on a large table.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that cross-partition queries (no filter on the partition key) don't get pruning benefits and can be slower than an unpartitioned table with a good index.
+
+</Mistake>
+
+<Mistake>
+
+Using slow row-by-row DELETE statements for data retention/archival instead of dropping entire old partitions, when the table is already partitioned by date.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    T["Transaction table (logical)"] --> P1["Partition: 2026-01"]
+    T --> P2["Partition: 2026-02"]
+    T --> P3["Partition: 2026-03"]
+    T --> POld["Partition: 2019-01 (old, archivable)"]
+    Q["Query: WHERE transaction_date >= '2026-02-01' AND < '2026-03-01'"] -->|partition pruning| P2
+    Q -.->|skipped entirely| P1
+    Q -.->|skipped entirely| P3
+    Q -.->|skipped entirely| POld
+    POld -->|DROP PARTITION, near-instant| Archive["Archived / cold storage"]
+`}
+  caption="Partition pruning lets the optimizer touch only the relevant date partition; old partitions can be archived and dropped almost instantly."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Partitioning splits one table into physical pieces on the same server; sharding splits data across separate servers</li>
+<li>Range partitioning by date is the standard fit for financial transaction tables — queries are almost always date-range-scoped</li>
+<li>Partition pruning lets the optimizer skip irrelevant partitions entirely, keeping queries fast even at billions of rows</li>
+<li>List partitioning (e.g. by region/branch) fits access patterns that aren't date-based</li>
+<li>Dropping/archiving an old partition is near-instant, vs a slow row-by-row DELETE of the same data</li>
+<li>Partition key choice is close to permanent — changing it later requires re-partitioning the whole table</li>
+<li>Queries that don't filter on the partition key lose the pruning benefit</li>
+</ul>
+
+</QuickRevision>

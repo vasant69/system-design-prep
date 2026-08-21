@@ -1,0 +1,182 @@
+---
+slug: "materialized-views"
+title: "Materialized Views & Denormalized Read Models"
+section: "databases"
+module: "indexing-performance"
+order: 5
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["query-execution-plans"]
+tags: ["indexing", "performance"]
+englishDefinition: "A materialized view is a database object that stores the precomputed result of a query physically on disk, unlike a regular view, which is just a stored query re-run every time it's accessed. It trades storage and staleness for much faster reads on expensive aggregations."
+interviewFrequency: "medium"
+companies: ["HDFC Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A materialized view is a database object that stores the precomputed result of a query physically on disk, unlike a regular view, which is just a stored query re-run every time it's accessed. It trades storage and staleness for much faster reads on expensive aggregations.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Regular view aur materialized view naam se similar lagte hain, lekin fundamentally different hain. Ek **regular view** basically ek saved SQL query hai — har baar jab tum use query karte ho, database underlying query ko fresh se run karta hai. Isse convenience milti hai (complex query ko ek naam ke peeche chhupa dete ho), lekin performance benefit **zero** hota hai — underlying computation har baar honi hi hai.
+
+**Materialized view** isse ek step aage le jaata hai: query ka result **actually disk pe store** hota hai, jaise ek normal table. Read karna matlab seedha stored result padhna — koi recomputation nahi. Yeh especially valuable hai jab underlying query expensive ho (bade joins, aggregations, millions of rows scan karna).
+
+### BFSI example — dashboard jo har baar aggregate na kare
+
+Socho ek "daily branch transaction totals" dashboard — jo har branch ke liye us din ke total credit, total debit, transaction count dikhata hai. Agar yeh live query ho:
+
+```sql
+SELECT branch_id, transaction_date,
+       SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE 0 END) AS total_credit,
+       SUM(CASE WHEN type = 'DEBIT' THEN amount ELSE 0 END) AS total_debit,
+       COUNT(*) AS txn_count
+FROM Transaction
+WHERE transaction_date = CURRENT_DATE
+GROUP BY branch_id, transaction_date;
+```
+
+Yeh query har baar page load pe millions of rows scan/aggregate karegi (chahe partitioning se ek din ka partition hi scan ho, phir bhi aggregation cost hai) — dashboard load slow feel hoga, aur agar bahut log dashboard baar-baar refresh karte hain, database pe repeated heavy load padega.
+
+Fix: isi query ko **materialize** kar do:
+
+```sql
+CREATE MATERIALIZED VIEW daily_branch_summary AS
+SELECT branch_id, transaction_date,
+       SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE 0 END) AS total_credit,
+       SUM(CASE WHEN type = 'DEBIT' THEN amount ELSE 0 END) AS total_debit,
+       COUNT(*) AS txn_count
+FROM Transaction
+GROUP BY branch_id, transaction_date;
+```
+
+Ab dashboard seedha `daily_branch_summary` se read karta hai — instant, kyunki result already precomputed hai. Similarly, "monthly account statement summary" bhi isi pattern se banaya ja sakta hai — nightly ya batch-close ke baad refresh hota hai, aur din bhar reads instant rehte hain.
+
+### Refresh strategy — yahan asli trade-off hai
+
+Materialized view ka result **stale ho jaata hai** jaise hi underlying table mein naya data aaye — jab tak view refresh nahi hoti, woh purana snapshot dikhati rehti hai. Refresh ka scheduling hi is feature ka core design decision hai:
+
+- **Full refresh** — poori view dobara compute karna from scratch. Simple hai, lekin bade datasets pe expensive — ek badi materialized view ka full refresh minutes ya even hours le sakta hai, aur is dauraan (database-dependent) resources lock ho sakte hain ya reads blocked ho sakte hain.
+- **Incremental refresh** — sirf jo naya data aaya hai usko existing materialized result mein merge karna, poora recompute kiye bina. Zyada efficient, lekin implement karna complex hai aur sab databases/query shapes isko support nahi karte.
+
+BFSI mein common pattern: nightly batch job (ya batch-close ke turant baad) materialized view ko refresh karta hai. Din bhar dashboard/reports thoda stale data dikhate hain (jaise tak-kal tak ka data), jo acceptable hai kyunki yeh reporting use case hai, real-time balance check nahi.
+
+### Denormalization se comparison
+
+Pichle module mein "denormalization" cover hua tha — jahan application code manually ek denormalized column ya table maintain karta hai (jaise `Account.last_transaction_amount` ko har transaction ke baad application logic se update karna). Materialized view essentially **database-native version** hai isi idea ka: database khud query-driven denormalization manage karta hai, refresh logic ke saath, application code ko manually sync maintain nahi karna padta.
+
+Trade-off yeh hai: manual denormalization real-time rehta hai (application transaction ke saath hi update karta hai), lekin bug-prone hai (agar ek jagah update miss ho gaya, data inconsistent ho jaata hai). Materialized view consistent-by-refresh hai (guaranteed accurate as of last refresh), lekin real-time nahi.
+
+### Jab NAHI use karna chahiye
+
+Sabse important guideline: **kabhi bhi real-time accuracy chahiye wahan materialized view mat use karo**. Current account balance jaisi cheez — jahan galat/stale value dikhana seedha customer trust aur regulatory issue ban sakta hai — kabhi bhi materialized view se serve nahi karni chahiye. Balance hamesha live query (ya real-time-maintained denormalized column, transaction ke saath atomically updated) se aana chahiye, kabhi bhi "last night ka refreshed snapshot" se nahi.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Materialized views feel like a free performance win, but the moment someone asks "is this real-time?" the answer is always no — even a "5-minute refresh" materialized view can be stale exactly when it matters most (e.g. right after a large transaction posts). Never put anything balance-critical or compliance-critical behind one without an explicit staleness SLA everyone has agreed to.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Monthly account statement summaries (opening balance, closing balance, total credits/debits for the month) are a natural fit for a materialized view refreshed once after each day's batch close. Millions of customers can then load their statement summary instantly instead of the bank re-aggregating a full month of transactions on every page view.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Seller dashboards showing aggregated metrics (total sales, returns, ratings over the last 30 days) are commonly backed by materialized views or equivalent precomputed summary tables, refreshed on a schedule — computing these aggregates live from the raw orders table on every dashboard load would be prohibitively expensive at Amazon's transaction volume.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>A live aggregation query over millions of rows can take seconds; reading the same result from a materialized view is typically single-digit milliseconds</li>
+<li>Full refresh of a large materialized view can take minutes to hours depending on data volume and aggregation complexity</li>
+<li>Incremental refresh, when supported, can reduce refresh time by an order of magnitude versus full refresh</li>
+<li>Typical BFSI refresh cadence for reporting/dashboard materialized views: nightly, or immediately after daily batch close</li>
+<li>Storage overhead: a materialized view duplicates (precomputed) data, so it adds storage cost proportional to its result size, not the source table size</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common interview trap: candidate proposes a materialized view for something that needs real-time accuracy, like "show the user's current account balance." The strong answer explicitly rules this out — materialized views are for expensive, staleness-tolerant aggregations (dashboards, reports, statements), never for values where a stale read has real consequences. Also be ready to contrast materialized views with plain views (no performance benefit, always live) and with manual application-level denormalization (real-time but bug-prone), since interviewers often probe "why not just denormalize in code?"
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using a materialized view to serve current account balance or any other value that needs real-time accuracy — staleness between refreshes makes this dangerous in BFSI.
+
+</Mistake>
+
+<Mistake>
+
+Confusing a regular view with a materialized view — a regular view provides no performance benefit since it re-runs the underlying query every time.
+
+</Mistake>
+
+<Mistake>
+
+Choosing full refresh by default for a very large materialized view without considering whether incremental refresh is supported and would be far cheaper.
+
+</Mistake>
+
+<Mistake>
+
+Not defining an explicit staleness SLA — "refreshed nightly" needs to be a documented, agreed-upon expectation, not an implicit assumption downstream consumers might get wrong.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that a full refresh can lock resources or take significant time on a large materialized view, and scheduling it during peak load instead of off-peak batch windows.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    T["Transaction table (millions of rows)"] -->|nightly / batch-close refresh| MV["Materialized view: daily_branch_summary (precomputed)"]
+    MV -->|instant read| Dash["Branch dashboard"]
+    T -.->|live query, no materialization| Balance["Current balance query (always live, never materialized)"]
+    Balance -->|real-time, no staleness| App["Account balance display"]
+`}
+  caption="Aggregated, staleness-tolerant reads go through a materialized view; real-time-critical reads like balance always query live."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Materialized view = precomputed query result stored on disk; regular view = stored query re-run live every time</li>
+<li>Best fit: expensive aggregations that tolerate staleness — dashboards, statement summaries, reports</li>
+<li>Refresh strategy matters: full refresh (simple, expensive) vs incremental refresh (efficient, more complex)</li>
+<li>Materialized view = database-native, query-driven denormalization, vs manually maintained denormalized columns in application code</li>
+<li>Never serve real-time-critical values (like current account balance) from a materialized view</li>
+<li>A large materialized view's refresh itself has a real cost — can lock resources or take significant time</li>
+<li>Always pair a materialized view with an explicit, agreed staleness SLA</li>
+</ul>
+
+</QuickRevision>

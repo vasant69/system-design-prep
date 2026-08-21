@@ -1,0 +1,280 @@
+---
+slug: "core-banking-ledger-db"
+title: "Design a Core Banking Ledger Database"
+section: "databases"
+module: "bfsi-case-studies"
+order: 1
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["double-entry-ledger-schema", "core-banking-schema"]
+tags: ["case-study", "bfsi", "ledger"]
+englishDefinition: "Design the core database schema for a bank's ledger system - the authoritative record of every customer's account balance and every transaction that ever moved money, built on the double-entry principle, supporting millions of accounts and high transaction throughput with absolute correctness as the top priority."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "SBI"]
+---
+
+<SimpleDefinition>
+
+Design the core database schema for a bank's ledger system - the authoritative record of every customer's account balance and every transaction that ever moved money, built on the double-entry principle, supporting millions of accounts and high transaction throughput with absolute correctness as the top priority.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh case study poore Database Design section ka synthesis point hai. Isme ek naya concept nahi seekhoge — is topic ka poora point hai ki jo tumne pichle modules mein alag-alag seekha (ER modeling, double-entry ledger, ACID, isolation levels, indexing, partitioning) usse ek coherent, end-to-end schema mein jodo. Interview mein "design a banking system's database" jaisa prompt exactly isi synthesis ki demand karta hai — interviewer individual concepts nahi test kar raha, yeh test kar raha hai ki tum unhe ek real system mein sahi jagah pe apply kar sakte ho ya nahi.
+
+### Requirements Clarification
+
+Kisi bhi core banking schema design se pehle, functional aur non-functional requirements explicitly clarify karo — interview mein yeh seedha shuru karna chahiye, seedha tables banana nahi.
+
+Functional requirements:
+- Naye accounts open karna (savings, current, fixed deposit — alag product types)
+- Transactions post karna (deposit, withdrawal, transfer, interest credit)
+- Kisi bhi account ka current balance compute karna
+- Statement generate karna (ek date range ke transactions)
+
+Non-functional requirements — aur yahan asli interview signal hai:
+- **Correctness sabse upar hai, availability se bhi upar.** Agar system ek galat balance dikhaye, ya do transactions double-count ho jaayein, woh ek incorrect-response-fast se zyada bura hai. Yeh directly System Design section ke CAP theorem topic se connect karta hai: core banking ledger ek **CP** system hona chahiye — jab network partition ho ya replica lag ho, system stale/possibly-wrong balance dikhane ke bajaye error de dega ("service temporarily unavailable") bajaye ek galat number dikhane ke.
+- **Durability** — ek transaction jo customer ko "successful" dikh chuka hai, woh kabhi bhi crash ke baad "gayab" nahi ho sakta.
+- **Auditability** — regulator, internal audit, ya customer dispute kabhi bhi pooch sakta hai "yeh balance yeh kyun hai" — schema ko yeh sawaal deterministically answer karna chahiye, kisi guess ya assumption ke bina.
+
+Ek clarifying sawaal jo tum khud interviewer se poochoge: "Kya balance real-time consistent chahiye, ya eventual consistency (kuch seconds ka lag) acceptable hai reporting ke liye?" Yeh answer schema ke read-path design ko directly shape karta hai (aage dekhenge).
+
+### Key Entities & Relationships
+
+Paanch core entities hain jo is schema ka backbone banate hain:
+
+- **Customer** — KYC details wala entity, ek insaan ya organization jo bank ka client hai.
+- **Account** — ek specific banking product instance jo ek ya zyada Customers se belong karta hai (joint accounts ki wajah se yeh N:M relationship hai, junction table `AccountHolder` ke through, jaisa ki ER Modeling topic mein cover hua).
+- **Product** — Account ka "type" define karta hai (savings, current, fixed deposit) — interest rate, minimum balance rule, withdrawal limit jaisi product-level policies isi mein store hoti hain, taaki naya product launch karna sirf ek naya row insert karna ho, code change nahi.
+- **LedgerEntry** — double-entry principle wala append-only table, jo Double-Entry Ledger Schema topic mein detail se cover hua. Har transaction kam se kam ek debit aur ek matching credit row banata hai.
+- **AuditLog** — kisi bhi sensitive field change (jaise account status freeze/unfreeze, KYC update) ka independent audit trail, `LedgerEntry` se alag kyunki woh sirf money movement track karta hai, AuditLog broader operational changes track karta hai.
+
+Relationships: Customer ↔ Account ek N:M relationship hai (AccountHolder junction table ke through), Account → Product ek N:1 relationship hai (kai accounts ek hi product ko reference karte hain), aur Account → LedgerEntry ek 1:N relationship hai (ek account ke saikdon/hazaaron entries ho sakte hain).
+
+### Schema Design
+
+Yahan poora core schema together dikha rahe hain — pichle modules ke individual pieces ek jagah:
+
+```sql
+CREATE TABLE customer (
+    customer_id     BIGINT PRIMARY KEY,
+    pan_number      VARCHAR(10) UNIQUE NOT NULL,
+    name            VARCHAR(120) NOT NULL,
+    kyc_status      VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at      TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE product (
+    product_id      BIGINT PRIMARY KEY,
+    product_code    VARCHAR(30) UNIQUE NOT NULL,   -- e.g. SAVINGS_REGULAR, FD_1YR
+    interest_rate   DECIMAL(6, 4),
+    min_balance     DECIMAL(18, 2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE account (
+    account_id      BIGINT PRIMARY KEY,
+    account_number  VARCHAR(20) UNIQUE NOT NULL,
+    product_id      BIGINT NOT NULL REFERENCES product(product_id),
+    status          VARCHAR(20) NOT NULL DEFAULT 'active',
+    currency        VARCHAR(3) NOT NULL DEFAULT 'INR',
+    created_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE account_holder (
+    account_id      BIGINT NOT NULL REFERENCES account(account_id),
+    customer_id     BIGINT NOT NULL REFERENCES customer(customer_id),
+    role            VARCHAR(20) NOT NULL DEFAULT 'primary',
+    PRIMARY KEY (account_id, customer_id)
+);
+
+CREATE TABLE ledger_entry (
+    entry_id        BIGINT PRIMARY KEY,
+    transaction_id  BIGINT NOT NULL,
+    account_id      BIGINT NOT NULL REFERENCES account(account_id),
+    entry_type      VARCHAR(6) NOT NULL CHECK (entry_type IN ('debit', 'credit')),
+    amount          DECIMAL(18, 2) NOT NULL CHECK (amount > 0),
+    created_at      TIMESTAMP NOT NULL DEFAULT now(),
+    CONSTRAINT uq_txn_account_type UNIQUE (transaction_id, account_id, entry_type)
+);
+
+CREATE TABLE audit_log (
+    audit_id        BIGINT PRIMARY KEY,
+    entity_name     VARCHAR(50) NOT NULL,     -- 'account', 'customer', etc.
+    entity_id       BIGINT NOT NULL,
+    field_changed   VARCHAR(50) NOT NULL,
+    old_value       TEXT,
+    new_value       TEXT,
+    changed_by      VARCHAR(100) NOT NULL,
+    changed_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+```
+
+Notice: `account` mein koi `balance` column nahi hai. Yeh deliberate hai — balance `ledger_entry` se compute hota hai, exactly jaisa Double-Entry Ledger Schema topic mein establish hua tha. `product` table product-level rules ko data mein rakhta hai, hardcoded application logic mein nahi — naya FD variant launch karna ek row insert hai.
+
+### Query Patterns & Indexing
+
+Teen alag query patterns hain, aur teenon ka alag optimal answer hai:
+
+**1. "Current balance for account X"** — yahan ek genuine trade-off hai jo CQRS pattern se related hai (jo tumne pehle System Design section mein dekha hoga): kya balance har baar `SUM()` se compute karo, ya ek materialized "running balance" column maintain karo jo har `ledger_entry` insert ke saath same transaction mein update ho? Real-time computation always-correct hai lekin O(n) hai (jitni zyada entries, utni slow query) — production banking systems mein isliye ek materialized balance column maintain karte hain jo write-path pe transactionally update hoti hai, aur `SUM()` sirf verification/reconciliation ke liye use hoti hai, not the hot read path. Yeh effectively ek CQRS split hai: write model (ledger_entry, source of truth) alag hai read model (materialized balance) se.
+
+```sql
+CREATE INDEX idx_ledger_entry_account_time ON ledger_entry (account_id, created_at);
+```
+
+**2. "Statement for a date range"** — yeh query `account_id` aur ek date range dono filter karti hai, isliye composite index `(account_id, created_at)` upar wala hi kaam karta hai. Bade banks mein `ledger_entry` table billions of rows tak grow karta hai, isliye Indexing & Performance module ke concepts yahan directly apply hote hain: `created_at` pe range partitioning (monthly ya quarterly partitions) query ko sirf relevant partitions tak restrict karta hai, aur purane partitions ko cold storage mein archive kiya ja sakta hai without touching hot data.
+
+**3. "All transactions for reconciliation"** — yeh ek batch/reporting query hai jo poore table ko scan karti hai (jaise nightly debit=credit invariant check). Yeh query kabhi bhi live OLTP primary pe nahi chalni chahiye — Read Replicas for Reporting topic ka exact principle yahan apply hota hai: reconciliation job ek dedicated read replica pe route hoti hai, taaki heavy scan live withdrawals/transfers ko slow na kare.
+
+### Scaling/Integrity Considerations
+
+Ek common misconception yeh hai ki high transaction volume dekh ke seedha "sharding karo" bol dena. Core ledger ke liye yeh usually galat first move hai. Sharding & Partitioning topic mein establish hua principle yahan bhi apply hota hai: sharding write-scaling ke liye zaroori hai jab ek single node ka disk/CPU literally insufficient ho jaaye — lekin core ledger jaisa table, jahan cross-account transactions (transfers) frequent hain, sharding **cross-shard transactions** ka genuinely hard problem create karta hai (do accounts alag shards pe hue to atomic transfer distributed transaction ban jaata hai, jo slow aur complex hai).
+
+Isliye practical approach: **vertical scaling + achhi indexing + partitioning as far as possible**, aur sharding ko last resort maano, sirf tab jab ek single well-indexed, well-partitioned primary genuinely insufficient ho. Zyaadatar banks apna core ledger ek powerful single-primary (with replicas) setup pe hi years tak chalate hain — sharding ka complexity cost usually sirf genuinely massive, globally-distributed payment networks (jaise UPI switch level) ke liye justify hota hai, jahan transactions largely independent hoti hain (agla case study isi pattern ko cover karta hai).
+
+Integrity ke liye teen mechanisms already establish ho chuke hain pichle modules mein, aur sab yahan ek saath kaam karte hain: **isolation levels** (concurrent transfers same account pe race condition na banayein), **idempotency keys** (retry se double-transaction na ho), aur **CHECK constraints** (`amount > 0`, negative balance na ho unless overdraft-enabled product). Ek core ledger schema jo in teeno ko miss kare, woh production-ready nahi hai chahe uska ER diagram kitna bhi clean dikhe.
+
+### Follow-Up Questions
+
+**"Ek transaction fail/reverse ho gaya, kya karoge?"** — Kabhi bhi `ledger_entry` row ko delete ya edit nahi karte (append-only invariant tootni nahi chahiye, audit trail break ho jaayega). Iske bajaye ek **compensating entry** insert karte ho — original transaction ko reverse karne wali ek nayi debit/credit pair, jo ek naya `transaction_id` (ya `reversal_of_transaction_id` reference) ke saath store hoti hai. Isse history mein dono cheezein saaf dikhti hain: original transaction hua tha, aur baad mein reverse ho gaya — dono facts preserve hote hain, koi record erase nahi hota.
+
+**"Core banking system of record ke against nightly reconciliation kaise karoge?"** — Ek batch job jo do independent sources compare karta hai: internal `ledger_entry` se compute kiya total per account, versus core banking system (jaise Finacle) ka apna authoritative total. Mismatch aaya to alert raise hota hai — is job ka poora point yeh hai ki bugs customer ya regulator ke complain karne se pehle internally pakde jaayein, exactly jaisa Double-Entry Ledger Schema topic mein debits=credits invariant check discuss hua tha, bas yahan comparison ek external system of record ke against ho raha hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Materialized running balance: O(1) read, fast for high-frequency balance checks (ATM, UPI)", "SUM()-based computed balance: always provably correct, no risk of drift from a missed update"]}
+  cons={["Materialized balance needs a transactionally-safe update on every ledger_entry insert, or it can silently drift from the true sum", "Pure SUM() computation degrades as ledger_entry grows into billions of rows without partitioning"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Core banking platforms like Finacle internally maintain exactly this separation: an append-only ledger as the source of truth, and a fast-access balance figure that the mobile app and ATM network actually query. When a customer disputes a transaction, the bank does not just show the current number — it walks the `ledger_entry` history to reconstruct exactly how that balance was arrived at, entry by entry.
+
+</RealWorld>
+
+<RealWorld company="SBI">
+
+At SBI's scale (hundreds of millions of accounts), the core ledger table is one of the largest tables in the entire banking estate. Rather than sharding it, SBI-scale systems typically lean hard on partitioning (by date range) and read replicas for the enormous reporting/regulatory workload, keeping the OLTP primary focused purely on live transaction posting.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A national-scale bank's `ledger_entry` table commonly holds tens of billions of rows accumulated over years
+- Materialized balance read: sub-millisecond; a `SUM()` over an unpartitioned multi-year ledger_entry history for a very old account: can run into seconds
+- Nightly reconciliation jobs at large banks routinely compare tens of millions of accounts' computed balances against system-of-record totals
+- A mismatch of even a few paise between debit and credit totals system-wide is typically treated as a P1 incident requiring same-day root-cause
+- Well-indexed, well-partitioned single-primary core ledger setups commonly serve tens of thousands of transactions per second before sharding is even considered
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+This is the capstone prompt of the module: "design the database for a bank's core ledger." The strongest signal you can give is treating it as a synthesis exercise rather than inventing something new — explicitly say "I'll use the double-entry pattern here, ACID transactions here, this isolation level for concurrent transfers, this partitioning strategy for the statement query" and connect each design choice back to a named principle. Equally important: proactively state that this is a CP system under CAP theorem, and that sharding is deliberately avoided for as long as possible in favor of vertical scaling and good indexing — most candidates jump to sharding immediately, and calling that out as a deliberate non-choice is a strong differentiator.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Storing account balance as a plain mutable column instead of deriving it from `ledger_entry` — reintroduces the exact non-auditable, non-retry-safe problem the double-entry pattern exists to solve.
+
+</Mistake>
+
+<Mistake>
+
+Reaching for sharding immediately because "banking is high-scale" — for the core ledger, cross-account transfers make cross-shard transactions genuinely painful, and vertical scaling plus partitioning usually goes much further first.
+
+</Mistake>
+
+<Mistake>
+
+Deleting or editing a `ledger_entry` row to "fix" a failed transaction instead of inserting a compensating reversal entry — breaks the append-only audit invariant that makes the ledger trustworthy.
+
+</Mistake>
+
+<Mistake>
+
+Routing heavy reconciliation/reporting scans to the same primary database that serves live balance checks and transfers, degrading real transaction latency for a batch job.
+
+</Mistake>
+
+<Mistake>
+
+Not explicitly stating the CAP trade-off — treating the ledger as if it should always be available, when correctness (CP) is the non-negotiable priority during a partition.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    CUSTOMER ||--o{ ACCOUNT_HOLDER : "links to"
+    ACCOUNT ||--o{ ACCOUNT_HOLDER : "links to"
+    PRODUCT ||--o{ ACCOUNT : "defines"
+    ACCOUNT ||--o{ LEDGER_ENTRY : "has"
+    ACCOUNT ||--o{ AUDIT_LOG : "tracked by"
+    CUSTOMER {
+        bigint customer_id PK
+        string pan_number
+        string kyc_status
+    }
+    PRODUCT {
+        bigint product_id PK
+        string product_code
+        decimal interest_rate
+    }
+    ACCOUNT {
+        bigint account_id PK
+        string account_number
+        bigint product_id FK
+        string status
+    }
+    ACCOUNT_HOLDER {
+        bigint account_id FK
+        bigint customer_id FK
+        string role
+    }
+    LEDGER_ENTRY {
+        bigint entry_id PK
+        bigint transaction_id
+        bigint account_id FK
+        string entry_type
+        decimal amount
+    }
+    AUDIT_LOG {
+        bigint audit_id PK
+        string entity_name
+        bigint entity_id
+        string field_changed
+    }
+`}
+  caption="The full core ledger schema: Product defines account policy, AccountHolder handles joint accounts, LedgerEntry is the append-only source of truth for balance, and AuditLog tracks non-monetary changes."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- This case study is a synthesis: double-entry ledger + core entities + audit trail + integrity mechanisms, combined into one schema
+- Five core tables: Customer, Account, Product, LedgerEntry, AuditLog, plus an AccountHolder junction for joint accounts
+- Account has no stored `balance` column — it's derived from LedgerEntry, optionally materialized for fast reads (a CQRS-style split)
+- Non-functional priority order: correctness first (CP under CAP theorem), then durability, then auditability — availability is explicitly secondary during a partition
+- Statement queries need `(account_id, created_at)` composite indexing plus date-range partitioning at scale
+- Reconciliation/reporting queries route to a read replica, never the OLTP primary
+- Sharding is deliberately avoided for the core ledger as long as possible — cross-account transfers make cross-shard transactions expensive; vertical scaling and partitioning go further first
+- Failed/reversed transactions get a compensating ledger entry, never a delete or edit of the original row
+
+</QuickRevision>

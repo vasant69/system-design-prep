@@ -1,0 +1,182 @@
+---
+slug: "acid-bank-transfer"
+title: "ACID in Practice: The Bank Transfer Example"
+section: "databases"
+module: "transactions-integrity"
+order: 1
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["normalization-denormalization"]
+tags: ["transactions", "acid", "fundamentals"]
+englishDefinition: "ACID is the set of four guarantees a database transaction provides: Atomicity (all-or-nothing execution), Consistency (the database moves from one valid state to another, never violating its rules), Isolation (concurrent transactions don't see each other's uncommitted work), and Durability (once committed, data survives crashes). A money transfer between two accounts is the textbook example because every one of the four properties maps to a real failure mode a bank cannot afford."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "Paytm"]
+---
+
+<SimpleDefinition>
+
+ACID is the set of four guarantees a database transaction provides: Atomicity (all-or-nothing execution), Consistency (the database moves from one valid state to another, never violating its rules), Isolation (concurrent transactions don't see each other's uncommitted work), and Durability (once committed, data survives crashes). A money transfer between two accounts is the textbook example because every one of the four properties maps to a real failure mode a bank cannot afford.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek simple scenario le lete hain jo poore is section ka backbone rahega: Account A se Account B ko 500 rupaye transfer karna hai. Database level pe yeh do steps mein hota hai — A ka balance 500 se GHATAO, B ka balance 500 se BADHAO. Yeh do steps alag-alag dikhte hain, lekin business logic ke hisaab se yeh EK hi operation hai. ACID ke chaaron letters isi ek example ke through samjhte hain.
+
+### Atomicity — dono ho, ya koi na ho
+
+Socho crash A ka balance update hone ke baad, lekin B ka balance update hone se PEHLE ho jaata hai — server crash, network drop, process kill, kuch bhi. Agar database sirf ek statement ko "commit" maan le aur doosre ko chhod de, to 500 rupaye A ke account se nikal gaye lekin B tak pahunche hi nahi — paisa "vanish" ho gaya, sirf thin air mein.
+
+Atomicity guarantee karti hai: dono UPDATE statements ek hi **transaction** ke andar treated hote hain as ek single unit. Ya to dono commit honge, ya crash ki soorat mein poora transaction rollback ho jaayega jaise kuch hua hi na ho. Koi "half-done" state exist nahi kar sakta jo persist ho jaaye.
+
+```sql
+BEGIN;
+
+UPDATE Account SET balance = balance - 500 WHERE account_id = 'A';
+UPDATE Account SET balance = balance + 500 WHERE account_id = 'B';
+
+COMMIT;
+```
+
+Agar `COMMIT` se pehle system crash ho jaaye, database restart hone pe is poore transaction ko rollback kar dega — A ka balance waisa hi rahega jaisa transfer se pehle tha. Agar crash `COMMIT` ke baad hua, to dono updates guaranteed permanent hain (yeh Durability ka kaam hai, aage dekhte hain).
+
+### Consistency — schema aur business rules kabhi violate nahi honge
+
+Consistency ka matlab hai: transaction se pehle database "valid" state mein tha, aur transaction ke baad bhi valid state mein hoga — kabhi bhi beech mein ya end mein ek aisi state nahi banegi jo schema constraints ya business rules todti ho. Banking ka sabse obvious rule: balance kabhi negative nahi ho sakta (chhod ke overdraft-enabled accounts, jinke apne alag limits hote hain).
+
+```sql
+ALTER TABLE Account ADD CONSTRAINT chk_balance_nonneg CHECK (balance >= 0);
+```
+
+Agar Account A ke paas sirf 300 rupaye hain aur transfer 500 ka try ho raha hai, to A ka UPDATE isi CHECK constraint ko violate karega — database poora transaction reject kar dega, aur B ka balance bhi nahi badhega. Consistency yehi hai: database khud apne rules enforce karta hai, sirf application code pe bharosa nahi karta.
+
+### Isolation — do concurrent transfers ek doosre ko interfere na karein
+
+Ab socho do transfers same waqt ho rahe hain, dono Account A ko touch kar rahe hain — ek Customer A se B ko 500 bhej raha hai, doosra kisi aur transaction mein A se C ko 300 debit ho raha hai. Agar dono transactions ek doosre ka "in-progress" (uncommitted) data dekh lein, to race conditions aur galat final balances ban sakte hain — jaise dono transactions same starting balance padh lein aur ek doosre ka update "overwrite" kar dein.
+
+Isolation guarantee karti hai ki har transaction aisa behave kare jaise woh akela chal raha ho, chahe reality mein dozens of transactions parallel chal rahe hon. Exact behavior database ke **isolation level** pe depend karta hai — yeh itna important aur nuanced topic hai ki agla poora topic isi pe hai (Isolation Levels & Anomalies). Abhi ke liye itna samajh lo: bina proper isolation ke, concurrent transfers same account pe silently galat result de sakte hain, aur bug production mein sirf high-traffic ke time dikhega.
+
+### Durability — commit ke baad "success" ka matlab permanent hona chahiye
+
+Customer ne apne app pe "Transfer Successful" dekh liya. Ab agar exactly usi second server crash ho jaaye — power failure, hardware fault, kuch bhi — to woh transfer database mein permanently save hona CHAHIYE. Agar restart ke baad woh transaction "gayab" ho jaaye, to customer ko dikhaya gaya "success" ek jhooth tha, aur yeh trust-breaking bug hai jo BFSI mein unacceptable hai.
+
+Durability is guaranteed mainly via **Write-Ahead Logging (WAL)**. Intuition level pe samjho: jab bhi database koi change commit karta hai, woh pehle us change ko ek append-only log file mein disk pe likhta hai (WAL), aur commit sirf tab successful maana jaata hai jab yeh log entry disk pe safely persist ho chuki ho — actual table data (in-memory pages) baad mein bhi disk pe flush ho sakta hai, lekin agar crash ho jaaye, database restart ke waqt WAL ko replay karke exact wahi state reconstruct kar leta hai jo commit ke time thi. Isliye WAL ko "commit ka insurance" bol sakte ho — disk pe likha hua log hi guarantee hai ki commit sach mein permanent tha.
+
+### Sabse critical real-world statement is topic ka
+
+"Application code se seedha do alag UPDATE queries chala do, bina transaction wrap kiye" — yeh ek payments system mein critical bug hai, defect nahi, bug hai jo real paisa galat calculate kar sakta hai. Har financial write jisme multiple related changes ho (chahe do rows ho, ya do tables), unhe hamesha ek explicit `BEGIN...COMMIT` transaction ke andar wrap karna chahiye. Yeh sirf "best practice" nahi hai — yeh correctness ka non-negotiable requirement hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Do separate UPDATE statements bina transaction ke chalana (application code se, ek try-catch ke bharose) ACID ki Atomicity guarantee ko poori tarah bypass kar deta hai. Crash beech mein hua to paisa "disappear" ho sakta hai — yeh sabse common real-world payments bug hai jo interview mein bhi poocha jaata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank / ICICI Bank">
+
+Core banking systems (CBS) jaise Finacle ya similar platforms internally har fund transfer ko ek single database transaction ke through route karte hain, chahe end-user ko yeh "instant" transfer dikhe. Debit aur credit legs same local transaction mein hote hain (ya distributed transfer ke case mein saga-style compensating logic ke saath, jo is module ke baad ke topics mein cover hoga). Agar CBS crash ho, unresolved transactions ko log se replay/reconcile kiya jaata hai — customer ko kabhi "half-transferred" balance nahi dikhta.
+
+</RealWorld>
+
+<RealWorld company="Paytm">
+
+UPI transactions mein NPCI, sender bank, aur receiver bank teen alag systems involve hote hain — lekin har individual bank ke apne local ledger update ek ACID transaction hi hota hai. Agar Paytm ka backend apna khud ka wallet balance update kare (debit) aur simultaneously koi cashback credit kare, dono changes ek transaction mein hone chahiye, warna crash ke case mein wallet balance aur cashback ledger out-of-sync ho sakte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>WAL fsync latency: typically 1-10ms per commit on SSD-backed database servers — yeh durability ka direct cost hai</li>
+<li>A `BEGIN...COMMIT` wrapping two UPDATE statements on the same table: negligible extra overhead vs unwrapped queries, but removes an entire class of critical bugs</li>
+<li>Payments systems commonly process thousands of transfer transactions per second at bank-scale — every one of them needs the same atomicity guarantee, no exceptions for "just this one"</li>
+<li>A CHECK constraint like `balance >= 0` adds sub-millisecond overhead per write but prevents an entire category of consistency violations</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar seedha poochte hain "explain ACID" aur candidate generic definitions bol dete hain bina kisi concrete example ke — yeh weak answer hai. Strong answer: har letter ko bank transfer example pe map karo specifically — Atomicity se "crash beech mein ho to paisa vanish nahi hona chahiye," Consistency se "balance kabhi negative nahi ho sakta (schema-level enforcement)," Isolation se "do concurrent transfers same account pe galat result nahi de sakte," Durability se "commit ke baad crash bhi ho to data safe rahe (WAL)." Bonus signal: khud proactively bolo ki "isolation" ka exact behavior isolation level pe depend karta hai, aur woh agla logical topic hai — yeh dikhata hai ki tumhe pata hai ACID ek starting point hai, poora answer nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Application code se do alag UPDATE queries chalana bina ek explicit transaction (`BEGIN...COMMIT`) ke wrap kiye — crash beech mein hua to atomicity guarantee poori tarah gayab ho jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Consistency ko sirf "data correct hona chahiye" jaisa vague concept samajhna, jab ki actual mechanism schema-level constraints (CHECK, FOREIGN KEY, NOT NULL) hain jo database khud enforce karta hai — application-level validation akela kaafi nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Yeh maan lena ki Isolation ka matlab hamesha "poori tarah sequential jaisa behavior" hota hai — reality mein exact behavior isolation level pe depend karta hai, aur default level (Read Committed) kuch anomalies allow karta hai (agla topic dekho).
+
+</Mistake>
+
+<Mistake>
+
+Durability ko "data disk pe hai to safe hai" jaisa oversimplify karna, bina WAL ke role samjhe — agar commit se pehle hi log disk pe persist na ho, crash ke case mein "committed" dikhne wala data bhi gayab ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Transfer ko "debit phir alag se credit" jaisa do independent operations treat karna application design mein, jab ki yeh business logic ke hisaab se ek hi atomic unit hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App as Application
+    participant DB as Database
+    participant WAL as WAL (Disk Log)
+
+    App->>DB: BEGIN
+    App->>DB: UPDATE Account A (balance -500)
+    App->>DB: UPDATE Account B (balance +500)
+    App->>DB: COMMIT
+    DB->>WAL: Write commit record to log
+    WAL-->>DB: fsync confirmed (durable)
+    DB-->>App: Success
+
+    Note over DB,WAL: Crash after COMMIT but before this point:<br/>WAL replay on restart reconstructs the commit
+`}
+  caption="A bank transfer wrapped in a single transaction: both UPDATEs succeed or fail together, and durability is guaranteed by the WAL record being fsynced to disk before COMMIT returns."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>ACID = Atomicity, Consistency, Isolation, Durability — four guarantees a transaction provides</li>
+<li>Atomicity: debit and credit in a transfer must both happen or neither — wrap them in BEGIN...COMMIT</li>
+<li>Consistency: schema/business rules (like `balance >= 0`) are never violated, even mid-transaction</li>
+<li>Isolation: concurrent transfers on the same account must not interleave incorrectly — exact behavior depends on isolation level (next topic)</li>
+<li>Durability: once committed, data survives a crash — guaranteed via Write-Ahead Logging (WAL)</li>
+<li>WAL intuition: the log record is fsynced to disk before COMMIT returns; on restart, WAL is replayed to reconstruct committed state</li>
+<li>Running two separate UPDATE queries from application code without a transaction is a critical bug in a payments system, not a minor oversight</li>
+</ul>
+
+</QuickRevision>

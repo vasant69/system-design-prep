@@ -1,0 +1,191 @@
+---
+slug: "idempotency-db-layer"
+title: "Idempotency at the Database Layer"
+section: "databases"
+module: "transactions-integrity"
+order: 4
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["keys-constraints-integrity"]
+tags: ["transactions", "reliability", "payments"]
+englishDefinition: "Idempotency means an operation produces the same result no matter how many times it's applied. At the database layer, idempotency is enforced through a UNIQUE constraint on a client-generated idempotency-key column, so that even if application logic mistakenly attempts the same logical write twice, the database itself rejects the duplicate rather than relying solely on application-level checks."
+interviewFrequency: "very-high"
+companies: ["Razorpay", "Paytm", "PhonePe"]
+---
+
+<SimpleDefinition>
+
+Idempotency means an operation produces the same result no matter how many times it's applied. At the database layer, idempotency is enforced through a UNIQUE constraint on a client-generated idempotency-key column, so that even if application logic mistakenly attempts the same logical write twice, the database itself rejects the duplicate rather than relying solely on application-level checks.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+System Design section mein idempotency ek concept ke roop mein cover hui hai — "same request do baar bhejo, result same rahe". Yeh topic specifically usi concept ka **database mechanics** wala hissa hai: idempotency ko actually bulletproof kaun banata hai, application code ya database schema?
+
+### Problem — network retries payments mein real hain
+
+Socho ek customer payment button dabata hai. Request server tak pahunchti hai, payment process ho jaata hai, database mein record ban jaata hai — lekin response customer ke device tak wapas aate-aate network drop ho jaata hai. Customer ko lagta hai payment fail ho gaya (koi confirmation nahi mila), woh phir se button dabata hai. Ab exactly wahi logical payment do baar server tak pahunchti hai. Agar system yeh detect na kare ki yeh same logical operation hai, to customer se double charge ho sakta hai — yeh ek real, common failure mode hai, koi edge case nahi.
+
+### Solution — client-generated idempotency key + UNIQUE constraint
+
+Har logical payment attempt ke saath client (mobile app/frontend) ek unique `idempotency_key` generate karta hai — typically ek UUID — aur usi key ko retry ke case mein bhi REUSE karta hai (naya UUID nahi banata retry pe, wahi purana bhejta hai). Database side pe:
+
+```sql
+CREATE TABLE Payment (
+    payment_id      BIGINT PRIMARY KEY,
+    idempotency_key UUID NOT NULL UNIQUE,
+    account_id      BIGINT NOT NULL,
+    amount          DECIMAL(12, 2) NOT NULL,
+    status          VARCHAR(20) NOT NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+```
+
+`idempotency_key` pe `UNIQUE` constraint hi asli guarantee hai. Ab insert pattern kuch is tarah likha ja sakta hai (PostgreSQL syntax):
+
+```sql
+INSERT INTO Payment (payment_id, idempotency_key, account_id, amount, status)
+VALUES (101, 'a1b2c3d4-...', 'A', 500.00, 'SUCCESS')
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING *;
+```
+
+Agar yeh `idempotency_key` pehli baar aa raha hai, INSERT normally chalega aur naya row `RETURNING` se wapas milega. Agar yeh key already exist karta hai (duplicate/retry request), `ON CONFLICT DO NOTHING` insert ko silently skip kar dega aur `RETURNING` kuch bhi wapas nahi karega — application is signal ko dekh ke samajh jaata hai "yeh already processed ho chuka hai," aur original payment ka result fetch karke wahi customer ko wapas bhej deta hai (ek naya payment banaye bina).
+
+### Yeh SAFE hai, application-level check-then-insert SAFE nahi hai
+
+Ek naive approach ho sakta hai: application pehle query kare "kya is idempotency_key wala koi record already hai?", aur agar nahi hai to hi INSERT kare — "check-then-insert" pattern:
+
+```
+1. SELECT * FROM Payment WHERE idempotency_key = ?
+2. Agar row nahi mili, INSERT INTO Payment (...)
+```
+
+Yeh **race condition** ke against safe NAHI hai. Socho do requests (original + retry ka duplicate, dono almost simultaneously server tak pahunch gaye, jaise ek proxy retry ki wajah se) dono ek saath step 1 execute karte hain — dono ko "row nahi mili" milta hai (kyunki dusre ne abhi tak insert nahi kiya), aur dono step 2 pe pahunch ke duplicate INSERT kar dete hain. Application-level check ek check hai, ek **enforcement** nahi — beech mein ek race window hamesha rehta hai jise application code khud detect nahi kar sakta, chahe kitni bhi careful logic likh lo.
+
+Database ka `UNIQUE` constraint is race ko poori tarah eliminate karta hai kyunki yeh database engine ke andar, single atomic operation ke through enforce hota hai — dono concurrent INSERTs try honge, ek succeed karega, doosra turant `unique constraint violation` error dega, chahe dono transactions bilkul same millisecond pe start hui hon. Yehi wajah hai ki database-level UNIQUE constraint ko "bulletproof enforcement point" bola jaata hai — yeh application logic ke kisi bhi bug se independent hai.
+
+Application ka correct pattern is error ko **normal flow** ki tarah handle karna hai, exception ki tarah nahi:
+
+```
+try:
+    INSERT INTO Payment (...) VALUES (...)
+except UniqueConstraintViolation:
+    # yeh ek error nahi hai — iska matlab hai "already processed"
+    existing = SELECT * FROM Payment WHERE idempotency_key = ?
+    return existing.result  # same result jo pehli baar diya tha
+```
+
+Yeh distinction critical hai: `UNIQUE` violation yahan ek **expected, handled case** hai, na ki ek unexpected failure jise crash/500 error mein convert kar diya jaaye.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Pehle check karo record exist karta hai ya nahi, phir insert karo" — yeh application-level pattern LOOKS safe lekin concurrent requests ke against race condition se poori tarah exposed hai. Sirf database-level UNIQUE constraint hi is race ko atomically eliminate karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Razorpay">
+
+Payment gateways jaise Razorpay client ko explicitly ek `idempotency_key`/`x-request-id` header bhejne ki facility dete hain, aur documentation mein clearly bolte hain: same key ke saath retry karo agar pehla response na mile (timeout, network error). Backend is key ko ek UNIQUE column pe map karta hai, jisse retries automatically dedupe ho jaate hain database level pe, bina application ko complex distributed-lock logic likhne ki zaroorat ke.
+
+</RealWorld>
+
+<RealWorld company="Paytm / PhonePe">
+
+UPI transactions mein har request ek unique transaction reference number (jaise `RRN` - Retrieval Reference Number, ya app-level `transaction_id`) carry karti hai. Agar mobile network flaky hai (jo India mein bahut common hai) aur app ek payment request do baar bhejta hai, backend ka UNIQUE constraint is reference number pe hi guarantee karta hai ki customer ka account sirf ek baar debit ho, chahe request kitni baar retry ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>UNIQUE constraint check ka overhead: essentially free — database already index maintain karta hai constraint ke liye, lookup O(log n) hai</li>
+<li>Network-retry-caused duplicate payment attempts: production payment systems mein typically 0.1%-1% of requests, especially mobile/flaky-network heavy markets mein</li>
+<li>Idempotency key: typically UUID (16 bytes) ya client-generated string, TTL/retention often 24 hours se kuch din tak for retry-matching purposes</li>
+<li>Check-then-insert race window: microseconds, lekin high-throughput systems mein millions of requests/day ke against yeh window statistically guaranteed hit hoga eventually</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How do you prevent duplicate payments on retry?" — yeh Razorpay/Paytm-type interviews mein extremely common hai. Weak answer: "application check karega ki record already hai ya nahi." Strong answer: explicitly bolo ki application-level check race condition se safe nahi hai, aur asli bulletproof enforcement UNIQUE constraint database level pe hai — phir `INSERT ... ON CONFLICT DO NOTHING` ya equivalent pattern with proper exception handling explain karo. Bonus signal: connect karo is System Design section ke Idempotency topic se — bolo ki application-level idempotency-key generation aur passing client se hoti hai, lekin uski ENFORCEMENT database schema mein honi chahiye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sirf application-level "check if exists, then insert" pattern pe bharosa karna — yeh race condition ke against safe nahi hai, concurrent duplicate requests dono ek saath "not found" dekh sakte hain aur dono insert kar sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Idempotency key ko server-generate karna (client se nahi lena) — agar server hi key banata hai per-request, to retry pe naya key banega aur duplicate detect hi nahi hoga. Key client se aani chahiye aur retry pe reuse honi chahiye.
+
+</Mistake>
+
+<Mistake>
+
+UNIQUE constraint violation ko generic error/exception ki tarah treat karna (500 error return kar dena) — yeh ek expected case hai jise "already processed, return existing result" ki tarah gracefully handle karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Idempotency key ko sirf application memory/cache mein track karna (jaise Redis mein), database constraint ke bina — cache eviction ya cache-miss scenario mein yeh protection silently gayab ho sakta hai. Database-level UNIQUE constraint hi persistent, bulletproof source of truth hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client (retry)
+    participant App as Application
+    participant DB as Database (Payment table)
+
+    C->>App: POST /payment (idempotency_key = K)
+    App->>DB: INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING *
+    alt First time seeing key K
+        DB-->>App: Row inserted, returned
+        App-->>C: Success, new payment result
+    else Key K already exists (duplicate/retry)
+        DB-->>App: No row returned (conflict)
+        App->>DB: SELECT * WHERE idempotency_key = K
+        DB-->>App: Existing payment row
+        App-->>C: Success, same result as before (no double charge)
+    end
+`}
+  caption="A UNIQUE constraint on idempotency_key makes duplicate INSERT attempts fail atomically at the database level, so the application can safely treat a conflict as 'already processed' instead of a real error."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Idempotency: same operation applied multiple times produces the same result</li>
+<li>Database-level enforcement: a UNIQUE constraint on a client-generated idempotency_key column on the Payment/Transaction table</li>
+<li>Pattern: `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`, or try-insert with exception handling</li>
+<li>Application-level "check if exists, then insert" is NOT safe — there's a race window between the check and the insert</li>
+<li>The database constraint is atomic and closes that race window completely, independent of application logic bugs</li>
+<li>Idempotency key must be client-generated and reused on retry, not server-generated per request</li>
+<li>A UNIQUE constraint violation on this column is an expected, handled case — not a generic error</li>
+</ul>
+
+</QuickRevision>

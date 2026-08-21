@@ -1,0 +1,168 @@
+---
+slug: "index-internals-oltp"
+title: "Index Internals for OLTP Workloads"
+section: "databases"
+module: "indexing-performance"
+order: 1
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["sql-query-fundamentals"]
+tags: ["indexing", "performance"]
+englishDefinition: "A database index is an auxiliary B-Tree data structure, built on one or more columns, that trades extra storage and slower writes for much faster reads on the indexed columns. Online Transaction Processing (OLTP) systems like core banking need a different indexing mindset than analytics systems, because the same table is read and written heavily at the same time."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A database index is an auxiliary B-Tree data structure, built on one or more columns, that trades extra storage and slower writes for much faster reads on the indexed columns. Online Transaction Processing (OLTP) systems like core banking need a different indexing mindset than analytics systems, because the same table is read and written heavily at the same time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Index ko samajhne ka sabse simple tarika hai — kisi kitaab ka index page. Poori kitaab (table) padhne ke bajaye, tum index dekhte ho aur seedha sahi page pe pahunch jaate ho. Database mein bhi yahi hota hai: index ke bina, database ko poora table scan karna padta hai (`Seq Scan`) row-by-row, jo lakhon-crores rows pe bahut slow hai. Index hone se database seedha relevant rows tak jump kar sakta hai.
+
+### B-Tree quick refresher
+
+Zyadatar relational databases (Postgres, MySQL/InnoDB) default index type ke liye **B-Tree** use karte hain. Teen properties yaad rakho:
+
+- **Sorted** — B-Tree ke andar values sorted order mein rehte hain, isliye range queries (`WHERE amount > 1000`) aur equality queries (`WHERE account_id = 5`) dono efficiently serve ho sakte hain.
+- **Balanced** — tree ki har branch roughly equal depth pe hoti hai, isliye lookup time predictable rehta hai chahe data kitna bhi grow kare.
+- **O(log n) lookup** — ek 10 crore row table mein bhi, B-Tree lookup sirf ~27 comparisons mein target row dhoondh leta hai (log base ~100-200 per node, kyunki B-Tree nodes wide hote hain, disk-page-aligned).
+
+Yeh sab theory system design books mein milti hai. Asli interview-relevant baat yeh hai: **index free nahi hai**.
+
+### OLTP ka asli trade-off: read aur write dono heavy, saath mein
+
+Analytics warehouse (jaise ek nightly reporting system) mein pattern simple hota hai — bulk load raat ko hota hai, din bhar sirf reads chalte hain. Wahan jitne marzi indexes daal do, write cost sirf ek batch window mein pay hota hai.
+
+Core banking jaisa OLTP system fundamentally different hai. Ek single `Transaction` table pe:
+
+- Har second hazaaron naye transaction **inserts** ho rahe hain (UPI payment, card swipe, NEFT).
+- Saath hi saath, "is account ka current balance dikhao" ya "is account ki last 10 transactions dikhao" jaisi **read queries** bhi continuously chal rahi hain.
+
+Yeh dono simultaneously, same table pe, high volume mein ho rahe hain — isliye OLTP mein index ka trade-off analytics se zyada acute hai. Jab bhi ek naya index add karte ho:
+
+- Har `INSERT` ab sirf table row nahi likhta, balki **har index ko bhi update** karta hai (B-Tree mein sahi jagah insert karna, kabhi-kabhi page split bhi karna padta hai).
+- `UPDATE` jo indexed column ko touch kare, usko bhi index mein reflect karna padta hai.
+- Zyada indexes = zyada write amplification = higher insert/update latency = lower TPS (transactions per second) ceiling.
+
+Concrete example: `Transaction.account_id` pe index lagana almost hamesha zaroori hai, kyunki "get all transactions for this account" ek extremely common query hai (statement generation, balance history, fraud checks) — index ke bina yeh full table scan ban jaata hai. Lekin agar koi "just in case" mentality se `Transaction` table ke **har column** pe index laga de (amount, status, channel, remarks...), to insert throughput seedha crash ho sakta hai ek high-TPS table pe — kyunki har insert ab 8-10 B-Tree updates trigger kar raha hai, sirf 1 ke bajaye.
+
+### Clustered vs non-clustered index — OLTP context mein
+
+- **Clustered index** table ki actual physical row ordering define karta hai — table disk pe usi order mein stored hota hai jaise clustered index sorted hai. Ek table mein sirf **ek** clustered index ho sakta hai (kyunki physical order ek hi ho sakta hai). Zyadatar systems mein primary key hi default clustered index hota hai.
+- **Non-clustered index** ek separate structure hai jo indexed column ki sorted values ko row locations (ya clustering key) ke saath map karta hai — table ka ek hi hisse mein multiple non-clustered indexes ho sakte hain.
+
+Yeh choice OLTP mein directly performance affect karti hai. Agar `Transaction` table `transaction_id` (sequential surrogate key) pe clustered hai, to naye rows hamesha table ke end mein insert hote hain — fast, predictable. Lekin agar range query "last 30 days ke transactions for account X" chalani ho, to woh rows physically table mein bikhri hui hongi (kyunki clustering `transaction_id` se hai, `account_id` se nahi) — database ko multiple disk pages se scatter-read karna padega.
+
+Isike against, agar clustering `account_id` (ya `account_id + date`) based ho, to ek account ke saare transactions physically ek dusre ke paas store hote hain — range queries bahut fast ho jaati hain, lekin insert pattern ab sequential nahi rehta (naye transactions randomly beech mein insert ho sakte hain jis account ka bhi transaction aaye), jo page splits aur fragmentation badha sakta hai. Yehi wajah hai ki clustering key choice ek one-time-ish, high-stakes decision hai — table create karte waqt hi soch-samajh ke lena chahiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Reads dramatically faster — O(log n) lookup instead of full scan", "Range queries (date ranges, account-scoped) become efficient with the right clustering", "Predictable performance even as table grows to billions of rows"]}
+  cons={["Every INSERT/UPDATE on an indexed column pays extra B-Tree maintenance cost", "More indexes = more storage overhead", "Wrong clustering key choice hurts either write locality or range-read locality — hard to change later"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking ke `Transaction` table mein `account_id` pe index almost universal hai kyunki "account statement dikhao" query sabse zyada baar chalti hai — teller counters, mobile app, net banking, sab jagah se. Lekin isi table pe agar `remarks` (free-text field) ya `channel` (jo sirf 5-6 distinct values leta hai — low cardinality) pe bhi index laga diya jaaye, to write cost badhta hai bina proportional read benefit ke, kyunki low-cardinality columns pe B-Tree index utna selective nahi hota.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon ke order-processing OLTP tables bhi isi trade-off se guzarte hain — `orders` table pe `customer_id` index critical hai ("my orders" page ke liye), lekin peak sale events (jaise Great Indian Festival) ke time write throughput itna critical ho jaata hai ki teams explicitly audit karti hain "kaunse indexes actually use ho rahe hain" aur unused ya rarely-used indexes ko drop kar dete hain taaki insert latency kam rahe.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>B-Tree lookup on a 100M-row table: roughly 3-4 disk-page reads (log base ~200 per B-Tree node, since nodes are page-sized)</li>
+<li>Each additional index typically adds 10-30% write latency overhead per insert/update on that table, depending on index width</li>
+<li>A high-TPS core banking table can see thousands of inserts per second at peak (UPI-driven volumes) — every extra index directly eats into that ceiling</li>
+<li>Index storage overhead: often 10-20% of table size per single-column index, more for wide composite indexes</li>
+<li>A table can have exactly one clustered index but many non-clustered indexes</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer often asks "how would you speed up this slow query" and expects "add an index" as a first instinct — but the strong signal is immediately following up with "but what's the write cost, and is this table read-heavy or write-heavy?" For a core banking `Transaction` table specifically, be ready to reason about the clustered index choice (surrogate `transaction_id` vs `account_id`-based clustering) and its effect on both insert pattern and range-scan performance for "last N days" style queries — this is a very common BFSI-flavored follow-up.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Indexing every column "just in case" without checking actual query patterns — this silently kills insert throughput on high-TPS OLTP tables like `Transaction`.
+
+</Mistake>
+
+<Mistake>
+
+Indexing low-cardinality columns (like a `status` column with 3 possible values) expecting a big speedup — the index isn't selective enough to be worth its write cost.
+
+</Mistake>
+
+<Mistake>
+
+Assuming the primary key should always be the clustered index without considering the table's dominant query pattern (e.g. date-range or account-scoped reads).
+
+</Mistake>
+
+<Mistake>
+
+Treating OLTP indexing decisions the same way as an analytics warehouse, ignoring that OLTP tables are read AND written heavily at the same time.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that `UPDATE`s on indexed columns also pay B-Tree maintenance cost, not just `INSERT`s — a frequently-updated indexed column (like `status`) can be surprisingly expensive.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q["Query: WHERE account_id = 5"] --> D{Index exists on account_id?}
+    D -- No --> SCAN["Seq Scan: read every row in Transaction table"]
+    D -- Yes --> BT["B-Tree index lookup: O(log n)"]
+    BT --> ROWS["Fetch matching rows via row pointers"]
+    SCAN --> SLOW["Slow on 100M+ row tables"]
+    ROWS --> FAST["Fast, predictable latency"]
+`}
+  caption="Without an index on account_id, every 'transactions for this account' query degrades into a full table scan as the table grows."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Index = auxiliary B-Tree: sorted, balanced, O(log n) lookup — but not free</li>
+<li>OLTP tables are read AND write heavy simultaneously — this makes the index trade-off more acute than in analytics systems</li>
+<li>Every index added speeds up matching reads but slows down every insert/update on that table</li>
+<li>Index high-cardinality, frequently-filtered columns (like account_id); avoid indexing "just in case"</li>
+<li>Clustered index = physical row order, one per table; non-clustered = separate structure, many per table</li>
+<li>Clustering choice (surrogate PK vs account/date-based) directly affects range-query and insert performance</li>
+<li>Low-cardinality columns rarely benefit enough from indexing to justify the write cost</li>
+</ul>
+
+</QuickRevision>

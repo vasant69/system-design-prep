@@ -1,0 +1,184 @@
+---
+slug: "financial-data-types"
+title: "Data Types & Precision for Financial Data"
+section: "databases"
+module: "relational-fundamentals"
+order: 4
+difficulty: "beginner"
+readingTime: 11
+prerequisites: ["er-modeling-schema-basics"]
+tags: ["data-modeling", "fundamentals"]
+englishDefinition: "Representing money and financial quantities in a database requires fixed-point decimal types (DECIMAL/NUMERIC) with an explicit precision and scale, never floating-point types (FLOAT/DOUBLE). This choice is non-negotiable for BFSI systems because floating-point binary representation introduces rounding errors that compound across millions of transactions into real, auditable discrepancies."
+interviewFrequency: "very-high"
+companies: ["HDFC Bank", "Razorpay", "Paytm"]
+---
+
+<SimpleDefinition>
+
+Representing money and financial quantities in a database requires fixed-point decimal types (DECIMAL/NUMERIC) with an explicit precision and scale, never floating-point types (FLOAT/DOUBLE). This choice is non-negotiable for BFSI systems because floating-point binary representation introduces rounding errors that compound across millions of transactions into real, auditable discrepancies.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh topic classic interview trap hai — sunne mein simple lagta hai ("bas sahi data type choose karo"), lekin *why* explain karna hi asli test hai. Agar tumne kabhi ek browser console mein `0.1 + 0.2` type kiya hai, tumne yeh dekha hoga:
+
+```
+0.1 + 0.2 = 0.30000000000000004
+```
+
+Yeh koi bug nahi hai — yeh IEEE 754 floating point ka fundamental limitation hai.
+
+### Floating point money ke liye dangerous kyun hai
+
+Computers binary mein numbers store karte hain. Decimal fractions jaise `0.1` ko binary mein **exactly** represent karna hamesha possible nahi hota — bilkul waise jaise `1/3` ko decimal mein exactly likhna possible nahi (`0.333...` infinitely repeats). `FLOAT`/`DOUBLE` types in fractions ko **approximate** karte hain, exact represent nahi karte.
+
+Ek individual transaction mein yeh error itna chhota hota hai ki insaan ko dikhta bhi nahi (jaise `0.30000000000000004` vs `0.3`). Lekin BFSI systems mein transactions **millions** mein hote hain, aur interest calculations, currency conversions, aggregations — sab in tiny errors ko accumulate karte hain. Ek chhota rounding error, jab lakhs baar repeat ho aur sum kiya jaaye, ek **real, auditable discrepancy** ban jaata hai — jaise ek bank ka total ledger balance jo actual cash se paise ka mismatch dikhaye. Regulators aur auditors is tarah ke mismatch ko bardaasht nahi karte.
+
+### Sahi choice: DECIMAL / NUMERIC
+
+`DECIMAL(precision, scale)` (kai databases mein `NUMERIC` synonym hai) ek **fixed-point** type hai jo decimal digits ko exactly store karta hai — binary approximation nahi karta. `precision` total significant digits hai, `scale` decimal point ke baad kitne digits hain.
+
+Practical rule for money: `NUMERIC(19, 4)` use karo.
+- `19` total digits — bade amounts ke liye kaafi hai (crores/lakhs tak, ya global scale amounts)
+- `4` decimal places — sirf 2 decimal places (jaise ₹100.50) nahi, balki **4** rakhte hain taaki intermediate calculations (interest accrual, FX conversion rates) precise rahein, aur final display ke time currency ke actual decimal places (usually 2) pe round kiya jaaye.
+
+```sql
+CREATE TABLE account (
+    account_id BIGINT PRIMARY KEY,
+    balance    NUMERIC(19, 4) NOT NULL DEFAULT 0 CHECK (balance >= 0)
+);
+
+CREATE TABLE transaction (
+    transaction_id BIGINT PRIMARY KEY,
+    account_id     BIGINT NOT NULL REFERENCES account(account_id),
+    amount         NUMERIC(19, 4) NOT NULL,
+    interest_rate  NUMERIC(9, 6)  -- extra precision for rate calculations
+);
+```
+
+Kabhi bhi `FLOAT` ya `DOUBLE` ka use amount, balance, ya kisi bhi monetary column ke liye mat karo — interview mein agar yeh galti dikhe, iske turant baad flag karna chahiye.
+
+### Alternative pattern: smallest unit as BIGINT
+
+Kuch payment systems (jaise Stripe) `DECIMAL` bilkul use hi nahi karte — woh amount ko currency ki **smallest unit** (paise, cents) mein ek `BIGINT` integer ke roop mein store karte hain. Jaise ₹100.50 ko `10050` (paise) store karte hain.
+
+Yeh pattern kaam karta hai kyunki integers mein koi rounding ambiguity hoti hi nahi — addition/subtraction exact hoti hai, no floating point involved, aur database ke integer arithmetic ke saath kaam karna simple hai.
+
+**DECIMAL vs Integer-minor-units trade-off:**
+- **DECIMAL/NUMERIC**: human-readable directly, database-native support for arithmetic aur constraints jaise `balance >= 0`, lekin multi-currency systems mein har currency ke different decimal places handle karna thoda extra logic maangta hai (JPY mein 0 decimal places hote hain, kuwaiti dinar mein 3).
+- **Integer minor units**: simplest, sabse fast, zero ambiguity — lekin application code ko hamesha "divide by 100 (ya currency-specific factor) for display" discipline follow karni padti hai; agar kahin bhool gaye, seedha ₹1 ki jagah ₹100 dikh sakta hai galti se.
+
+Dono approaches valid hain — important cheez sirf **floating point kabhi na use karna** hai.
+
+### Timestamps: UTC, always
+
+Ek related lekin alag trap: timestamps. BFSI systems often multiple time zones mein operate karte hain (branches, customers, cross-border payments) aur Daylight Saving Time (DST) transitions face karte hain. Agar timestamps **naive local time** (bina timezone info ke) store kiye jaayein, to DST transitions ke around ambiguous ya duplicate times ban sakte hain, aur cross-timezone comparisons galat ho sakti hain.
+
+Rule: hamesha `TIMESTAMP WITH TIME ZONE` (ya UTC mein explicitly store karke application layer pe convert) use karo — kabhi naive local timestamp nahi. UTC ek single, unambiguous reference point deta hai, aur display ke time user ki local timezone mein convert kar dete hain.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Yeh sabse common interview trap hai is puri series mein: candidate schema design theek karta hai, lekin `balance` ko `FLOAT` ya `DOUBLE` bana deta hai "kyunki decimal numbers hain." Yeh instant red flag hai for a BFSI role — turant `DECIMAL`/`NUMERIC` explicit scale ke saath propose karo, aur `0.1 + 0.2` example se explain karo why.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Razorpay / Paytm">
+
+Payment gateways jaise Razorpay internally amounts ko often smallest currency unit (paise) mein integer ke roop mein handle karte hain — yeh API design mein bhi dikhta hai (jaise Razorpay API amount ko paise mein accept karta hai, na ki rupees decimal mein), taaki client aur server ke beech kabhi floating point rounding mismatch na ho.
+
+</RealWorld>
+
+<RealWorld company="HDFC Bank">
+
+Core banking systems balance aur transaction amounts ko `NUMERIC`/`DECIMAL` types mein store karte hain with explicit precision, aur interest calculation engines usually zyada decimal places (jaise 6) use karte hain intermediate computation ke liye, phir final statement pe currency ke standard 2 decimal places (paise) pe round karte hain — yeh ensure karta hai ki rounding sirf ek controlled, auditable final step pe ho, har intermediate calculation mein nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `0.1 + 0.2` in IEEE 754 double precision: `0.30000000000000004` — a tiny but real error
+- Recommended type for money: `NUMERIC(19, 4)` — 19 total digits, 4 decimal places for intermediate precision
+- Standard currency display precision: 2 decimal places for INR/USD, 0 for JPY, 3 for KWD (Kuwaiti Dinar) — varies by currency
+- Integer-minor-units pattern: `BIGINT` storing paise/cents — e.g. ₹100.50 stored as `10050`
+- A rounding error of even ₹0.0001 per transaction, across 10 million daily transactions, compounds to a real reconciliation gap that auditors will flag
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+This is one of the highest-frequency BFSI interview questions precisely because it's easy to get wrong without noticing — many candidates default to `FLOAT` out of habit. The strong answer states the rule immediately (DECIMAL/NUMERIC, never FLOAT/DOUBLE, for any monetary value), explains the binary-representation reason concretely (the `0.1 + 0.2` example), gives the practical `NUMERIC(19,4)` convention, and can discuss the integer-minor-units alternative (Stripe-style) as a valid second option — showing you know there's more than one correct pattern, but floating point is never one of them. Follow-up questions often probe timestamp handling (UTC vs naive local time) as a related precision/correctness trap.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using `FLOAT` or `DOUBLE` for balance, amount, or any monetary column — introduces binary rounding errors that compound across millions of transactions into real discrepancies.
+
+</Mistake>
+
+<Mistake>
+
+Using `DECIMAL`/`NUMERIC` without an explicit scale (just `DECIMAL` with defaults) — different databases default differently, and an implicit scale can silently truncate precision needed for interest/FX calculations.
+
+</Mistake>
+
+<Mistake>
+
+Storing all currencies' amounts assuming 2 decimal places always apply — breaks for currencies like JPY (0 decimal places) or KWD (3 decimal places) in multi-currency systems.
+
+</Mistake>
+
+<Mistake>
+
+Storing timestamps as naive local time instead of UTC with timezone awareness — creates ambiguity around DST transitions and breaks correctness for cross-timezone systems.
+
+</Mistake>
+
+<Mistake>
+
+Mixing the two money-representation patterns inconsistently within the same system (some tables using DECIMAL rupees, others using integer paise) without a clear, documented convention — leads to conversion bugs.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Raw amount: Rs 100.50"] --> B{Storage choice}
+    B -->|"FLOAT/DOUBLE"| C["Binary approximation - WRONG for money"]
+    B -->|"DECIMAL/NUMERIC(19,4)"| D["Exact decimal - correct"]
+    B -->|"BIGINT minor units"| E["10050 paise - correct, integer-only"]
+    C --> F["Rounding errors compound across millions of transactions"]
+    D --> G["Safe for balances, interest, FX calculations"]
+    E --> G
+`}
+  caption="Two correct patterns (DECIMAL with explicit scale, or integer minor units) versus the one pattern that must never be used for money (floating point)."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never use FLOAT/DOUBLE for money — binary floating point cannot exactly represent most decimal fractions (`0.1 + 0.2 != 0.3`)
+- Always use DECIMAL/NUMERIC with an explicit precision and scale, e.g. `NUMERIC(19, 4)`
+- Extra decimal places (4, not 2) allow precise intermediate calculations (interest, FX) before rounding to the currency's display precision
+- Alternative valid pattern: store amounts as integers in the smallest currency unit (paise/cents) using BIGINT — used by systems like Stripe
+- DECIMAL vs integer-minor-units is a real trade-off (readability/native arithmetic vs simplicity/zero ambiguity) — but floating point is never acceptable in either approach
+- Different currencies have different decimal precision (INR: 2, JPY: 0, KWD: 3) — don't hardcode an assumption
+- Always store timestamps in UTC with timezone awareness, never naive local time, for systems spanning time zones or DST
+
+</QuickRevision>

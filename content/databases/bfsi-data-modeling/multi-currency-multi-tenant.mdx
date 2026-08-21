@@ -1,0 +1,218 @@
+---
+slug: "multi-currency-multi-tenant"
+title: "Multi-Currency & Multi-Tenant Schema Design"
+section: "databases"
+module: "bfsi-data-modeling"
+order: 6
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["core-banking-schema"]
+tags: ["data-modeling", "bfsi", "internationalization"]
+englishDefinition: "Multi-currency schema design handles amounts denominated in different currencies with exchange rates needed to compare or aggregate across them. Multi-tenancy handles a single database or schema serving multiple distinct customers or organizations - such as a B2B payments platform serving many merchants - safely and efficiently."
+interviewFrequency: "medium"
+companies: ["HDFC Bank", "Razorpay", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Multi-currency schema design handles amounts denominated in different currencies with exchange rates needed to compare or aggregate across them. Multi-tenancy handles a single database or schema serving multiple distinct customers or organizations - such as a B2B payments platform serving many merchants - safely and efficiently.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh topic do alag lekin dono BFSI mein bahut common challenges cover karta hai — multi-currency amounts, aur multi-tenant data isolation. Dono ka pattern similar hai: "ek implicit assumption jo chhoti scale pe theek lagti hai, badi scale pe silently break ho jaati hai."
+
+### Multi-currency: har amount ke saath currency chahiye
+
+Sabse common galti: ek `amount DECIMAL` column, bina yeh assume kiye ki woh kis currency mein hai — "obviously INR hai" jaisa implicit assumption. Yeh tabhi tak chalta hai jab tak system single-currency rahe. Jaise hi cross-border payments, forex accounts, ya international merchants aate hain, yeh assumption todh jaati hai.
+
+**Rule**: har monetary amount column ke saath ek `currency_code` column hona chahiye (ISO 4217, jaise `INR`, `USD`, `EUR`). Kabhi bhi single implicit currency assume mat karo.
+
+```sql
+CREATE TABLE ledger_entry (
+    entry_id       BIGINT PRIMARY KEY,
+    account_id     BIGINT NOT NULL,
+    amount         DECIMAL(18, 2) NOT NULL,
+    currency_code  CHAR(3) NOT NULL,   -- always paired with amount
+    ...
+);
+```
+
+Ab problem: agar do amounts alag currencies mein hain, unhe directly compare ya sum karna meaningless hai (`100 USD + 100 INR != 200` kisi bhi cheez ka). Comparison ya aggregation ke liye ek explicit **ExchangeRate table** chahiye, **effective-dated** — kyunki exchange rates continuously change, aur "kis rate pe convert karna hai" depend karta hai **kab** convert kar rahe ho:
+
+```sql
+CREATE TABLE exchange_rate (
+    rate_id         BIGINT PRIMARY KEY,
+    from_currency   CHAR(3) NOT NULL,
+    to_currency     CHAR(3) NOT NULL,
+    rate            DECIMAL(18, 8) NOT NULL,
+    effective_from  TIMESTAMP NOT NULL,
+    effective_to    TIMESTAMP,          -- NULL = currently active
+
+    CONSTRAINT uq_rate_pair_period UNIQUE (from_currency, to_currency, effective_from)
+);
+```
+
+Yeh bilkul wahi **SCD (Type 2) pattern** hai jo tumne KYC topic mein dekha — exchange rates "slowly changing" data hain, aur historical accuracy ke liye tumhe yeh jaanna zaroori hai ki **kis rate pe** ek specific past transaction convert hui thi, na ki aaj ka rate.
+
+### Cross-currency transaction: dono amounts store karo
+
+Jab ek transaction currency boundary cross karta hai (jaise ek customer USD account se INR merchant ko pay kare), best practice hai **dono** amounts store karna: **original currency amount** (jo customer ne actually pay kiya, apni currency mein) **aur** converted amount (jis rate pe convert hua, target currency mein) — full auditability ke liye. Agar sirf converted amount store hota, aur baad mein dispute ho ("maine kitna diya tha USD mein?"), original figure reconstruct karna rate-history pe depend karta, jo fragile hai.
+
+```sql
+CREATE TABLE cross_currency_transaction (
+    transaction_id     BIGINT PRIMARY KEY,
+    original_amount    DECIMAL(18, 2) NOT NULL,
+    original_currency  CHAR(3) NOT NULL,
+    converted_amount   DECIMAL(18, 2) NOT NULL,
+    converted_currency CHAR(3) NOT NULL,
+    rate_applied       DECIMAL(18, 8) NOT NULL,
+    rate_id            BIGINT REFERENCES exchange_rate(rate_id)
+);
+```
+
+### Multi-tenancy: teen standard approaches
+
+Multi-tenant BFSI platforms (jaise Razorpay, jo hazaaron merchants serve karta hai ek hi platform se) ke paas isolation ka level choose karna hota hai. Teen standard approaches hain:
+
+1. **Separate database per tenant** — Best isolation (ek tenant ka data physically alag database mein hai). Most operational overhead (har tenant ke liye separate provisioning, backups, migrations, monitoring). Common for **large enterprise BFSI clients** jinhe strong compliance/data-residency guarantees chahiye (jaise ek bada bank jo apna instance chahta hai).
+
+2. **Separate schema per tenant** — Middle ground. Same database instance, but har tenant ka apna schema (`tenant_123.account`, `tenant_456.account`). Isolation decent hai, operational overhead separate-DB se kam hai (ek hi DB instance manage karna hai), lekin still har tenant ke liye schema-level objects manage karne padte hain.
+
+3. **Shared tables with tenant_id column** — Sabse efficient for **many small tenants** — ek hi table (`account`) sab tenants ka data rakhta hai, har row pe ek `tenant_id` column. Operational overhead sabse kam hai (ek hi schema maintain karna). Lekin risk sabse zyada hai: **ek missed `WHERE tenant_id = ?`** kisi query mein — ek serious **data leak** hai, jahan ek tenant doosre tenant ka data dekh sakta hai. Isse mitigate karne ke liye **row-level security (RLS)** use hoti hai — database khud enforce karta hai ki har query automatically tenant-filtered ho, application code pe depend kiye bina (yeh exact topic Security & Compliance module mein detail mein cover hota hai).
+
+### Decision framework
+
+Choice tenant count aur isolation/compliance requirements pe depend karta hai:
+
+- **Few, large, high-compliance tenants** (jaise ek bank platform serving 5-10 enterprise clients, har ek regulatory-heavy) → **separate database per tenant**.
+- **Moderate number of mid-size tenants** jahan kuch isolation chahiye but full DB-per-tenant overhead justify nahi hota → **separate schema per tenant**.
+- **Many (hundreds/thousands) small tenants** (jaise Razorpay ke chhote merchants) jahan operational efficiency critical hai → **shared tables + tenant_id + row-level security**, with RLS as a non-negotiable safety net, not an optional nice-to-have.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Separate DB per tenant: strongest isolation, easiest to reason about compliance boundaries", "Shared tables + tenant_id: most efficient for many small tenants, single schema to maintain and evolve"]}
+  cons={["Separate DB per tenant: high operational overhead (provisioning, backups, migrations multiply with tenant count)", "Shared tables + tenant_id: a single missed WHERE tenant_id filter is a serious data leak risk, mitigated but not eliminated by row-level security"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Razorpay">
+
+As a B2B payments platform serving a very large number of merchants, Razorpay-style platforms typically lean toward shared tables with a `merchant_id`/`tenant_id` column for most data, given the sheer number of tenants — with strict application-level and often database-level (row-level security) enforcement to prevent any cross-merchant data leakage.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon's global payments infrastructure processes transactions across many currencies, and historical order/refund data must reflect the exact exchange rate in effect at the time of the original transaction, not the current rate - a direct real-world case for effective-dated exchange rate tables rather than a single "current rate" value.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- ISO 4217 defines roughly 180 active currency codes - `currency_code CHAR(3)` comfortably covers all of them
+- A payments platform serving 10,000+ small merchants: shared tables + `tenant_id` + RLS is typically the only operationally viable approach; separate DB per tenant would mean 10,000+ databases to operate
+- Enterprise BFSI clients requiring dedicated infrastructure for compliance: often in the single or low double digits per platform, making separate-database-per-tenant feasible
+- Exchange rates commonly need effective-dating at sub-daily granularity for actively traded currency pairs - "today's rate" isn't precise enough for audit-grade accuracy
+- A missed `tenant_id` filter in a shared-table design is one of the most common root causes of cross-tenant data leak incidents in multi-tenant SaaS/BFSI platforms
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt: "design a schema for a payments platform serving many merchants across currencies." Strong answers separate the two concerns explicitly - currency (always pair `amount` with `currency_code`, use an effective-dated `ExchangeRate` table for cross-currency comparisons, store both original and converted amounts on cross-currency transactions) and tenancy (name the three standard isolation approaches, and give a reasoned recommendation based on tenant count and compliance needs rather than picking one by default). Bonus: connecting the exchange rate table back to the SCD pattern, and the shared-table risk back to row-level security, shows you're linking concepts across the module rather than treating each as isolated trivia.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Storing a monetary `amount` column without an accompanying `currency_code` column, implicitly assuming a single currency system-wide.
+
+</Mistake>
+
+<Mistake>
+
+Comparing or summing amounts across different currencies directly, without converting through an explicit, effective-dated exchange rate.
+
+</Mistake>
+
+<Mistake>
+
+Using only the current/latest exchange rate for historical transactions instead of the rate that was actually in effect at transaction time.
+
+</Mistake>
+
+<Mistake>
+
+Storing only the converted amount on a cross-currency transaction, losing the original amount the customer actually paid or received.
+
+</Mistake>
+
+<Mistake>
+
+Choosing shared tables with `tenant_id` for isolation-critical, high-compliance enterprise tenants without row-level security enforcement - one missed `WHERE` clause becomes a data leak.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    ACCOUNT ||--o{ LEDGER_ENTRY : "has"
+    EXCHANGE_RATE ||--o{ CROSS_CURRENCY_TXN : "applied to"
+    ACCOUNT {
+        bigint account_id PK
+        bigint tenant_id FK
+        string currency_code
+    }
+    LEDGER_ENTRY {
+        bigint entry_id PK
+        bigint account_id FK
+        decimal amount
+        string currency_code
+    }
+    EXCHANGE_RATE {
+        bigint rate_id PK
+        string from_currency
+        string to_currency
+        decimal rate
+        timestamp effective_from
+        timestamp effective_to
+    }
+    CROSS_CURRENCY_TXN {
+        bigint transaction_id PK
+        decimal original_amount
+        string original_currency
+        decimal converted_amount
+        string converted_currency
+        bigint rate_id FK
+    }
+`}
+  caption="Every amount column pairs with a currency_code; effective-dated ExchangeRate rows (SCD-style) let cross-currency transactions record both the original and converted amounts with full auditability. tenant_id on Account is the shared-table multi-tenancy marker."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never store a monetary amount without a paired `currency_code` column - never assume an implicit single currency
+- Comparing/summing across currencies requires an explicit, effective-dated `ExchangeRate` table - same SCD pattern as KYC data
+- Cross-currency transactions should store both the original amount/currency and the converted amount/currency plus the rate used, for full auditability
+- Three multi-tenancy approaches: separate database per tenant (best isolation, most overhead), separate schema per tenant (middle ground), shared tables + `tenant_id` (most efficient, highest leak risk without safeguards)
+- Shared tables + `tenant_id` needs row-level security as a non-negotiable safety net, not an optional extra
+- Decision framework: few large high-compliance tenants → separate DB; moderate mid-size tenants → separate schema; many small tenants → shared tables + tenant_id + RLS
+- A missed `WHERE tenant_id = ?` in a shared-table design is a serious, common real-world data leak vector
+
+</QuickRevision>

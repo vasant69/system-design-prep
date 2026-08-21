@@ -1,0 +1,208 @@
+---
+slug: "upi-payments-store"
+title: "Design a UPI/Payments Transaction Store"
+section: "databases"
+module: "bfsi-case-studies"
+order: 2
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["idempotency-db-layer", "distributed-transactions-core-banking"]
+tags: ["case-study", "bfsi", "payments"]
+englishDefinition: "Design the database schema for a UPI-style payments transaction store - a system that records payment requests moving through multiple hops (payer app, PSP, NPCI switch, payee PSP, payee bank) with extremely high write throughput, where idempotency and eventual status resolution are the hardest problems."
+interviewFrequency: "very-high"
+companies: ["NPCI", "Paytm", "PhonePe"]
+---
+
+<SimpleDefinition>
+
+Design the database schema for a UPI-style payments transaction store - a system that records payment requests moving through multiple hops (payer app, PSP, NPCI switch, payee PSP, payee bank) with extremely high write throughput, where idempotency and eventual status resolution are the hardest problems.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Yeh case study core banking ledger se ek fundamentally different problem hai, chahe dono "payments" ke baare mein hon. Core ledger mein correctness aur strong consistency top priority thi. Yahan bhi correctness zaroori hai, lekin asli hard problem alag hai: **ek single payment request multiple independent systems se ho ke guzarta hai** (payer ka app, uska PSP, NPCI ka switch, payee ka PSP, payee ka bank), aur har hop pe delay, timeout, ya failure ho sakta hai. Schema ka job hai is poori journey ko safely, unambiguously track karna — chahe koi hop slow ho ya fail ho jaaye.
+
+### Requirements Clarification
+
+Functional requirements:
+- Ek payment initiate karna (payer se payee tak)
+- Us payment ka status track karna jaise woh multiple hops se guzarta hai
+- Timeouts aur retries ko safely handle karna — bina duplicate payment ke
+- "Yeh transaction ka current status kya hai" jaisi status-check queries support karna
+
+Non-functional requirements — aur yahan UPI-scale ka asli challenge hai:
+- **Very high TPS** — NPCI switch level pe billions of transactions per month process hote hain, matlab schema ko genuinely massive write throughput handle karna hai.
+- **Strict idempotency** — Idempotency (DB Layer) topic ka core principle yahan non-negotiable hai: ek retry kabhi bhi doosra payment nahi create kar sakta.
+- **Eventual consistency of final status acceptable hai, lekin "forever ambiguous" acceptable NAHI hai.** Yeh subtle lekin critical distinction hai: agar ek payment turant "SUCCESS" ya "FAILED" resolve nahi hota (kyunki koi hop slow hai), yeh theek hai — lekin woh payment permanently "pending" nahi reh sakta. Kisi bhi transaction ka eventually ek definitive, terminal status milna hi chahiye.
+
+### Key Entities & Relationships
+
+Do core entities is design ka backbone hain, aur unka split hi is case study ka sabse important design decision hai:
+
+- **PaymentTransaction** — ek row per logical payment attempt, jisme ek client-generated **idempotency/reference ID** hota hai jo UNIQUE constraint se enforce hota hai. Yeh directly Idempotency (DB Layer) topic se connect karta hai: payer app request bhejne se PEHLE hi ek unique reference ID generate karta hai, aur agar wahi request retry ho (network timeout ke baad), same reference ID dobara aata hai — UNIQUE constraint database level pe hi duplicate insert reject kar deta hai.
+- **PaymentStatusEvent** — ek **append-only log** jo har status transition record karta hai jo transaction guzarta hai: `INITIATED`, `FORWARDED`, `CREDITED`, `ACKNOWLEDGED`, `FAILED`. Crucially, yeh sirf ek status column overwrite nahi karta — har transition ek NAYA row hai, taaki hop-by-hop poori history auditable rahe. Agar kal koi dispute aaye ("payment initiate hua lekin credit nahi hua"), yeh table exactly bata sakta hai kaunse hop tak payment pahuncha aur kahan ruk gaya.
+
+Relationship simple hai: `PaymentTransaction` ek `PaymentStatusEvent` se 1:N hai — ek transaction ke multiple status events ho sakte hain, jaise woh apni journey mein aage badhta hai.
+
+Yeh design pattern (immutable "current state" table + separate append-only "event history" table) ek classic pattern hai jo event-sourcing se inspired hai — current status ek fast, queryable field hai, lekin poori truth event log mein hai.
+
+### Schema Design
+
+```sql
+CREATE TABLE payment_transaction (
+    transaction_id      BIGINT PRIMARY KEY,
+    reference_id         VARCHAR(64) NOT NULL UNIQUE,   -- client-generated idempotency key
+    payer_vpa            VARCHAR(100) NOT NULL,
+    payee_vpa             VARCHAR(100) NOT NULL,
+    amount                DECIMAL(18, 2) NOT NULL CHECK (amount > 0),
+    currency              VARCHAR(3) NOT NULL DEFAULT 'INR',
+    current_status        VARCHAR(20) NOT NULL DEFAULT 'INITIATED',
+    created_at            TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE payment_status_event (
+    event_id             BIGINT PRIMARY KEY,
+    transaction_id        BIGINT NOT NULL REFERENCES payment_transaction(transaction_id),
+    status                VARCHAR(20) NOT NULL,   -- INITIATED, FORWARDED, CREDITED, ACKNOWLEDGED, FAILED
+    hop_name              VARCHAR(50) NOT NULL,   -- e.g. PAYER_PSP, NPCI_SWITCH, PAYEE_PSP, PAYEE_BANK
+    event_timestamp       TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_status_event_txn ON payment_status_event (transaction_id, event_timestamp);
+```
+
+`reference_id` ka UNIQUE constraint hi poore idempotency guarantee ka foundation hai — agar payer app ka retry same reference_id ke saath dobara insert try kare, database khud reject kar dega (ya application ise ek "already processing" response de sakti hai, naya payment banaye bina).
+
+### Query Patterns & Indexing
+
+**1. "Transaction X ka current status kya hai"** — do options hain, aur real systems dono ka hybrid use karte hain. Option A: latest `payment_status_event` row query karo (`ORDER BY event_timestamp DESC LIMIT 1`). Option B: `payment_transaction` pe ek `current_status` column maintain karo jo har naye status event insert ke saath **same atomic transaction mein** update ho. Production systems Option B prefer karte hain kyunki status-check ek extremely frequent, latency-sensitive query hai (payer app baar-baar poll karta hai) — ek indexed column read karna, event table sort/filter karne se kaafi fast hai.
+
+**2. High-frequency inserts on PaymentStatusEvent na bottleneck bane** — yeh table sabse zyada write-heavy hai poore system mein (har hop ek insert hai). Isliye ek deliberate trade-off yahan hota hai: is table pe **kam se kam indexes** rakho. Har extra index ek insert ko slow karta hai (index bhi update karna padta hai) — Composite & Covering Indexes topic ka exact principle yahan reverse-apply hota hai: waha hum reads fast karne ke liye indexes add karte the, yahan hum writes fast rakhne ke liye indexes minimal rakhte hain. Sirf ek composite index `(transaction_id, event_timestamp)` rakhte hain jo status-history queries ke liye zaroori hai — koi extra index (jaise `hop_name` pe alag se) tab tak nahi jab tak koi specific query pattern usse justify na kare.
+
+### Scaling/Integrity Considerations
+
+Yeh table core banking ledger se ekdum ulta scaling profile hai. Core ledger mein sharding avoid karte the kyunki cross-account transfers cross-shard transactions banate the. Yahan situation opposite hai: **har payment transaction largely independent hai doosre payment transactions se** — ek payment ka status dusre payment se depend nahi karta. Isliye `PaymentTransaction`/`PaymentStatusEvent` genuinely ek achha sharding candidate hai — `reference_id` ka hash le ke shard decide kar sakte ho (Sharding & Partitioning topic ka hash-based sharding strategy), aur is table ko horizontally scale kar sakte ho bina cross-shard transaction complexity ke, kyunki almost saari queries ek hi transaction_id ke around scoped hoti hain.
+
+Idempotency yahan sirf ek nice-to-have nahi, poore design ka foundation hai — Idempotency (DB Layer) topic mein establish hua concept ki client-generated key + UNIQUE constraint hi retries ko safe banata hai, exactly yahi mechanism yeh poora system chala raha hai. Distributed Transactions (Core Banking) topic se yeh bhi connect hota hai: multi-hop payment ek classic saga pattern hai — koi single ACID transaction poore payer-to-payee flow ko span nahi kar sakti (alag systems, alag databases involve hain), isliye har hop apna local step commit karta hai aur status event emit karta hai, poori consistency eventually event chain se reconstruct hoti hai.
+
+### Follow-Up Questions
+
+**"Ek transaction intermediate state mein bahut der se stuck hai (jaise `FORWARDED` pe 5 minute se zyada), kya karoge?"** — Yeh exactly wahi problem hai jo "forever ambiguous" ban sakti hai agar handle na karo. Solution: ek **reconciliation/timeout-sweep batch job** jo periodically stale `INITIATED`/`FORWARDED` transactions query karta hai (`current_status NOT IN ('CREDITED', 'FAILED', 'ACKNOWLEDGED') AND updated_at < now() - threshold`), aur har stale transaction ke liye ek **status-check call** NPCI ya downstream PSP ko karta hai — agar woh definitively resolve ho jaaye (success ya fail), status update karo; agar threshold cross ho jaaye bina resolution ke, transaction ko explicitly `FAILED`/`TIMED_OUT` mark karo. Yeh guarantee karta hai ki har transaction eventually ek terminal state pe pahunche, chahe woh terminal state "success" ho ya "explicitly failed" — sirf "hamesha pending" nahi rehta.
+
+**"Duplicate payer request kaise detect karoge agar reference_id thoda alag ho (jaise client bug se naya UUID generate ho gaya retry pe)?"** — Yeh UNIQUE constraint ki limitation hai: woh sirf exact same reference_id ko duplicate maanta hai. Isliye production systems mein aksar ek secondary check bhi hota hai — same payer, same payee, same amount, chhote time window mein — jo suspicious duplicate flag kare bina hard-block kiye, taaki genuinely alag do payments (jo coincidentally similar hon) galti se block na ho jaayein.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Maintained current_status column: fast, indexed, single-row read for the extremely frequent status-check query", "Append-only PaymentStatusEvent: full auditable hop-by-hop history, essential for disputes and reconciliation"]}
+  cons={["current_status must be updated in the same transaction as each event insert, or it can drift from the true latest event", "Minimal indexing on the hot-write event table means some analytical queries (e.g. by hop_name) are slower until a dedicated reporting path is built"]}
+/>
+
+## Real World Example
+
+<RealWorld company="NPCI">
+
+NPCI's UPI switch processes payment requests that hop from the payer's PSP, through the switch, to the payee's PSP and bank, at national scale — billions of transactions a month. The switch cannot force every hop to respond instantly, so its transaction store is built around exactly this pattern: a transaction record with a unique reference, and an append-only trail of status events, with reconciliation jobs sweeping for anything stuck too long in an intermediate state.
+
+</RealWorld>
+
+<RealWorld company="Paytm / PhonePe">
+
+When a UPI payment shows "processing" for an unusually long time in a payer's app, that is almost always this exact intermediate-state problem playing out — the app is polling `current_status`, which has not yet reached a terminal value because one hop (often the payee's bank) has not responded. A background reconciliation job is what eventually resolves it, either by confirming success via a status-check call or marking it failed after a timeout threshold.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- UPI processes billions of transactions a month at national scale, translating to sustained throughput in the thousands of transactions per second, with sharp peaks
+- A single payment can generate 4-6+ PaymentStatusEvent rows across its hops (INITIATED, FORWARDED, one or more intermediate acks, CREDITED/FAILED)
+- Typical timeout-sweep thresholds for a stuck transaction: often in the tens of seconds to a few minutes range before a status-check call or auto-fail kicks in
+- A UNIQUE constraint on reference_id adds negligible write overhead but eliminates an entire class of duplicate-payment bugs
+- Reducing indexes on a hot-write table from 4-5 down to 1-2 can meaningfully cut insert latency at very high write throughput
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt is "design the backend for a UPI-like payment system." Weak answers describe the network hops but never get concrete about the schema. Strong answers explicitly split PaymentTransaction (with the idempotency-key UNIQUE constraint) from an append-only PaymentStatusEvent log, explain why status is tracked as an event history rather than an overwritten column, and proactively raise the "stuck in intermediate state" problem with a reconciliation/timeout-sweep design before being asked. Also strong: contrasting this table's sharding strategy with the core ledger's — explicitly saying "unlike the core ledger, these transactions are largely independent, so hash-sharding by reference_id works well here" shows you understand sharding is a case-by-case decision, not a universal default.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Storing payment status as a single overwritten column with no event history — makes it impossible to reconstruct which hop a payment failed at during a dispute or audit.
+
+</Mistake>
+
+<Mistake>
+
+Relying only on application-level "check before insert" logic for idempotency instead of a database-level UNIQUE constraint on reference_id — a race between the check and the insert can still let a duplicate through.
+
+</Mistake>
+
+<Mistake>
+
+Over-indexing the PaymentStatusEvent table the way you would a read-heavy reporting table — this is a hot-write table, and every extra index directly slows down the insert path at very high TPS.
+
+</Mistake>
+
+<Mistake>
+
+Having no timeout-sweep/reconciliation job, so a transaction stuck at an intermediate hop can remain ambiguously "pending" forever instead of eventually reaching a terminal status.
+
+</Mistake>
+
+<Mistake>
+
+Assuming this table should be scaled the same way as the core ledger (avoid sharding, scale vertically) — payment transactions are largely independent of each other, making this a genuinely good sharding candidate, unlike the core ledger.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Payer as Payer App
+    participant PSP as Payer PSP
+    participant NPCI as NPCI Switch
+    participant PayeePSP as Payee PSP
+    participant DB as PaymentTransaction / PaymentStatusEvent
+
+    Payer->>PSP: Pay request (reference_id generated client-side)
+    PSP->>DB: INSERT PaymentTransaction (reference_id UNIQUE)
+    PSP->>DB: INSERT PaymentStatusEvent (INITIATED)
+    PSP->>NPCI: Forward payment
+    DB->>DB: INSERT PaymentStatusEvent (FORWARDED)
+    NPCI->>PayeePSP: Route to payee bank
+    PayeePSP-->>DB: INSERT PaymentStatusEvent (CREDITED)
+    DB->>DB: Update current_status = CREDITED (same txn as event insert)
+    Note over DB: Timeout-sweep job periodically checks for<br/>transactions stuck before a terminal status
+`}
+  caption="A payment hops through multiple independent systems; PaymentStatusEvent captures each hop as an append-only row, while current_status on PaymentTransaction is kept in sync for fast status-check reads."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Core split: PaymentTransaction (one row per payment, UNIQUE reference_id for idempotency) + PaymentStatusEvent (append-only log of every hop's status transition)
+- reference_id's UNIQUE constraint is the actual idempotency mechanism — a retried request cannot create a second payment
+- current_status is a maintained column updated transactionally alongside each event insert, so status-check reads stay fast without scanning event history
+- PaymentStatusEvent is a hot-write table — deliberately minimal indexing to avoid slowing down inserts at very high TPS
+- Eventual consistency of final status is fine; "ambiguous forever" is not — every transaction must reach a terminal state
+- A timeout-sweep/reconciliation batch job resolves transactions stuck too long at an intermediate hop, via a status-check call or an explicit fail after a threshold
+- Unlike the core ledger, payment transactions are largely independent of each other — this makes hash-sharding by reference_id a genuinely good scaling strategy here
+- Multi-hop payments are a real-world saga pattern: no single ACID transaction spans payer to payee, so consistency is reconstructed from the event chain
+
+</QuickRevision>

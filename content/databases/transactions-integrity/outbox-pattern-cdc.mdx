@@ -1,0 +1,187 @@
+---
+slug: "outbox-pattern-cdc"
+title: "Outbox Pattern & Change Data Capture (CDC)"
+section: "databases"
+module: "transactions-integrity"
+order: 6
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["distributed-transactions-core-banking"]
+tags: ["transactions", "distributed-systems", "data-pipelines"]
+englishDefinition: "The Transactional Outbox pattern writes an event to an outbox table as part of the same local database transaction as the business data change, then a separate process reliably publishes those rows to a message queue. Change Data Capture (CDC) is a more automated alternative — a mechanism, often reading a database's write-ahead or replication log, that streams every row-level change to downstream consumers without an explicit outbox table."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+The Transactional Outbox pattern writes an event to an outbox table as part of the same local database transaction as the business data change, then a separate process reliably publishes those rows to a message queue. Change Data Capture (CDC) is a more automated alternative — a mechanism, often reading a database's write-ahead or replication log, that streams every row-level change to downstream consumers without an explicit outbox table.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein humne outbox event ko saga ke context mein mention kiya tha — is topic mein iski mechanics deep dive karte hain, aur ek automated alternative (CDC) bhi dekhte hain.
+
+### Core problem — "Dual Write" problem
+
+Socho ek naive implementation: application account balance update karta hai database mein, aur phir seedha ek message queue (jaise Kafka) pe event publish karta hai — do alag operations, do alag systems:
+
+1. `UPDATE Account SET balance = balance - 500 WHERE account_id = 'A'` — database write
+2. Kafka producer se message publish karo: `"AccountDebited"` event
+
+Yeh do independent operations hain, do alag systems ke against. Beech mein bahut kuch galat ho sakta hai: DB write succeed ho jaaye, lekin Kafka publish fail ho jaaye (network issue, Kafka down) — ab database mein change hai lekin koi downstream service ko pata hi nahi chala. Ya ulta: Kafka publish succeed ho jaaye, lekin turant baad DB transaction kisi reason se fail/rollback ho jaaye — ab downstream services ne ek event process kar liya jo database mein kabhi hua hi nahi. Dono cases mein system **inconsistent** ho jaata hai. Isse **dual write problem** kehte hain — do independent systems ko ek saath, reliably update karne ki koshish, bina kisi cross-system atomicity guarantee ke.
+
+### Solution 1 — Transactional Outbox Pattern
+
+Idea simple hai: message queue pe seedha publish mat karo. Iske bajaye, event ko ek **outbox table** mein insert karo, **usi local database transaction ke andar** jisme business change ho raha hai:
+
+```sql
+BEGIN;
+
+UPDATE Account SET balance = balance - 500 WHERE account_id = 'A';
+
+INSERT INTO Outbox (event_id, aggregate_id, event_type, payload, published_at)
+VALUES (
+    gen_random_uuid(),
+    'A',
+    'AccountDebited',
+    '{"account_id": "A", "amount": 500}',
+    NULL
+);
+
+COMMIT;
+```
+
+Kyunki dono statements ek hi local ACID transaction ke andar hain, yeh guarantee hoti hai: agar balance update commit hua, outbox row bhi guaranteed commit hui (aur vice versa) — dono ek saath ya dono nahi, koi third option nahi. Yeh exactly wahi atomicity guarantee hai jo pichle topics mein dekhi thi, bas ab isse "business change + event" ke beech apply kiya ja raha hai.
+
+Ab ek separate **poller/relay process** periodically outbox table check karta hai unpublished rows (`published_at IS NULL`) ke liye:
+
+```sql
+SELECT * FROM Outbox WHERE published_at IS NULL ORDER BY event_id LIMIT 100;
+```
+
+Relay har row ko Kafka/queue pe push karta hai, aur successfully publish hone ke baad `published_at` ko current timestamp se mark karta hai. Agar relay khud crash ho jaaye publish karne ke baad lekin mark-as-published se pehle, worst case ek event dobara publish ho jaayega (at-least-once delivery) — yeh downstream consumers ko idempotent design karne ki zaroorat create karta hai (yaad rakho — idempotency topic isi wajah se pehle cover hua tha is module mein).
+
+### Solution 2 — Change Data Capture (CDC)
+
+CDC ek zyada automated approach hai. Tools jaise **Debezium** seedha database ka apna internal transaction/replication log padhte hain (jaise PostgreSQL ka WAL, MySQL ka binlog) — jo log already exist karta hai durability ke liye (yaad karo Topic 1 mein WAL). Kyunki har committed change automatically is log mein already likha jaata hai, CDC tool ko koi separate outbox table maintain karne ki zaroorat nahi — koi bhi row-level INSERT/UPDATE/DELETE automatically capture ho jaata hai aur downstream stream ho sakta hai.
+
+**Trade-off**: CDC application code ko kam invasive hai — developers ko manually outbox table maintain nahi karni padti, na hi explicit INSERT likhna padta. Lekin iska cost hai: CDC tumhe database-specific replication log mechanics se tightly couple kar deta hai (WAL format, binlog format — database-specific, upgrade-sensitive), aur application-level reasoning harder ho jaati hai kyunki "kaunsa change downstream stream hoga" ab ek explicit application-level decision nahi rehta, balki "koi bhi row change automatically stream hoga" ban jaata hai — jisme non-business-relevant changes (jaise internal housekeeping updates) bhi accidentally stream ho sakte hain agar careful filtering na ho.
+
+### BFSI use case — fraud detection aur regulatory reporting
+
+Ek bahut real BFSI scenario: har ledger change (debit/credit) ko **fraud-detection pipeline** aur ek **regulatory reporting system** dono ko near-real-time stream karna hai, bina core transaction ki latency badhaye. Agar fraud-check ya reporting system ko synchronously call kiya jaaye core transaction ke andar, latency badh jaayegi aur agar woh systems slow/down hon to core banking transaction bhi unnecessarily block ho jaayegi — yeh unacceptable hai. Outbox pattern (ya CDC) is problem ko elegantly solve karta hai: core transaction apna kaam karta hai fast, apni local ACID guarantee ke saath, aur event asynchronously downstream systems tak pahunchta hai bina core path ko touch kiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Outbox: explicit, application controls exactly what gets published, easier to reason about business events", "CDC: less invasive, no separate table to maintain, captures every change automatically, decouples event emission from application code"]}
+  cons={["Outbox: requires an extra table, a poller/relay process, and application discipline to write to it correctly", "CDC: tightly couples you to database-specific log mechanics, can leak internal/non-business changes downstream if not carefully filtered"]}
+/>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core ledger changes streaming to a fraud-detection pipeline is a canonical outbox/CDC use case — har debit/credit event ko fraud-scoring service tak milliseconds mein pahunchna hota hai bina core transaction latency ko affect kiye. Ek outbox-based relay ya CDC tool (jaise Debezium) yeh guarantee karta hai ki koi bhi committed ledger change miss nahi hota, chahe fraud-service temporarily down ho — events queue mein accumulate hote hain aur service wapas aane pe process ho jaate hain.
+
+</RealWorld>
+
+<RealWorld company="Amazon / Flipkart">
+
+Order management systems mein order status changes (placed, shipped, delivered) ko multiple downstream systems tak stream karna hota hai — analytics, recommendation engine, seller notifications, sab alag consumers. Outbox pattern se order database apna authoritative source of truth rehta hai, aur ek single reliable event stream saare downstream consumers ko feed karta hai, bina order service ko har consumer se directly, synchronously couple kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Outbox relay poll interval: typically sub-second to a few seconds, depending on required near-real-time-ness of downstream consumers</li>
+<li>CDC (e.g. Debezium reading WAL/binlog) latency: often under 1 second from commit to downstream event, since it reads the log directly rather than polling a table</li>
+<li>At-least-once delivery duplicate rate in outbox/CDC pipelines: low but non-zero — this is exactly why downstream consumers need idempotent processing (ties back to the idempotency topic)</li>
+<li>Outbox table cleanup: published rows are typically archived/deleted after a retention window (hours to days) to keep the table small and fast to query</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How do you reliably notify other services when a database record changes?" — weak answer: "just publish to Kafka after the DB write." Strong answer starts by naming the **dual write problem** explicitly — DB write and queue publish are two independent operations that can fail independently, causing inconsistency. Then explain the Outbox pattern (event written in the SAME local transaction as the business change) with a concrete SQL example, and mention the relay/poller process. Bonus signal: proactively bring up CDC as an alternative and give the accurate trade-off — less invasive to application code, but tighter coupling to database-specific log mechanics. Best answers connect this back to idempotency ("since delivery is at-least-once, downstream consumers must be idempotent") and to the Saga topic ("this is what makes the saga's next step reliably triggered").
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Database write aur message queue publish ko do separate, unrelated operations ki tarah likhna application code mein — yeh dual write problem create karta hai jahan ek succeed ho sakta hai aur doosra fail, system ko inconsistent chhod ke.
+
+</Mistake>
+
+<Mistake>
+
+Outbox table mein event insert karna business change ke ALAG transaction mein (pehle balance update commit karo, phir alag transaction mein outbox insert karo) — yeh poore pattern ka purpose hi defeat kar deta hai. Dono ek hi atomic transaction mein hone chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Outbox/CDC events ko "exactly-once" assume karna — reality mein yeh typically "at-least-once" delivery hoti hai (relay crash, retries), isliye downstream consumers ko idempotent design karna zaroori hai, warna duplicate processing ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+CDC ko blindly "better" maan lena Outbox se bina trade-off samjhe — CDC database-specific replication log mechanics pe tightly couple kar deta hai aur non-business-relevant row changes bhi accidentally downstream leak ho sakte hain agar careful filtering na ho.
+
+</Mistake>
+
+<Mistake>
+
+Fraud-check ya reporting jaisi downstream systems ko core transaction ke andar synchronously call karna "simplicity ke liye" — isse core banking transaction ki latency aur availability directly downstream system ke health pe depend karne lagti hai, jo unacceptable coupling hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    App[Application] -->|1. BEGIN local txn| DB[(Ledger DB)]
+    DB -->|2. UPDATE Account| DB
+    DB -->|3. INSERT Outbox row - same txn| DB
+    DB -->|4. COMMIT - atomic| DB
+    Relay[Poller/Relay Process] -->|5. Poll unpublished rows| DB
+    Relay -->|6. Publish event| Queue[Kafka / Message Queue]
+    Relay -->|7. Mark published_at| DB
+    Queue --> Fraud[Fraud Detection Pipeline]
+    Queue --> Reporting[Regulatory Reporting System]
+
+    CDC[CDC Tool - e.g. Debezium] -.->|Alternative: reads WAL/binlog directly, no outbox table needed| DB
+    CDC -.-> Queue
+`}
+  caption="Outbox pattern: the business change and outbox event commit atomically in one local transaction, then a relay publishes asynchronously. CDC is a more automated alternative that reads the database's own transaction log directly."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Dual write problem: writing to a database and publishing to a queue as two separate operations can fail halfway, leaving the system inconsistent</li>
+<li>Outbox pattern: insert an event row into an outbox table in the SAME local transaction as the business change — guarantees atomicity between the two</li>
+<li>A separate poller/relay process reads unpublished outbox rows, pushes them to Kafka/a queue, and marks them published</li>
+<li>CDC (e.g. Debezium): reads the database's own transaction/replication log directly — no separate outbox table needed, any row change is automatically captured</li>
+<li>Trade-off: CDC is less invasive to application code, but couples you tightly to database-specific log mechanics and can leak non-business changes</li>
+<li>Outbox/CDC delivery is typically at-least-once, not exactly-once — downstream consumers must be idempotent</li>
+<li>BFSI use case: streaming every ledger change to fraud-detection and regulatory reporting in near-real-time without adding latency to the core transaction</li>
+</ul>
+
+</QuickRevision>

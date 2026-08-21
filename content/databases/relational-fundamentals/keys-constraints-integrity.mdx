@@ -1,0 +1,199 @@
+---
+slug: "keys-constraints-integrity"
+title: "Keys, Constraints & Referential Integrity"
+section: "databases"
+module: "relational-fundamentals"
+order: 3
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["er-modeling-schema-basics"]
+tags: ["data-modeling", "fundamentals", "sql"]
+englishDefinition: "Primary keys, foreign keys, unique constraints, check constraints, and NOT NULL constraints are the mechanisms a relational database uses to enforce data integrity rules directly at the schema level, rather than relying only on application code. Because a database constraint is checked on every write regardless of which application or process performs it, it acts as the last line of defense for correctness."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "Paytm", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Primary keys, foreign keys, unique constraints, check constraints, and NOT NULL constraints are the mechanisms a relational database uses to enforce data integrity rules directly at the schema level, rather than relying only on application code. Because a database constraint is checked on every write regardless of which application or process performs it, it acts as the last line of defense for correctness.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Bahut se developers sochte hain "hum application code mein validation kar lenge" — jaise "balance negative nahi hone denge" ya "duplicate PAN number allow nahi karenge" — aur database ko sirf ek dumb storage layer treat karte hain. Yeh assumption BFSI systems mein dangerous hai, kyunki application-level validation **bypass ho sakti hai**: ek bug, ek direct DB script, ek doosri service jo same table mein likhti hai bina us validation ko dobara implement kiye, ya ek migration script jo validation layer ke bina directly data insert karta hai. Database constraint yeh guarantee karta hai chahe write kahin se bhi aaye — yeh "push validation down to the database" philosophy hai.
+
+### Primary Key — unique aur stable identity
+
+Primary Key (PK) har row ko uniquely identify karta hai aur automatically NOT NULL + UNIQUE dono enforce karta hai. Banking context: `account_id` Account table ka PK hota hai.
+
+### Foreign Key — cross-table integrity
+
+Foreign Key (FK) guarantee karta hai ki ek table ka column doosri table ke existing row ko reference kare — "orphan" rows nahi ban sakte. Jaise `Transaction.account_id` ek FK hai jo `Account.account_id` ko reference karta hai. Agar koi `account_id` Transaction mein insert ho jo Account table mein exist hi nahi karta, database reject kar dega — application code galti kare bhi to yeh silently pass nahi hoga.
+
+FK ke saath ek important decision hoti hai: parent row delete hone pe kya ho? Options: `ON DELETE CASCADE` (child rows bhi delete ho jaayen), `ON DELETE SET NULL`, ya `ON DELETE RESTRICT` (parent delete hi na hone do agar child rows exist karte hain). Banking mein `Account` delete karna agar uske `Transaction` history hai, to `ON DELETE RESTRICT` sahi choice hai — kisi transaction history wale account ko accidentally delete nahi hone dena chahiye, chahe application code mein koi bug ho jaaye.
+
+### Unique Constraint — no duplicates, but not the identity
+
+Unique constraint guarantee karta hai ki ek column (ya column combination) mein koi do rows same value na rakhein — lekin, PK ke unlike, yeh row ki "identity" nahi hai. Banking example: `PAN number` per customer unique hona chahiye (ek PAN sirf ek customer se linked ho), lekin `customer_id` (surrogate key) hi actual PK rehta hai. Ek table mein multiple unique constraints ho sakti hain, lekin sirf ek PK.
+
+### Check Constraint — business rule enforcement
+
+Check constraint ek boolean condition enforce karta hai har row pe. Banking examples:
+- Savings account ka balance kabhi negative nahi ho sakta: `CHECK (balance >= 0)`
+- `account_type` sirf specific values ho sakti hain: `CHECK (account_type IN ('SAVINGS', 'CURRENT', 'FIXED_DEPOSIT'))`
+
+Yeh business rules ko database mein bake kar deta hai — application code chahe kuch bhi try kare, database negative balance insert hi nahi hone dega.
+
+### NOT NULL — mandatory fields
+
+Simplest constraint, lekin skip karna common mistake hai. `Customer.pan_number NOT NULL` guarantee karta hai ki koi bhi customer record bina PAN ke create nahi ho sakta — jo KYC compliance ke liye zaroori hai.
+
+### Sab ek saath — ek CREATE TABLE example
+
+```sql
+CREATE TABLE account (
+    account_id      BIGINT PRIMARY KEY,
+    account_number  VARCHAR(20) NOT NULL UNIQUE,
+    customer_id     BIGINT NOT NULL REFERENCES customer(customer_id),
+    account_type    VARCHAR(20) NOT NULL
+        CHECK (account_type IN ('SAVINGS', 'CURRENT', 'FIXED_DEPOSIT')),
+    balance         DECIMAL(19,4) NOT NULL DEFAULT 0
+        CHECK (balance >= 0),
+    branch_id       BIGINT NOT NULL REFERENCES branch(branch_id)
+        ON DELETE RESTRICT,
+    created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+```
+
+Yeh ek single table mein PK, FK (with explicit `ON DELETE RESTRICT`), UNIQUE, NOT NULL, aur CHECK — sab dikhata hai together kaam karte hue.
+
+### Trade-off: constraints free nahi hain
+
+Har constraint har write pe **check** hota hai — yeh free nahi hai. FK check ka matlab hai database ko parent table mein ek lookup (usually index ke through) karna padta hai har insert/update pe. CHECK constraints CPU cycles lete hain har row validate karne ke liye. High-throughput write path (jaise UPI transaction processing, jahan lakhs of transactions per second ho sakti hain) mein har extra constraint thoda overhead add karta hai — lekin BFSI mein yeh trade-off almost hamesha worth hai, kyunki ek galat balance ya orphaned transaction ka cost, constraint check ke overhead se kahin zyada hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Genuinely trap question: "kya humein database constraints chahiye agar application already validate karti hai?" Sahi jawab hamesha "haan" hai — application validation aur database constraints **redundant nahi hain, complementary hain**. Application validation user ko fast, friendly error deta hai; database constraint guarantee deta hai ki data kabhi bhi corrupt nahi hoga, chahe validation layer kahin se bhi bypass ho jaaye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking Account table mein `balance >= 0` CHECK constraint (savings accounts ke liye) ek real last line of defense hai. Agar koi bug ek race condition create kar de jahan do concurrent withdrawals same balance check pass kar jaayein application layer pe, database-level constraint us final negative-balance write ko reject kar dega — application ko error handle karna padega, lekin data kabhi corrupt nahi hoga.
+
+</RealWorld>
+
+<RealWorld company="Paytm">
+
+UPI/wallet systems mein `Transaction.account_id` FK constraint zaroori hai kyunki multiple services (payment processing, refunds, settlement reconciliation) same Transaction table mein likh sakte hain. Agar koi ek service mein bug ho aur woh galat/non-existent `account_id` ke saath transaction insert karne ki koshish kare, FK constraint us insert ko database level pe reject kar deta hai — chahe us specific service ki apni validation buggy ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- FK constraint check overhead: typically a single indexed lookup on the parent table per write — cheap if the referenced column is indexed (it almost always is, since it's usually a PK)
+- CHECK constraint overhead: negligible per-row CPU cost, but adds up at very high write throughput (lakhs of transactions/sec in national payment systems)
+- A table can have only 1 PRIMARY KEY but many UNIQUE constraints and many CHECK constraints
+- Missing NOT NULL on a mandatory field like PAN number: can silently let thousands of incomplete KYC records accumulate before anyone notices
+- Removing a poorly indexed FK can sometimes measurably speed up bulk writes — but the correctness trade-off is rarely worth it for financial data
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common interview probe: "your application already validates balance >= 0, so why add a database CHECK constraint too?" The strong answer explains defense in depth — application code can have bugs, can be bypassed by direct DB access or scripts, and multiple services might write to the same table without sharing validation logic. The database constraint is the only guarantee that holds regardless of the write path. Also expect to be asked to choose an `ON DELETE` behavior (CASCADE vs RESTRICT vs SET NULL) for a specific relationship and justify it — for financial history tables, RESTRICT is almost always the right default.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Relying only on application-level validation for critical business rules (like non-negative balance) and skipping the equivalent database CHECK constraint — leaves no protection against bugs, direct DB writes, or other services.
+
+</Mistake>
+
+<Mistake>
+
+Using `ON DELETE CASCADE` by default on financial relationships without thinking it through — deleting an Account should not silently cascade-delete years of Transaction history; RESTRICT is usually correct there.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting `NOT NULL` on genuinely mandatory columns (like `pan_number` for KYC), which silently allows incomplete records into the system.
+
+</Mistake>
+
+<Mistake>
+
+Confusing UNIQUE with PRIMARY KEY — treating a business-facing unique field (like PAN number) as the primary key instead of using a stable surrogate key with a separate unique constraint.
+
+</Mistake>
+
+<Mistake>
+
+Treating constraints as strictly free — not accounting for the real (if usually small) write-path overhead of every FK lookup and CHECK evaluation when designing for very high transaction throughput.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    CUSTOMER ||--o{ ACCOUNT : "owns"
+    BRANCH ||--o{ ACCOUNT : "hosts"
+    ACCOUNT ||--o{ TRANSACTION : "has"
+    CUSTOMER {
+        bigint customer_id PK
+        string pan_number UK
+        string name
+    }
+    ACCOUNT {
+        bigint account_id PK
+        string account_number UK
+        bigint customer_id FK
+        bigint branch_id FK
+        string account_type
+        decimal balance
+    }
+    BRANCH {
+        bigint branch_id PK
+        string branch_name
+    }
+    TRANSACTION {
+        bigint transaction_id PK
+        bigint account_id FK
+        decimal amount
+    }
+`}
+  caption="PK (identity), FK (cross-table integrity, e.g. Account.branch_id with ON DELETE RESTRICT), and UK (unique constraint on pan_number/account_number) working together in one schema."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Primary Key: unique row identity, implies NOT NULL + UNIQUE, only one per table
+- Foreign Key: guarantees referenced rows exist, prevents orphan rows; choose ON DELETE behavior deliberately (RESTRICT is usually safest for financial history)
+- Unique constraint: no duplicate values, but not the row's identity — can have many per table (e.g. PAN number)
+- Check constraint: enforces a business rule at the schema level, like `balance >= 0` or a valid account_type enum
+- NOT NULL: guarantees a mandatory field is always present
+- Philosophy: push validation down to the database — application validation can be bypassed, a DB constraint cannot
+- Constraints are checked on every write and have a real (usually small) performance cost — a genuine trade-off, not free
+- Application-level and database-level validation are complementary, not redundant
+
+</QuickRevision>

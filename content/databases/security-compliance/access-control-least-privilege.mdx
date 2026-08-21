@@ -1,0 +1,202 @@
+---
+slug: "access-control-least-privilege"
+title: "Access Control & Least Privilege for Financial Systems"
+section: "databases"
+module: "security-compliance"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["row-level-security-masking"]
+tags: ["security", "compliance", "bfsi"]
+englishDefinition: "The principle of least privilege, applied to database access, means every application service, human operator, and role should have exactly the minimum database permissions needed for its job, and nothing more. In BFSI database design this is enforced through specific access-control patterns like role-based access control (RBAC), separate read-only and write-only credentials, and permission-level immutability guarantees."
+interviewFrequency: "high"
+companies: ["HDFC Bank", "ICICI Bank", "Amazon"]
+---
+
+<SimpleDefinition>
+
+The principle of least privilege, applied to database access, means every application service, human operator, and role should have exactly the minimum database permissions needed for its job, and nothing more. In BFSI database design this is enforced through specific access-control patterns like role-based access control (RBAC), separate read-only and write-only credentials, and permission-level immutability guarantees.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek bahut common anti-pattern hai jo choti teams mein aksar dikhta hai: har service, har script, har internal tool ek hi powerful database credential use karta hai — often ek admin-level user jiske paas har table pe har permission hai (SELECT, INSERT, UPDATE, DELETE, DROP, sab kuch). Yeh shuru mein convenient lagta hai — koi permission error nahi aata, koi "access denied" debug nahi karna padta. Lekin BFSI systems mein yeh ek serious security design flaw hai, kyunki iska matlab hai: **kisi bhi ek service ka compromise hona poore database ka compromise ban jaata hai**.
+
+### Least privilege ka core principle
+
+Principle simple hai: har service, har human operator, ko sirf utni hi permission do jitni unke actual job ke liye chahiye, na kam na zyada. Agar ek reporting service sirf data read karti hai, usse SELECT ke alawa kuch nahi milna chahiye — INSERT, UPDATE, DELETE, DROP sab explicitly deny hone chahiye, chahe woh service kabhi unhe use karne ka intend na kare. Yeh redundant lagta hai jab tak koi bug, koi SQL injection, ya koi compromised dependency us service ko malicious query chalane pe majboor na kar de — tab yeh "unnecessary restriction" hi tumhara last line of defense banti hai.
+
+### Concrete BFSI examples
+
+- **Reporting/analytics service account** — sirf `SELECT` access. Kabhi `UPDATE`/`DELETE`/`INSERT` nahi. Yeh service sirf dashboards aur reports generate karti hai — write access ki koi legitimate zaroorat hi nahi hai, isliye woh permission exist hi nahi karni chahiye.
+
+```sql
+CREATE ROLE reporting_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO reporting_readonly;
+-- Explicitly no INSERT, UPDATE, DELETE grants
+```
+
+- **Audit log table** — yeh table sirf `INSERT-only` honi chahiye, even un services ke liye jo usme legitimately likhti hain. Pichle audit trail topic mein humne dekha ki audit rows kabhi modify ya delete nahi honi chahiye — is guarantee ko sirf "convention" pe chodna kafi nahi hai, isse **permission level pe enforce** karna chahiye. Koi bhi application role, chahe woh audit logger service hi kyun na ho, UPDATE ya DELETE permission audit table pe nahi honi chahiye.
+
+```sql
+CREATE ROLE audit_logger;
+GRANT INSERT ON audit_log TO audit_logger;
+GRANT SELECT ON audit_log TO audit_logger;
+-- Deliberately NO UPDATE, NO DELETE — even for the service that writes the logs
+REVOKE UPDATE, DELETE ON audit_log FROM audit_logger;
+```
+
+Yeh important distinction hai: agar audit logger service khud compromise ho jaaye (jaise ek attacker uski credentials chura le), phir bhi woh attacker existing audit rows ko modify ya delete nahi kar sakta — kyunki woh permission database level pe exist hi nahi karti, application code ki niyat pe depend nahi karti.
+
+- **Customer-support tool ka database role** — masked card numbers dekh sakta hai (pichle masking topic se), raw unmasked values nahi. Yeh role ek masking view/function ke through hi query kare, raw table pe direct access na ho.
+
+- **Primary vs read-replica credentials** — read-heavy workloads (jaise reporting, ya customer-facing "recent transactions" screen) ke liye alag read-only credentials hoti hain jo sirf replica se connect karti hain, jabki write-path services (jaise transaction processing) alag read-write credentials use karti hain jo sirf primary se connect karti hain. Yeh separation dono operational (accidental writes hitting a replica fail fast, obviously wrong) aur security (compromised read-only credential kabhi write nahi kar sakta) benefit deta hai.
+
+### RBAC — standard mechanism yeh sab enforce karne ka
+
+Practically yeh sab **Role-Based Access Control (RBAC)** ke through implement hota hai — individual users/services ko directly permissions grant karne ke bajaye, tum **roles** define karte ho (`reporting_readonly`, `ledger_writer`, `audit_logger`, `support_masked_read`), har role ko exactly wahi permissions dete ho jo uske job ke liye zaroori hain, aur phir application services ya human operators ko appropriate role assign karte ho.
+
+```sql
+CREATE ROLE ledger_writer;
+GRANT SELECT, INSERT ON ledger_entries TO ledger_writer;
+-- No UPDATE, no DELETE — ledger entries are append-only (ties to immutability)
+
+GRANT ledger_writer TO transaction_processing_service;
+```
+
+Is approach ka fayda: agar 50 services hain aur unme se 10 ko reporting access chahiye, tum ek `reporting_readonly` role banate ho aur 10 services ko assign karte ho — permission logic ek jagah define hoti hai, aur agar policy change ho (jaise ek naya table add hua jo reporting ko bhi dikhna chahiye), tum sirf role definition update karte ho, har service individually nahi.
+
+**Anti-pattern**: har service ko ek single powerful admin-level credential dena. Yeh sirf convenient hai, lekin iska matlab hai koi bhi ek compromised service — chahe woh sirf ek chhota internal reporting tool hi kyun na ho — poore database ka full breach ban sakta hai (read, write, delete, sab kuch).
+
+### Access review — ek operational practice jo yeh design enable karta hai
+
+RBAC-based design ek important operational benefit bhi deta hai: **periodic access review/recertification**. Agar roles clearly defined hain aur services/humans un roles se cleanly mapped hain, to ek security/compliance team periodically review kar sakti hai "kis role ke paas kya access hai, aur kya yeh abhi bhi justified hai" — jaise ek employee jo team change kar gaya, uski purani role membership revoke karna. Yeh review BFSI regulatory audits mein commonly expected practice hai. Agar permissions ad-hoc, individually granted hon (RBAC ke bina), yeh review practically impossible ho jaata hai — koi centralized jagah nahi hoti jahan se "sabka access ek nazar mein dikhe."
+
+</Hinglish>
+
+<Callout type="warning">
+
+The audit-log-is-INSERT-only pattern is a good litmus test for whether a team actually understands least privilege versus just paying lip service to it. If the service that writes audit logs technically *can* UPDATE or DELETE those rows (even if "it never would"), the immutability guarantee is a convention, not a control — and conventions don't survive a compromised credential or a rogue script.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HDFC Bank">
+
+Core banking database access at a regulated bank is typically segmented into tightly scoped roles — a teller-facing application role that can read and write specific transaction types within limits, a reporting role that's read-only against replicas, and a small, heavily audited set of DBA-level roles for schema changes — with periodic access recertification cycles mandated as part of internal and RBI-facing compliance audits.
+
+</RealWorld>
+
+<RealWorld company="ICICI Bank">
+
+Audit and compliance logging systems at large banks are commonly designed so that even the service account responsible for writing logs has no UPDATE or DELETE grant on the log tables — turning "our audit logs are immutable" from a policy statement into a permission-enforced guarantee that survives even a compromised logging service.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Amazon's internal services follow a strict least-privilege model where each service's database/data-store credentials are scoped narrowly to exactly the tables and operations that service needs — a pattern documented publicly as part of their security culture, and one of the reasons a compromise in one service doesn't automatically cascade into full data-store access across the business.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>A single shared admin-level credential across N services: turns 1 compromised service into a blast radius of N services' worth of data and every table in the database</li>
+<li>Typical BFSI RBAC role count for a core banking system: often 5-15 distinct roles (reporting, ledger writer, audit logger, support masked-read, DBA, etc.) rather than 1-2 broad ones</li>
+<li>Access recertification cadence in regulated BFSI environments: commonly quarterly or semi-annual reviews of who/what holds which role</li>
+<li>Permission grant overhead per new service: a few minutes to assign an existing role versus re-deriving a bespoke permission set each time — RBAC amortizes this cost</li>
+<li>Read replica read-only credentials: eliminate an entire class of accidental-write bugs simply by permission being absent, not just discouraged</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A strong signal in interviews is naming specific roles rather than speaking about "access control" abstractly — say "a reporting_readonly role with SELECT-only grants" instead of "we'd restrict access appropriately." A classic follow-up is "what if the service that writes audit logs gets compromised — can the attacker cover their tracks?" — the correct answer ties directly to permission-level immutability: even the writer role should lack UPDATE/DELETE, so a compromised writer still can't tamper with historical rows. Also expect questions distinguishing RBAC from ad-hoc/per-user permission grants, and why the latter doesn't scale for audits.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Giving every service or script a single shared admin-level credential "for simplicity" — this collapses the security boundary between services, so any one compromise becomes a full database breach.
+
+</Mistake>
+
+<Mistake>
+
+Granting UPDATE/DELETE on an audit log table to the very service that writes to it, treating immutability as a coding convention instead of a database-enforced permission boundary.
+
+</Mistake>
+
+<Mistake>
+
+Not separating read-only replica credentials from read-write primary credentials — a reporting job accidentally pointed at the primary with write access can cause real production incidents.
+
+</Mistake>
+
+<Mistake>
+
+Granting a support tool direct table access instead of routing it through a masking view — bypassing the intended data-exposure boundary even though the RBAC role itself looks appropriately scoped.
+
+</Mistake>
+
+<Mistake>
+
+Treating access control as a one-time setup instead of an ongoing practice — roles and grants drift over time (employees change teams, services get decommissioned) without periodic recertification to catch stale, over-broad access.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Roles["RBAC Roles"]
+        R1[reporting_readonly]
+        R2[ledger_writer]
+        R3[audit_logger]
+        R4[support_masked_read]
+    end
+    subgraph Grants["Permissions"]
+        G1["SELECT only"]
+        G2["SELECT, INSERT - no UPDATE/DELETE"]
+        G3["INSERT, SELECT only - no UPDATE/DELETE"]
+        G4["SELECT via masking view only"]
+    end
+    R1 --> G1
+    R2 --> G2
+    R3 --> G3
+    R4 --> G4
+    S1[Analytics Service] --> R1
+    S2[Transaction Processor] --> R2
+    S3[Audit Logging Service] --> R3
+    S4[Support Dashboard] --> R4
+`}
+  caption="Each service is assigned a narrowly-scoped role with only the permissions its job requires — the audit_logger role can never UPDATE or DELETE, even though it is the service actively writing to that table."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Least privilege: every service, script, and human should have exactly the minimum database permissions their job requires, nothing more
+- Reporting/analytics services get SELECT-only access, never write permissions
+- Audit log tables should be INSERT-only at the permission level, even for the service that writes to them — enforces immutability structurally, not just by convention
+- Support tools should access sensitive fields through masking views, not raw table access
+- Separate read-write credentials for primary versus read-only credentials for replicas
+- RBAC (Role-Based Access Control) is the standard mechanism: define roles, grant minimum necessary permissions per role, assign services/humans to roles
+- A single shared admin-level credential across all services is a common anti-pattern that turns any one compromise into a full breach
+- RBAC-based design enables periodic access review/recertification, an expected practice in regulated BFSI audits
+
+</QuickRevision>
