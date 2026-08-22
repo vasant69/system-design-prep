@@ -223,54 +223,61 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
-    slug: "dotnet-api",
-    title: "ASP.NET Core Web API",
+    slug: "oops-dotnet",
+    title: "OOP in .NET Core",
     description:
-      "Controllers, DI, EF Core, API design, and security in ASP.NET Core — the backend Web API stack, not the MVC/Razor UI layer.",
-    icon: "Code2",
+      "Object-oriented C# from CLR internals to MVC & Web API — built to clear the technical round, not to pass a quiz.",
+    icon: "Boxes",
     enabled: true,
     modules: [
       {
-        id: "api-fundamentals",
-        title: "API Fundamentals",
+        id: "oop-foundations",
+        title: "OOP Foundations & the C# Type System",
         description:
-          "The request lifecycle and Program.cs, the middleware pipeline, attribute routing and controllers, action results and status codes, and model binding/validation.",
+          "Why .NET is object-oriented to its core, and what actually happens in memory: class vs object, value vs reference types, properties, constructors, and access modifiers.",
         order: 1,
       },
       {
-        id: "di-middleware",
-        title: "DI, Middleware & Cross-Cutting Concerns",
+        id: "four-pillars",
+        title: "The Four Pillars, Properly",
         description:
-          "The DI container and service lifetimes, configuration and the options pattern, structured logging, writing custom middleware, filters vs middleware, and global exception handling.",
+          "Not definitions — what encapsulation, abstraction, inheritance, and polymorphism actually buy you, and where each one breaks. Overload resolution, virtual/override, method hiding, and constructor execution order.",
         order: 2,
       },
       {
-        id: "efcore-data-access",
-        title: "Data Access with EF Core",
+        id: "abstraction-tools",
+        title: "Abstraction Tools",
         description:
-          "DbContext and change tracking, migrations, LINQ-to-Entities query translation, relationships and loading strategies, concurrency control, the repository/unit-of-work debate, and EF Core performance tuning.",
+          "Abstract classes vs interfaces and the decision framework between them, explicit interface implementation, default interface methods, the diamond problem, static classes, and sealed/partial/nested classes.",
         order: 3,
       },
       {
-        id: "api-design-practices",
-        title: "API Design & Best Practices",
+        id: "advanced-oop",
+        title: "Advanced OOP in C#",
         description:
-          "REST design principles, Minimal APIs vs Controllers, versioning and OpenAPI/Swagger, HttpClient/IHttpClientFactory, pagination/filtering/sorting, and rate limiting/response caching.",
+          "Object class methods (ToString/Equals/GetHashCode), generics with variance, records and immutability, delegates and events, extension methods, and IDisposable/GC basics.",
         order: 4,
       },
       {
-        id: "dotnet-security",
-        title: "Security — AuthN & AuthZ",
+        id: "oop-in-aspnet-core",
+        title: "OOP Inside ASP.NET Core MVC & Web API",
         description:
-          "JWT bearer authentication, ASP.NET Core Identity, roles/policies/claims-based authorization, CORS, secrets management and HTTPS/HSTS, and SQL injection prevention with EF Core.",
+          "Where theory meets your actual project: dependency injection as OOP's real payoff, service lifetimes, controller inheritance, middleware as chain-of-responsibility, filters, DTOs, and the repository/unit-of-work debate.",
         order: 5,
       },
       {
-        id: "testing-production",
-        title: "Testing & Production Readiness",
+        id: "solid-patterns",
+        title: "SOLID & Patterns You'll Actually Be Asked",
         description:
-          "Unit testing with xUnit/Moq, integration testing with WebApplicationFactory, caching strategies, background jobs, health checks/observability, and deployment basics.",
+          "Each SOLID principle with a real .NET refactor, plus the design patterns that actually show up in a .NET codebase — Factory, Strategy, Singleton, Decorator, Options, and Mediator/CQRS.",
         order: 6,
+      },
+      {
+        id: "interview-delivery",
+        title: "Interview Delivery & Practical Round",
+        description:
+          "async/await meets OOP, custom exceptions, unit testing OOP code with Moq/xUnit, rapid-fire one-liner traps, and a live low-level-design walkthrough.",
+        order: 7,
       },
     ],
   },

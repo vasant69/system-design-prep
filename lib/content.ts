@@ -13,7 +13,7 @@ import rehypeAutolinkHeadings from "rehype-autolink-headings";
 import { rehypePrettyCode } from "rehype-pretty-code";
 import { getEnabledSections, getModulesSorted } from "@/lib/sections";
 import { mdxComponents } from "@/components/mdx";
-import type { ModuleConfig, QuizQuestion, TopicFrontmatter, TopicMeta } from "@/lib/types";
+import type { InterviewQuestion, ModuleConfig, QuizQuestion, TopicFrontmatter, TopicMeta } from "@/lib/types";
 
 const CONTENT_ROOT = path.join(process.cwd(), "content");
 
@@ -186,3 +186,39 @@ export async function getTopicQuiz(sectionSlug: string, moduleId: string, slug: 
     return [];
   }
 }
+
+/**
+ * Loads the co-located technical-round question bank for a topic
+ * (content/<section>/<module>/<slug>.interview.ts), if one exists. Returns
+ * [] rather than throwing so a topic without one doesn't break the page —
+ * mirrors getTopicQuiz above.
+ */
+export async function getTopicInterviewQuestions(
+  sectionSlug: string,
+  moduleId: string,
+  slug: string,
+): Promise<InterviewQuestion[]> {
+  try {
+    const mod = (await import(`@/content/${sectionSlug}/${moduleId}/${slug}.interview`)) as {
+      default: InterviewQuestion[];
+    };
+    return mod.default;
+  } catch {
+    return [];
+  }
+}
+
+/** Every technical-round question across every topic in a section, with topic context attached — for the /[section]/questions aggregator. */
+export const getAllInterviewQuestions = cache(async (sectionSlug: string) => {
+  const topics = getAllTopicsMeta(sectionSlug);
+  const results: { topic: TopicMeta; moduleId: string; question: InterviewQuestion }[] = [];
+  for (const topic of topics) {
+    const found = findTopicFile(sectionSlug, topic.slug);
+    if (!found) continue;
+    const questions = await getTopicInterviewQuestions(sectionSlug, found.moduleId, topic.slug);
+    for (const question of questions) {
+      results.push({ topic, moduleId: found.moduleId, question });
+    }
+  }
+  return results;
+});

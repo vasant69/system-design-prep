@@ -62,3 +62,24 @@ export type QuizQuestion = {
   explanation: string;
   difficulty: "easy" | "medium" | "hard";
 };
+
+export type InterviewQuestionType = "conceptual" | "code-output" | "scenario" | "trap" | "coding";
+
+/** A single "technical round" question — richer than a QuizQuestion (open-ended, not MCQ). */
+export type InterviewQuestion = {
+  id: string;
+  /** Phrased the way an interviewer would actually ask it */
+  question: string;
+  type: InterviewQuestionType;
+  difficulty: Difficulty;
+  /** Companies only when genuinely commonly-reported for this exact question — omit rather than guess */
+  askedAt?: string[];
+  /** Hinglish, 1-2 lines — what to say first */
+  shortAnswer: string;
+  /** Hinglish, full explanation with code where needed */
+  detailedAnswer: string;
+  /** Hinglish — the follow-up question an interviewer is likely to fire next */
+  followUp?: string;
+  /** Hinglish — the wrong-but-tempting answer that signals a weak candidate */
+  redFlag?: string;
+};

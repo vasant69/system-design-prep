@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { ArrowLeft, ArrowRight, Clock, GitBranch } from "lucide-react";
-import { getAllTopicParams, getAdjacentTopics, getTopic, resolvePrerequisites } from "@/lib/content";
+import { getAllTopicParams, getAdjacentTopics, getTopic, getTopicInterviewQuestions, resolvePrerequisites } from "@/lib/content";
 import { getSection } from "@/lib/sections";
 import { Badge } from "@/components/ui/badge";
 import { DifficultyBadge } from "@/components/topic/DifficultyBadge";
@@ -12,6 +12,7 @@ import { TableOfContents } from "@/components/topic/TableOfContents";
 import { ProgressActions } from "@/components/topic/ProgressActions";
 import { FocusModeToggle } from "@/components/topic/FocusModeToggle";
 import { KeyboardNav } from "@/components/topic/KeyboardNav";
+import { TechnicalRoundQuestions } from "@/components/topic/TechnicalRoundQuestions";
 import { getModuleTheme } from "@/lib/section-theme";
 import { moduleIconMap } from "@/components/icon-map";
 import { cn } from "@/lib/utils";
@@ -42,9 +43,10 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
   const topic = await getTopic(sectionSlug, slug);
   if (!topic) notFound();
 
-  const { meta, content } = topic;
+  const { meta, content, moduleId } = topic;
   const prerequisites = resolvePrerequisites(sectionSlug, meta.prerequisites);
   const { prev, next } = getAdjacentTopics(sectionSlug, slug);
+  const interviewQuestions = await getTopicInterviewQuestions(sectionSlug, moduleId, slug);
   const moduleConfig = section.modules.find((m) => m.id === meta.module);
   const theme = getModuleTheme(meta.module);
   const ModuleIcon = moduleIconMap[meta.module];
@@ -127,6 +129,8 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
           )}
 
           <article id="topic-article">{content}</article>
+
+          <TechnicalRoundQuestions questions={interviewQuestions} />
 
           <div className="mt-14 grid gap-3 border-t border-border pt-6 sm:grid-cols-2">
             {prev ? (
