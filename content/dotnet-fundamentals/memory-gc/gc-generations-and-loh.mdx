@@ -1,0 +1,169 @@
+---
+slug: "gc-generations-and-loh"
+title: "GC Generations (Gen 0/1/2) and the Large Object Heap"
+section: "dotnet-fundamentals"
+module: "memory-gc"
+order: 2
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["managed-vs-unmanaged-and-gc-fundamentals"]
+tags: ["dotnet", "csharp", "gc", "generations", "loh", "performance"]
+englishDefinition: "The .NET GC organizes the managed heap into generations — Gen 0, Gen 1, Gen 2 — based on the generational hypothesis that most objects die young; Gen 0 collections are fast and frequent because they scan only a small nursery region, while Gen 2 collections are expensive full-heap scans. The Large Object Heap (LOH) holds allocations of 85KB or larger separately, since copying such large objects during compaction is costly, which is why the LOH is compacted only rarely and can fragment over time."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+The .NET GC organizes the managed heap into generations — Gen 0, Gen 1, Gen 2 — based on the generational hypothesis that most objects die young; Gen 0 collections are fast and frequent because they scan only a small nursery region, while Gen 2 collections are expensive full-heap scans. The Large Object Heap (LOH) holds allocations of 85KB or larger separately, since copying such large objects during compaction is costly, which is why the LOH is compacted only rarely and can fragment over time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic me hamne dekha GC mark-and-sweep se unreachable objects reclaim karta hai. Lekin agar GC har baar **poori heap** scan kare, wo bahut slow ho jaayega — real applications me lakhon objects allocate hote hain per second. Yahi problem generational GC design solve karta hai, aur ye interview me sabse zyada poocha jaane wala GC-internals topic hai.
+
+### Generational hypothesis — core insight
+
+.NET GC ka poora design ek empirically-observed pattern pe based hai: **"zyadatar objects short-lived hote hain — jo objects lambe samay tak survive karte hain, wo aksar bahut lambe samay tak zinda rehte hain."** Ek typical web request ke andar allocate hue temporary objects (DTOs, LINQ intermediate results, string concatenations) method scope khatam hote hi garbage ban jaate hain. Lekin ek application-lifetime cache ya singleton service jo ek baar bache, generally poori application lifetime tak zinda rehta hai.
+
+Is observation se ek optimization nikalti hai: **agar GC pehle sirf naye (young) objects ko check kare, zyadatar collection work bahut chhota aur fast ho jaayega**, kyunki zyadatar naye objects already dead honge.
+
+### Gen 0, Gen 1, Gen 2 — teen zones
+
+- **Gen 0** — sabse naya region. Har `new` allocation (small objects) yahin hoti hai. Ye sabse chhota region hai (typically kuch sau KB se few MB), isliye jaldi bhar jaata hai aur **frequently** collect hota hai. Gen 0 collection fast hai kyunki chhota region scan hota hai aur zyadatar objects already dead milte hain — bahut kam "live" objects ko kahin move karna padta hai.
+- **Gen 1** — Gen 0 collection survive karne wale objects yahan promote hote hain. Ye ek **buffer/intermediate zone** hai — un objects ke liye jo thode der zinda rahe lekin abhi "long-lived" prove nahi hue.
+- **Gen 2** — Gen 1 se bhi survive karne wale objects yahan aate hain — genuinely long-lived objects: application-lifetime caches, singleton services, static-referenced data. Gen 2 collection **sabse expensive** hai kyunki isme poori Gen 2 (jo bahut bada ho sakta hai) scan karna padta hai — isliye Gen 2 collections rare hone chahiye, aur jab hote hain, application-wide pause (ya background/concurrent mode me kam pause) create kar sakte hain.
+
+```csharp
+void HandleRequest()
+{
+    var dto = new RequestDto(); // Gen 0 allocation
+    var result = Process(dto);  // intermediate objects, mostly Gen 0
+    return result;
+} // dto aur intermediate objects method return ke baad turant dead —
+  // classic "young object dies young" pattern, Gen 0 collection ke liye ideal
+```
+
+**Promotion ka rule simple hai**: agar object apni current generation ke collection ko **survive** karta hai (kisi root se abhi bhi reachable hai), wo agli generation me promote ho jaata hai. Isliye ek object jo genuinely short-lived hai kabhi Gen 1/Gen 2 tak pahunchta hi nahi — wo Gen 0 me hi mar jaata hai, jo cheap hai.
+
+### Large Object Heap (LOH) — bade objects ke liye alag treatment
+
+Objects jo **85,000 bytes (85KB) ya usse bade** hote hain (bade arrays, large strings, big buffers) unhe normal Gen 0/1/2 heap pe allocate nahi kiya jaata — wo ek **separate heap, Large Object Heap (LOH)** pe jaate hain. Ye separate treatment kyun zaroori hai?
+
+Normal generational GC collection ke ek part me **compaction** hota hai — surviving objects ko memory me ek doosre ke paas (contiguous) move kar diya jaata hai taaki fragmentation kam ho aur future allocations fast (bump-pointer style) rahein. Lekin ek 10MB object ko memory me move karna (copy karna) genuinely expensive hai — bahut CPU cycles aur memory bandwidth lagti hai. Isliye LOH by default **compact nahi hota** (kam se kam pehle; .NET Core me `GCSettings.LargeObjectHeapCompactionMode` se opt-in compaction possible hai). Iska side-effect: **LOH fragment ho sakta hai** — agar bade objects allocate/free hote rahein alag-alag sizes ke, gaps ban jaate hain jo reuse nahi ho paate agar naya allocation gap se bada ho, jisse effective memory usage badh jaata hai chahe total live data kam ho.
+
+```csharp
+byte[] smallBuffer = new byte[1000];   // Gen 0/1/2 heap — normal generational GC
+byte[] largeBuffer = new byte[100_000]; // 85KB se bada — Large Object Heap pe jaata hai
+```
+
+LOH collections Gen 2 collection ke saath hi trigger hote hain (LOH ko conceptually Gen 2 ke saath collect kiya jaata hai) — isliye bahut saare large-object allocations Gen 2 collections ko zyada frequent bhi bana sakte hain, jo already expensive collection ko aur zyada costly bana deta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Gen 0/1 collections fast hain kyunki small region scan hota hai", "Generational hypothesis real-world allocation patterns se match karta hai, isliye ye design practically bahut effective hai", "Zyadatar throwaway/temporary objects Gen 0 me hi collect ho jaate hain, application ko slow nahi karte"]}
+  cons={["Gen 2 collections expensive hain — bade, long-lived object graphs scan karne padte hain", "LOH fragment ho sakta hai kyunki compaction by default nahi hota", "Frequent large-object allocation (85KB+) Gen 2 collection frequency bhi badha sakta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET runtime team ne 85KB ka threshold empirically choose kiya — ye number koi hard architectural constant nahi hai, balki testing ke through decide kiya gaya ki isse bade objects ke liye compaction cost benefit se zyada ho jaati hai. .NET Core me `System.GC` API se `LargeObjectHeapCompactionMode.CompactOnce` set karke ek baar explicitly LOH compact karna possible hai — Microsoft ki guidance hai ye sirf tab use karo jab genuinely LOH fragmentation ek measured problem ho, routine practice nahi.
+
+</RealWorld>
+
+<RealWorld company="A High-Traffic E-commerce Platform">
+
+Ek Indian e-commerce backend me ek image-processing service bade byte arrays (500KB+ product images) frequently allocate/dispose kar raha tha per request. Kuch mahino baad, memory usage steadily badhta gaya bina live data badhe — profiling se pata chala LOH heavily fragmented tha: bade gaps the jo naye (slightly bigger) allocations ke liye reuse nahi ho pa rahe the, isliye process ko naya memory OS se maangna padta tha. Fix `ArrayPool<byte>` (pooled, reusable buffers) use karna tha instead of fresh large allocations har request pe — isse LOH allocation churn drastically kam hua.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 generations for the normal heap: Gen 0 (youngest, most frequent), Gen 1 (intermediate), Gen 2 (long-lived, most expensive)
+- 85,000 bytes (85KB) — threshold above which an object goes to the Large Object Heap instead of Gen 0
+- Gen 0 collections happen far more often than Gen 1, which happen far more often than Gen 2 — a strict frequency hierarchy
+- LOH is NOT compacted by default (unlike Gen 0/1/2) — copying very large objects during compaction is expensive
+- `GCSettings.LargeObjectHeapCompactionMode` allows opting into a one-time LOH compaction when fragmentation is a measured problem
+- Objects promote to the next generation only if they SURVIVE a collection of their current generation
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"GC generations kya hain aur kyun exist karti hain?" ka strong answer: "Generational hypothesis pe based hain ki zyadatar objects short-lived hote hain. Gen 0 naye objects ke liye hai, jo sabse chhota aur frequently-collected region hai — isliye cheap. Jo objects Gen 0 collection survive karte hain wo Gen 1, phir Gen 2 me promote hote hain — Gen 2 me long-lived objects (caches, singletons) hote hain, aur Gen 2 collection expensive hai kyunki poora bada region scan hota hai. Separately, 85KB se bade objects Large Object Heap pe jaate hain kyunki bade objects ko compaction ke dauraan move karna expensive hai — isliye LOH by default compact nahi hota aur fragment ho sakta hai." Almost-certain follow-up: "LOH fragmentation ka real-world impact kya hai, aur kaise avoid karoge?" — jawaab: `ArrayPool<T>` se large-buffer reuse, ya `LargeObjectHeapCompactionMode.CompactOnce` jab genuinely zaroori ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye maan lena ki har GC collection poori heap scan karta hai — galat hai, Gen 0 collections sirf Gen 0 region scan karte hain, poora heap sirf Gen 2 (full) collection me scan hota hai.
+
+</Mistake>
+
+<Mistake>
+
+85KB threshold ko exact array/object size samajh lena bina "total allocated bytes" ka context — array ke liye ye array ke elements ka total size hai (header overhead ke saath), object ke liye object ka total field size — subtlety interview me miss ho jaati hai lekin core concept (threshold exists) sabse zaroori hai.
+
+</Mistake>
+
+<Mistake>
+
+LOH ko bhi normal Gen 0/1/2 heap ki tarah automatically-compacted samajhna — LOH by default compact nahi hota, ye ek genuinely different behavior hai jo fragmentation ka source ban sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Frequent large-buffer allocation (jaise per-request bade byte arrays) ko normal pattern samajhna — high-throughput code me `ArrayPool<T>` jaisi pooling strategy consider honi chahiye, warna LOH churn aur fragmentation real production problem ban sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Gen 2 collection ko "rare hai to important nahi" treat karna — Gen 2 collections rare hote hain lekin jab hote hain, unka pause/cost sabse zyada hota hai, isliye high-throughput services me Gen 2 collection frequency monitor karna genuinely matter karta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["new object (small, less than 85KB)"] --> B["Gen 0"]
+    B -->|Survives Gen 0 collection| C["Gen 1"]
+    C -->|Survives Gen 1 collection| D["Gen 2 — long-lived"]
+    B -->|Dies in Gen 0| X["Reclaimed — cheap, frequent"]
+    D -->|Collected| Y["Reclaimed — expensive, rare, full scan"]
+
+    E["new object (85KB or larger)"] --> F["Large Object Heap"]
+    F -->|"Collected with Gen 2, NOT compacted by default"| G["Can fragment over time"]
+`}
+  caption="Small objects flow through Gen 0 to Gen 2 based on survival; large objects (85KB+) bypass this entirely and go straight to the LOH, which fragments because it isn't compacted by default."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Generational hypothesis: most objects die young — GC design exploits this for speed
+- Gen 0 = newest, smallest, most frequently collected (cheap); Gen 2 = long-lived, largest, rarest, most expensive to collect
+- Objects promote a generation only if they survive that generation's collection
+- LOH threshold = 85KB — large objects skip Gen 0/1/2 entirely
+- LOH is NOT compacted by default (copying large objects is expensive) — this is a real fragmentation risk
+- LOH collections happen alongside Gen 2 collections
+- `ArrayPool<T>` is the practical fix for frequent large-buffer allocation churn
+- Gen 2 / full collections are rare but carry the highest pause cost — worth monitoring in high-throughput services
+
+</QuickRevision>

@@ -1,0 +1,228 @@
+---
+slug: "ienumerator-and-yield-return"
+title: "IEnumerator and yield return — Writing Custom Iterators"
+section: "dotnet-fundamentals"
+module: "collections-generics"
+order: 7
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["collection-interface-hierarchy"]
+tags: ["dotnet", "csharp", "iterators", "yield-return", "lazy-evaluation", "state-machine"]
+englishDefinition: "yield return lets a method produce a sequence lazily, one element at a time, without building the whole collection in memory first; the compiler transforms a method containing yield return into a hidden state-machine class implementing IEnumerator<T>, which resumes execution from exactly where it left off each time MoveNext() is called."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "TCS"]
+---
+
+<SimpleDefinition>
+
+`yield return` lets a method produce a sequence lazily, one element at a time, without building the whole collection in memory first; the compiler transforms a method containing `yield return` into a hidden state-machine class implementing `IEnumerator<T>`, which resumes execution from exactly where it left off each time `MoveNext()` is called.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`yield return` C# ke sabse "magical-lagne-wale" features me se ek hai — interview me sirf syntax nahi, compiler internally kya karta hai wo bhi poochha jaata hai.
+
+### Problem: bade ya infinite sequences ko eagerly generate karna wasteful hai
+
+Socho tumhe pehli 10 Fibonacci numbers chahiye. Naive approach:
+
+```csharp
+List<long> GetFirstNFibonacci(int n)
+{
+    var result = new List<long>();
+    long a = 0, b = 1;
+    for (int i = 0; i < n; i++)
+    {
+        result.Add(a);
+        (a, b) = (b, a + b);
+    }
+    return result;
+}
+```
+
+Ye theek hai chhoti `n` ke liye, lekin socho agar tumhe "jab tak kisi condition tak na pahuncho" chahiye, ya sequence genuinely infinite ho — poori list pehle se banana impossible ya wasteful ho jaata hai.
+
+### Solution: `yield return` — lazy, on-demand generation
+
+```csharp
+IEnumerable<long> Fibonacci()
+{
+    long a = 0, b = 1;
+    while (true) // Infinite sequence — koi problem nahi, kyunki lazy hai
+    {
+        yield return a;
+        (a, b) = (b, a + b);
+    }
+}
+
+// Consume karte waqt sirf jitna chahiye utna hi generate hota hai
+foreach (var num in Fibonacci().Take(10))
+{
+    Console.WriteLine(num); // 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
+}
+```
+
+`Fibonacci()` ek `while (true)` infinite loop hai, lekin ye kabhi hang nahi hota — `yield return` har baar method ka execution **pause** kar deta hai aur control caller ko wapas de deta hai, ek value ke saath. Agla element chahiye hone par (`MoveNext()` call hone par, jo `foreach` internally karta hai), execution exactly wahin se resume hota hai jahan pause hua tha.
+
+### Compiler internally kya generate karta hai — state machine
+
+`yield return` wale method ko compiler **completely rewrite** kar deta hai — ek hidden class banata hai jo `IEnumerator<T>` implement karti hai, jisme:
+
+- Saari local variables (`a`, `b`) class-level fields ban jaati hain (kyunki state ko pause ke beech survive karna hai).
+- Method body ek `MoveNext()` method me convert ho jaata hai, jisme ek internal "state" integer track karta hai ki last `yield return` kahan tha.
+- Har `yield return X` "yahan pause karo, X ko current value bana do, wapas true return karo (agla element hai)" jaisa behave karta hai.
+- Method end (ya `yield break`) pe "false return karo (sequence khatam)" hota hai.
+
+Conceptually (simplified, actual compiler-generated code isse zyada complex hai):
+
+```csharp
+// Compiler ye NAHI likhta EXACTLY, lekin conceptually is jaisa kuch generate hota hai
+class FibonacciEnumerator : IEnumerator<long>
+{
+    private int _state = 0;
+    private long _a = 0, _b = 1;
+    public long Current { get; private set; }
+
+    public bool MoveNext()
+    {
+        if (_state == 0)
+        {
+            Current = _a;
+            (_a, _b) = (_b, _a + _b);
+            _state = 1;
+            return true; // "yahan tak pahunch gaye, ek value hai"
+        }
+        // ... loop continues, state tracks position
+        return true;
+    }
+}
+```
+
+Ye "state machine" transformation `async`/`await` ke compiler-generated state machine se conceptually bahut similar hai (dono "pause execution, resume later exactly wahin se" pattern hai) — agar tum ek samajh lo, doosra samajhna easy ho jaata hai.
+
+### `yield break` — explicitly sequence end karna
+
+```csharp
+IEnumerable<int> TakeUntilNegative(IEnumerable<int> source)
+{
+    foreach (var item in source)
+    {
+        if (item < 0)
+            yield break; // Sequence yahin khatam, koi aur element nahi
+        yield return item;
+    }
+}
+```
+
+### Kyun ye genuinely useful hai — lazy evaluation ka fayda
+
+`yield return` se banayi hui sequence tab tak KUCH execute nahi karti jab tak use enumerate na kiya jaaye — ye `IEnumerable<T>`-based LINQ ke deferred-execution model ka hi ek manual, custom implementation hai. Fayda: memory efficiency (poori collection kabhi ek saath memory me nahi hoti), aur early-termination scenarios me wasted computation avoid hoti hai (`Take(5)` lagane se sirf 5 elements generate honge, chahe underlying method infinite ho).
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Memory-efficient — never materializes the full sequence at once", "Naturally supports infinite or very large sequences", "Composes cleanly with LINQ's deferred execution (Take, Where, etc. only pull what's needed)"]}
+  cons={["Slightly harder to debug — execution jumps between MoveNext calls, not a straight top-to-bottom read", "Re-enumerating a yield-return method re-runs the whole generator from scratch — side effects inside it execute again", "Exceptions thrown mid-iteration surface only when MoveNext is called that far, not immediately at the call site"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+LINQ to Objects ke andar khud (`Enumerable.Where`, `Enumerable.Select` ki .NET source implementation) `yield return` use karta hai — yehi wajah hai ki `myList.Where(x => x > 5)` turant execute nahi hota, ek lazy `IEnumerable<T>` return karta hai jo sirf enumerate hone par actually filter karta hai. Poora LINQ to Objects ka deferred-execution model fundamentally isi `yield return` mechanism pe based hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Log-Processing Service">
+
+Ek service ko multi-GB log files line-by-line process karni thi bina poori file memory me load kiye. Team ne `IEnumerable<string> ReadLogLines(string path)` method banaya jisme `yield return line;` har line ke baad tha — is method ko `foreach` se consume karne par, ek time pe sirf ek line memory me hoti thi, poori file kabhi ek saath load nahi hoti thi. Isse ek 5GB log file process karna bhi constant, low memory footprint ke saath possible ho gaya, jabki `File.ReadAllLines()` (jo poori file eagerly load karta) out-of-memory crash de raha tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `yield return` compiler ko ek poora hidden `IEnumerator<T>`-implementing class generate karne ke liye trigger karta hai
+- Local variables `yield return` method ke andar class-level fields ban jaate hain (state survive karne ke liye pauses ke beech)
+- Infinite sequences (`Fibonacci()`) safely generate ho sakte hain kyunki generation genuinely lazy hai — `Take(n)` na lagane tak koi memory/CPU wasted nahi hoti agar tum khud rok do
+- Re-enumeration = poora generator method dobara se chalta hai, from scratch
+- `async`/`await` ka compiler-generated state machine conceptually `yield return` ke transformation se similar hai — dono "pause and resume" pattern hain
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`yield return` internally kaise kaam karta hai?" ka strong answer: "Jab compiler ek method me `yield return` dekhta hai, wo poore method ko rewrite kar deta hai ek hidden class me jo `IEnumerator<T>` implement karti hai. Method ke local variables class-level fields ban jaate hain taaki state pauses ke beech survive kar sake. Har `yield return X` execution ko pause karta hai aur `X` ko current value bana deta hai; agla `MoveNext()` call exactly wahin se resume hota hai jahan pause hua tha. Ye 'lazy evaluation' allow karta hai — sequence element-by-element on-demand generate hoti hai, poori collection pehle se materialize nahi karni padti, jisse infinite ya bahut badi sequences bhi memory-efficiently handle ho sakti hain." Follow-up jo aksar aata hai: "async/await ka state machine `yield return` se kaise related hai?" — answer: dono conceptually similar hain, ek 'pause execution, resume later' transformation compiler karta hai, bas async/await asynchronous continuation ke liye hai, yield return synchronous lazy iteration ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`yield return` wale method ko har call pe naya work karega samajhna bina realize kiye ki ye lazy hai — jab tak enumerate na ho, andar ka code bilkul nahi chalta. `var seq = GetItems();` sirf ek "recipe" banata hai, execution nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+`yield return` sequence ko multiple baar enumerate karna assuming ki ye ek baar compute hoke cache ho jaata hai — har naya `foreach` (ya `.ToList()`) poora method dobara se, shuru se chalata hai. Agar andar koi side effect (jaise database call) hai, wo repeat hoga.
+
+</Mistake>
+
+<Mistake>
+
+`yield return` aur `return` ko ek method me mix karne ki koshish karna — ek method jisme `yield return` hai, wo automatically iterator method ban jaata hai, aur usme plain `return value;` (non-void value ke saath) allowed nahi hai, sirf `yield break` (ya bina value ke `return;`, sequence end karne ke liye) allowed hai.
+
+</Mistake>
+
+<Mistake>
+
+Infinite `yield return` sequence ko `Take()` ya kisi explicit stopping condition ke bina, direct `.ToList()` ya `foreach` se poora consume karne ki koshish karna — ye genuinely hang/infinite-loop ho jaayega, kyunki sequence kabhi khatam hi nahi hoti.
+
+</Mistake>
+
+<Mistake>
+
+`yield return` method me thrown exception ko "method call hote hi turant throw hoga" samajhna — actually exception sirf tab throw hoga jab enumeration us specific point tak pahunchegi (`MoveNext()` call), method call ke turant baad nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant Iterator as yield return method
+    Caller->>Iterator: MoveNext() [1st call]
+    Iterator-->>Caller: yield return A (pause here)
+    Caller->>Iterator: MoveNext() [2nd call]
+    Note over Iterator: Resumes exactly where it paused
+    Iterator-->>Caller: yield return B (pause here)
+    Caller->>Iterator: MoveNext() [3rd call]
+    Iterator-->>Caller: false (sequence ends)
+`}
+  caption="Each MoveNext() call resumes the compiler-generated state machine from exactly where the previous yield return paused it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `yield return` lets a method lazily produce a sequence, one element at a time, on demand
+- The compiler transforms a `yield return` method into a hidden class implementing `IEnumerator<T>` — a state machine
+- Local variables become class-level fields to survive pauses between `MoveNext()` calls
+- Infinite sequences are safe to write with `yield return` as long as the consumer applies `Take()` or another stopping condition
+- `yield break` explicitly ends the sequence early
+- Re-enumerating a `yield return` method re-runs it from scratch — side effects repeat
+- Exceptions inside a `yield return` method surface only when enumeration reaches that point, not at the call site
+- Conceptually similar to `async`/`await`'s compiler-generated state machine — both are "pause and resume" transformations
+
+</QuickRevision>

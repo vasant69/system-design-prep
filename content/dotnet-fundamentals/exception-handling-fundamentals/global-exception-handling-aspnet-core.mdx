@@ -1,0 +1,215 @@
+---
+slug: "global-exception-handling-aspnet-core"
+title: "Global Exception Handling in ASP.NET Core"
+section: "dotnet-fundamentals"
+module: "exception-handling-fundamentals"
+order: 6
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["try-catch-finally-and-hierarchy", "middleware-pipeline-chain-of-responsibility", "filters-and-custom-attributes"]
+tags: ["dotnet", "csharp", "aspnet-core", "exceptions", "exception-filters", "middleware", "problemdetails"]
+englishDefinition: "ASP.NET Core offers exception handling at two different pipeline layers: middleware-level global handling (UseExceptionHandler, or the typed IExceptionHandler interface from .NET 8) catches unhandled exceptions from anywhere in the request pipeline including outside MVC, while the MVC-specific IExceptionFilter (and its async counterpart) runs only within the MVC action-invocation pipeline but gets richer context — the ActionContext, the specific controller/action, and model state — making it useful for controller-scoped exception translation that middleware-level handling can't easily express."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Amazon", "Microsoft", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core offers exception handling at two different pipeline layers: middleware-level global handling (`UseExceptionHandler`, or the typed `IExceptionHandler` interface from .NET 8) catches unhandled exceptions from anywhere in the request pipeline including outside MVC, while the MVC-specific `IExceptionFilter` (and its async counterpart) runs only within the MVC action-invocation pipeline but gets richer context — the `ActionContext`, the specific controller/action, and model state — making it useful for controller-scoped exception translation that middleware-level handling can't easily express.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic `oops-dotnet` ke middleware pipeline aur filters topics se directly connected hai — agar wo pehle nahi padhe, unko pehle dekh lo, kyunki ASP.NET Core ka exception handling in dono concepts (middleware = Chain of Responsibility, filters = MVC pipeline hooks) ke upar hi based hai. Yahan hum specifically dekhte hain: global handling ke do main approaches, aur `IExceptionFilter` ka exact role in-between.
+
+### Approach 1 — `UseExceptionHandler` middleware (traditional, works everywhere)
+
+```csharp
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/problem+json";
+        var problem = new ProblemDetails
+        {
+            Status = 500,
+            Title = "An unexpected error occurred",
+        };
+        await context.Response.WriteAsJsonAsync(problem);
+    });
+});
+```
+
+Ye middleware pipeline ke bahut early lagta hai (taaki neeche wale sab middleware/MVC exceptions ko catch kar sake), aur unhandled exception aane par ek fallback response deta hai. Ye har request ke liye kaam karta hai — MVC controllers, minimal API endpoints, ya custom middleware, sab jagah se aayi exception isko trigger karti hai, kyunki ye middleware pipeline ka hi part hai (Chain of Responsibility pattern).
+
+### Approach 2 — `IExceptionHandler` (typed, .NET 8+)
+
+```csharp
+public class GlobalExceptionHandler : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext, Exception exception, CancellationToken ct)
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status500InternalServerError,
+            Title = exception.Message,
+        };
+        httpContext.Response.StatusCode = problem.Status.Value;
+        await httpContext.Response.WriteAsJsonAsync(problem, ct);
+        return true; // handled
+    }
+}
+
+// Program.cs
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
+```
+
+.NET 8 me introduce hua `IExceptionHandler` interface `UseExceptionHandler`-style delegate se zyada testable, DI-friendly hai — ek proper class hai jo dependency injection le sakti hai (jaise `ILogger`), aur multiple handlers register kar sakte ho jo order me try hote hain jab tak koi `true` return na kare ("main isko handle kar sakta hoon"). `AddProblemDetails()` RFC 7807 (`ProblemDetails`) format ko automatically wire kar deta hai standard error responses ke liye.
+
+### Approach 3 — `IExceptionFilter` — MVC-specific, controller-scoped
+
+Ab tak jo dekha, wo dono middleware-level hain — pure request pipeline ka part, MVC-agnostic. `IExceptionFilter` fundamentally **alag layer** hai — ye sirf MVC action-invocation pipeline ke andar chalta hai, jab exception ek controller action ke andar (ya action se pehle wale filters me) throw hoti hai:
+
+```csharp
+public class ApiExceptionFilter : IExceptionFilter
+{
+    private readonly ILogger<ApiExceptionFilter> _logger;
+
+    public ApiExceptionFilter(ILogger<ApiExceptionFilter> logger) => _logger = logger;
+
+    public void OnException(ExceptionContext context)
+    {
+        _logger.LogError(context.Exception, "Unhandled exception in {Action}",
+            context.ActionDescriptor.DisplayName); // rich MVC context available
+
+        if (context.Exception is ValidationException valEx)
+        {
+            context.Result = new BadRequestObjectResult(new { error = valEx.Message });
+            context.ExceptionHandled = true; // stops further propagation
+        }
+    }
+}
+
+// Registration — globally for all controllers, or per-controller/action via attribute
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ApiExceptionFilter>();
+});
+```
+
+`IExceptionFilter` ka genuine advantage: `ExceptionContext` me MVC-specific rich context milta hai — `ActionDescriptor` (kaunsa action fail hua), `RouteData`, `ModelState` — jo middleware-level handling me directly available nahi hota (middleware ko HTTP request/response level hi dikhta hai, MVC ke action-level concepts nahi). Isliye `IExceptionFilter` useful hai jab exception handling logic ko specifically MVC action context ki zaroorat ho — jaise action-specific error transformation, ya sirf kuch specific controllers pe custom handling (per-controller filter attribute se).
+
+### Konsa use karein — decision
+
+- **`UseExceptionHandler`/`IExceptionHandler`**: default choice for a global, application-wide fallback — catches everything, including minimal APIs aur non-MVC middleware, simplest to reason about.
+- **`IExceptionFilter`**: jab MVC-specific context chahiye (action name, model state), ya jab handling sirf kuch specific controllers/actions tak scoped honi chahiye, na ki poori app ke liye.
+
+Practically zyada teams dono use karte hain saath me — `IExceptionHandler`/`UseExceptionHandler` ek app-wide safety net ke roop me, aur `IExceptionFilter` sirf specific controllers me jahan MVC-context-aware translation genuinely zaroori ho.
+
+### Async version
+
+`IExceptionFilter` ka async version `IAsyncExceptionFilter` hai (`OnExceptionAsync` method) — jab handling logic khud async ho (jaise database call karna logging se pehle). Modern .NET code me async version prefer kiya jaata hai jahan bhi I/O involved ho.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET 8 ke saath `IExceptionHandler` interface introduce karne ka explicit reasoning tha `UseExceptionHandler`'s delegate-based approach ko replace karna ek testable, DI-composable pattern se — multiple handlers chain ho sakte hain (jaise ek specific exception type ke liye ek handler, generic fallback ke liye doosra), jo purane single-delegate approach me clean tarike se express karna mushkil tha.
+
+</RealWorld>
+
+<RealWorld company="An Indian SaaS Product API">
+
+Ek multi-tenant SaaS API me team ne dono layers use kiye: app-wide `IExceptionHandler` jo generic 500 `ProblemDetails` response deta tha kisi bhi unhandled exception ke liye, aur ek `TenantScopedExceptionFilter` (`IExceptionFilter`) sirf multi-tenant controllers pe register kiya gaya tha jo `ActionContext` se tenant ID nikalke, tenant-specific error format aur alerting trigger karta tha — ye MVC-specific context ke bina possible nahi hota, middleware level pe tenant-aware routing info easily available nahi thi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `UseExceptionHandler`/`IExceptionHandler` — application-wide, catches exceptions from anywhere in the pipeline (MVC, minimal APIs, custom middleware)
+- `IExceptionFilter`/`IAsyncExceptionFilter` — MVC-only, runs only within the action-invocation pipeline
+- `IExceptionHandler` — .NET 8+, multiple handlers can be registered, tried in order until one returns `true`
+- `ExceptionContext.ExceptionHandled = true` — required to stop the exception from propagating further after an `IExceptionFilter` handles it
+- `AddProblemDetails()` wires up RFC 7807-compliant error responses automatically alongside `IExceptionHandler`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Global exception handling ASP.NET Core me kaise karte ho?" ka strong answer: "Do main approaches hain, alag layers pe. Application-wide fallback ke liye `UseExceptionHandler` middleware ya .NET 8 ka typed `IExceptionHandler` interface — ye request pipeline ke top level pe kaam karta hai, MVC ho ya minimal API, sabko cover karta hai. Agar mujhe MVC-specific rich context chahiye — kaunsa action fail hua, model state — ya handling sirf specific controllers tak scoped karni ho, main `IExceptionFilter` use karta hoon, jo MVC action-invocation pipeline ke andar chalta hai." Common follow-up: "`IExceptionFilter` me exception ko handle karne ke baad `ExceptionHandled = true` set karna kyun zaroori hai?" — answer: agar ye set nahi kiya, exception filter ke baad bhi upar propagate hota rahega, jaise filter ne kuch kiya hi nahi — `ExceptionHandled = true` explicitly batata hai ki is exception ko ab aage nahi bhejna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`IExceptionFilter` ko application-wide global exception handling ka replacement samajhna — ye sirf MVC action pipeline ke andar chalta hai, minimal API endpoints ya custom middleware ki exceptions ko nahi pakadta.
+
+</Mistake>
+
+<Mistake>
+
+`IExceptionFilter` me exception handle karne ke baad `context.ExceptionHandled = true` set karna bhool jaana — exception silently aage propagate hota rehta hai, jaise filter ne kuch kiya hi nahi.
+
+</Mistake>
+
+<Mistake>
+
+`UseExceptionHandler` middleware ko pipeline me galat jagah register karna (bahut neeche) — ye upar wale middleware ki exceptions ko catch nahi kar payega, isliye ise pipeline ke early hi register karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Production error responses me raw exception message/stack trace client ko directly bhej dena — sensitive internal details leak ho sakti hain. `ProblemDetails` ka generic, safe message use karo, detailed info sirf server-side logs me.
+
+</Mistake>
+
+<Mistake>
+
+`IExceptionFilter` (sync) use karna jab handling logic async ho (jaise DB call) — `IAsyncExceptionFilter` use karo, sync filter me `.Result`/`.Wait()` call karna deadlock risk create kar sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["HTTP Request"] --> B["Middleware Pipeline\n(UseExceptionHandler / IExceptionHandler\nregistered early)"]
+    B --> C["MVC Routing"]
+    C --> D["Action Filters -> Action Execution"]
+    D -->|"Exception thrown\ninside action"| E["IExceptionFilter\n(MVC-scoped, rich ActionContext)"]
+    E -->|"ExceptionHandled = true"| F["Custom response returned"]
+    E -->|"Not handled"| G["Propagates up to\nmiddleware-level handler"]
+    D -->|"No exception"| H["Normal response"]
+`}
+  caption="IExceptionFilter operates inside the MVC pipeline; unhandled exceptions still fall back to the middleware-level global handler."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `UseExceptionHandler` / `IExceptionHandler` (.NET 8+) — application-wide, catches exceptions from anywhere in the pipeline
+- `IExceptionFilter` / `IAsyncExceptionFilter` — MVC-only, runs inside the action-invocation pipeline, gets rich `ActionContext`
+- Set `ExceptionHandled = true` in an `IExceptionFilter` or the exception keeps propagating
+- `IExceptionHandler` supports multiple registered handlers tried in order until one returns `true`
+- `AddProblemDetails()` wires up RFC 7807-compliant structured error responses
+- Use middleware-level handling as the app-wide safety net; use `IExceptionFilter` for MVC-context-aware, per-controller translation
+- Never leak raw exception details to the client in production responses
+
+</QuickRevision>

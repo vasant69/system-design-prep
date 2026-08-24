@@ -1,0 +1,180 @@
+---
+slug: "string-immutability-and-stringbuilder"
+title: "String Immutability and StringBuilder"
+section: "dotnet-fundamentals"
+module: "csharp-language-fundamentals"
+order: 9
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: []
+tags: ["dotnet", "csharp", "string", "stringbuilder", "immutability", "interning"]
+englishDefinition: "Every string in .NET is immutable — any operation that looks like it modifies a string actually creates a new string object, which becomes a real performance concern in loops; StringBuilder provides a genuinely mutable character buffer for repeated concatenation, and string interning is a runtime optimization where identical string literals share the same object, making == correct for content comparison of interned literals."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Wipro", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Every string in .NET is immutable — any operation that looks like it modifies a string actually creates a new string object, which becomes a real performance concern in loops; `StringBuilder` provides a genuinely mutable character buffer for repeated concatenation, and string interning is a runtime optimization where identical string literals share the same object, making `==` correct for content comparison of interned literals.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"`string` immutable hai" — ye fact almost sabko pata hai, lekin **kyun** immutable hai aur iska **practical performance impact** kya hai, ye interview me depth-test karne ke liye poocha jaata hai.
+
+### String immutability — kya matlab hai exactly
+
+```csharp
+string s = "Hello";
+s = s + " World"; // ye "modify" nahi kar raha — ek NAYA string object bana raha hai
+```
+
+Jab tum `s = s + " World"` likhte ho, original `"Hello"` string object memory me waisa hi rehta hai, unchanged. Ek NAYA string object `"Hello World"` heap pe allocate hota hai, aur `s` variable ab is naye object ko point karti hai. Purana `"Hello"` object, agar koi aur reference nahi rakhta, garbage-collection ke liye eligible ho jaata hai.
+
+**Kyun immutable design kiya gaya:**
+1. **Thread-safety** — immutable objects inherently thread-safe hain, koi lock ki zaroorat nahi, kyunki koi thread kabhi bhi unhe modify nahi kar sakta
+2. **String interning possible banata hai** (neeche detail me) — agar strings mutable hote, do variables same object share nahi kar sakte, kyunki ek variable ka change doosre ko bhi affect kar deta
+3. **Hashing/dictionary keys ke liye safe** — `Dictionary<string, T>` me string ko key ki tarah use karna safe hai kyunki uska hash kabhi change nahi ho sakta (agar mutable hota, hash change ho jaata aur dictionary corrupt ho jaati)
+
+### Loop me string concatenation — real performance problem
+
+```csharp
+string result = "";
+for (int i = 0; i < 10000; i++)
+{
+    result += i.ToString(); // HAR iteration me ek NAYA string object banta hai
+}
+```
+
+Har `+=` call pe ek naya string object allocate hota hai, jo purane result ko copy karta hai PLUS naya part. 10,000 iterations me, ye **O(n²) character copies** ho jaata hai (har naya string, purane poore string ko re-copy karta hai) — genuinely expensive, aur bahut saara garbage (short-lived objects) generate karta hai jo GC pressure badhata hai.
+
+### `StringBuilder` — genuine mutable buffer
+
+```csharp
+var sb = new StringBuilder();
+for (int i = 0; i < 10000; i++)
+{
+    sb.Append(i.ToString()); // internal buffer me in-place append, no new object per call
+}
+string result = sb.ToString(); // sirf ek baar final string object banta hai
+```
+
+`StringBuilder` internally ek resizable character buffer maintain karta hai (array jaisa, jo zaroorat pe grow hota hai) — `Append()` calls is buffer ko in-place modify karte hain, koi naya string object har call pe nahi banta. Ye loop-based concatenation ko **O(n)** kar deta hai (amortized), `O(n²)` ki jagah.
+
+**Kab `StringBuilder` use karo, kab plain `+`/`$""`:**
+- **1-4 concatenations, ek baar** — plain `+`/interpolation fine hai, `StringBuilder` overkill hai (creation overhead khud hi kuch cost hai)
+- **Loop ke andar repeated concatenation** — `StringBuilder` genuinely zaroori hai, especially jab iteration count bada ho ya unknown ho
+
+### String Interning — ek subtle optimization
+
+```csharp
+string a = "hello";
+string b = "hello";
+Console.WriteLine(ReferenceEquals(a, b)); // True! — dono same interned object ko point karte hain
+
+string c = new string("hello".ToCharArray());
+Console.WriteLine(ReferenceEquals(a, c)); // False — c ek naya, non-interned object hai
+Console.WriteLine(a == c); // True — == string ke liye content-equality karta hai, reference nahi
+```
+
+**Compile-time string literals** CLR ke ek internal "intern pool" me store hote hain — agar do jagah exactly same literal string likha jaaye, runtime dono ko SAME object ko point karwa deta hai (memory-saving optimization). Ye sirf **compile-time literals** ke liye automatic hai — runtime pe dynamically-constructed strings (concatenation, `new string(...)`, user input) automatically intern NAHI hote (jab tak explicitly `string.Intern()` na call karo).
+
+`==` operator `string` ke liye **content equality** karta hai (C# design decision — `string.Equals()` override kiya gaya hai), reference equality nahi — isliye `a == c` `True` hota hai upar, chahe wo alag objects hon. Ye deliberate hai, `string`-specific behavior — normal reference types me `==` default reference equality karta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Plain string concatenation simple/readable hai chhote, one-off cases ke liye", "StringBuilder loop-heavy concatenation ko O(n²) se O(n) tak improve karta hai", "String interning memory bachata hai jab same literal repeatedly compile-time pe use ho"]}
+  cons={["StringBuilder ka creation overhead chhote, one-off cases me plain concatenation se zyada ho sakta hai", "Interning sirf compile-time literals ke liye automatic hai — runtime strings ke liye manual string.Intern() zaroori hai, jo apna trade-off (intern pool memory kabhi release nahi hoti) laata hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ke apne source code guidelines StringBuilder use karne ki explicit recommend karte hain jab bhi concatenation count compile-time pe unknown ho ya loop ke andar ho — .NET analyzers (jaise `CA1834`) bhi is pattern ko catch karte hain aur warning dete hain jab loop ke andar `+=` string concatenation detect ho.
+
+</RealWorld>
+
+<RealWorld company="An Indian E-commerce Reporting Service">
+
+Ek daily sales-report-generation service me, hazaaron order rows ko ek CSV string me format karna hota hai. Initial implementation `+=` use kar rahi thi ek loop me, jo 50,000+ rows ke liye report generation ko kaafi slow bana raha tha — `StringBuilder` me switch karne se generation time seconds se milliseconds tak reduce hua, ek genuinely measurable production improvement.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `string` immutability — C# 1.0 se, language-level guarantee
+- Loop me `+=` concatenation — O(n²) character copies (n = iteration count)
+- `StringBuilder.Append()` — amortized O(1) per call, O(n) overall for n appends
+- `==` on `string` — content equality (overridden `Equals()`), NOT default reference equality
+- String interning — sirf compile-time literals ke liye automatic; runtime strings ke liye `string.Intern()` explicit call chahiye
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`string` immutable kyun hai, aur ye performance ko kaise affect karta hai?" ka strong answer: "`string` immutable hai thread-safety, safe dictionary-hashing, aur interning ko enable karne ke liye — koi bhi 'modification' actually ek naya object banata hai. Iska practical impact tab dikhta hai jab loop ke andar repeated concatenation ho — har `+=` ek naya string allocate karta hai jo purane poore content ko copy karta hai, jo O(n²) copies deta hai n iterations me. `StringBuilder` ek genuinely mutable internal buffer maintain karta hai, isliye repeated appends O(n) amortized rehte hain, aur bahut kam garbage generate hota hai." Follow-up: "`==` string ke liye kya karta hai, reference equality ya content equality?" — content equality, kyunki `string.Equals()` override kiya gaya hai; ye reference types ke default behavior se deliberately alag hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Loop ke andar `+=` string concatenation use karna jab iteration count bada ho — ye O(n²) performance problem ko silently introduce karta hai, aur code review me easily miss ho jaata hai kyunki syntactically bilkul normal dikhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Chhote, ek-baar-hone-waale concatenations ke liye bhi `StringBuilder` use karna "best practice" ki tarah — `StringBuilder` object banane ka khud ka overhead hai, 2-3 concatenations ke liye plain `+`/string interpolation zyada simple aur equally-ya-zyada efficient hai.
+
+</Mistake>
+
+<Mistake>
+
+`ReferenceEquals()` use karna string comparison ke liye assume karke ki ye `==` jaisa hi content-check karega — `ReferenceEquals()` sirf tabhi `true` deta hai jab dono variables genuinely same object point karte hon (interning ke through ya explicit assignment se), runtime-constructed equal-content strings ke liye `false` de sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki har string automatically interned hai — sirf compile-time literals automatic-interned hote hain; runtime pe `string.Concat()`, `+`, user input se bane strings interned NAHI hote by default.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["string result = &quot;&quot;;"] --> B["Loop: result += i.ToString();"]
+    B --> C["Each += creates a NEW string object,\ncopying the entire previous content"]
+    C --> D["n iterations = O(n^2) total character copies"]
+    E["StringBuilder sb = new();"] --> F["Loop: sb.Append(i.ToString());"]
+    F --> G["Appends into an internal resizable buffer,\nno new object per call"]
+    G --> H["n appends = O(n) amortized"]
+`}
+  caption="String concatenation in a loop is quadratic because every += allocates and copies a new string; StringBuilder avoids this with a mutable internal buffer."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `string` is immutable — every "modification" creates a new object, original untouched
+- Immutability enables thread-safety, safe dictionary-key hashing, and interning
+- Loop concatenation with `+=` is O(n²) — StringBuilder.Append() is O(n) amortized
+- Use StringBuilder for loop/repeated concatenation; plain `+`/`$""` fine for a handful of one-off concatenations
+- `==` on string does content equality (overridden Equals()), not reference equality
+- Interning is automatic for compile-time literals only — runtime-built strings need explicit `string.Intern()`
+
+</QuickRevision>

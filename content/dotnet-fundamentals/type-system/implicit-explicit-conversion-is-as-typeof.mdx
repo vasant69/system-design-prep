@@ -1,0 +1,208 @@
+---
+slug: "implicit-explicit-conversion-is-as-typeof"
+title: "Implicit/Explicit Conversion, is, as, and typeof"
+section: "dotnet-fundamentals"
+module: "type-system"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: []
+tags: ["dotnet", "csharp", "type-system", "casting", "conversion", "pattern-matching"]
+englishDefinition: "C# offers several distinct ways to convert or check a type at runtime — implicit conversions (safe, no data loss, compiler-automatic), explicit conversions/casts (potentially lossy or failure-prone, must be written explicitly), the is operator (type check, optionally with pattern matching), the as operator (safe cast returning null on failure), and typeof (a compile-time operator for obtaining a Type object from a type name, distinct from the runtime GetType() call)."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+C# offers several distinct ways to convert or check a type at runtime — implicit conversions (safe, no data loss, compiler-automatic), explicit conversions/casts (potentially lossy or failure-prone, must be written explicitly), the `is` operator (type check, optionally with pattern matching), the `as` operator (safe cast returning `null` on failure), and `typeof` (a compile-time operator for obtaining a `Type` object from a type name, distinct from the runtime `GetType()` call).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interview me "cast kaise karte ho" poochne par zyada candidates seedha `(int)someValue` bol dete hain — lekin C# me type conversion aur type-checking ke liye kaafi alag tools hain, har ek ka apna use-case aur failure-mode hai. In sabko sahi context me distinguish karna hi is topic ka core hai.
+
+### Implicit conversion — safe, automatic, no data loss
+
+Jab source type destination type me **bina kisi data loss ke** fit ho sakta hai, compiler automatically convert kar deta hai, bina kisi explicit syntax ke:
+
+```csharp
+int i = 100;
+long l = i;      // implicit — int always fits in long, no data loss
+double d = l;    // implicit — long fits in double's range (precision loss possible for very large values, but compiler allows it)
+```
+
+Implicit conversion sirf tab allowed hai jab compiler guarantee de sake ki koi meaningful information nahi kho rahi — chhote type se bade, compatible type me.
+
+### Explicit conversion (cast) — potentially lossy, tumhe likhna padta hai
+
+Jab conversion data loss kar sakta hai (bada type → chhota type) ya failure-prone ho sakta hai, C# tumse explicitly cast syntax maangta hai — ye ek deliberate "main jaanta hoon risk hai" signal hai:
+
+```csharp
+double d = 9.99;
+int i = (int)d;   // explicit — 9, decimal part truncate ho gaya (data loss)
+
+long big = 5_000_000_000;
+int small = (int)big; // explicit — overflow, unpredictable result (unchecked context me silently wraps)
+```
+
+Reference types ke liye explicit cast tab use hota hai jab tum ek base-type reference ko derived type me convert karna chahte ho — agar actual runtime object us derived type ka nahi hai, ye **`InvalidCastException`** throw karta hai:
+
+```csharp
+object obj = "hello";
+int x = (int)obj; // InvalidCastException — obj actually string hai, int nahi
+```
+
+### is — type check, aur C# 7+ me pattern matching bhi
+
+`is` operator check karta hai ki koi object kisi type (ya uske derived type) ka hai ya nahi, `bool` return karta hai. C# 7 se `is` ek pattern-matching variant bhi support karta hai jo check + cast ek line me kar deta hai:
+
+```csharp
+object obj = "hello";
+
+if (obj is string) { /* purana style — sirf bool check */ }
+
+if (obj is string s) // C# 7+ pattern matching — check + cast + variable declaration, sab ek line me
+{
+    Console.WriteLine(s.Length); // s already string hai, safe use
+}
+```
+
+### as — safe cast, exception ki jagah null
+
+`as` operator cast karne ki koshish karta hai, lekin agar fail ho jaaye, exception throw nahi karta — `null` return karta hai. **Sirf reference types (aur nullable value types) ke saath kaam karta hai**, plain value types ke saath nahi:
+
+```csharp
+object obj = 42;
+string? s = obj as string; // null — cast fail hua, exception nahi aaya
+
+if (s != null) { /* safely use s */ }
+```
+
+`as` tab prefer karo jab failure ek expected, normal case ho aur tum gracefully handle karna chahte ho. Direct cast `(string)obj` tab prefer karo jab failure genuinely ek bug/exceptional condition ho jo turant surface honi chahiye.
+
+### typeof vs GetType() — compile-time vs runtime
+
+Ye do alag mechanisms hain jo dono `Type` object dete hain, lekin bilkul alag time pe resolve hote hain:
+
+- **`typeof(SomeType)`** — **compile-time** operator, type ka naam directly source code me likhte ho, compiler resolve karta hai. Runtime object ki zaroorat nahi.
+- **`obj.GetType()`** — **runtime** method call, actual instance ka concrete runtime type return karta hai — declared/static type se independent.
+
+```csharp
+Type t1 = typeof(Person);        // compile-time — "Person" naam se directly
+
+object obj = new Person();
+Type t2 = obj.GetType();         // runtime — obj ka declared type "object" hai, lekin actual type "Person" milta hai
+
+Console.WriteLine(t1 == t2);     // True — same underlying Type object, .NET Type instances per-type singleton hain
+```
+
+Ek practical distinction: `typeof` generic type parameters ke saath bhi kaam karta hai without an instance (`typeof(List<int>)`), jabki `GetType()` ko ek actual instance chahiye hi hoti hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`as` sirf reference types aur `Nullable<T>` ke saath compile hota hai — plain value types (jaise `int`) ke saath `as` use karne ki koshish compile error deti hai, kyunki value types kabhi `null` nahi ho sakte (jab tak nullable na ho), isliye "null on failure" semantics unke liye meaningless hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka model binding aur JSON deserialization internally `is`/pattern matching heavily use karta hai — jab ek request body ko polymorphic type hierarchy me deserialize karna ho (jaise ek `PaymentMethod` base class jiske multiple derived types hain), framework `is` pattern matching se runtime pe sahi derived type identify karta hai bina unsafe direct casts ke.
+
+</RealWorld>
+
+<RealWorld company="An Indian Banking API">
+
+Ek legacy codebase me developer ne ek `object`-typed cache value ko direct cast (`(CustomerProfile)cachedValue`) se access kiya bina check kiye ki cache me genuinely wahi type stored hai — kabhi-kabhi cache me ek different type (stale entry) store ho jaata tha, aur production me random `InvalidCastException` aata tha. Fix: `as` operator + null check, jo gracefully cache-miss jaisa handle karta, exception ki jagah.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Implicit conversion: no syntax needed, only allowed when guaranteed no data loss
+- Explicit conversion (cast): `(Type)value` syntax, can lose data or throw `InvalidCastException`
+- `is` (pattern matching form, C# 7+): check + cast + declare, in one expression
+- `as`: works only on reference types and `Nullable<T>` — returns `null` on failure, never throws
+- `typeof()`: compile-time, resolves from a type name directly in source code
+- `GetType()`: runtime, requires an actual instance, always returns the concrete runtime type
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`is`, `as`, aur direct cast me kya fark hai, kab kaunsa use karoge?" — strong answer: "Direct cast `(Type)obj` tab use karta hoon jab main confident hoon type sahi hai aur agar galat ho to exception genuinely ek bug signal honi chahiye — ye `InvalidCastException` throw karta hai failure pe. `as` tab use karta hoon jab failure ek normal, expected case hai — ye `null` return karta hai, exception nahi, lekin sirf reference types ke saath kaam karta hai. `is` (pattern matching ke saath) check aur cast dono ek line me karta hai, jab main pehle verify karna chahta hoon phir safely use karna chahta hoon, especially switch expressions ke andar." Follow-up: `typeof` vs `GetType()` — compile-time vs runtime resolution ka distinction clearly bolo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`as` operator ko value types (`int`, `struct`) ke saath use karne ki koshish karna — compile error, kyunki `as` sirf reference types aur `Nullable<T>` support karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`as` ke baad `null` check bhool jaana — agar cast fail hua aur result `null` hai, uske baad koi member access karna `NullReferenceException` dega, jo poore `as` ke purpose ko defeat karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Direct cast ka use karna jab failure genuinely expected/normal ho — har failed cast pe `InvalidCastException` throw hoke process crash hona chahiye, ye assumption galat hai jab data source unreliable ho (jaise external API se aaya data).
+
+</Mistake>
+
+<Mistake>
+
+`typeof()` aur `GetType()` ko interchangeable samajhna — `typeof` compile-time hai (type name se), `GetType()` runtime hai (instance se); ye galat context me use karne se compile errors ya galat results milte hain.
+
+</Mistake>
+
+<Mistake>
+
+Purane style `if (obj is string) { var s = (string)obj; }` likhna jab modern pattern-matching `if (obj is string s)` ek line me safe check + cast de sakta hai — redundant, error-prone double-casting.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Need to convert or check a type"] --> B{"Conversion safe, no data loss?"}
+    B -->|Yes| C["Implicit conversion — automatic"]
+    B -->|No| D{"Failure should be exceptional?"}
+    D -->|Yes, throw on failure| E["Explicit cast (Type)value -> InvalidCastException"]
+    D -->|No, failure is expected| F["as operator -> null on failure"]
+    A --> G{"Just need a type check?"}
+    G -->|Yes, with cast in one step| H["is pattern: obj is Type t"]
+`}
+  caption="Different tools for different confidence levels about whether a conversion will succeed."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Implicit conversion: automatic, only when guaranteed lossless (small type -> large compatible type)
+- Explicit cast `(Type)value`: required when data could be lost or the cast could fail; throws `InvalidCastException` on failure
+- `is` (C# 7+ pattern form): type check + cast + variable declaration in one expression
+- `as`: safe cast, returns `null` on failure instead of throwing — reference types and `Nullable<T>` only
+- `typeof(SomeType)`: compile-time, resolves from the type name in source
+- `obj.GetType()`: runtime, requires an instance, always returns the actual concrete type
+- Use `as` + null check when failure is an expected case; use a direct cast when failure means a real bug
+
+</QuickRevision>

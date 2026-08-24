@@ -1,0 +1,200 @@
+---
+slug: "memory-leaks-in-dotnet"
+title: "How a Garbage-Collected Language Still Leaks Memory"
+section: "dotnet-fundamentals"
+module: "memory-gc"
+order: 6
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["managed-vs-unmanaged-and-gc-fundamentals", "idisposable-dispose-pattern"]
+tags: ["dotnet", "csharp", "gc", "memory-leaks", "events", "static"]
+englishDefinition: "A .NET application can leak memory even with a garbage collector, because the GC only frees objects that are truly unreachable — it never questions whether a reachable object is actually still needed. Static references holding objects alive forever, event handlers a publisher never unsubscribes (keeping the subscriber rooted for the publisher's lifetime), undisposed IDisposable resources, and closures capturing more than expected are the four classic sources."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "Razorpay", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+A .NET application can leak memory even with a garbage collector, because the GC only frees objects that are truly unreachable — it never questions whether a reachable object is actually still needed. Static references holding objects alive forever, event handlers a publisher never unsubscribes (keeping the subscriber rooted for the publisher's lifetime), undisposed `IDisposable` resources, and closures capturing more than expected are the four classic sources.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Garbage collector hai to memory leak ho hi nahi sakta" — ye is poore module ka sabse persistent misconception hai, aur pichle topics me hum ise baar-baar dekh chuke hain. Ab poori tarah is topic ko dedicate karte hain: **GC exactly kya guarantee deta hai, aur us guarantee ke bawajood memory kaise genuinely leak hoti hai.**
+
+### GC ka exact guarantee — aur uski limit
+
+GC ka guarantee simple hai: **jo object truly unreachable hai (kisi root se koi path nahi), wo eventually reclaim hoga.** Lekin GC ye kabhi nahi poochta: "ye object reachable to hai, lekin kya application ko genuinely iski zaroorat hai?" Agar koi reference chain — chahe developer ki niyat se ho ya bhool se — ek object ko "reachable" banaye rakhti hai, GC use **kabhi collect nahi karega**, chahe application logically use nahi kar raha ho. Isi gap ko **"managed memory leak"** kehte hain — technically GC apna kaam sahi kar raha hai, lekin application ka reference-graph design galat hai.
+
+### Source #1 — Static references
+
+`static` fields **application ki poori lifetime tak** root rehte hain. Agar ek static field (ya static collection) me objects add karte jaao aur kabhi remove na karo, wo objects application band hone tak kabhi collect nahi honge — chahe unhe kabhi access na kiya jaaye.
+
+```csharp
+public static class Cache
+{
+    // BAD: kabhi remove nahi hota, application lifetime tak grow karta rahega
+    private static readonly List<CustomerData> _allCustomers = new();
+
+    public static void Add(CustomerData c) => _allCustomers.Add(c);
+}
+```
+
+Har `Add()` call se `_allCustomers` grow hota hai — koi eviction, koi expiry nahi. Ye ek classic unbounded-cache leak hai.
+
+### Source #2 — Unsubscribed event handlers (sabse common, sabse subtle)
+
+Ye sabse frequently-asked leak scenario hai interview me. Jab ek object (`Subscriber`) doosre object (`Publisher`) ke event ko `+=` se subscribe karta hai, **Publisher ke andar ek reference Subscriber ki taraf ban jaata hai** (delegate invocation list ke through) — ye direction counter-intuitive lagta hai lekin yahi asli mechanism hai.
+
+```csharp
+public class Publisher
+{
+    public event EventHandler DataChanged;
+    public void Raise() => DataChanged?.Invoke(this, EventArgs.Empty);
+}
+
+public class Subscriber
+{
+    public Subscriber(Publisher pub)
+    {
+        pub.DataChanged += OnDataChanged; // Publisher ab Subscriber ko reference karta hai
+    }
+    private void OnDataChanged(object sender, EventArgs e) { /* ... */ }
+}
+```
+
+Agar `Publisher` ka lifetime `Subscriber` se **lamba** hai (jaise Publisher ek application-lifetime singleton hai, Subscriber ek short-lived UI page/request-scoped object hai), aur `Subscriber` kabhi `pub.DataChanged -= OnDataChanged` call nahi karta, **Publisher Subscriber ko forever rooted rakhega** — Subscriber "logically dead" hone ke bawajood GC ke liye reachable rehta hai, kabhi collect nahi hoga. Ye pattern classically **"lapsed listener problem"** kehlaata hai.
+
+**Fix**: explicitly unsubscribe (`-=`) jab subscriber ka kaam khatam ho jaaye (jaise `Dispose()` ke andar), ya `WeakReference`-based event patterns use karo (agla is module ka topic isse cover karta hai).
+
+### Source #3 — Undisposed `IDisposable` resources
+
+Agar ek `IDisposable` object (jo internally koi unmanaged resource ya native handle hold karta hai) kabhi `Dispose()` nahi hota, uska managed wrapper eventually GC se collect ho jaayega (agar reachable nahi hai), lekin agar finalizer nahi hai ya properly implement nahi hua, underlying unmanaged resource (file handle, socket, DB connection) leak ho sakta hai — ye technically "managed memory leak" nahi hai, lekin practically ek **resource leak** hai jo same symptoms (degrading performance, eventual failure) deta hai. Is module ke `idisposable-dispose-pattern` topic me detail hai.
+
+### Source #4 — Closures capturing more than expected
+
+Jab ek lambda ya local function bahar ka variable capture karta hai, C# compiler ek **hidden class** generate karta hai jo captured variables ko fields ke roop me store karta hai. Agar closure ek bade object (jaise poora `this`, ya ek bada array) ko capture kar leta hai jab sirf ek chhoti field chahiye thi, poora bada object closure ke through indirectly rooted reh jaata hai jab tak closure khud reachable hai.
+
+```csharp
+public class ReportGenerator
+{
+    private readonly byte[] _hugeBuffer = new byte[50_000_000]; // 50MB
+    private string _reportName = "Q1";
+
+    public Action GetCallback()
+    {
+        // Closure 'this' capture karta hai (kyunki _reportName instance field hai),
+        // isliye poora ReportGenerator (samet 50MB buffer) indirectly rooted reh jaata hai
+        return () => Console.WriteLine($"Report: {_reportName}");
+    }
+}
+```
+
+Yahan callback ko sirf `_reportName` chahiye tha, lekin instance field access karne ki wajah se compiler **poora `this`** capture karta hai — jab tak ye returned `Action` kahin store hoke reachable rehta hai, poora `ReportGenerator` (50MB buffer samet) bhi rooted rehta hai, chahe caller ko sirf ek chhoti string chahiye thi.
+
+</Hinglish>
+
+<Callout type="warning">
+
+In char sources me se **unsubscribed event handlers** interview me sabse zyada poocha jaata hai, kyunki ye sabse counter-intuitive hai — subscriber "chhota, short-lived" lagta hai, lekin actual reference direction (publisher se subscriber ki taraf) use invisible-se leak karta hai. Isko crisply explain kar paana ek strong signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET diagnostic tooling (dotnet-counters, dotnet-gcdump, Visual Studio Diagnostic Tools) specifically "generation survival" aur "retained size by type" metrics deta hai jo exactly in leak patterns ko detect karne ke liye design kiye gaye hain — jaise ek type jiski instance count time ke saath monotonically badhti rahe (never plateau), ye classic unbounded-static-collection ya lapsed-listener signature hai.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Notification Service">
+
+Ek Indian fintech app me ek `NotificationCenter` singleton service tha jisme UI screens (`TransactionScreen`, `ProfileScreen` jaisi short-lived objects) apne aap ko subscribe karte the notifications ke liye, lekin screen close hone par unsubscribe nahi karte the. Kuch hafton use ke baad, memory profiling se pata chala saare purane, closed screens abhi bhi memory me the — `NotificationCenter` (jo application lifetime tak zinda tha) unhe event subscription ke through rooted rakh raha tha. Fix tha har screen ke `Dispose()`/cleanup method me explicit `-=` unsubscribe call add karna — ye ek textbook lapsed-listener leak tha jo production me genuinely gradual memory growth aur eventual `OutOfMemoryException`-adjacent crashes de raha tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 4 classic leak sources: static references, unsubscribed events, undisposed IDisposables, over-capturing closures
+- Event subscription (`+=`) creates a reference from publisher TO subscriber — the opposite direction of what most developers intuitively expect
+- A closure that captures `this` roots the ENTIRE containing object, not just the specific field it needs
+- GC's guarantee is "unreachable is reclaimed" — it never evaluates whether a reachable object is still logically needed
+- Diagnostic signature of most managed leaks: instance count of a type grows monotonically over time, never plateaus even under steady load
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Garbage collector hone ke bawajood .NET me memory leak kaise ho sakta hai?" ka strong answer: "GC sirf unreachable objects reclaim karta hai — agar koi reference chain object ko reachable rakhe, chahe application ko us object ki zaroorat na ho, GC use kabhi collect nahi karega. Chaar classic sources hain: static references jo application lifetime tak jeete hain aur kabhi clear nahi hote; unsubscribed event handlers, jahan publisher subscriber ko reference karta hai — agar publisher lambe lifetime ka hai aur subscriber unsubscribe nahi karta, subscriber forever rooted rehta hai (lapsed listener problem); undisposed IDisposable resources jo underlying unmanaged handles leak karte hain; aur closures jo zaroorat se zyada capture karte hain, jaise poora `this` jab sirf ek field chahiye thi." Almost-certain follow-up: "Event handler leak ka fix kya hai?" — jawaab: explicit unsubscribe (`-=`) object ke cleanup path me, ya weak-reference-based event pattern.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"GC hai to memory leak impossible hai" bol dena — GC sirf unreachable objects reclaim karta hai, reachable-but-logically-unused objects (leaks) collect nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Event subscription ki reference direction galat samajhna — subscriber publisher ko reference nahi karta cleanup ke liye, balki publisher subscriber ko reference karta hai (delegate invocation list ke through), jo leak ka asli mechanism hai.
+
+</Mistake>
+
+<Mistake>
+
+Closures ko "sirf jo variable use hua wahi capture hota hai" samajhna — agar koi instance field/method access ho raha hai, poora `this` capture hota hai, sirf wo field nahi.
+
+</Mistake>
+
+<Mistake>
+
+Static collections me items add karte jaana bina kabhi remove/expire kiye — unbounded static caches production ka ek genuinely common leak source hain.
+
+</Mistake>
+
+<Mistake>
+
+Memory leak detect karne ke liye sirf "total memory usage" dekhna instead of "instance count by type over time" — total memory naturally fluctuate karta hai, lekin ek specific type ki count ka monotonic growth genuinely leak ka signal hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Publisher (long-lived, e.g. singleton)"] -->|"pub.Event += subscriber.Handler"| B["Subscriber (intended short-lived)"]
+    B -.->|Subscriber never calls -= | A
+    A -->|Still holds reference| B
+    B -->|Rooted via Publisher, unreachable-check fails| C["GC can never collect Subscriber"]
+
+    D["static field / collection"] --> E["Objects added, never removed"]
+    E --> F["Rooted for entire app lifetime — grows unbounded"]
+`}
+  caption="Two classic leak mechanisms: an event subscription roots the subscriber through the longer-lived publisher, and an unbounded static collection roots everything added to it for the application's lifetime."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- GC only reclaims truly UNREACHABLE objects — it never questions whether a reachable object is still logically needed
+- Static references: objects added to a static field/collection live for the whole app lifetime unless explicitly removed
+- Unsubscribed events (lapsed listener problem): the publisher holds a reference TO the subscriber via `+=` — long-lived publisher + un-unsubscribed subscriber = subscriber leaks
+- Undisposed `IDisposable`: managed wrapper may still get collected, but the underlying unmanaged resource can leak without proper Dispose/finalizer
+- Over-capturing closures: capturing any instance field/method roots the entire containing object (`this`), not just what's logically needed
+- Diagnostic signature: an instance count for a type that grows monotonically over time, never plateauing under steady load
+- Fix pattern: explicit `-=` unsubscribe on cleanup, bounded/evicting caches instead of unbounded static collections, and mindful closure captures
+
+</QuickRevision>

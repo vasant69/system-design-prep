@@ -1,0 +1,172 @@
+---
+slug: "struct-vs-class-decision"
+title: "Struct vs Class — the Actual Decision Criteria"
+section: "dotnet-fundamentals"
+module: "type-system"
+order: 8
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["value-types-reference-types-memory-layout"]
+tags: ["dotnet", "csharp", "type-system", "struct", "class", "performance"]
+englishDefinition: "Choosing struct over class is a deliberate performance/semantics trade-off, not a stylistic default — a struct is appropriate when the type is small (Microsoft's own guidance: under ~16 bytes), logically immutable, has value-equality semantics, and is short-lived or frequently copied; using a large or long-lived mutable struct actively hurts performance through excessive copying and can introduce subtle bugs."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Choosing `struct` over `class` is a deliberate performance/semantics trade-off, not a stylistic default — a struct is appropriate when the type is small (Microsoft's own guidance: under ~16 bytes), logically immutable, has value-equality semantics, and is short-lived or frequently copied; using a large or long-lived mutable struct actively hurts performance through excessive copying and can introduce subtle bugs.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interview me "struct kab use karoge" poochne par zyada candidates sirf definition repeat kar dete hain ("struct value type hai, class reference type hai") — ye definition hai, decision criteria nahi. Interviewer actually ye jaanna chahta hai ki tumne kabhi genuinely soch ke struct choose kiya hai ya nahi, concrete reasoning ke saath.
+
+### Microsoft ki apni guidance — 4 conditions, sab satisfy hone chahiye
+
+.NET design guidelines struct ke liye ek specific checklist deti hain — agar **saari conditions** satisfy nahi hoti, class use karo, struct nahi:
+
+1. **Logically ek single value represent karta hai** — jaise ek coordinate, ek money amount, ek date — na ki ek complex entity jiski identity matter karti ho.
+2. **Instance size chhoti hai** — Microsoft ka rule of thumb: **16 bytes se kam**. Isse bada, struct copy karna (jo har assignment/parameter-pass pe hota hai) actual memcpy cost ke roop me class ke pointer-copy se mehenga ho jaata hai.
+3. **Immutable hai (ya immutable hona chahiye)** — mutable struct genuinely bugs ka source hain (neeche detail me dekho).
+4. **Frequently boxed nahi hoga** — agar type baar-baar `object`/interface types me assign hoga (boxing trigger karega), struct ka "no heap allocation" benefit khatam ho jaata hai, ulta extra allocations aa jaate hain.
+
+### Kyun size matter karti hai — copy cost real hai
+
+Struct har assignment, parameter-pass, aur return pe **poora copy** hota hai (kyunki value type hai). Chhoti struct (jaise do `int` fields, 8 bytes) ke liye ye copy essentially free hai — CPU register-level operation. Lekin agar struct 10 fields rakhti hai (jaise 80+ bytes), har method call jisme wo parameter ke roop me pass ho, poora 80 bytes copy karta hai — ye genuinely measurable overhead hai, especially loops/hot paths me:
+
+```csharp
+struct BigStruct // BAD — 10 fields, ~80 bytes
+{
+    public long A, B, C, D, E, F, G, H, I, J;
+}
+
+void Process(BigStruct s) { /* har call pe 80 bytes copy hue */ }
+```
+
+`in` keyword (readonly reference parameter) is cost ko mitigate kar sakta hai bade structs ke liye jab tumhe genuinely struct chahiye lekin copy avoid karni ho — ye alag topic (`ref-out-in-parameters`) me cover hota hai.
+
+### Mutable struct — genuinely dangerous, ek classic gotcha
+
+Mutable struct interview me sabse zyada poocha jaane wala gotcha hai — ek concrete example:
+
+```csharp
+struct Point { public int X, Y; }
+
+List<Point> points = new() { new Point { X = 1, Y = 1 } };
+points[0].X = 99; // Compile ERROR in modern C# for List indexer — lekin conceptually samjho:
+
+Point p = points[0]; // ye ek COPY hai
+p.X = 99;             // sirf local copy 'p' change hota hai
+Console.WriteLine(points[0].X); // still 1 — original untouched, jo confusing ho sakta hai agar mutable expect kiya ho
+```
+
+Ye value-copy semantics ki wajah se, mutable struct ke saath "jo dikh raha hai wo change nahi ho raha" jaisi confusing situations aati hain — ek `foreach` loop ke andar struct ko modify karna bhi silently kaam nahi karta (loop variable ek copy hoti hai), jo naye developers ko genuinely surprise karta hai.
+
+### Class kab better fit hai — most business entities ke liye
+
+Agar type ki identity matter karti hai (do "Order" objects ko same treat nahi karna chahiye sirf isliye ki unki fields match karti hain), ya type large hai, ya inheritance chahiye (struct inheritance support nahi karta), ya reference semantics genuinely expected hai (jaise ek shared, mutable state object jo multiple jagah update hona chahiye) — class hi sahi choice hai. Practically, **most business domain entities (Order, Customer, Product) classes honi chahiye**, struct sirf specific small-value scenarios ke liye reserve karo.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Struct **inheritance support nahi karta** (sirf interfaces implement kar sakta hai) — agar tumhare design me ek base type se multiple derived types chahiye, struct ye kar hi nahi sakta, class mandatory hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka `DateTime`, `TimeSpan`, `Guid`, aur numeric types (`int`, `decimal`) — sab struct hain, aur sab Microsoft ki apni guideline follow karte hain: chhoti size, logically single-value, immutable. `Point`/`Rectangle` (System.Drawing) bhi isi pattern ka classic example hain — coordinates ek natural, small, immutable value hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Trading Platform">
+
+Ek high-frequency trading dashboard me developer ne ek `MarketTick` type (price, volume, timestamp, symbol, exchange, aur 6 aur fields — kul ~15 fields) ko struct bana diya "performance ke liye," ye sochte hue ki struct hamesha faster hota hai. Actual measurement me pata chala ki is bade struct ka baar-baar copy hona (jo tick processing pipeline me lakhon baar per second ho raha tha) class ke reference-pass se **zyada expensive** tha. Fix: type ko wapas class banaya gaya, jisse sirf ek pointer copy hoti hai har baar, poori 100+ bytes ki struct nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Microsoft's rule of thumb for struct size: under ~16 bytes for the copy cost to stay negligible
+- Every struct assignment/parameter-pass/return copies the FULL instance — proportional cost to size
+- Class assignment/parameter-pass always copies just a pointer (8 bytes on 64-bit), regardless of the object's actual size
+- Struct does not support inheritance (only interface implementation) — a hard constraint, not a style choice
+- Boxing a struct (assigning to `object`/an interface type) allocates on the heap — negates the "no allocation" benefit entirely
+- `DateTime`, `Guid`, `TimeSpan`, all numeric primitives are structs — all small, immutable, single-value
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Struct kab use karoge, class kab?" — strong answer: "Microsoft ki apni guideline follow karta hoon: struct tab jab type chhota ho (16 bytes ke around), logically ek single immutable value represent kare (jaise coordinate ya money amount), aur frequently boxed na ho. Agar type identity-based hai, large hai, mutable hona chahiye, ya inheritance chahiye — class use karta hoon. Mutable struct explicitly avoid karta hoon, kyunki copy semantics ki wajah se confusing bugs aate hain — jaise foreach loop ke andar struct modify karne ki koshish silently fail ho jaati hai, ya ek collection se nikala gaya struct modify karna original ko affect nahi karta." Ye answer concrete criteria deta hai, sirf definition repeat nahi karta.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Struct ko "hamesha faster" samajh lena bina size consider kiye — bada struct (50+ bytes) frequent copying me class se slower ho sakta hai, kyunki poora data copy hota hai har baar.
+
+</Mistake>
+
+<Mistake>
+
+Mutable struct banana — struct ke copy semantics ki wajah se mutation confusing, silently-ineffective behavior create karte hain (jaise collection se nikala gaya struct modify karna original ko affect nahi karta).
+
+</Mistake>
+
+<Mistake>
+
+Struct ke saath inheritance implement karne ki koshish karna — struct sirf interfaces implement kar sakta hai, class se inherit nahi kar sakta (except implicit `System.ValueType`/`System.Object`).
+
+</Mistake>
+
+<Mistake>
+
+Ek struct type ko baar-baar `object`/interface-typed variables me assign karna bina consider kiye boxing overhead — har boxing ek heap allocation hai, jo struct ke "no allocation" advantage ko negate kar deta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Choosing struct vs class"] --> B{"Small (~16 bytes or less)?"}
+    B -->|No| C["Use class"]
+    B -->|Yes| D{"Logically a single immutable value?"}
+    D -->|No| C
+    D -->|Yes| E{"Needs inheritance or reference identity?"}
+    E -->|Yes| C
+    E -->|No| F{"Will be frequently boxed?"}
+    F -->|Yes| C
+    F -->|No| G["struct is appropriate"]
+`}
+  caption="All four conditions must hold before struct is the right choice — failing any one of them points back to class."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Struct criteria (Microsoft's own guidance, ALL must hold): small (~16 bytes), logically a single value, immutable, not frequently boxed
+- Every struct copy (assignment/param-pass/return) copies the full instance — cost scales with size
+- Class copy always copies just a pointer, regardless of object size
+- Struct does not support inheritance — only interface implementation
+- Boxing a struct (into `object`/an interface) allocates on the heap, negating the no-allocation benefit
+- Mutable structs are a classic bug source — copy semantics make "modifying" a struct from a collection or loop silently ineffective
+- Most business domain entities (Order, Customer) should be classes — struct is for small, immutable, value-like data
+
+</QuickRevision>

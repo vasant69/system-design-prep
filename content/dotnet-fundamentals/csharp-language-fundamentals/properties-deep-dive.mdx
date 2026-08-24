@@ -1,0 +1,220 @@
+---
+slug: "properties-deep-dive"
+title: "Properties Deep Dive — Auto-Properties, init, and required"
+section: "dotnet-fundamentals"
+module: "csharp-language-fundamentals"
+order: 8
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: []
+tags: ["dotnet", "csharp", "properties", "init", "required"]
+englishDefinition: "C# properties evolved from full backing-field-plus-accessor boilerplate to auto-properties (compiler-generated backing field), then init-only setters (C# 9, immutable-after-construction) and required members (C# 11, compiler-enforced mandatory initialization) — each addressing a real gap the previous syntax left open."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+C# properties evolved from full backing-field-plus-accessor boilerplate to auto-properties (compiler-generated backing field), then `init`-only setters (C# 9, immutable-after-construction) and `required` members (C# 11, compiler-enforced mandatory initialization) — each addressing a real gap the previous syntax left open.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Properties C# ka sabse basic-lagne-waala feature hai, lekin iska evolution (C# 1 se C# 11 tak) genuinely interesting hai — har naya addition ek real, specific problem solve karta hai jo purane syntax me exist karta tha. Interview me is evolution ko samajhna ek strong signal hai depth ka.
+
+### Full property — backing field explicitly
+
+```csharp
+public class Person
+{
+    private string _name;
+    public string Name
+    {
+        get { return _name; }
+        set { _name = value; }
+    }
+}
+```
+
+Ye ek manual backing field hai — `get`/`set` accessors explicitly `_name` ko read/write karte hain. Zaroori tab jab getter/setter me genuine logic ho (validation, computation, side-effect).
+
+### Auto-property (C# 3.0) — compiler generates the backing field
+
+```csharp
+public class Person
+{
+    public string Name { get; set; } // compiler khud ek hidden backing field banata hai
+}
+```
+
+Jab getter/setter me koi custom logic nahi hai (sirf plain read/write), auto-property ye poora boilerplate eliminate karta hai. Compiler internally ek anonymous, inaccessible backing field generate karta hai — functionally same hai upar ke manual version se.
+
+**Auto-property with private setter** — ek common encapsulation pattern:
+
+```csharp
+public class Order
+{
+    public int Id { get; private set; } // sirf class ke andar set ho sakta hai
+    public Order(int id) { Id = id; }
+}
+```
+
+### `init`-only setter (C# 9.0) — immutable after construction, but object-initializer-friendly
+
+```csharp
+public class Person
+{
+    public string Name { get; init; }
+    public int Age { get; init; }
+}
+
+var p = new Person { Name = "Amit", Age = 30 }; // OK — object initializer
+p.Name = "Rohit"; // COMPILE ERROR — init-only, construction ke baad set nahi ho sakta
+```
+
+**Problem jo `init` solve karta hai:** Constructor-only immutability (`{ get; }` bina setter ke, sirf constructor me set) ka ek friction tha — object-initializer syntax (`new Person { Name = "..." }`) use nahi ho sakta tha kyunki wo effectively ek public setter chahta hai. `init` ye dono cheezein deta hai ek saath: object-initializer syntax bhi kaam karta hai, AUR construction ke baad object immutable rehta hai — best of both worlds.
+
+### `required` members (C# 11.0) — compiler-enforced mandatory initialization
+
+```csharp
+public class Person
+{
+    public required string Name { get; init; }
+    public int Age { get; init; }
+}
+
+var p1 = new Person { Name = "Amit" };  // OK
+var p2 = new Person();                   // COMPILE ERROR — Name is required
+```
+
+**Problem jo `required` solve karta hai:** `init`-only properties bhi optional hoti hain by default — koi guarantee nahi thi ki caller unhe genuinely set karega (jab tak constructor parameter na ho). `required` (C# 11) compiler-level enforcement deta hai — agar `required` property ko object-initializer me set nahi kiya jaaye, COMPILE ERROR aata hai. Ye records/DTOs ke liye especially useful hai jahan kuch fields genuinely mandatory hain lekin developer ek full constructor nahi likhna chahta (object-initializer syntax ka convenience chahiye).
+
+### Computed / Expression-bodied Properties
+
+```csharp
+public class Rectangle
+{
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public double Area => Width * Height; // computed, no backing field at all
+}
+```
+
+Ye property har access pe recompute hoti hai — koi storage nahi, sirf ek expression. `get`-only, koi `set` possible nahi (logically bhi nahi hona chahiye — `Area` ek derived value hai).
+
+### Explicit backing field kab genuinely zaroori hai
+
+Jab validation, lazy-loading, ya side-effect chahiye ho:
+
+```csharp
+public class BankAccount
+{
+    private decimal _balance;
+    public decimal Balance
+    {
+        get => _balance;
+        set
+        {
+            if (value < 0) throw new ArgumentException("Balance cannot be negative");
+            _balance = value;
+        }
+    }
+}
+```
+
+</Hinglish>
+
+<Callout type="tip">
+
+Evolution timeline yaad rakhne ka trick: auto-property (C# 3) ne boilerplate hataya, `init` (C# 9) ne immutability + object-initializer friction hataya, `required` (C# 11) ne 'optional-by-default' problem hataya. Har step ne apne se pehle wale step ki ek specific limitation address ki.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET 7+ ke apne minimal-API request/response DTOs me `required` members heavily recommend kiye jaate hain — jaise `public required string Email { get; init; }` — taaki JSON deserialization ke through object banate waqt, agar `Email` field missing ho request body me, compiler-level (design-time) hi ye clear ho ki ye field mandatory hai, aur runtime pe bhi missing-required-property deserialization errors clearly surface hote hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Banking KYC System">
+
+Ek KYC-onboarding DTO me `required string PanNumber { get; init; }` aur `string? MiddleName { get; init; }` (optional) ka combination common hai — `required` fields genuinely mandatory business rules ko compiler-level enforce karte hain (missing PAN number wala object banana hi possible nahi), jabki optional fields (`MiddleName`) bina `required` ke rehte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Auto-properties — C# 3.0 (2007)
+- `init`-only setters — C# 9.0 (2020)
+- `required` members — C# 11.0 (2022)
+- Auto-property with private setter (`{ get; private set; }`) — C# 1 se hi pattern-wise possible tha C# 3 ke baad auto-property syntax ke saath
+- Computed/expression-bodied read-only properties (`=>`) — C# 6.0 (2015)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`init` aur `required` alag-alag kaunse specific problems solve karte hain?" ka strong answer: "`init` (C# 9) constructor-only immutability aur object-initializer syntax ke beech ka conflict solve karta hai — pehle immutable property ke liye ya to constructor-only set karna padta tha (object-initializer nahi chal sakta) ya public setter dena padta tha (immutability toot jaati). `init` dono chahta hai — object-initializer syntax bhi, aur construction-ke-baad-immutable bhi. `required` (C# 11) ek doosra problem solve karta hai — `init`-only bhi optional hoti hai by default, koi guarantee nahi thi ki set ki jaayegi. `required` compiler-enforced mandatory-initialization deta hai, bina ek full constructor likhne ki zaroorat ke." Follow-up: "records me `init` kyun default choice hoti hai?" — records value-based immutability ke liye design kiye gaye hain, `init` unke saath naturally fit karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`init`-only property ko `set`-jaisa treat karne ki koshish karna construction ke baad — `p.Name = "New"` (jahan `p` already constructed hai) COMPILE ERROR deta hai, ye ek common beginner confusion hai jab `init` naya-naya seekha ho.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `init` automatically object ko poori tarah immutable bana deta hai — `init` sirf us specific property ko protect karta hai; agar class me koi mutable collection property (jaise `List<T>`) hai, uske andar ke elements ab bhi modify ho sakte hain even after construction, jab tak wo bhi properly immutable collection type na ho.
+
+</Mistake>
+
+<Mistake>
+
+`required` ko constructor-parameter validation ka substitute samajhna — `required` sirf ye ensure karta hai ki property object-initializer me set ki jaaye, lekin VALUE ki validity (jaise "empty string nahi honi chahiye") check nahi karta — wo logic ab bhi setter/constructor ke andar explicitly likhni padti hai.
+
+</Mistake>
+
+<Mistake>
+
+Har property ko blindly `{ get; set; }` bana dena bina soche ki wo mutable hona chahiye ya nahi — agar domain me ek field genuinely construction ke baad kabhi nahi badalna chahiye, `init` ya read-only (`{ get; }` + constructor-only) use karna chahiye, plain mutable setter nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["C# 1: full backing field + get/set"] --> B["C# 3: auto-property { get; set; }"]
+    B --> C["C# 9: init setter — immutable + object-initializer friendly"]
+    C --> D["C# 11: required — compiler-enforced mandatory set"]
+    D --> E["Result: new Dto { RequiredField = x } compiles;\nnew Dto() without RequiredField fails to compile"]
+`}
+  caption="Each property syntax evolution addressed a specific limitation left by the previous one — from boilerplate, to immutability-vs-initializer friction, to optional-by-default."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Auto-property (C# 3): `{ get; set; }`, compiler generates a hidden backing field
+- Private setter (`{ get; private set; }`): encapsulation, only settable within the class
+- `init` (C# 9): settable only during object-initializer/construction, immutable after — best of constructor-only immutability + initializer syntax
+- `required` (C# 11): compiler-enforces the property must be set at construction, works with `init` or `set`
+- Computed property (`=>`, no backing field): recomputed every access, get-only, no `set` possible
+- `required` enforces "was it set", not "is the value valid" — validation is still a separate concern
+
+</QuickRevision>

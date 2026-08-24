@@ -1,0 +1,206 @@
+---
+slug: "icomparable-icomparer-custom-sorting"
+title: "IComparable, IComparer, and Custom Sorting"
+section: "dotnet-fundamentals"
+module: "collections-generics"
+order: 9
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["list-dictionary-hashset"]
+tags: ["dotnet", "csharp", "sorting", "icomparable", "icomparer", "iequatable"]
+englishDefinition: "IComparable<T> is implemented ON a type to define its single natural ordering (e.g. Product sorts by Id by default); IComparer<T> is a separate, swappable strategy object that defines an ordering FROM THE OUTSIDE, letting the same collection be sorted different ways without changing the type itself; IEquatable<T> defines value equality, which — together with a matching GetHashCode() override — is essential for correct Dictionary/HashSet behavior with custom types."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+`IComparable<T>` is implemented ON a type to define its single natural ordering (e.g. `Product` sorts by `Id` by default); `IComparer<T>` is a separate, swappable strategy object that defines an ordering FROM THE OUTSIDE, letting the same collection be sorted different ways without changing the type itself; `IEquatable<T>` defines value equality, which — together with a matching `GetHashCode()` override — is essential for correct `Dictionary`/`HashSet` behavior with custom types.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Custom types (jaise `Product`, `Employee`) ko sort karna ya collections me correctly use karna interview me bahut poocha jaata hai — kyunki `.Sort()` ya `Dictionary` bina explicit help ke pata hi nahi kar sakte ki do `Product` objects ko kaise compare/equal karein.
+
+### `IComparable<T>` — type ki apni "natural" ordering
+
+Ye interface type khud implement karta hai — "mujhe naturally kaise sort karna hai" ka jawab. Ek type ki sirf EK natural ordering ho sakti hai.
+
+```csharp
+public class Product : IComparable<Product>
+{
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+
+    public int CompareTo(Product? other)
+    {
+        if (other == null) return 1;
+        return Price.CompareTo(other.Price); // Natural order: by price
+    }
+}
+
+List<Product> products = GetProducts();
+products.Sort(); // Uses CompareTo — sorts by Price, the natural order
+```
+
+`CompareTo` ek `int` return karta hai: negative (current object pehle aata hai), zero (equal), positive (current object baad me aata hai) — ye convention .NET ki har comparison-related API follows karti hai.
+
+### `IComparer<T>` — external, swappable ordering strategies
+
+Problem: agar tumhe `Product` ko kabhi price se, kabhi name se sort karna ho, `IComparable<T>` insufficient hai — ek type ki sirf ek "natural" order ho sakti hai. Solution: **external comparer objects** banao jo type ke bahar sorting logic define karein.
+
+```csharp
+public class ProductNameComparer : IComparer<Product>
+{
+    public int Compare(Product? x, Product? y)
+    {
+        if (x == null || y == null) return 0;
+        return string.Compare(x.Name, y.Name, StringComparison.Ordinal);
+    }
+}
+
+public class ProductPriceDescendingComparer : IComparer<Product>
+{
+    public int Compare(Product? x, Product? y)
+    {
+        if (x == null || y == null) return 0;
+        return y.Price.CompareTo(x.Price); // Reversed for descending
+    }
+}
+
+products.Sort(new ProductNameComparer());              // Sort by name
+products.Sort(new ProductPriceDescendingComparer());    // Sort by price, descending
+products.Sort();                                        // Back to natural order (by price, IComparable)
+```
+
+Same `Product` list, teen alag orderings, bina `Product` class ko touch kiye — ye Strategy pattern ka ek concrete built-in example hai. `List<T>.Sort(IComparer<T>)`, `OrderBy(keySelector, IComparer<T>)`, `SortedDictionary`/`SortedSet` constructors — sab `IComparer<T>` accept karte hain custom ordering ke liye.
+
+### `IEquatable<T>` — value equality, `Dictionary`/`HashSet` correctness ke liye critical
+
+`Dictionary`/`HashSet` ka pura mechanism hashing pe based hai — `GetHashCode()` se bucket decide hota hai, `Equals()` se same-bucket ke andar exact match confirm hota hai. Agar custom type in dono ko sahi implement nahi karta, hashing collections **silently galat behave karte hain**.
+
+```csharp
+public class ProductId : IEquatable<ProductId>
+{
+    public int Value { get; }
+    public ProductId(int value) => Value = value;
+
+    public bool Equals(ProductId? other) => other != null && Value == other.Value;
+    public override bool Equals(object? obj) => Equals(obj as ProductId);
+    public override int GetHashCode() => Value.GetHashCode();
+}
+```
+
+**Critical rule: `Equals()` aur `GetHashCode()` HAMESHA saath override karo, consistently.** Agar do objects `Equals()` se `true` dete hain, unka `GetHashCode()` bhi SAME hona chahiye — warna `Dictionary`/`HashSet` unhe alag buckets me daal dega, aur `Contains()`/lookup silently fail ho jaayega (item "exist" karta hai logically, lekin collection use "nahi mil raha" bolegi).
+
+```csharp
+var set = new HashSet<ProductId>();
+set.Add(new ProductId(5));
+
+bool found = set.Contains(new ProductId(5)); // true — sirf tab jab Equals/GetHashCode sahi override hon
+// Bina override ke: false — kyunki default reference equality use hoti, do alag instances "different" maane jaate
+```
+
+</Hinglish>
+
+<Tradeoff
+  pros={["IComparable<T>: simple, one natural default order defined once on the type itself", "IComparer<T>: unlimited swappable orderings without modifying the original type — clean Strategy pattern"]}
+  cons={["IComparable<T>: only ONE ordering possible per type, forces a subjective 'default' choice", "IComparer<T>: requires writing a separate class (or lambda-based Comparer<T>.Create) per ordering strategy — a bit more ceremony"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka `string` type `IComparable<string>` implement karta hai (default ordinal-ish culture-aware comparison), lekin `StringComparer` class (jo `IComparer<string>` implement karti hai) multiple ready-made variants deti hai — `StringComparer.Ordinal`, `StringComparer.OrdinalIgnoreCase`, `StringComparer.InvariantCulture` — exactly demonstrate karte hue ki ek type ki natural ordering aur uski use-case-specific alternate orderings alag concerns hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Job-Portal Search Feature">
+
+Ek job listing page pe results ko "Relevance," "Newest First," aur "Salary High to Low" — teen tareeke se sort karna tha, user ke dropdown selection ke basis pe. Team ne `JobListing` class me koi ek "natural" ordering force nahi ki — teen alag `IComparer<JobListing>` classes banayi (`RelevanceComparer`, `DateComparer`, `SalaryComparer`), aur UI dropdown selection ke basis pe sahi comparer `list.Sort(comparer)` me pass kar diya. Naya sorting option add karna (jaise future me "Company Rating") sirf ek naya `IComparer<JobListing>` add karna ban gaya, `JobListing` class ko touch kiye bina.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `IComparable<T>.CompareTo()` — returns negative/zero/positive, ONE natural order per type
+- `IComparer<T>.Compare(x, y)` — external, UNLIMITED alternate orderings per type
+- `IEquatable<T>.Equals()` — must be paired with a consistent `GetHashCode()` override for `Dictionary`/`HashSet` correctness
+- Objects equal by `Equals()` MUST return the same `GetHashCode()` — a broken invariant causes silent lookup failures, not exceptions
+- `List<T>.Sort()` (no args) uses `IComparable<T>`; `List<T>.Sort(IComparer<T>)` uses the passed-in comparer
+- `Comparer<T>.Create(Func<T,T,int>)` — a shortcut to build an `IComparer<T>` from a lambda without a full class
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`IComparable<T>` aur `IComparer<T>` me kya fark hai?" ka strong answer: "`IComparable<T>` type khud implement karta hai apni ek natural, default ordering define karne ke liye — jaise `Product` price se sort hota hai by default. `IComparer<T>` ek external, separate object hai jo ordering strategy ko type se bahar define karta hai — isse same collection ko multiple alag tareekon se sort kiya ja sakta hai (jaise `Product` ko kabhi name se, kabhi price descending se) bina `Product` class ko modify kiye. Practically: natural, ek-hi-tarah-ka default order ke liye `IComparable<T>`, swappable/multiple orderings ke liye `IComparer<T>`." Follow-up jo aksar aata hai: "custom type ko `Dictionary` key banane ke liye kya zaroori hai?" — answer: `Equals()` aur `GetHashCode()` dono ko consistently override karna, kyunki agar do 'equal' objects ka hash different hai, hashing collections silently galat behave karenge — koi exception nahi aayega, bas lookup fail hoga.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`Equals()` ko override karna lekin `GetHashCode()` ko nahi (ya vice versa) — ye ek broken invariant create karta hai jo `Dictionary`/`HashSet` me silently galat behavior deta hai, koi compile ya runtime error nahi milta directly.
+
+</Mistake>
+
+<Mistake>
+
+`IComparable<T>` se multiple orderings implement karne ki koshish karna (jaise ek "sort by name" aur "sort by price" dono `CompareTo` me kisi flag se) — `IComparable<T>` sirf ek natural order support karta hai. Multiple orderings ke liye `IComparer<T>` sahi tool hai.
+
+</Mistake>
+
+<Mistake>
+
+`CompareTo()` me `null` check na karna — `other` parameter `null` ho sakta hai, aur convention ke mutabik `null` ko "chhota" treat kiya jaata hai (current object `1` return karta hai, matlab wo baad me aata hai).
+
+</Mistake>
+
+<Mistake>
+
+`GetHashCode()` ko mutable field pe base karna jo object create hone ke baad change ho sakta hai — agar object `HashSet`/`Dictionary` me daala ja chuka hai aur uska hash-defining field baad me change ho jaaye, collection us object ko dhoondh nahi payegi (galat bucket me search karega).
+
+</Mistake>
+
+<Mistake>
+
+Custom `IComparer<T>` me `Compare(x, y)` ko inconsistent banana (jaise ek baar `x < y` bolna, doosri baar contradictory result dena) — ye sorting algorithms ko unpredictable/incorrect results de sakta hai, kabhi-kabhi exceptions bhi (.NET ke kuch sort implementations consistency violations detect karke exception throw kar sakte hain).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Need to sort a custom type?"] --> B{"One natural order, or multiple?"}
+    B -->|"One default order"| C["Implement IComparable&lt;T&gt; ON the type"]
+    B -->|"Multiple, swappable orders"| D["Write separate IComparer&lt;T&gt; classes"]
+    E["Need Dictionary/HashSet with custom type?"] --> F["Override Equals() AND GetHashCode() together, consistently"]
+`}
+  caption="IComparable defines a type's one natural order; IComparer supplies unlimited alternate strategies from outside; Equals/GetHashCode must move together for hashing collections to work."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `IComparable<T>` — implemented ON the type, ONE natural ordering, `CompareTo()` returns negative/zero/positive
+- `IComparer<T>` — external strategy object, UNLIMITED alternate orderings, `Compare(x, y)`
+- `List<T>.Sort()` uses `IComparable<T>`; `List<T>.Sort(comparer)` uses a supplied `IComparer<T>`
+- `IEquatable<T>.Equals()` must be paired with a matching `GetHashCode()` override for custom `Dictionary`/`HashSet` keys
+- Two objects that are `Equals()` MUST return the same `GetHashCode()` — breaking this causes silent lookup failures, no exception
+- Never base `GetHashCode()` on a field that can mutate after the object is placed in a hashing collection
+- `Comparer<T>.Create(lambda)` is a quick way to build an `IComparer<T>` without a full class
+
+</QuickRevision>

@@ -1,0 +1,203 @@
+---
+slug: "throw-vs-throw-ex"
+title: "throw; vs throw ex; — the Stack Trace Gotcha"
+section: "dotnet-fundamentals"
+module: "exception-handling-fundamentals"
+order: 3
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["try-catch-finally-and-hierarchy"]
+tags: ["dotnet", "csharp", "exceptions", "stack-trace", "rethrow"]
+englishDefinition: "`throw;` (a bare rethrow, no expression) preserves the exception's original stack trace exactly as it was captured at the throw site; `throw ex;` (rethrowing the caught exception variable) resets the stack trace to the current catch block's location, permanently discarding the information about where the exception actually originated — a classic, easy-to-miss production debugging gotcha."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Amazon", "Flipkart", "Accenture"]
+---
+
+<SimpleDefinition>
+
+`throw;` (a bare rethrow, no expression) preserves the exception's original stack trace exactly as it was captured at the throw site; `throw ex;` (rethrowing the caught exception variable) resets the stack trace to the current catch block's location, permanently discarding the information about where the exception actually originated — a classic, easy-to-miss production debugging gotcha.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye ek chhota syntax difference hai — ek semicolon ka farak (`throw;` vs `throw ex;`) — lekin production debugging me **massive** impact daalta hai. Interview me ye sabse "sharp" trap questions me se ek hai kyunki dono syntactically valid hain, dono compile hote hain, dono exception ko rethrow karte hain — lekin ek genuinely useful information preserve karta hai, doosra permanently destroy kar deta hai.
+
+### `throw;` — bare rethrow, stack trace preserved
+
+```csharp
+void ProcessOrder()
+{
+    try
+    {
+        ValidateOrder(); // throws here, deep inside
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Order processing failed");
+        throw; // bare rethrow — original stack trace intact
+    }
+}
+```
+
+`throw;` (bina kisi expression ke, sirf keyword) exception object ko **as-is** rethrow karta hai — CLR uske `StackTrace` property ko touch nahi karta. Jab ye exception aakhir me kahin top-level log ho, uska stack trace exactly wahi dikhayega jahan exception **originally** throw hui thi (`ValidateOrder()` ke andar, exact line), plus ye baad me kahan-kahan se guzri.
+
+### `throw ex;` — resets the stack trace
+
+```csharp
+void ProcessOrder()
+{
+    try
+    {
+        ValidateOrder(); // throws here, deep inside
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Order processing failed");
+        throw ex; // BAD — resets stack trace to THIS line
+    }
+}
+```
+
+`throw ex;` exception ko ek naye `throw` statement ki tarah treat karta hai — jaise tumne yahin, is catch block ki line pe, ek fresh exception throw kiya ho. CLR exception ka `StackTrace` property **overwrite** kar deta hai is naye location se. Original information — exception `ValidateOrder()` ke andar exact kis line pe hua tha — **permanently lost** ho jaati hai. Jab production me ye exception log hoga, stack trace sirf `catch` block ki line dikhayega, uske neeche kuch nahi — jaise exception yahin se shuru hua ho, jabki actually deep kahin aur se aaya tha.
+
+### Side-by-side — same failure, different debugging experience
+
+Original throw `ValidateOrder()` me line 42 pe:
+
+**`throw;` ka stack trace:**
+```
+at OrderValidator.ValidateOrder() in Validator.cs:line 42
+at OrderService.ProcessOrder() in OrderService.cs:line 15
+at OrderController.Post() in OrderController.cs:line 30
+```
+
+**`throw ex;` ka stack trace:**
+```
+at OrderService.ProcessOrder() in OrderService.cs:line 20
+at OrderController.Post() in OrderController.cs:line 30
+```
+
+Doosre case me `ValidateOrder()` ka mention hi gayab hai — debugger ko sirf itna pata chalega ki `ProcessOrder()` me exception aaya, lekin **exactly kahan, kis validation rule ne fail kiya** — ye information permanently lost hai. Production incident debugging me ye literally hours ka difference bana sakta hai.
+
+### Teesra option — `throw new WrapperException("...", ex)`
+
+Kabhi-kabhi tumhe genuinely ek naya, higher-level exception throw karna hota hai (error type translate karne ke liye — deeper me "Custom Exceptions" topic me cover hoga), lekin original ko information ke liye preserve karna hota hai:
+
+```csharp
+catch (SqlException ex)
+{
+    throw new OrderProcessingException("Order could not be saved", ex); // ex becomes InnerException
+}
+```
+
+Ye `throw ex;` se fundamentally alag hai — ye ek **naya exception object** hai jiska apna fresh stack trace hai (jo sahi hai, ye genuinely ek naya throw point hai), lekin original `SqlException` `InnerException` property me completely preserved rehta hai — koi information lost nahi hoti, sirf ek naye, zyada meaningful exception type ke through wrap ho jaati hai.
+
+### Kab `throw ex;` kabhi bhi acceptable hai?
+
+Practically kabhi nahi. Agar tumhe genuinely ek fresh-looking stack trace chahiye (rare), better approach `ExceptionDispatchInfo.Capture(ex).Throw()` (System.Runtime.ExceptionServices) hai, jo `throw;` jaisa hi original trace preserve karta hai lekin catch block ke bahar bhi use ho sakta hai (jaise ek async continuation me). Roslyn analyzers (`CA2200`) explicitly `throw ex;` pattern ko flag karte hain.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ke Roslyn code analyzers me `CA2200` rule specifically `throw ex;` pattern detect karta hai aur warning deta hai "Rethrow to preserve stack details" — ye itna common aur impactful mistake hai ki Microsoft ne isko ek first-class static-analysis rule bana diya, sirf documentation me mention karne ke bajaye.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Incident Response Team">
+
+Ek production outage me ek payment-reconciliation service crash kar raha tha. On-call engineer ne logs dekhe — stack trace sirf ek generic `catch` block ki line dikha raha tha, exact failure point invisible tha (kisi ne `throw ex;` likha tha "just to log and rethrow"). Root cause identify karne me almost 40 minutes extra lage kyunki team ko manually reproduce karna pada, sirf stack trace se directly point nahi mila. Post-incident review me `throw ex;` ko lint rule se ban kar diya gaya poore codebase me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `throw;` — bare rethrow, ZERO stack trace information lost
+- `throw ex;` — resets `StackTrace` to the current line, permanently discards the original throw location
+- Roslyn analyzer rule `CA2200` specifically flags `throw ex;` as a warning
+- `throw new WrapperException("...", ex)` — a genuinely new exception, original preserved via `InnerException`, not lost
+- `ExceptionDispatchInfo.Capture(ex).Throw()` — advanced alternative that preserves original trace even outside a direct catch block (e.g. across async boundaries)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`throw;` aur `throw ex;` me kya fark hai?" ka strong answer: "`throw;` (bina expression ke) exception ko as-is rethrow karta hai, uska original stack trace preserve rehta hai — jahan exception actually origin hua tha, wo information intact rehti hai. `throw ex;` exception ko ek naye throw ki tarah treat karta hai, uska stack trace current line se overwrite ho jaata hai — original throw location permanently lost ho jaati hai. Production debugging me ye bahut critical hai — `throw ex;` se stack trace sirf catch block tak dikhata hai, exact root cause line invisible ho jaati hai. Isliye kabhi bhi bare `throw;` use karo jab sirf log-and-rethrow karna ho, aur agar naya exception type chahiye to `throw new WrapperException(msg, ex)` use karo jisse original exception `InnerException` me preserve rahe." Follow-up almost certain: "to `throw ex;` ka koi valid use case hai?" — answer: practically nahi, ye ek anti-pattern hai jo Roslyn analyzer (`CA2200`) tak flag karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`catch (Exception ex) { ...; throw ex; }` likhna "just to log and rethrow" — ye original stack trace ko permanently destroy karta hai. `throw;` use karo.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `throw;` aur `throw ex;` functionally identical hain kyunki dono compile hote hain aur exception rethrow karte hain — behavior identical hai (exception propagate hota hai) lekin stack trace fundamentally different hota hai.
+
+</Mistake>
+
+<Mistake>
+
+`throw new SameExceptionType(ex.Message)` likh kar naya exception banana without passing `ex` as `innerException` — ye original exception object hi discard kar deta hai, sirf uska message string bachta hai, `StackTrace` aur exception type dono lost.
+
+</Mistake>
+
+<Mistake>
+
+Empty `catch { throw; }` jaise pattern likhna bina kisi logging ya value-add ke — agar tumhe sirf exception ko unchanged propagate karna hai bina kuch add kiye, catch block hi zaroori nahi (`finally` use karo agar sirf cleanup chahiye).
+
+</Mistake>
+
+<Mistake>
+
+Multi-catch scenarios me sirf ek catch block me `throw;` sahi likhna, aur doosre me galti se `throw ex;` reh jaana — inconsistency, especially bade codebase me, ek common code-review miss hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Deep as ValidateOrder() (line 42)
+    participant Mid as ProcessOrder() catch block
+    participant Log as Production Logs
+
+    Deep->>Deep: Exception originates here
+    Deep-->>Mid: Exception bubbles up
+    Mid->>Mid: catch (Exception ex)
+    alt throw; (bare rethrow)
+        Mid-->>Log: Stack trace shows line 42 (original)
+    else throw ex; (resets trace)
+        Mid-->>Log: Stack trace shows ONLY catch block line
+    end
+`}
+  caption="Same exception, same catch block — but the logged stack trace differs completely depending on throw; vs throw ex;."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `throw;` (bare, no expression) — preserves the original stack trace exactly
+- `throw ex;` (rethrowing the caught variable) — resets the stack trace to the current line, losing the original throw location
+- Use `throw;` whenever you're logging-and-rethrowing without changing the exception
+- Roslyn analyzer `CA2200` specifically flags `throw ex;` as a code-quality warning
+- To genuinely wrap with a new exception type, use `throw new WrapperException(msg, ex)` — original preserved via `InnerException`, not lost
+- `ExceptionDispatchInfo.Capture(ex).Throw()` preserves the original trace even across boundaries a plain `throw;` can't reach (e.g. some async scenarios)
+- This is a one-character-looking, high-impact production debugging difference — a favorite sharp interview trap
+
+</QuickRevision>

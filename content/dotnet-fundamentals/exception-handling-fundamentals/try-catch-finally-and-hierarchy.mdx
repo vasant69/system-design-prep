@@ -1,0 +1,219 @@
+---
+slug: "try-catch-finally-and-hierarchy"
+title: "Try-Catch-Finally and the Exception Class Hierarchy"
+section: "dotnet-fundamentals"
+module: "exception-handling-fundamentals"
+order: 1
+difficulty: "beginner"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "csharp", "exceptions", "try-catch-finally", "error-handling"]
+englishDefinition: "try-catch-finally is C#'s structured exception handling block, where finally always runs regardless of whether the try block succeeded, threw, or even returned early; every exception in .NET derives from System.Exception, which splits into SystemException (CLR/runtime-thrown) and ApplicationException (a largely deprecated convention for user-defined exceptions that most modern guidance recommends against using as a base)."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Wipro", "Accenture", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+`try-catch-finally` is C#'s structured exception handling block, where `finally` always runs regardless of whether the `try` block succeeded, threw, or even returned early; every exception in .NET derives from `System.Exception`, which splits into `SystemException` (CLR/runtime-thrown) and `ApplicationException` (a largely deprecated convention for user-defined exceptions that most modern guidance recommends against using as a base).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic har .NET interview ka opening question hota hai — lagta hai sabko aata hai, lekin `finally` ka **exact** guarantee aur exception hierarchy ka structure zyada candidates surface-level hi jaante hain. Interviewer yahi depth test karta hai.
+
+### `try` / `catch` / `finally` — basic mechanics
+
+`try` block me wo code jaata hai jo fail ho sakta hai. `catch` block us exception ko pakadta hai aur handle karta hai. `finally` block **hamesha** execute hota hai — chahe `try` successfully complete ho, chahe exception throw ho aur catch ho jaaye, chahe exception unhandled reh jaaye aur bubble up ho, chahe `try` ke andar hi `return` statement mil jaaye.
+
+```csharp
+static string ReadValue()
+{
+    try
+    {
+        Console.WriteLine("Try block chal raha hai");
+        return "success";
+    }
+    finally
+    {
+        Console.WriteLine("Finally chalega, return ke baad bhi");
+    }
+}
+```
+
+Output:
+```
+Try block chal raha hai
+Finally chalega, return ke baad bhi
+```
+
+Ye counter-intuitive lagta hai pehli baar — `return "success"` ke baad bhi `finally` chalta hai. Actual mechanism: `return` ka value pehle compute/store hota hai, phir CLR `finally` block run karta hai, uske baad hi method actually caller ko return karta hai. Isi wajah se `finally` cleanup code (jaise `connection.Close()`, `file.Dispose()`) ke liye reliable jagah hai — resource leak nahi hota chahe method kaise bhi exit ho.
+
+**Ek genuine exception**: agar process khud crash ho jaaye (`Environment.FailFast`, StackOverflowException, ya process ko forcefully kill karna) to `finally` guarantee nahi hota — lekin normal control flow (return, exception, break, continue) me `finally` hamesha chalta hai.
+
+### Multiple catch blocks — order matters
+
+```csharp
+try
+{
+    // risky code
+}
+catch (ArgumentNullException ex)
+{
+    // most specific first
+}
+catch (ArgumentException ex)
+{
+    // less specific
+}
+catch (Exception ex)
+{
+    // most general — last
+}
+```
+
+Compiler **specific-to-general** order enforce karta hai — agar general (`Exception`) catch pehle likha, aur specific catch uske baad, to compiler "unreachable catch clause" error dega, kyunki `ArgumentNullException` bhi `Exception` hi hai, pehla catch usko already pakad lega.
+
+### Exception class hierarchy — `System.Exception` root hai
+
+Har exception, chahe built-in ho ya custom, `System.Exception` se trace hoti hai:
+
+```
+System.Exception
+├── System.SystemException        (CLR/runtime khud throw karta hai)
+│   ├── NullReferenceException
+│   ├── IndexOutOfRangeException
+│   ├── InvalidOperationException
+│   ├── ArgumentException
+│   │   └── ArgumentNullException
+│   ├── DivideByZeroException
+│   └── StackOverflowException
+└── System.ApplicationException   (largely deprecated convention)
+```
+
+`SystemException` un exceptions ka base hai jo CLR ya .NET runtime khud generate karta hai — array bounds, null dereference, invalid cast, waghera. Idea tha ki application-level custom exceptions `ApplicationException` se inherit karein taaki "framework ka exception" vs "app ka exception" clearly distinguish ho sake.
+
+**Reality: `ApplicationException` ek historical dead end hai.** Microsoft ki current guidance (aur most style guides) explicitly kehte hain custom exceptions ko `ApplicationException` se NAHI, seedha `System.Exception` se inherit karo. Practical reason — koi genuinely useful behavior `ApplicationException` add nahi karta, aur real-world .NET code me bhi bahut se built-in "application-ish" exceptions (jaise `InvalidOperationException`) actually `SystemException` se hi derive hote hain, isliye ye distinction pehle se hi inconsistent thi. Ye ek classic "history vs current best practice" interview trap hai.
+
+### Ek `finally` gotcha jo bahut poocha jaata hai
+
+```csharp
+static int Test()
+{
+    try
+    {
+        return 1;
+    }
+    finally
+    {
+        return 2; // BAD PRACTICE — overrides the try's return value
+    }
+}
+// Test() returns 2, not 1
+```
+
+`finally` ke andar `return` likhna legal hai lekin **anti-pattern** hai — ye `try` ka return value silently overwrite kar deta hai, aur agar `try` me exception throw hua tha, `finally` ka `return` us exception ko bhi silently swallow kar deta hai (exception kabhi propagate hi nahi hota). Analyzers (like Roslyn) is pattern par warning dete hain.
+
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ke apne source code aur official coding guidelines me explicitly likha hai: naye custom exceptions `Exception` se directly derive karein, `ApplicationException` se nahi. Ye guidance itni established hai ki Roslyn analyzers (`CA1058`-family rules) purane `ApplicationException`-based code par bhi warning fire karte hain, migration ko encourage karne ke liye.
+
+</RealWorld>
+
+<RealWorld company="An Indian Banking Backend">
+
+Ek payment-processing service me `finally` block ke andar database connection close karne ka code tha, lekin galti se ek early `return` uske upar likha gaya jisse `finally` skip hone ka doubt tha. Team ne actually test likha proving `finally` hamesha chalta hai — is exact confusion ki wajah se code review me ek naya rule add kiya gaya: resource cleanup hamesha `finally` ya `using` me ho, kabhi manual "just before return" placement pe depend na kare.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `finally` guaranteed runs on: normal completion, exception (caught or uncaught), early `return`, `break`/`continue` out of the try
+- `finally` NOT guaranteed on: process crash, `Environment.FailFast`, `StackOverflowException`, forcibly killed process
+- Catch block order: compiler enforces specific-before-general, else "unreachable catch clause" compile error
+- `System.Exception` is the root of ALL exceptions in .NET — every exception, built-in or custom, ultimately derives from it
+- `ApplicationException` — technically still exists, but current Microsoft guidance says don't use it as a custom-exception base
+- `return` inside `finally` silently overrides both the try's return value AND any in-flight exception — a real anti-pattern
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`finally` ka guarantee exactly kya hai?" — strong answer: "`finally` block hamesha execute hota hai jab bhi `try` block se control normally exit karta hai — success, caught exception, uncaught exception bubbling up, ya `try` ke andar hi `return`/`break`/`continue`. Sirf process-level crash (StackOverflow, forced kill) me `finally` skip ho sakta hai. Isi guarantee ki wajah se resource cleanup — connections, file handles, locks — `finally` (ya uske syntactic sugar `using`) me likha jaata hai, kyunki wahan se guarantee milta hai chahe method kaise bhi complete ho." Likely follow-up: "`ApplicationException` custom exceptions ke liye base kyun nahi use karna chahiye?" — answer: historically iska purpose tha "app vs framework exception" distinguish karna, lekin practically ye consistently follow nahi hua (bahut se built-in exceptions khud `SystemException` se derive hote hain jo conceptually "application" errors hain) — isliye current guidance seedha `System.Exception` se inherit karne ki hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`finally` ke andar `return` likhna — ye `try` ka return value silently override kar deta hai, aur agar `try` me exception thi, use bhi swallow kar deta hai bina kisi trace ke. Almost always a bug.
+
+</Mistake>
+
+<Mistake>
+
+Custom exceptions ko `ApplicationException` se inherit karna "best practice" samajh kar — ye purani, ab discouraged guidance hai. `System.Exception` se seedha inherit karo.
+
+</Mistake>
+
+<Mistake>
+
+General `catch (Exception ex)` ko specific catch blocks se pehle likhna — compile error deta hai ("unreachable catch clause"), kyunki general catch sab kuch already pakad leta.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `finally` sirf tab chalta hai jab exception aaye — `finally` normal, exception-free completion par bhi chalta hai, ye "cleanup on failure only" nahi hai, "cleanup always" hai.
+
+</Mistake>
+
+<Mistake>
+
+`catch (Exception) { }` empty block likh kar exception ko silently swallow karna — koi log nahi, koi rethrow nahi. Debugging me ye production incidents ko invisible bana deta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["try block starts"] --> B{"Exception thrown?"}
+    B -->|No| C["try completes normally"]
+    B -->|Yes, matching catch exists| D["catch block runs"]
+    B -->|Yes, no matching catch| E["exception propagates up"]
+    C --> F["finally block runs"]
+    D --> F
+    E --> F
+    F --> G["Method exits\n(or exception continues propagating\nafter finally completes)"]
+`}
+  caption="finally always runs on the way out, regardless of which of the three paths the try block took."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `finally` always runs — success, caught exception, uncaught exception, or an early `return` inside `try`
+- `finally` does NOT run on process crash / `Environment.FailFast` / forced process kill
+- Catch blocks must be ordered specific-to-general, or it's a compile error ("unreachable catch clause")
+- `System.Exception` is the root of every exception; splits into `SystemException` (CLR-thrown) and the largely-deprecated `ApplicationException`
+- Current guidance: custom exceptions inherit `Exception` directly, never `ApplicationException`
+- `return` inside `finally` is an anti-pattern — silently overrides the try's return value and swallows in-flight exceptions
+- Use `finally` (or `using`) for guaranteed resource cleanup — connections, files, locks
+
+</QuickRevision>

@@ -1,0 +1,240 @@
+---
+slug: "exception-handling-best-practices"
+title: "Exception Handling Best Practices"
+section: "dotnet-fundamentals"
+module: "exception-handling-fundamentals"
+order: 7
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["try-catch-finally-and-hierarchy", "throw-vs-throw-ex", "custom-exceptions-and-filters"]
+tags: ["dotnet", "csharp", "exceptions", "best-practices", "error-handling"]
+englishDefinition: "Well-designed exception handling in .NET follows a small set of consistently-tested rules: catch specific exceptions before general ones (the compiler enforces ordering, but the reasoning is about intent), never use exceptions for expected, normal control flow (they're expensive and obscure code paths), always log with enough context to diagnose the failure without reproducing it, and never silently swallow an exception with an empty catch block."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Amazon", "Flipkart", "Accenture", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Well-designed exception handling in .NET follows a small set of consistently-tested rules: catch specific exceptions before general ones, never use exceptions for expected, normal control flow (they're expensive and obscure code paths), always log with enough context to diagnose the failure without reproducing it, and never silently swallow an exception with an empty catch block.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye module ka synthesis topic hai — pichle 6 topics ki mechanics (finally, built-in exceptions, throw vs throw ex, custom exceptions, inner exceptions, global handling) ko ek saath la kar "achha exception handling kaisa dikhta hai" ka practical checklist banate hain. Interview me ye aksar ek open-ended question ki tarah poocha jaata hai: "exception handling me best practices kya follow karte ho?" — aur ye topic exactly wo answer structure deta hai.
+
+### Rule 1 — Specific exceptions pehle catch karo, general baad me
+
+```csharp
+try
+{
+    ProcessPayment(request);
+}
+catch (InsufficientFundsException ex)
+{
+    // specific — actionable, distinct handling
+    return BadRequest(new { error = "insufficient_funds", ex.AvailableBalance });
+}
+catch (PaymentGatewayException ex)
+{
+    // specific — different actionable handling (retry?)
+    _logger.LogWarning(ex, "Gateway error, may be transient");
+    return StatusCode(503);
+}
+catch (Exception ex)
+{
+    // general — genuinely unexpected, last resort
+    _logger.LogError(ex, "Unexpected error processing payment");
+    return StatusCode(500);
+}
+```
+
+Compiler ye order enforce karta hai (general pehle likha to compile error), lekin **reasoning** samajhna zaroori hai: har specific catch block ek genuinely different, actionable response deta hai. Agar sab catch blocks same kaam karte hain, alag types me split karne ka koi fayda nahi — ek generic catch kaafi hai.
+
+### Rule 2 — Exceptions ko normal control flow ke liye use mat karo
+
+```csharp
+// BAD — "not found" ek expected outcome hai, exceptional nahi
+public User GetUser(int id)
+{
+    var user = _db.Users.Find(id);
+    if (user == null) throw new UserNotFoundException(id);
+    return user;
+}
+
+// GOOD — nullable return, caller normally handle karta hai
+public User? GetUser(int id) => _db.Users.Find(id);
+
+// caller
+var user = GetUser(id);
+if (user is null) return NotFound();
+```
+
+Exceptions genuinely expensive hain — stack trace capture, unwinding, allocation — aur jab normal, expected outcomes (jaise "record not found" ek lookup me) exceptions se signal kiye jaate hain, code flow follow karna mushkil ho jaata hai (har normal case ek try/catch me wrap hota hai). Reserve exceptions ke liye tabhi jab situation genuinely **unexpected** ho — ek database connection drop hona, ek corrupt file, ek third-party API ka unexpected response format.
+
+### Rule 3 — Hamesha context ke saath log karo
+
+```csharp
+// BAD — koi context nahi, sirf ki kuch fail hua
+catch (Exception ex)
+{
+    _logger.LogError("Error occurred");
+}
+
+// GOOD — structured logging, exception object, relevant context
+catch (Exception ex)
+{
+    _logger.LogError(ex, "Failed to process order {OrderId} for customer {CustomerId}",
+        order.Id, order.CustomerId);
+}
+```
+
+`_logger.LogError(ex, ...)` (exception object ko pehle parameter ke roop me pass karna) poora stack trace aur `InnerException` chain automatically capture karta hai. Structured logging (named placeholders `{OrderId}`, string concatenation nahi) production log-aggregation tools (Seq, Application Insights, ELK) me searchable/filterable data deta hai — sirf ek free-text message se production debugging bahut slow ho jaata hai.
+
+### Rule 4 — Exceptions ko silently swallow mat karo
+
+```csharp
+// WORST possible pattern
+try
+{
+    SaveToDatabase(order);
+}
+catch (Exception)
+{
+    // nothing here — failure completely invisible
+}
+```
+
+Empty catch block ek genuine production risk hai — failure hoti hai, koi trace nahi milta, application "successfully" continue karta hai jab actually kuch corrupt ho chuka hai. Minimum baseline: kam se kam log karo. Better: decide karo ki genuinely handle kar sakte ho (fallback value, retry) ya rethrow karna hai (`throw;`, stack trace preserve karke).
+
+### Rule 5 — Exception ka scope tight rakho
+
+```csharp
+// BAD — poora method try me wrap kar diya
+try
+{
+    ValidateInput(request);
+    var result = ProcessOrder(request);
+    SendConfirmationEmail(result);
+    UpdateInventory(result);
+}
+catch (Exception ex) { /* which line failed? unclear */ }
+
+// GOOD — sirf wo specific operation jo genuinely fail ho sakta hai aur jise specifically handle karna hai
+ValidateInput(request); // let validation exceptions propagate naturally
+var result = ProcessOrder(request);
+try
+{
+    SendConfirmationEmail(result); // this specific step is allowed to fail non-fatally
+}
+catch (EmailException ex)
+{
+    _logger.LogWarning(ex, "Confirmation email failed, order still processed");
+}
+UpdateInventory(result);
+```
+
+Ek bada try block jisme multiple unrelated operations hon, debugging mushkil banata hai — exception aane par pata nahi chalta exactly kaunsi line fail hui, aur handling logic (agar generic) sab operations ke liye same treat kar deta hai jabki alag operations ka alag "acceptable failure" mode ho sakta hai.
+
+### Rule 6 — Async code me exceptions ko properly propagate hone do
+
+`async void` methods (event handlers ke alawa) avoid karo — unke exceptions caller catch hi nahi kar sakta, wo directly process crash kar sakte hain. `async Task` use karo taaki exception `Task` ke through normally propagate ho aur `await` se catch ho sake.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's official framework design guidelines document explicitly ek "Design Guidelines for Exceptions" section rakhta hai jisme yahi rules — specific-before-general catching, exceptions-not-for-control-flow, meaningful messages — formally documented hain, aur .NET ke apne BCL code ko inhi guidelines ke against review kiya jaata hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Insurance Claims Platform">
+
+Ek claims-processing service me ek empty `catch { }` block silently claim-status-update failures swallow kar raha tha — 3 mahine tak kisi ko pata nahi chala ki kuch claims database me stuck reh gaye the "processing" state me, kyunki application logs me kuch bhi error nahi dikh raha tha. Root cause discover hone ke baad, team ne poori codebase me ek automated check add kiya (Roslyn analyzer rule) jo empty catch blocks ko build-time error bana deta hai — is exact incident se seedha driven policy change.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Rule of thumb: catch specific-to-general, always — compiler enforces the order, understand the "why" (distinct, actionable handling per type)
+- Exceptions are expensive — stack trace capture + unwinding cost meaningfully more than a normal return path, don't use them for expected outcomes
+- `_logger.LogError(ex, "message {Param}", value)` — always pass the exception object as the first argument for full stack trace capture
+- Empty `catch { }` blocks — a genuine, repeatedly-seen production incident cause; treat as a hard rule violation, not a style nitpick
+- `async void` — exceptions can't be caught by the caller; reserved strictly for event handlers
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Exception handling me tumhare best practices kya hain?" ek open-ended question hai jahan interviewer breadth aur judgment dono test karta hai. Strong structured answer: "Paanch cheezein follow karta hoon — (1) specific exceptions pehle catch karo, general baad me, aur har catch block ek genuinely distinct, actionable response de; (2) exceptions ko normal, expected control flow ke liye use mat karo — jaise 'not found' lookups, wahan nullable return ya TryParse-style pattern use karo; (3) hamesha exception object ke saath, structured, relevant context ke saath log karo; (4) kabhi bhi exception ko silently swallow mat karo — empty catch block genuinely production incidents cause karte hain; (5) try block ka scope tight rakho, sirf wahi operation wrap karo jo genuinely fail ho sakta hai aur jise specifically handle karna hai." Ye ek "checklist" answer hai jo interviewer ko dikhata hai ki tumhare paas sirf syntax knowledge nahi, production judgment bhi hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Empty `catch (Exception) { }` likhna — sabse dangerous pattern, failure completely invisible ho jaata hai, production incidents ka common silent root cause.
+
+</Mistake>
+
+<Mistake>
+
+Exceptions ko expected, normal outcomes ke liye use karna (jaise "not found") — perf cost aur unclear code flow, jab ek nullable return ya boolean check kaafi tha.
+
+</Mistake>
+
+<Mistake>
+
+Poore method ko ek hi bade try block me wrap karna — exact failure point unclear ho jaata hai, aur alag operations ka alag acceptable-failure-mode express nahi ho pata.
+
+</Mistake>
+
+<Mistake>
+
+Log karte waqt sirf `ex.Message` ya generic string use karna, exception object khud ko `LogError` ka first parameter na banana — poora stack trace/InnerException chain capture nahi hoti.
+
+</Mistake>
+
+<Mistake>
+
+`async void` methods likhna event handlers ke alawa kisi aur jagah — exceptions caller ko catch karne ka mauka hi nahi milta, process crash ho sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Exception handling checklist"] --> B["Specific before general catch,\neach with distinct handling"]
+    A --> C["Never use exceptions\nfor expected control flow"]
+    A --> D["Always log with\nexception object + context"]
+    A --> E["Never silently swallow\n(no empty catch blocks)"]
+    A --> F["Keep try scope tight —\nonly what can genuinely fail"]
+    A --> G["async Task, not async void\n(except event handlers)"]
+`}
+  caption="Six rules that turn 'knows try/catch syntax' into 'writes production-grade exception handling.'"
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Catch specific exceptions before general ones — each catch block should mean a genuinely different, actionable response
+- Never use exceptions for expected, normal control flow — reserve them for genuinely unexpected failures
+- Always log with the exception object as a parameter plus relevant structured context, not just a free-text message
+- Never silently swallow an exception with an empty catch block — a real, repeated production-incident root cause
+- Keep the try block's scope as tight as possible — only what genuinely can fail and needs specific handling
+- Prefer `async Task` over `async void` (except event handlers) so exceptions can actually be caught by the caller
+- This topic is the "checklist" synthesis of everything else in this module — a common open-ended interview question
+
+</QuickRevision>

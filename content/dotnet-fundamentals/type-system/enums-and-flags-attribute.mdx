@@ -1,0 +1,182 @@
+---
+slug: "enums-and-flags-attribute"
+title: "Enums, Underlying Types, and the [Flags] Attribute"
+section: "dotnet-fundamentals"
+module: "type-system"
+order: 9
+difficulty: "beginner"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "csharp", "type-system", "enum", "flags", "bitwise"]
+englishDefinition: "An enum is a value type that defines a set of named integer constants for readability and type safety; by default backed by int, an enum's underlying type can be any integral type, and applying [Flags] turns it into a bitwise-combinable set (each member a distinct power-of-two bit) checked via bitwise AND or the built-in HasFlag method."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Wipro", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+An `enum` is a value type that defines a set of named integer constants for readability and type safety; by default backed by `int`, an enum's underlying type can be any integral type, and applying `[Flags]` turns it into a bitwise-combinable set (each member a distinct power-of-two bit) checked via bitwise `&` or the built-in `HasFlag` method.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Enum kya hai, aur kyun magic numbers se better hai
+
+`enum` named integer constants ka ek set define karta hai — `if (status == 1)` likhne ke bajaye `if (status == OrderStatus.Shipped)` likhna, jo readable bhi hai aur type-safe bhi (compiler galat type assign hone se rokta hai):
+
+```csharp
+public enum OrderStatus
+{
+    Pending,    // 0 — default, pehla member hamesha 0 hota hai jab tak explicitly override na ho
+    Confirmed,  // 1
+    Shipped,    // 2
+    Delivered,  // 3
+    Cancelled   // 4
+}
+
+OrderStatus status = OrderStatus.Shipped;
+Console.WriteLine((int)status); // 2 — underlying value ko explicit cast se access kiya
+```
+
+Underlying type by default `int` hai, lekin explicitly kisi bhi integral type (`byte`, `long`, `short`, etc.) se backed kiya ja sakta hai — jab memory-sensitive scenario ho (jaise ek array me lakhon enum values store karni ho), `byte`-backed enum use karke 4x space save ho sakta hai `int` ke comparison me:
+
+```csharp
+public enum SmallCode : byte { A = 1, B = 2, C = 3 } // byte-backed — 1 byte per value, not 4
+```
+
+### Enum ek value type hai, aur runtime pe just an integer hai
+
+Ye important nuance hai: `enum` compile-time pe type-safety deta hai, lekin runtime pe ye **sirf ek integer hai** (uske underlying type ka). Ye is-mismatch-safe nahi hai runtime pe — tum ek invalid integer value ko forcibly cast kar sakte ho jo koi defined member match nahi karta:
+
+```csharp
+OrderStatus invalid = (OrderStatus)999; // compile hoga, koi runtime check nahi
+Console.WriteLine(invalid); // "999" print hoga — koi matching name nahi
+```
+
+Ye ek genuine gotcha hai — enum "type-safe" hai compile-time pe (tum `OrderStatus status = "hello"` nahi likh sakte), lekin runtime pe arbitrary integer values force-cast ho sakte hain. Isliye external input (jaise API se aaya integer) ko enum me cast karne se pehle `Enum.IsDefined()` se validate karna best practice hai.
+
+### [Flags] attribute — jab multiple values ek saath combine honi ho
+
+Normal enum me ek variable ek hi value hold kar sakta hai. Lekin real scenarios me kabhi-kabhi **multiple options ek saath** chahiye hote hain — jaise ek user ke paas "Read" AND "Write" dono permissions ho sakti hain. Iske liye `[Flags]` attribute use hota hai, jisme har member ek **distinct power-of-two bit** hona chahiye:
+
+```csharp
+[Flags]
+public enum Permissions
+{
+    None    = 0,
+    Read    = 1,  // binary: 0001
+    Write   = 2,  // binary: 0010
+    Execute = 4,  // binary: 0100
+    Delete  = 8   // binary: 1000
+}
+
+Permissions userPerms = Permissions.Read | Permissions.Write; // bitwise OR se combine
+Console.WriteLine(userPerms); // "Read, Write" — [Flags] ToString() ko smart bana deta hai
+
+bool canWrite = (userPerms & Permissions.Write) == Permissions.Write; // bitwise AND se check
+bool canWrite2 = userPerms.HasFlag(Permissions.Write); // same result, built-in helper method
+```
+
+Power-of-two hona zaroori hai kyunki har bit ek independent flag represent karta hai — `1` (0001), `2` (0010), `4` (0100), `8` (1000) — inko `|` (OR) se combine karne par koi overlap nahi hota, har bit apni jagah preserve rehti hai. Agar members power-of-two na hon (jaise `1, 2, 3`), combining ambiguous ho jaata hai kyunki `3` khud bhi ek valid standalone value dikhta hai.
+
+### HasFlag() vs bitwise &
+
+`HasFlag()` readable hai lekin thoda slower hai (boxing involve hota hai internally, kyunki ye `Enum` base class ka method hai jo `object` parameter leta hai) — hot paths me direct bitwise `&` comparison prefer kiya jaata hai, general code me `HasFlag()` ki readability worth hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`[Flags]` enum members **power-of-two** hone chahiye (1, 2, 4, 8, 16, ...) taaki bitwise OR se combine karne par koi bit-overlap na ho. Agar koi member sequential (0, 1, 2, 3) rakh diya jaaye galti se, combining silently galat/ambiguous results dega — ye ek real, subtle bug hai jo compiler catch nahi karta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET BCL ka `FileAttributes` enum khud `[Flags]` ka classic example hai — ek file simultaneously `ReadOnly`, `Hidden`, aur `Archive` ho sakti hai, sab ek hi `FileAttributes` variable me bitwise-combined store hoti hain, `File.GetAttributes()` se milne wali value me.
+
+</RealWorld>
+
+<RealWorld company="An Indian HRMS Platform">
+
+Ek HR system me `EmployeeRole` enum banaya gaya tha `[Flags]` ke saath — kyunki ek employee simultaneously "Manager" aur "Approver" dono ho sakta tha. Ek naye developer ne accidentally ek naya role `HRAdmin = 3` add kar diya (power-of-two nahi, jo actually `Read | Write` ke barabar tha existing values me), jisse `HasFlag()` checks unexpectedly true return karne lage un employees ke liye jinke paas actually wo specific role nahi tha. Fix: code review guideline add ki gayi ki har naya `[Flags]` member explicitly next power-of-two value ho, aur unit test add kiya gaya jo verify karta hai koi do members overlap na karein.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Default enum underlying type: `int` (4 bytes) — can be `byte`, `sbyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`
+- First enum member defaults to `0` unless explicitly assigned
+- `[Flags]` members should each be a distinct power of two: 1, 2, 4, 8, 16, ...
+- `Enum.IsDefined()` validates a value against actual defined members at runtime — enums don't self-validate on cast
+- `HasFlag()` involves boxing internally (slight perf cost) — direct bitwise `&` is the hot-path alternative
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`[Flags]` attribute kya karta hai, aur enum members power-of-two kyun hone chahiye?" — strong answer: "`[Flags]` enum ko bitwise-combinable banata hai — matlab ek variable multiple values simultaneously hold kar sakta hai, jaise permissions. Members power-of-two (1, 2, 4, 8) hone chahiye kyunki har value ek distinct bit represent karti hai — bitwise OR se combine karne par har bit apni jagah preserve rehti hai, koi overlap nahi hota. Check karne ke liye bitwise `&` ya `HasFlag()` use karta hoon — `HasFlag` readable hai, `&` thoda faster hai boxing avoid karne ki wajah se." Follow-up: enum runtime pe kitna type-safe hai — jawaab: compile-time type-safe hai, lekin runtime pe ye sirf ek integer hai, arbitrary values forcibly cast ho sakti hain, isliye external input validate karna zaroori hai `Enum.IsDefined()` se.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`[Flags]` enum members ko sequential (0, 1, 2, 3) rakh dena instead of power-of-two — combining silently galat/ambiguous results deta hai, ek subtle bug jo compiler catch nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki enum runtime pe bhi fully type-safe hai — external/untrusted integer values ko bina `Enum.IsDefined()` validate kiye directly enum me cast karna invalid values allow kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+`[Flags]` enum me `None = 0` member na define karna — bina explicit zero-value ke, "no flags set" state represent karna confusing ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Regular (non-Flags) enum ko bitwise operators se combine karne ki koshish karna — ye compile ho sakta hai lekin semantically meaningless hai agar members power-of-two na hon aur `[Flags]` intent na ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Read = 0001"] -->|"OR"| D["Combined = 0011"]
+    B["Write = 0010"] -->|"OR"| D
+    D -->|"AND Write (0010)"| E["0010 == Write -> HasFlag true"]
+    D -->|"AND Execute (0100)"| F["0000 != Execute -> HasFlag false"]
+`}
+  caption="Power-of-two flag values combine via bitwise OR without collision, and are checked via bitwise AND against the target flag."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `enum` = named integer constants, value type, default underlying type `int`
+- Underlying type can be any integral type (`byte` through `long`) — smaller types save memory at scale
+- Runtime type-safety is limited — an out-of-range integer can be force-cast into an enum with no built-in check
+- `[Flags]` makes an enum bitwise-combinable — members must be distinct powers of two (1, 2, 4, 8, ...)
+- Combine with `|` (bitwise OR); check with `&` (bitwise AND) or the more readable `HasFlag()`
+- `HasFlag()` involves boxing internally — slightly slower than a direct bitwise check in hot paths
+- Always include a `None = 0` member in a `[Flags]` enum for the "nothing set" state
+
+</QuickRevision>

@@ -1,0 +1,187 @@
+---
+slug: "weakreference-span-memory-stackalloc"
+title: "WeakReference, Span<T>/Memory<T>, and stackalloc"
+section: "dotnet-fundamentals"
+module: "memory-gc"
+order: 7
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["memory-leaks-in-dotnet", "managed-vs-unmanaged-and-gc-fundamentals"]
+tags: ["dotnet", "csharp", "weakreference", "span", "memory", "stackalloc", "performance"]
+englishDefinition: "WeakReference lets code hold a handle to an object without keeping it reachable, so the GC can still collect it when nothing else references it — useful for caches. Span<T> and Memory<T> are allocation-free ways to work with a contiguous slice of an array, string, or stack memory without copying it. stackalloc allocates a buffer directly on the stack, avoiding heap allocation and GC involvement entirely, at the cost of a strict, unsafe-adjacent lifetime tied to the current method's stack frame."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+`WeakReference` lets code hold a handle to an object without keeping it reachable, so the GC can still collect it when nothing else references it — useful for caches. `Span<T>` and `Memory<T>` are allocation-free ways to work with a contiguous slice of an array, string, or stack memory without copying it. `stackalloc` allocates a buffer directly on the stack, avoiding heap allocation and GC involvement entirely, at the cost of a strict, unsafe-adjacent lifetime tied to the current method's stack frame.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Module ke pichle topic ne dikhaya ki references (static, events, closures) unintentionally objects ko alive rakh sakte hain. Ye last topic teen tools cover karta hai jo directly memory management ke saath interact karte hain — ek "GC ko bypass kaise karein bina object ko force-alive rakhe" (`WeakReference`), aur do "allocation hi kaise avoid karein" (`Span<T>`/`Memory<T>`, `stackalloc`).
+
+### `WeakReference` — reference hold karo, lekin GC ko rokna mat
+
+Normal (strong) reference GC ko object collect karne se **rokta** hai. `WeakReference` ek alag tarah ka handle deta hai — ye object ko **access karne ka raasta** deta hai jab tak wo zinda hai, lekin GC ko ye object collect karne se **nahi rokta**.
+
+```csharp
+var bigObject = new ExpensiveCache();
+var weakRef = new WeakReference(bigObject);
+
+bigObject = null; // strong reference clear
+// ab bigObject ko sirf weakRef ke through access kiya jaa sakta hai — agar wo abhi zinda hai
+
+if (weakRef.IsAlive && weakRef.Target is ExpensiveCache cache)
+{
+    // object abhi collect nahi hua, use kar sakte ho
+}
+else
+{
+    // object already collect ho chuka — dobara banao
+}
+```
+
+**Classic use case: cache jo GC pressure ke against automatically shrink ho sake.** Ek normal (strong-referenced) cache application-lifetime tak har cached item ko force-alive rakhega, chahe memory pressure high ho. `WeakReference`-based cache GC ko permission deta hai — agar memory tight hai aur GC ko space chahiye, wo weakly-referenced cached items ko collect kar sakta hai; agar space hai, items zinda reh sakte hain aur cache-hit milta rehta hai. Ye ek explicit trade-off hai: "cache-hit rate thoda kam ho sakta hai memory pressure me, lekin `OutOfMemoryException` risk kam ho jaata hai."
+
+`ConditionalWeakTable<TKey, TValue>` ek related, aur bhi specific tool hai — jab tumhe kisi existing object ke saath "extra data" associate karna ho bina us object ki lifetime affect kiye (jaise ek third-party object pe metadata attach karna).
+
+### `Span<T>` aur `Memory<T>` — allocation-free slicing
+
+Traditionally, kisi array/string ka "hissa" (subset) kaam karne ke liye ek **naya copy** banana padta tha (`array.Skip(2).Take(5).ToArray()`, ya `str.Substring(2, 5)`) — har operation ek nayi heap allocation create karta tha. `Span<T>` (C# 7.2) ek **stack-only struct** hai jo underlying memory (array, string, stack buffer) ka ek "view"/"window" represent karta hai **bina copy kiye** — koi extra allocation, koi GC pressure.
+
+```csharp
+int[] numbers = { 1, 2, 3, 4, 5, 6, 7, 8 };
+Span<int> slice = numbers.AsSpan(2, 3); // {3, 4, 5} — koi copy nahi, same underlying memory ka view
+
+slice[0] = 100; // original array bhi modify hota hai — ye ek VIEW hai, copy nahi
+Console.WriteLine(numbers[2]); // 100
+```
+
+`Span<T>` ek **ref struct** hai — matlab ye sirf stack pe reh sakta hai, kisi bhi heap-allocated field, async method state machine, ya iterator me store nahi ho sakta (compiler enforce karta hai). Ye restriction deliberately hai — `Span<T>` internally ek pointer + length hold karta hai, aur agar underlying memory (jaise `stackalloc` buffer) ka lifetime khatam ho jaaye jabki `Span<T>` heap pe kahin store ho, ek dangling reference ban jaayega — CLR isko structurally impossible bana deta hai `ref struct` restriction se.
+
+`Memory<T>` `Span<T>` ka **heap-allowed cousin** hai — jab tumhe similar slicing chahiye lekin ek async method ke across ya class field me store karna ho (jahan `ref struct` allowed nahi hai), `Memory<T>` use karo, aur jab actually process karna ho, `.Span` property se ek `Span<T>` nikaal lo.
+
+### `stackalloc` — buffer directly stack pe, GC involvement zero
+
+`stackalloc` ek buffer **stack pe** allocate karta hai, heap pe nahi — isliye GC ko iske baare me pata hi nahi chalta, kabhi collect/track nahi karta. Method return hote hi stack frame khud unwind ho jaata hai, buffer automatically "gone" ho jaata hai — bilkul jaisa normal local variables ke saath hota hai.
+
+```csharp
+Span<byte> buffer = stackalloc byte[256]; // heap allocation ZERO, GC involvement ZERO
+// buffer ko fill karo, process karo...
+// method return hote hi automatically gone — koi Dispose(), koi GC cycle involved nahi
+```
+
+`stackalloc` ka use case bahut narrow hai: **chhote, short-lived buffers, high-performance/hot-path code** (jaise parsing, serialization ke andar) jahan heap allocation avoidance genuinely measurable perf benefit deta hai. Ye "unsafe-adjacent" hai kyunki galat use se stack overflow ho sakta hai (bahut bada buffer, ya recursion ke saath combine karna) — isliye size hamesha chhota aur bounded rakhna chahiye (typically kuch sau bytes tak, kabhi user-controlled/unbounded size nahi).
+
+</Hinglish>
+
+<Tradeoff
+  pros={["WeakReference: cache automatically GC pressure ke against shrink ho sakta hai, OutOfMemoryException risk kam", "Span<T>/Memory<T>: allocation-free slicing, heavy GC-pressure-reducing perf win in hot paths", "stackalloc: zero heap allocation, zero GC involvement for small short-lived buffers"]}
+  cons={["WeakReference se cache-hit rate unpredictable ho jaata hai — GC ki marzi pe depend karta hai", "Span<T> ref struct restriction se flexibility kam hoti hai (heap fields, async, iterators me store nahi ho sakta)", "stackalloc galat size se stack overflow risk — bounded, chhoti sizes tak hi limit rakhna chahiye"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's own `System.Text.Json` aur `System.Text.RegularExpressions` (source-generated regex) ka high-performance path internally `Span<T>`/`ReadOnlySpan<char>` heavily use karta hai parsing ke liye — bina intermediate substring allocations ke, jo pehle ke JSON/regex parsers me significant GC pressure ka source thi. Microsoft ki apni performance benchmarks in APIs ki adoption ko drastically kam allocation rate se justify karti hain.
+
+</RealWorld>
+
+<RealWorld company="A High-Frequency Trading-Adjacent Fintech System">
+
+Ek Indian fintech company jo real-time market-data feeds process karti thi, apne parsing hot-path me pehle `string.Split()` aur `Substring()` heavily use karti thi — profiling ne dikhaya ki har incoming message ke liye dus se zyada intermediate string allocations ho rahi thi, jo GC ko frequently trigger kar rahi thi aur latency spikes create kar rahi thi. Team ne parsing logic ko `ReadOnlySpan<char>`-based rewrite kiya (bina substring allocation ke slicing), jisse allocation rate drastically gira aur p99 latency significantly improve hui — ek genuine example jahan `Span<T>` ka theoretical benefit measurable production impact bana.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `WeakReference` allows GC to collect an object even while a handle to it still exists — ordinary strong references never allow this
+- `Span<T>` shipped in C# 7.2 (.NET Core 2.1) as a `ref struct` — cannot live on the heap, cannot be a field of a class, cannot be captured by async methods
+- `Memory<T>` is the heap-allowed counterpart to `Span<T>` — exposes `.Span` when synchronous slicing access is needed
+- `stackalloc` buffers exist only for the current method's stack frame — automatically gone on return, zero GC tracking
+- Both `Span<T>`-based slicing and `stackalloc` are core techniques behind measurable allocation-rate reductions in .NET's own high-performance BCL APIs (JSON, regex, string parsing)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`WeakReference` kab use karoge?" ka strong answer: "Jab mujhe kisi object ka handle chahiye ho lekin GC ko us object ko collect karne se rokna nahi ho — classic use case ek cache hai jo memory pressure ke against automatically shrink ho sake. Normal strong reference cache items ko force-alive rakhta, `WeakReference`-based cache GC ko permission deta hai unhe collect karne ki agar zaroorat pade."
+
+"`Span<T>` kya solve karta hai?" ka strong answer: "Array/string ke ek hisse pe kaam karne ke liye traditionally nayi copy/allocation banani padti thi. `Span<T>` ek allocation-free view deta hai underlying memory ka — ye ek `ref struct` hai, isliye sirf stack pe reh sakta hai, jo compiler ko guarantee deta hai ki underlying memory (jaise ek `stackalloc` buffer) ke lifetime se bahar kabhi use nahi hoga." Almost-certain follow-up: "`Span<T>` heap pe kyun store nahi ho sakta?" — jawaab: `ref struct` restriction, dangling-reference bugs ko structurally impossible banane ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`WeakReference` ko "cache ka permanent solution" samajh lena — actually iska trade-off hai ki cache-hit rate unpredictable ho jaata hai (GC ki marzi pe depend karta hai), isliye ye har cache scenario ke liye sahi choice nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+`Span<T>` ko class field ya async method ke andar store karne ki koshish karna — compile error dega, kyunki `ref struct` sirf stack pe reh sakta hai. `Memory<T>` iska heap-allowed alternative hai.
+
+</Mistake>
+
+<Mistake>
+
+`stackalloc` ko bade ya unbounded (user-controlled) size ke saath use karna — stack overflow ka genuine risk hai; sirf chhoti, bounded sizes ke liye appropriate hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `Span<T>` hamesha ek copy banata hai jaisa `Substring()`/`Skip().Take()` karte hain — actually opposite hai, `Span<T>` ek view hai, underlying memory ko modify karne se original data bhi change hota hai.
+
+</Mistake>
+
+<Mistake>
+
+`Memory<T>` aur `Span<T>` ko interchangeable samajhna bina context consider kiye — `Span<T>` sirf synchronous, stack-scoped code ke liye; async ya field-storage scenarios me `Memory<T>` chahiye hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["WeakReference"] --> B["Handle exists, GC still free to collect"]
+    B --> C["Use case: shrinkable cache under memory pressure"]
+
+    D["Span&lt;T&gt; / Memory&lt;T&gt;"] --> E["View over existing memory, zero copy"]
+    E --> F{"Needs heap storage (field/async)?"}
+    F -->|Nahi, sync/stack only| G["Span&lt;T&gt; — ref struct"]
+    F -->|Haan| H["Memory&lt;T&gt; — heap-allowed, .Span when needed"]
+
+    I["stackalloc"] --> J["Buffer on stack — zero heap alloc, zero GC tracking"]
+    J --> K["Gone automatically when method returns"]
+`}
+  caption="Three distinct tools for reducing GC pressure and unwanted retention — WeakReference for collectible handles, Span/Memory for allocation-free slicing, stackalloc for stack-only buffers."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `WeakReference` gives access to an object without preventing GC from collecting it — classic use: shrinkable cache
+- `ConditionalWeakTable<TKey, TValue>` associates extra data with an object without extending its lifetime
+- `Span<T>` is an allocation-free view over an array/string/stack buffer — a `ref struct`, so stack-only (no fields, no async, no iterators)
+- `Memory<T>` is the heap-allowed counterpart — exposes `.Span` for synchronous slicing work
+- `stackalloc` allocates on the stack — zero heap allocation, zero GC involvement, gone automatically on method return
+- `stackalloc` is only safe for small, bounded buffer sizes — large/unbounded sizes risk stack overflow
+- All three exist to reduce GC pressure — either by allowing collection (WeakReference) or by avoiding allocation entirely (Span/Memory, stackalloc)
+
+</QuickRevision>

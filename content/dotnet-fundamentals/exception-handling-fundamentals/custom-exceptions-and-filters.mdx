@@ -1,0 +1,205 @@
+---
+slug: "custom-exceptions-and-filters"
+title: "Custom Exceptions and Exception Filters"
+section: "dotnet-fundamentals"
+module: "exception-handling-fundamentals"
+order: 4
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["try-catch-finally-and-hierarchy", "exception-handling-custom-exceptions"]
+tags: ["dotnet", "csharp", "exceptions", "custom-exceptions", "exception-filters"]
+englishDefinition: "A custom exception type earns its place only when callers genuinely need to catch and handle a specific failure mode differently from generic errors, following the standard three-constructor convention inheriting from System.Exception; exception filters (catch (Ex e) when (condition), C# 6) let a catch block trigger conditionally without the catch-and-rethrow pattern that would otherwise be needed to inspect an exception before deciding to handle it."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Flipkart", "Amazon", "Accenture"]
+---
+
+<SimpleDefinition>
+
+A custom exception type earns its place only when callers genuinely need to catch and handle a specific failure mode differently from generic errors, following the standard three-constructor convention inheriting from `System.Exception`; exception filters (`catch (Ex e) when (condition)`, C# 6) let a catch block trigger conditionally without the catch-and-rethrow pattern that would otherwise be needed to inspect an exception before deciding to handle it.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interview me exception handling ka pure syntax candidates ko aata hai, lekin **judgment** — kab custom exception banao, kab reuse karo, exception filters kab use karo — yahi asli differentiator hai. Ye topic `oops-dotnet` ke exception handling topic se related hai (agar padha hai, wahan custom exceptions ki basics already cover ho chuki hain) — yahan hum decision criteria aur filters ki depth pe focus karte hain.
+
+### Custom exception kab banao — decision criteria
+
+Simple test: **"Kya caller ko is specific failure ko doosre errors se genuinely alag handle karna hai?"** Agar haan — jaise `InsufficientFundsException` jisse UI specifically ek "add funds" prompt dikhana chahta hai, generic error message nahi — to custom exception justified hai. Agar tum sirf `Exception` ko naya naam de rahe ho bina extra data ya behavior add kiye, ya ek built-in type (`ArgumentException`, `InvalidOperationException`, `KeyNotFoundException`) already exact wahi meaning carry kar sakta tha, naya type banane ka koi fayda nahi — sirf clutter.
+
+### Standard constructor convention
+
+Microsoft guidance: `Exception` se seedha inherit karo, aur teen canonical constructors provide karo:
+
+```csharp
+public class InsufficientFundsException : Exception
+{
+    public decimal RequestedAmount { get; }
+    public decimal AvailableBalance { get; }
+
+    public InsufficientFundsException() { }
+
+    public InsufficientFundsException(string message)
+        : base(message) { }
+
+    public InsufficientFundsException(string message, Exception innerException)
+        : base(message, innerException) { }
+
+    // Domain-specific constructor with structured data
+    public InsufficientFundsException(decimal requested, decimal available)
+        : base($"Requested {requested} exceeds available balance {available}")
+    {
+        RequestedAmount = requested;
+        AvailableBalance = available;
+    }
+}
+```
+
+Ye teen constructors (parameterless, message-only, message+inner) framework conventions ke saath compatible rehte hain — kai .NET mechanisms (serialization, generic exception-wrapping utilities) inhi signatures ko expect karte hain. Extra domain-specific data (`RequestedAmount`, `AvailableBalance`) add karna genuinely valuable hai — ye caller ko structured information deta hai jo sirf `ex.Message` string-parsing se nahi milti.
+
+### Exception filters — `when` clause (C# 6)
+
+Exception filters ek catch block ko sirf tab trigger hone dete hain jab ek additional boolean condition true ho — bina exception ko pehle catch karke, condition check karke, phir manually rethrow karne ki zaroorat ke.
+
+```csharp
+try
+{
+    await CallExternalApiAsync();
+}
+catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+{
+    // sirf rate-limit errors yahan handle karo — retry logic
+    await Task.Delay(RetryDelay);
+    await RetryCallAsync();
+}
+catch (HttpRequestException ex) when ((int?)ex.StatusCode >= 500)
+{
+    // server errors — alag handling, jaise circuit breaker trip
+    _circuitBreaker.RecordFailure();
+    throw;
+}
+catch (HttpRequestException ex)
+{
+    // baaki sab HttpRequestException — generic handling
+    _logger.LogError(ex, "API call failed");
+    throw;
+}
+```
+
+Filter-free approach (catch karke check karo, match na ho to rethrow) same result de sakta tha, lekin do genuine downsides ke saath: (1) `throw;` ka use karna padta bina-match wale case ke liye — technically valid hai lekin readability worse hai, aur (2) **ek subtle-lekin-real difference** — filters exception ko catch hi nahi karte jab tak condition true na ho, isliye agar condition `false` hai, exception apni **original state** me bina touch hue upar propagate hota hai (jaise catch block exist hi nahi karta uss case ke liye). Ye particularly useful debugging tools (jaise Visual Studio ke "first-chance exception" break) ke saath cleanly interact karta hai.
+
+### Filters ka ek aur real use case — logging-without-handling
+
+```csharp
+catch (Exception ex) when (LogAndReturnFalse(ex))
+{
+    // never actually reaches here — LogAndReturnFalse always returns false
+}
+
+bool LogAndReturnFalse(Exception ex)
+{
+    _logger.LogError(ex, "Unhandled exception observed");
+    return false; // condition false -> catch never triggers, exception continues propagating
+}
+```
+
+Ye ek clever (thoda tricky) pattern hai — side-effect (logging) filter condition ke andar hi ho jaata hai, aur `false` return karke exception ko genuinely handle kiye bina, unmodified propagate hone dete hain. Interview me mention karne layak hai as advanced knowledge, though `catch { log; throw; }` usually zyada readable hota hai same result ke liye.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka `HttpClient` retry/resilience guidance (aur Polly library) exception filters ke exact same pattern ko encourage karti hai — specific `HttpRequestException` status codes (429, 503) ke liye alag retry behavior, generic ones ke liye alag — jo `when` clause se cleanly express hota hai bina nested if-checks ke.
+
+</RealWorld>
+
+<RealWorld company="An Indian Logistics Tracking API">
+
+Ek delivery-tracking service me team ne shuru me `TrackingNotFoundException` bina koi extra data ke bana diya tha — sirf `Exception` ka naya naam. Code review me flag hua ki isme koi value-add nahi tha, `KeyNotFoundException` already same meaning carry kar raha tha. Team ne isse replace kiya, aur sirf genuinely distinct case — `TrackingExpiredException` (jisme `ExpiredOnUtc` field tha, jo caller ko batata tha kab expire hua, alag UI message ke liye) — ke liye hi custom type rakha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Custom exception decision test: "does the caller need to handle this differently?" — if no, don't create a new type
+- 3 canonical constructors: parameterless, `(string message)`, `(string message, Exception innerException)`
+- Exception filters (`when` clause) — introduced C# 6 (2015)
+- `catch (Ex e) when (condition == false)` → exception is NOT caught, propagates completely untouched (unlike catch-check-rethrow, which does technically catch it first)
+- `[Serializable]` on custom exceptions — historically required for cross-AppDomain/remoting, largely irrelevant on modern .NET Core/5+
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Custom exception kab banani chahiye?" ka strong answer: "Jab caller ko genuinely ek specific failure mode ko alag handle karna ho — jaise ek particular UI message dikhana ya ek specific retry strategy trigger karna — tabhi custom exception justified hai. Agar main sirf `Exception` ko naya naam de raha hoon bina extra data/behavior ke, ya koi built-in type (`ArgumentException`, `InvalidOperationException`) already same meaning carry karta hai, to naya type banane se sirf clutter badhta hai." Exception filters pe follow-up common hai: "`catch (Ex e) when (condition)` aur catch-karke-check-karke-rethrow me kya fark hai?" — answer: functionally similar result mil sakta hai, lekin filter approach zyada readable hai (nested if-rethrow avoid hota hai), aur ek subtle correctness difference bhi hai — agar filter condition false hai, exception original state me completely untouched propagate hota hai, jaise catch clause exist hi nahi karta uss case ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Custom exception banana bina koi extra value add kiye — sirf `Exception` ka naya naam, koi extra data, koi different handling justification. Pure clutter.
+
+</Mistake>
+
+<Mistake>
+
+Custom exception classes ko teen canonical constructors na dena — sirf ek custom constructor rakhna framework/serialization compatibility ko silently break kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Exception filter ke andar heavy/expensive logic likhna jo baar-baar evaluate ho — filter condition har matching catch clause ke liye evaluate hota hai jab tak match na mile, isliye ye lightweight rehna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`when` clause ko `if` statement ke andar catch block me daal dena instead of filter syntax — functionally kabhi-kabhi same result deta hai lekin filter ka "exception ko touch hi na karna jab condition false ho" wala behavior lose ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+`ApplicationException` se custom exceptions inherit karna — historical convention hai, current guidance `System.Exception` se directly inherit karne ki hai (detail "try-catch-finally aur hierarchy" topic me hai).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Exception occurs"] --> B{"Does caller need to\nhandle THIS specific case\ndifferently from generic errors?"}
+    B -->|No| C["Reuse a built-in exception\n(ArgumentException, InvalidOperationException, etc.)"]
+    B -->|Yes| D["Create a custom exception type\nwith 3 canonical constructors +\ndomain-specific data"]
+    D --> E{"Need conditional handling\nwithin one catch type?"}
+    E -->|Yes| F["catch (Ex e) when (condition)\n— exception filter"]
+    E -->|No| G["Plain catch block"]
+`}
+  caption="Decision flow: reuse vs custom exception, then whether a filter is needed on top."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Create a custom exception only when the caller genuinely needs to handle it differently — otherwise reuse a built-in type
+- Three canonical constructors: parameterless, `(string message)`, `(string message, Exception inner)` — inherit from `System.Exception`
+- Add domain-specific structured data (properties) to a custom exception where it adds real value over `ex.Message`
+- Exception filters (`catch (Ex e) when (condition)`, C# 6) let a catch trigger conditionally
+- If the filter condition is false, the exception is NOT caught at all — it propagates completely untouched, which is subtly different from catch-check-rethrow
+- Keep filter conditions lightweight — they can be evaluated per matching catch clause
+- `[Serializable]` on custom exceptions is a legacy concern, largely irrelevant on modern .NET Core/5+
+
+</QuickRevision>

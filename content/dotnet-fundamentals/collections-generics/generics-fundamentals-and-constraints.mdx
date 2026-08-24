@@ -1,0 +1,225 @@
+---
+slug: "generics-fundamentals-and-constraints"
+title: "Generics Fundamentals and Type Constraints"
+section: "dotnet-fundamentals"
+module: "collections-generics"
+order: 8
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["generics-constraints-variance"]
+tags: ["dotnet", "csharp", "generics", "constraints", "collections", "type-safety"]
+englishDefinition: "Generics let a class, interface, or method be written once and parameterized over a type (List<T>, Dictionary<TKey,TValue>), giving compile-time type safety and eliminating both unsafe casts and the boxing overhead that non-generic collections required. Constraints (where T : ...) restrict which types can be substituted for a type parameter, letting generic code call members that wouldn't otherwise be guaranteed to exist."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Generics let a class, interface, or method be written once and parameterized over a type (`List<T>`, `Dictionary<TKey,TValue>`), giving compile-time type safety and eliminating both unsafe casts and the boxing overhead that non-generic collections required. Constraints (`where T : ...`) restrict which types can be substituted for a type parameter, letting generic code call members that wouldn't otherwise be guaranteed to exist.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Generics interview me sabse zyada poocha jaane wala C# topic hai, kyunki almost har collection, almost har repository pattern, almost har LINQ method inke upar hi built hai. Is topic me hum **fundamentals + constraints** cover karenge — variance (covariance/contravariance) `oops-dotnet` ke `generics-constraints-variance` topic me already deeply cover ho chuka hai, wahan cross-refer kar lena; yahan hum sirf uska naam lenge, dobara derive nahi karenge.
+
+### Generics kyun exist karte hain
+
+C# 1.0 me generics nahi the. Collections `ArrayList`/`Hashtable` type ke the, jo `object` store karte the — kisi bhi type ka. Do genuine problems the:
+
+1. **Type safety nahi thi.** `ArrayList` me tum ek `int` daal sakte the aur ek `string` bhi, compiler kabhi complain nahi karta tha — runtime pe cast karte waqt `InvalidCastException` milta tha, jo bahut late hai pakadna.
+2. **Boxing overhead.** `object` ek reference type hai, aur `int` ek value type — jab `int` ko `ArrayList` me daala jaata tha, wo silently heap pe box ho jaata tha, aur nikaalte waqt unbox. Ye extra allocation aur extra GC pressure add karta tha, sirf isliye kyunki collection ko pata nahi tha kis type ka data store ho raha hai. (Poora boxing/unboxing mechanism `sorted-and-legacy-collections` topic me detail se hai — yahan sirf itna samajhna kaafi hai ki generics ne is problem ko root se khatam kar diya.)
+
+**Generics ka solution:** ek type parameter (`T`) declare karo, aur actual type ko usage-time pe specify karo:
+
+```csharp
+// Non-generic (legacy) — koi type safety nahi, boxing hota hai
+ArrayList list = new ArrayList();
+list.Add(5);
+list.Add("oops"); // Compiler kuch nahi bolega
+int x = (int)list[0]; // Manual cast, runtime risk
+
+// Generic — compile-time type safety, koi boxing nahi
+List<int> numbers = new List<int>();
+numbers.Add(5);
+numbers.Add("oops"); // Compile ERROR — string List<int> me nahi ja sakta
+int y = numbers[0]; // Direct, no cast needed
+```
+
+`List<int>` runtime pe apna khud ka specialized version generate karta hai (JIT ke through) — `int` ke liye directly value store hoti hai, koi box nahi banta. Ye sirf syntax sugar nahi hai, genuine perf aur safety dono ka fayda hai.
+
+### Constraints — `T` ko restrict karna
+
+By default, ek generic type parameter `T` ke baare me compiler kuch nahi jaanta — sirf `object` ke members hi guaranteed hain (`ToString()`, `Equals()`, etc.). Agar tumhe `T` pe kuch specific karna hai — `new T()` banana ho, ek property access karni ho, ya sirf reference/value types allow karne ho — to **constraint** lagani padti hai.
+
+```csharp
+// where T : class — sirf reference types allowed
+public class Cache<T> where T : class
+{
+    private T? _cached;
+    public void Store(T item) => _cached = item;
+}
+
+// where T : struct — sirf value types allowed (Nullable<T> bhi exclude ho jaata hai)
+public struct Wrapper<T> where T : struct
+{
+    public T Value;
+}
+
+// where T : new() — T ke paas parameterless constructor hona chahiye
+public class Factory<T> where T : new()
+{
+    public T CreateInstance() => new T(); // Sirf constraint ke saath ye compile hota hai
+}
+
+// where T : BaseClass — T BaseClass ya uska descendant hona chahiye
+public class Repository<T> where T : Entity
+{
+    public int GetId(T item) => item.Id; // Entity.Id guaranteed accessible hai
+}
+
+// where T : IInterface — T is interface implement karta hona chahiye
+public class Comparer2<T> where T : IComparable<T>
+{
+    public T Max(T a, T b) => a.CompareTo(b) > 0 ? a : b; // CompareTo guaranteed
+}
+
+// Multiple constraints combine ho sakte hain (comma-separated, aur new() hamesha last)
+public class AdvancedRepository<T> where T : Entity, IComparable<T>, new()
+{
+    public T CreateDefault() => new T();
+    public T PickLarger(T a, T b) => a.CompareTo(b) > 0 ? a : b;
+}
+```
+
+**Constraint jo restrict karti hai wahi guarantee bhi deti hai.** `where T : IComparable<T>` likhne ka matlab hai "T sirf wahi type ban sakta hai jo `IComparable<T>` implement kare" — aur badle me, generic method ke andar `CompareTo()` call karna safe hai, kyunki compiler ko pata hai wo guaranteed exist karega. Ye ek trade — restrict karo, replace me power do.
+
+Ek subtlety: `where T : class` aur `where T : struct` mutually exclusive hain — ek `T` dono nahi ho sakta obviously, isliye ek generic type me dono constraints ek saath nahi lag sakte.
+
+### Generic methods bhi possible hain, sirf generic classes nahi
+
+```csharp
+public static T FindMax<T>(List<T> items) where T : IComparable<T>
+{
+    T max = items[0];
+    foreach (var item in items)
+        if (item.CompareTo(max) > 0) max = item;
+    return max;
+}
+```
+
+Yahan `<T>` method-level hai, class-level nahi — compiler call-site pe type infer kar leta hai (`FindMax(intList)` se `T = int` infer ho jaata hai), explicit specify karne ki zaroorat nahi.
+
+Variance (`out`/`in` keywords, covariance jaise `IEnumerable<Dog>` ko `IEnumerable<Animal>` treat karna) is topic ka scope nahi hai — wo poori tarah `generics-constraints-variance` (`oops-dotnet`) me cover hai, prerequisite ke roop me wahan refer kar lena.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Compile-time type safety — galat type add karne par build hi fail ho jaata hai", "Koi boxing/unboxing overhead nahi value types ke liye", "Constraints se generic code ke andar specific members safely call ho sakte hain", "Ek hi implementation reusable across sabhi types — code duplication khatam"]}
+  cons={["Constraints ki wajah se generic type utna 'generic' nahi rehta jitna lagta hai — har naya use-case constraint tighten kar sakta hai", "Complex constraint combinations (multiple interfaces + new()) padhne me mushkil ho sakte hain", "Generic code debug karna thoda indirect feel hota hai kyunki actual type sirf call-site pe pata chalta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka poora BCL generics pe hi bana hai — `List<T>`, `Dictionary<TKey,TValue>`, `IEnumerable<T>`, `Task<T>` — sab. Microsoft ne generics ko C# 2.0 (2005) me hi introduce kiya, exactly is wajah se ki `ArrayList`/`Hashtable` jaisi non-generic collections production code me boxing overhead aur runtime cast errors de rahi thi. Aaj koi bhi naya .NET code generic collections use karta hai by default — non-generic collections sirf legacy interop ke liye bache hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Banking Backend Team">
+
+Ek team ne generic `Repository<T> where T : Entity, new()` banaya jo sabhi entities (Account, Transaction, Customer) ke liye same CRUD logic reuse karta tha. Pehle har entity ke liye alag repository class thi — 12 almost-identical classes. Constraint (`Entity` base class ke liye `Id` property guarantee karta hai, `new()` factory method ke liye) ne ek single generic class se sab replace kar diya, aur naya entity add karna sirf `Entity` inherit karna ban gaya — koi naya repository likhne ki zaroorat nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Generics C# 2.0 (2005) me introduce hue — `ArrayList`/`Hashtable` jaisi non-generic collections se bahut jald replace ho gayi as the default choice
+- `List<int>` me koi boxing nahi hota — `ArrayList` me har `int` add ek heap allocation banata hai
+- Compile-time type mismatch generics ke saath build error hai; non-generic collections me wahi mismatch runtime `InvalidCastException` deta hai
+- Constraint keywords: `class`, `struct`, `new()`, a base class name, an interface name — combine ho sakte hain comma se, `new()` hamesha sabse last
+- `where T : class` aur `where T : struct` mutually exclusive hain — ek saath nahi lag sakte
+- Generic methods type parameter ko call-site pe usually automatically infer kar lete hain, explicit `<T>` specify karna optional hota hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Generics kyun use karte hain, aur constraints ka kya role hai?" ka strong answer: "Generics compile-time type safety dete hain aur boxing overhead khatam karte hain jo non-generic collections jaise `ArrayList` me hota tha — ek hi implementation type-safe tareeke se sabhi types ke liye reuse ho jaata hai. Default me generic code sirf `object` ke members access kar sakta hai kyunki compiler `T` ke baare me kuch guarantee nahi karta. Constraints (`where T : IComparable<T>`, `where T : new()`, etc.) ye guarantee dete hain — restrict karke, generic code ke andar specific members safely call karne ki permission milti hai." Follow-up jo almost hamesha aata hai: "`new()` constraint kis order me likhi jaati hai agar multiple constraints ho?" — answer: hamesha sabse last, comma-separated list me (`where T : BaseClass, IInterface, new()`).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`where T : class` aur `where T : struct` ko ek saath lagane ki koshish karna — ye mutually exclusive hain, kyunki ek type dono ho hi nahi sakta.
+
+</Mistake>
+
+<Mistake>
+
+`new()` constraint ko last position pe na rakhna multiple constraints me — compiler error deta hai; `new()` hamesha sabse aakhri me aani chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki generics sirf collections ke liye hain — generic methods, generic interfaces (`IComparable<T>`), aur generic delegates (`Func<T>`) sab equally common hain.
+
+</Mistake>
+
+<Mistake>
+
+Constraint na lagane ke baad bhi `T` ke members access karne ki koshish karna (jaise `T.Id`) — compiler error dega kyunki bina constraint ke `T` sirf `object` ke members guarantee karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Variance (covariance/contravariance, `out`/`in` keywords) ko constraints ke saath confuse karna — dono alag concepts hain; variance interface/delegate assignment compatibility ke baare me hai, constraints type-parameter restriction ke baare me. Detail `generics-constraints-variance` topic me hai.
+
+</Mistake>
+
+<Mistake>
+
+`new T()` call karna bina `where T : new()` constraint lagaye — compile error, kyunki compiler ko guarantee nahi hai ki har possible `T` ke paas parameterless constructor hoga.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Non-generic ArrayList/Hashtable"] --> B["Stores as object"]
+    B --> C["Boxing for value types + runtime cast risk"]
+    D["Generic List&lt;T&gt;/Dictionary&lt;K,V&gt;"] --> E["Compiler generates type-specific version"]
+    E --> F["No boxing, compile-time type safety"]
+    G["Need T to support new(), CompareTo(), a property?"] --> H["Add where T : constraint"]
+    H --> I["class / struct / new() / BaseClass / IInterface"]
+    I --> J["Generic code can now safely call those members"]
+`}
+  caption="Generics remove boxing and unsafe casts versus legacy collections; constraints trade restriction on T for the ability to call specific members inside generic code."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Generics (C# 2.0) replace non-generic `ArrayList`/`Hashtable` — compile-time type safety, zero boxing for value types
+- Type mismatch: generic collection = build error; non-generic collection = runtime `InvalidCastException`
+- Constraint keywords: `where T : class`, `struct`, `new()`, `BaseClass`, `IInterface` — combine with commas, `new()` always last
+- `class` and `struct` constraints are mutually exclusive
+- Constraints trade restriction for capability — restrict what `T` can be, gain the ability to call those members safely inside the generic code
+- Generic methods can usually infer `T` at the call site without explicit specification
+- Covariance/contravariance (`out`/`in`, variance) is a separate topic — see `generics-constraints-variance`, not re-derived here
+
+</QuickRevision>

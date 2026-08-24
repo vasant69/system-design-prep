@@ -1,0 +1,188 @@
+---
+slug: "system-object-and-base-methods"
+title: "System.Object and the Base Methods Every Type Inherits"
+section: "dotnet-fundamentals"
+module: "type-system"
+order: 2
+difficulty: "beginner"
+readingTime: 9
+prerequisites: ["object-class-methods-equals-gethashcode"]
+tags: ["dotnet", "csharp", "type-system", "object", "equals", "tostring"]
+englishDefinition: "System.Object is the ultimate base type of every type in the .NET Common Type System — every class, struct, and even value type implicitly derives from it, inheriting four methods: ToString(), Equals(), GetHashCode(), and the non-overridable GetType()."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Wipro", "Cognizant", "Accenture"]
+---
+
+<SimpleDefinition>
+
+`System.Object` is the ultimate base type of every type in the .NET Common Type System — every class, struct, and even value type implicitly derives from it, inheriting four methods: `ToString()`, `Equals()`, `GetHashCode()`, and the non-overridable `GetType()`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+C# me tum kabhi explicitly nahi likhte `class Person : Object` — lekin har class, har struct, harek type, chahe tumne khud banaya ho ya BCL ka ho, implicitly `System.Object` se derive karta hai. Isi wajah se koi bhi C# object pe tum bina kuch import kiye, bina kuch declare kiye, seedha `.ToString()` ya `.Equals()` call kar sakte ho — ye methods "free me" milte hain.
+
+### Char method kaunse hain
+
+`System.Object` char methods deta hai: `ToString()`, `Equals(object)`, `GetHashCode()`, `GetType()`. Pehle teen `virtual` hain — matlab koi bhi derived type inhe apni custom logic ke saath override kar sakta hai. `GetType()` `virtual` **nahi** hai — ye sealed hai by design, kyunki iska poora purpose hai runtime pe exact, actual type reliably return karna; agar ye override ho sakta, koi derived class jhoothi type-information de sakti thi, jo reflection aur type-checking ko unreliable bana deta.
+
+```csharp
+var person = new Person();
+Console.WriteLine(person.GetType().Name); // "Person" — hamesha actual runtime type, chahe kitni bhi layers of inheritance ho
+```
+
+### ToString() — kab override karna chahiye
+
+Default `ToString()` sirf fully-qualified type name deta hai (`"MyApp.Models.Person"`) — debugging ya logging me ye kisi kaam ka nahi. Jab bhi koi type ka meaningful, human-readable representation chahiye (logs, console output, quick debugging), `ToString()` override karo:
+
+```csharp
+public class Person
+{
+    public string Name { get; init; } = "";
+    public int Age { get; init; }
+
+    public override string ToString() => $"{Name} ({Age})";
+}
+
+var p = new Person { Name = "Asha", Age = 28 };
+Console.WriteLine(p);          // "Asha (28)" — Console.WriteLine internally ToString() call karta hai
+Console.WriteLine(p.ToString()); // same
+```
+
+Ye sabse low-risk override hai in char me se — koi correctness-breaking side effect nahi, sirf output readable banata hai.
+
+### Equals() — default behavior type-category ke hisaab se alag hai
+
+Ye interview me sabse zyada test hone wala nuance hai: default `Equals()` **class (reference type)** aur **struct (value type)** ke liye alag behave karta hai.
+
+- **Class (reference type):** default `Equals()` **reference equality** karta hai — bilkul `object.ReferenceEquals()` jaisa. Do variables sirf tab equal maane jaate hain jab dono same heap object ko point kar rahe hon, content chahe identical ho.
+- **Struct (value type):** default `Equals()` (jo `System.ValueType` se inherit hota hai, jo khud `System.Object` se derive karta hai) **field-by-field comparison** karta hai, reflection use karke. Ye kaam karta hai lekin slow hai — reflection ka overhead hai.
+
+```csharp
+class PersonClass { public string Name = ""; }
+struct PointStruct { public int X, Y; }
+
+var c1 = new PersonClass { Name = "Asha" };
+var c2 = new PersonClass { Name = "Asha" };
+Console.WriteLine(c1.Equals(c2)); // False — different heap objects, reference equality
+
+var s1 = new PointStruct { X = 1, Y = 2 };
+var s2 = new PointStruct { X = 1, Y = 2 };
+Console.WriteLine(s1.Equals(s2)); // True — field-by-field comparison, reflection-based
+```
+
+Custom equality logic (jaise `Equals()` ko override karna taaki two `PersonClass` instances "equal" mane jaayein agar unka `Name` same ho) aur uske saath aane wala `GetHashCode()` contract — ye ek gehra, apna-topic-worthy area hai, poori depth ke saath already `oops-dotnet` section me cover kiya gaya hai (Equals/GetHashCode ka contract, `HashCode.Combine`, `Dictionary`/`HashSet` internals) — yahan sirf itna samajhna kaafi hai ki default behavior type-category ke hisaab se differ karta hai; full override pattern aur uske consequences ke liye wo prerequisite topic dekho.
+
+### GetType() vs typeof — donon runtime type dete hain, ek jagah se
+
+`GetType()` instance pe call hota hai, runtime pe actual concrete type return karta hai — chahe variable ka declared/static type kuch aur ho:
+
+```csharp
+object obj = new Person();
+Console.WriteLine(obj.GetType().Name); // "Person" — declared type "object" hai, lekin GetType() actual runtime type deta hai
+```
+
+(`typeof()` — compile-time, type-name pe seedha lagta hai, `is`/`as`/cast conversions wale topic me depth ke saath cover hoga.)
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview shortcut yaad rakhne ka: teen methods jo override ho sakte hain — `ToString`, `Equals`, `GetHashCode` — sab `virtual` hain. Ek jo nahi ho sakta — `GetType` — sealed hai, kyunki runtime-type-identity ek guarantee honi chahiye, override-able nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka har exception type (`ArgumentNullException`, `InvalidOperationException`, etc.) `ToString()` override karta hai taaki stack trace, message, aur exception type sab ek readable format me print ho — isi wajah se `Console.WriteLine(ex)` genuinely useful debugging output deta hai, sirf `"System.Exception"` nahi.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Logging Pipeline">
+
+Ek team ne apne `TransactionEvent` domain objects ko structured logging pipeline (Serilog) me pass kiya bina `ToString()` override kiye — logs me sirf `"MyApp.Models.TransactionEvent"` dikhta raha, koi useful field nahi. Fix simple tha: `ToString()` override karke key fields (`TransactionId`, `Amount`, `Status`) include kiye, jisse production incident debugging turant faster ho gayi bina code me breakpoint lagaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 4 methods inherited from `System.Object`: `ToString()`, `Equals(object)`, `GetHashCode()`, `GetType()`
+- 3 of them (`ToString`, `Equals`, `GetHashCode`) are `virtual` — overridable
+- `GetType()` is NOT virtual — sealed by design for reliable runtime type identity
+- Default `Equals()` for a class = reference equality (identity check)
+- Default `Equals()` for a struct = reflection-based field-by-field comparison (via `System.ValueType`)
+- Every type in C# — class, struct, even `int` — implicitly derives from `System.Object`, no explicit `: Object` ever needed
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"System.Object se har type ko kaunse methods milte hain, aur inme se kaunse override ho sakte hain?" — strong answer: "Har C# type — class ho ya struct — implicitly System.Object se derive karta hai, jisse 4 methods milte hain: ToString, Equals, GetHashCode, aur GetType. Inme se pehle teen virtual hain, override ho sakte hain — GetType nahi, wo sealed hai taaki runtime type identity kabhi fake na ki ja sake. Default Equals ka behavior type-category pe depend karta hai — class ke liye reference equality, struct ke liye reflection-based field comparison." Almost-certain follow-up: custom Equals/GetHashCode override karne ka contract kya hai — us gehri depth ke liye related prerequisite topic ka reference do, taaki dikhe tumhe pata hai ye ek bada, separate topic hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`ToString()` override na karna aur phir logs/debug output me sirf type ka fully-qualified name dekhna, ye samajhe bina ki override karke usko fix kiya ja sakta tha.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki `Equals()` sab types ke liye same default behavior deta hai — classes aur structs ke default `Equals()` fundamentally alag mechanisms use karte hain (reference vs reflection-based field comparison).
+
+</Mistake>
+
+<Mistake>
+
+`GetType()` ko override karne ki koshish karna ya expect karna ki wo virtual hai — ye sealed method hai, compile error dega agar override karne ki koshish ki jaaye.
+
+</Mistake>
+
+<Mistake>
+
+Struct ka default `Equals()` (reflection-based) ko "fast" samajh lena — ye correctness ke liye kaam karta hai lekin reflection overhead ki wajah se explicit override se dheema hota hai, hot paths me isse avoid karna chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["System.Object"] --> B["ToString() — virtual"]
+    A --> C["Equals(object) — virtual"]
+    A --> D["GetHashCode() — virtual"]
+    A --> E["GetType() — NOT virtual, sealed"]
+    C --> F{"Class or Struct?"}
+    F -->|Class| G["Default: reference equality"]
+    F -->|Struct| H["Default: reflection-based field comparison"]
+`}
+  caption="Every type inherits four methods from System.Object — three overridable, one sealed for reliable runtime type identity."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Every C# type implicitly derives from `System.Object` — no explicit declaration needed
+- Four inherited methods: `ToString()`, `Equals(object)`, `GetHashCode()`, `GetType()`
+- `ToString()`, `Equals()`, `GetHashCode()` are `virtual` — overridable
+- `GetType()` is sealed (not virtual) — guarantees reliable runtime type identity
+- Default `Equals()` for a class = reference equality
+- Default `Equals()` for a struct = reflection-based field-by-field comparison
+- Override `ToString()` whenever meaningful, human-readable output matters (logs, debugging)
+- Full Equals/GetHashCode override contract and Dictionary/HashSet internals — see the cross-linked prerequisite topic for the deep dive
+
+</QuickRevision>
