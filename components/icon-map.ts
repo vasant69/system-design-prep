@@ -30,6 +30,20 @@ import {
   PlugZap,
   ListChecks,
   Mic,
+  Terminal,
+  Binary,
+  Braces,
+  MemoryStick,
+  ListTree,
+  OctagonAlert,
+  Zap,
+  Filter,
+  Cpu,
+  Cog,
+  Globe,
+  Table2,
+  Shapes,
+  TestTube2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -41,6 +55,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   GitBranch,
   Cloud,
   Boxes,
+  Terminal,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -68,4 +83,17 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "oop-in-aspnet-core": PlugZap,
   "solid-patterns": ListChecks,
   "interview-delivery": Mic,
+  "type-system": Binary,
+  "csharp-language-fundamentals": Braces,
+  "memory-gc": MemoryStick,
+  "collections-generics": ListTree,
+  "exception-handling-fundamentals": OctagonAlert,
+  "delegates-events-lambda": Zap,
+  "linq-fundamentals": Filter,
+  "async-threading-parallel": Cpu,
+  "dotnet-runtime-architecture": Cog,
+  "aspnet-core-fundamentals": Globe,
+  "data-access-adonet-efcore": Table2,
+  "design-patterns-architecture": Shapes,
+  "testing-and-others": TestTube2,
 };

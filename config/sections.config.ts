@@ -282,6 +282,107 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "dotnet-fundamentals",
+    title: "C# & .NET Core Fundamentals",
+    description:
+      "The full C#/.NET Core interview checklist — type system, language fundamentals, memory & GC, collections, LINQ, async/threading, runtime architecture, ASP.NET Core, data access, design patterns, and testing. OOP proper lives in the OOP in .NET Core section.",
+    icon: "Terminal",
+    enabled: true,
+    modules: [
+      {
+        id: "type-system",
+        title: "Type System",
+        description:
+          "Value vs reference types, boxing/unboxing, System.Object, nullable types, conversions, var/dynamic/const/readonly, anonymous types, tuples, records, structs, and enums.",
+        order: 1,
+      },
+      {
+        id: "csharp-language-fundamentals",
+        title: "C# Language Fundamentals",
+        description:
+          "Operators, control flow, pattern matching, ref/out/in, overloading, extension methods, local functions, indexers, properties, strings, deconstruction, and modern C# boilerplate.",
+        order: 2,
+      },
+      {
+        id: "memory-gc",
+        title: "Memory Management & Garbage Collection",
+        description:
+          "Managed vs unmanaged code, GC generations and the Large Object Heap, IDisposable/Dispose vs finalizers, memory leaks, WeakReference, and Span<T>/Memory<T>.",
+        order: 3,
+      },
+      {
+        id: "collections-generics",
+        title: "Collections & Generics",
+        description:
+          "Arrays, List/Dictionary/HashSet, queues/stacks, concurrent and immutable collections, the IEnumerable/ICollection/IList/IQueryable hierarchy, and generics with constraints.",
+        order: 4,
+      },
+      {
+        id: "exception-handling-fundamentals",
+        title: "Exception Handling",
+        description:
+          "try/catch/finally, the exception hierarchy, throw vs throw ex, custom exceptions, exception filters, AggregateException, and global exception handling.",
+        order: 5,
+      },
+      {
+        id: "delegates-events-lambda",
+        title: "Delegates, Events & Lambda",
+        description:
+          "Type-safe method pointers, multicast delegates, Func/Action/Predicate, lambda expressions and closures, events vs delegates, and callbacks.",
+        order: 6,
+      },
+      {
+        id: "linq-fundamentals",
+        title: "LINQ",
+        description:
+          "Query vs method syntax, deferred vs immediate execution, IEnumerable vs IQueryable, filtering/projection/grouping/joining, aggregation, and expression trees.",
+        order: 7,
+      },
+      {
+        id: "async-threading-parallel",
+        title: "Async, Threading & Parallel Programming",
+        description:
+          "Process vs thread, Task and the TPL, async/await mechanics, deadlocks and race conditions, locking primitives, and CPU-bound vs I/O-bound async decisions.",
+        order: 8,
+      },
+      {
+        id: "dotnet-runtime-architecture",
+        title: ".NET Core Architecture & Runtime",
+        description:
+          "CLR internals, IL and JIT compilation, AOT, assemblies and metadata, SDK vs runtime, deployment models, Kestrel, reflection, and attributes.",
+        order: 9,
+      },
+      {
+        id: "aspnet-core-fundamentals",
+        title: "ASP.NET Core Fundamentals",
+        description:
+          "Configuration and environments, routing, REST semantics, authentication/authorization and JWT/OAuth, CORS, logging, caching, background services, and SignalR — DI, middleware, filters, and DTOs live in OOP in .NET Core.",
+        order: 10,
+      },
+      {
+        id: "data-access-adonet-efcore",
+        title: "Data Access — ADO.NET & EF Core",
+        description:
+          "ADO.NET fundamentals, EF Core's DbContext/DbSet, migrations, change tracking, loading strategies, the N+1 problem, transactions and concurrency, and Dapper vs EF Core.",
+        order: 11,
+      },
+      {
+        id: "design-patterns-architecture",
+        title: "Design Patterns & Architecture",
+        description:
+          "Structural and behavioural patterns not already covered in OOP in .NET Core, plus layered/clean/onion architecture and microservices vs monolith.",
+        order: 12,
+      },
+      {
+        id: "testing-and-others",
+        title: "Testing & Others",
+        description:
+          "Unit and integration testing, mocking, TDD, serialization, file I/O, date/time handling, regular expressions, HttpClient, and source generators.",
+        order: 13,
+      },
+    ],
+  },
+  {
     slug: "english-learning",
     title: "English Learning",
     description: "Interview communication, vocabulary, and spoken English practice.",
