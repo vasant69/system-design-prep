@@ -56,7 +56,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "intermediate",
     shortAnswer: "Compiler positional records ke liye automatically ek Deconstruct method generate karta hai, unke primary-constructor parameters ke basis pe.",
     detailedAnswer:
-      "Jab `record Point(int X, int Y);` likha jaata hai, compiler kई cheezein automatically generate karta hai — properties (`X`, `Y`), ek constructor, `Equals`/`GetHashCode`/`ToString` overrides, AUR ek `Deconstruct(out int X, out int Y)` method. Isi wajah se `var (x, y) = new Point(3, 4);` bina ek line manually likhe kaam karta hai — ye ek record-specific compiler convenience hai jo custom classes me manually likhni padti hai.",
+      "Jab `record Point(int X, int Y);` likha jaata hai, compiler kai cheezein automatically generate karta hai — properties (`X`, `Y`), ek constructor, `Equals`/`GetHashCode`/`ToString` overrides, AUR ek `Deconstruct(out int X, out int Y)` method. Isi wajah se `var (x, y) = new Point(3, 4);` bina ek line manually likhe kaam karta hai — ye ek record-specific compiler convenience hai jo custom classes me manually likhni padti hai.",
   },
   {
     id: "deconstruct-tr-7",
