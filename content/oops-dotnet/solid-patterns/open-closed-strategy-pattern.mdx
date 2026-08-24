@@ -1,0 +1,266 @@
+---
+slug: "open-closed-strategy-pattern"
+title: "Open/Closed Principle — Strategy Pattern Refactor"
+section: "oops-dotnet"
+module: "solid-patterns"
+order: 2
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["single-responsibility-real-refactor", "abstract-class-vs-interface-decision"]
+tags: ["dotnet", "solid", "ocp", "strategy-pattern", "csharp"]
+englishDefinition: "The Open/Closed Principle states that software entities should be open for extension but closed for modification — you should be able to add new behavior by adding new code (a new class implementing an existing abstraction) rather than editing and risking existing, already-tested code."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Amazon", "Flipkart", "Paytm"]
+---
+
+<SimpleDefinition>
+
+The Open/Closed Principle states that software entities should be open for extension but closed for modification — you should be able to add new behavior by adding new code (a new class implementing an existing abstraction) rather than editing and risking existing, already-tested code.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Open/Closed Principle (OCP) ka naam confusing lagta hai pehli baar sunne pe — "open" aur "closed" ek saath kaise ho sakta hai? Matlab simple hai: class ka **behavior extend** karna aasan hona chahiye (open for extension) lekin uske **existing, already-tested code ko edit** karne ki zaroorat nahi honi chahiye (closed for modification). Practically iska matlab hai — naya requirement aaye to naya code **add** karo, purane code me **branch** mat add karo.
+
+### Classic violation — if/else chain jo badhta hi jaata hai
+
+Ek discount-calculation service socho jo shuru me simple thi, lekin har naye discount type ke saath ek naya `if/else` branch le leti hai:
+
+```csharp
+// BEFORE — OCP violation, har naye discount type ke liye is class ko MODIFY karna padta hai
+public class DiscountService
+{
+    public decimal CalculateDiscount(string discountType, decimal orderTotal)
+    {
+        if (discountType == "Festive")
+        {
+            return orderTotal * 0.10m;
+        }
+        else if (discountType == "FirstOrder")
+        {
+            return orderTotal * 0.15m;
+        }
+        else if (discountType == "Loyalty")
+        {
+            return orderTotal > 5000 ? orderTotal * 0.20m : orderTotal * 0.05m;
+        }
+        // Naya discount type aaya? Yahan ek aur else-if add karo...
+        // Risk: existing tested branches ke paas se guzarna padega, koi bhi typo purane discount ko silently tod sakta hai
+        return 0;
+    }
+}
+```
+
+Har naya discount type is class ko **modify** karwata hai. Risk do tarah ka hai: pehla, existing branches (jo already production me kaam kar rahe hain, already tested hain) ke beech me naya code insert karna — accidental typo ya galat condition order purane discount ko tod sakta hai. Dusra, ye class kabhi "done" nahi hoti — jitne discount types utne branches, aur eventually ye ek unmaintainable giant method ban jaati hai.
+
+### AFTER — Strategy pattern, interface ke peeche har discount apni class
+
+```csharp
+public interface IDiscountStrategy
+{
+    string DiscountType { get; }
+    decimal Calculate(decimal orderTotal);
+}
+
+public class FestiveDiscount : IDiscountStrategy
+{
+    public string DiscountType => "Festive";
+    public decimal Calculate(decimal orderTotal) => orderTotal * 0.10m;
+}
+
+public class FirstOrderDiscount : IDiscountStrategy
+{
+    public string DiscountType => "FirstOrder";
+    public decimal Calculate(decimal orderTotal) => orderTotal * 0.15m;
+}
+
+public class LoyaltyDiscount : IDiscountStrategy
+{
+    public string DiscountType => "Loyalty";
+    public decimal Calculate(decimal orderTotal) =>
+        orderTotal > 5000 ? orderTotal * 0.20m : orderTotal * 0.05m;
+}
+
+// Orchestrator — is class ko ab kabhi modify nahi karna padega naya discount add karne ke liye
+public class DiscountService
+{
+    private readonly IEnumerable<IDiscountStrategy> _strategies;
+    public DiscountService(IEnumerable<IDiscountStrategy> strategies) => _strategies = strategies;
+
+    public decimal CalculateDiscount(string discountType, decimal orderTotal)
+    {
+        var strategy = _strategies.FirstOrDefault(s => s.DiscountType == discountType);
+        return strategy?.Calculate(orderTotal) ?? 0;
+    }
+}
+```
+
+Ab ek naya discount type — jaise `FestiveComboDiscount` — add karna matlab sirf ek **nayi class** likhna hai jo `IDiscountStrategy` implement kare, aur usko DI container me register karna:
+
+```csharp
+builder.Services.AddScoped<IDiscountStrategy, FestiveDiscount>();
+builder.Services.AddScoped<IDiscountStrategy, FirstOrderDiscount>();
+builder.Services.AddScoped<IDiscountStrategy, LoyaltyDiscount>();
+// Naya discount? Bas ek naya AddScoped line — DiscountService ka koi bhi existing code touch nahi hota
+```
+
+`DiscountService` **closed for modification** hai — ye class ab kabhi edit nahi hogi naye discount ke liye. Lekin system **open for extension** hai — naye `IDiscountStrategy` implementations jitne chahiye utne add kar sakte ho. Ye exact wahi trade-off hai jo OCP promise karta hai: naya behavior add karne ka risk sirf naye code tak limited hai, purana tested code untouched rehta hai.
+
+### Reality check — OCP ko 100% absolute mat maano
+
+Practically har class 100% closed nahi ho sakti har tarah ke change ke liye — agar `IDiscountStrategy` interface ka signature hi badalna pade (jaise ek naya parameter chahiye har strategy ko), to har implementation edit karni padegi. OCP realistically kehta hai: "jo changes tum **anticipate** karte ho unke liye extension-friendly design karo," na ki "koi bhi future change kabhi kisi bhi existing file ko touch nahi karega." Strategy pattern discount-TYPE ke variation ke against protect karta hai, calculation-SIGNATURE ke variation ke against nahi.
+
+### Code Examples
+
+**Minimal example — abstraction se extension:**
+
+```csharp
+public interface IShape
+{
+    double Area();
+}
+
+public class Circle : IShape
+{
+    public double Radius { get; init; }
+    public double Area() => Math.PI * Radius * Radius;
+}
+
+public class Rectangle : IShape
+{
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public double Area() => Width * Height;
+}
+
+public double TotalArea(IEnumerable<IShape> shapes) => shapes.Sum(s => s.Area());
+// Naya shape (Triangle) add karna: TotalArea ya IShape ka koi existing code touch nahi hota
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Open for extension, closed for modification" bolo, aur if/else chain vs Strategy pattern ka ek simple example do.
+
+**SDE-3/Senior level answer:** Reality-check part connect karo — OCP absolute nahi hai, ye "anticipated variation points" ke against protect karta hai, sab variation ke against nahi. DI container me strategies register karne ka mechanism batao (`IEnumerable<IDiscountStrategy>` resolve hona), aur batao ki OCP ka trade-off kya hai — zyada upfront abstraction design effort, jo sirf tab worth hai jab variation genuinely expected ho, warna ye premature abstraction ban jaata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka middleware pipeline khud OCP ka ek real demonstration hai — naya middleware add karna matlab `IMiddleware` (ya delegate-based middleware) ki ek nayi class likhna aur `app.UseMiddleware<T>()` call karna, framework ke core pipeline-execution code ko kabhi modify nahi karna padta. Ye exact "open for extension, closed for modification" hai.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Payments API">
+
+Ek Indian fintech ka discount/cashback engine (Paytm/PhonePe-style) typically dus-se-zyada offer types support karta hai jo har festive season me badalte hain. `IDiscountStrategy`-style design ke bina, har naye campaign launch se pehle ek shared `DiscountService` class ko edit karna padta — jo release risk badhata hai kyunki ek chhota bug purane, already-live discounts ko bhi break kar sakta hai. Strategy pattern se naya campaign matlab sirf naya class deploy karna, existing discounts untouched.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- OCP is the second of the 5 SOLID principles, originally articulated by Bertrand Meyer (1988), later popularized in OOP context by Robert C. Martin
+- `IEnumerable<IDiscountStrategy>` resolving all registered implementations is standard ASP.NET Core DI container behavior — no extra library needed
+- Each `AddScoped<IDiscountStrategy, X>()` registration is one line — the cost of adding a new discount type after the refactor
+- A giant if/else chain with N branches has O(N) cyclomatic complexity growth; a Strategy-based design keeps each strategy's complexity constant regardless of N
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Open/Closed Principle kehta hai ki class extension ke liye open honi chahiye lekin modification ke liye closed. Maine ek real example handle kiya hai — ek DiscountService jisme har naye discount type ke liye if/else branch add karna padta tha. Maine isko IDiscountStrategy interface ke peeche refactor kiya — har discount apni class hai, DI container automatically saari registered strategies resolve karta hai. Ab naya discount add karna matlab ek naya class likhna hai, DiscountService ka existing code kabhi touch nahi hota."
+
+Ye answer definition ke saath ek concrete before/after example deta hai, aur DI container mechanism (`IEnumerable<T>` resolution) ka technical detail bhi deta hai jo dikhata hai ki candidate ne actually implement kiya hai, sirf pattern-name yaad nahi kiya. **Almost-guaranteed follow-up:** "Kya OCP hamesha 100% achievable hai? Kab ye practical nahi hota?"
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+OCP ko absolute rule samajhna — "koi bhi existing class kabhi edit nahi honi chahiye" — practically har change kisi na kisi existing code ko touch karta hai; OCP sirf **anticipated variation points** ke against protect karta hai (jaise discount TYPE badalna), har tarah ke change ke against nahi (jaise interface signature hi badalna).
+
+</Mistake>
+
+<Mistake>
+
+Premature abstraction — bina kisi real evidence ke ki variation aane wala hai, har jagah interface + Strategy pattern force karna. Ye unnecessary complexity add karta hai. OCP tab apply karo jab genuinely expected ho ki naye "types"/"variants" aayenge.
+
+</Mistake>
+
+<Mistake>
+
+Strategy classes ko DI container me register karna bhool jaana — interface definition sahi hone ke bawajood, agar `AddScoped<IDiscountStrategy, FestiveDiscount>()` jaisi registration missing hai, to naya discount silently kaam nahi karega (`FirstOrDefault` null return karega).
+
+</Mistake>
+
+<Mistake>
+
+If/else chain ko dekh kar turant "OCP violation" bol dena bina context check kiye — agar branches kabhi genuinely nahi badalne wale (jaise ek fixed, closed set of 2-3 cases jo domain me kabhi extend nahi honge), to Strategy pattern force karna unnecessary indirection hai.
+
+</Mistake>
+
+<Mistake>
+
+Strategy pattern aur simple polymorphism ko confuse karna interview me — Strategy specifically **interchangeable algorithms/behaviors** ke liye hai jo runtime pe select hote hain (jaise discount type ke basis pe), general inheritance-based polymorphism se subtly different framing hai jo interviewer expect karta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class IDiscountStrategy {
+        <<interface>>
+        +string DiscountType
+        +Calculate(orderTotal) decimal
+    }
+    class FestiveDiscount {
+        +Calculate(orderTotal) decimal
+    }
+    class FirstOrderDiscount {
+        +Calculate(orderTotal) decimal
+    }
+    class LoyaltyDiscount {
+        +Calculate(orderTotal) decimal
+    }
+    class DiscountService {
+        -IEnumerable~IDiscountStrategy~ strategies
+        +CalculateDiscount(type, total) decimal
+    }
+    IDiscountStrategy <|.. FestiveDiscount
+    IDiscountStrategy <|.. FirstOrderDiscount
+    IDiscountStrategy <|.. LoyaltyDiscount
+    DiscountService --> IDiscountStrategy : resolves all via DI
+`}
+  caption="DiscountService never changes when a new discount type is added — only a new class implementing IDiscountStrategy is needed."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- OCP: open for extension, closed for modification — add new behavior via new code, not by editing tested code
+- Classic violation smell: an if/else or switch chain that grows one branch per new type
+- Fix: Strategy pattern — an interface + one implementing class per variant, resolved via DI
+- ASP.NET Core's DI container resolves `IEnumerable<T>` of all registered implementations automatically
+- OCP is not absolute — it protects against anticipated variation points, not every possible future change
+- Premature abstraction (Strategy pattern with no real variation need) is an over-application anti-pattern
+- Forgetting to register a new strategy in the DI container is a real, common bug after this refactor
+- Middleware in ASP.NET Core is a built-in real-world OCP example
+
+</QuickRevision>

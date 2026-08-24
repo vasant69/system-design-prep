@@ -1,0 +1,224 @@
+---
+slug: "exception-handling-custom-exceptions"
+title: "Exception Handling & Custom Exceptions Done Right"
+section: "oops-dotnet"
+module: "interview-delivery"
+order: 2
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["object-class-methods-equals-gethashcode", "encapsulation-beyond-private-fields"]
+tags: ["dotnet", "exceptions", "oop", "csharp", "error-handling"]
+englishDefinition: "Custom exception types should be created only for genuinely distinct failure modes that callers need to catch and handle differently from generic errors, following the standard convention of inheriting from Exception with the three canonical constructors; exceptions exist for exceptional, unexpected conditions, not as a substitute for normal control flow."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Flipkart", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Custom exception types should be created only for genuinely distinct failure modes that callers need to catch and handle differently from generic errors, following the standard convention of inheriting from `Exception` with the three canonical constructors; exceptions exist for exceptional, unexpected conditions, not as a substitute for normal control flow.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Exception handling ek aisa topic hai jahan candidates syntax to jaante hain (`try`/`catch`/`finally`) lekin **judgment** miss karte hain — kab custom exception banao, kab built-in reuse karo, aur exceptions ko kab bilkul use hi na karo. Interviewer yahi judgment test karta hai.
+
+### Custom exception kab banao, kab nahi
+
+Rule simple hai: custom exception tabhi banao jab caller ko **genuinely alag tareeke se handle karna ho** us specific failure ko — jaise `InsufficientFundsException` jisse specifically catch karke UI pe ek particular message dikhana ho, generic error nahi. Agar tum sirf `Exception` ko different naam de rahe ho bina koi extra behavior/data add kiye, ya koi built-in type (`ArgumentException`, `InvalidOperationException`, `KeyNotFoundException`) already kaam kar sakta tha, to naya type banane ka koi fayda nahi — sirf codebase me exception types ka clutter badhta hai.
+
+### Custom exception class ki convention
+
+Microsoft ki guidance clear hai: `Exception` se inherit karo (kabhi `ApplicationException` se nahi — wo legacy guidance thi jo ab deprecated maani jaati hai), aur teen standard constructors provide karo — parameterless, `(string message)`, aur `(string message, Exception innerException)`. Ye third wala important hai kyunki ye **exception chaining** allow karta hai — original exception ko lose kiye bina ek higher-level exception wrap karke throw kar sakte ho.
+
+`[Serializable]` attribute historically zaroori tha agar exception cross-AppDomain ya remoting boundaries cross karta tha — modern .NET (Core/5+) me ye largely irrelevant ho chuka hai kyunki remoting hi deprecated hai, lekin purane codebases me still dikhta hai.
+
+### Exception filters — `when` clause
+
+C# exception filters (`catch (Ex e) when (condition)`) allow karte hain ek catch block ko sirf tab trigger hone dena jab ek additional condition true ho — bina exception ko catch karke phir rethrow karne ke. Ye particularly useful hai jab same exception type ko alag-alag conditions ke basis pe alag handle karna ho (jaise HTTP status code ke basis pe retry karna ya nahi).
+
+### Exceptions ko control flow ke liye use mat karo
+
+Ye ek core principle hai: exceptions **exceptional** conditions ke liye hain, normal/expected outcomes ke liye nahi. Agar koi condition regularly expected hai (jaise "user not found" ek lookup me), to exception throw karke use catch karna, instead of ek nullable return ya a result type/boolean check use karna, **anti-pattern** hai — exceptions expensive hain (stack trace capture, unwinding), aur code flow ko samajhna mushkil ho jaata hai jab normal logic bhi try/catch se guzarta hai.
+
+### Code Examples
+
+**Bad — exceptions for control flow:**
+
+```csharp
+public User GetUser(int id)
+{
+    var user = _db.Users.Find(id);
+    if (user == null) throw new Exception("User not found"); // expected outcome, not exceptional
+    return user;
+}
+
+// Caller forced into try/catch for a completely normal case
+try
+{
+    var user = GetUser(999);
+}
+catch (Exception)
+{
+    // "not found" is expected, not exceptional — this is a design smell
+}
+```
+
+**Good — custom exception for a genuinely distinct failure, plus filter:**
+
+```csharp
+public class InsufficientFundsException : Exception
+{
+    public decimal RequestedAmount { get; }
+    public decimal AvailableBalance { get; }
+
+    public InsufficientFundsException() { }
+    public InsufficientFundsException(string message) : base(message) { }
+    public InsufficientFundsException(string message, Exception inner) : base(message, inner) { }
+
+    public InsufficientFundsException(decimal requested, decimal available)
+        : base($"Requested {requested} exceeds available balance {available}")
+    {
+        RequestedAmount = requested;
+        AvailableBalance = available;
+    }
+}
+
+public class AccountService
+{
+    public void Withdraw(Account account, decimal amount)
+    {
+        if (amount > account.Balance)
+            throw new InsufficientFundsException(amount, account.Balance);
+
+        account.Balance -= amount;
+    }
+}
+
+// Caller catches specifically, with useful structured data attached
+try
+{
+    accountService.Withdraw(account, 5000);
+}
+catch (InsufficientFundsException ex) when (ex.RequestedAmount > 1000)
+{
+    // filter: only route large failed withdrawals to fraud-review logging
+    _logger.LogWarning("Large withdrawal blocked: {Ex}", ex.Message);
+}
+catch (InsufficientFundsException ex)
+{
+    return BadRequest(ex.Message);
+}
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `try`/`catch`/`finally` ka syntax pata ho, aur ek simple custom exception (message + base constructors) likh saken.
+
+**SDE-3/Senior level answer:** Exception filters, exception chaining (`innerException`), aur sabse important — "exceptions control flow ke liye nahi hain" principle ko concrete example ke saath justify kar saken, plus kab custom vs built-in exception choose karna hai iska clear judgment dikha saken.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's own BCL (Base Class Library) is design karta hai purposeful, specific exception types — `ArgumentNullException`, `ArgumentOutOfRangeException`, `InvalidOperationException` — har ek ek genuinely distinct failure signal karta hai jisse caller specifically catch kar sake, generic `Exception` se kabhi throw nahi karti Microsoft ki apni libraries.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Payments API">
+
+Ek Indian payments backend me `PaymentGatewayTimeoutException` aur `PaymentDeclinedException` do alag custom exceptions hote hain — dono "payment fail hua" signal karte hain lekin caller ko unhe **alag** handle karna hota hai: timeout pe retry logic chal sakta hai, decline pe user ko turant "card declined" message dikhana hota hai, retry ka koi matlab nahi. Agar dono ek hi generic `PaymentException` hote, ye distinction handle karna mushkil ho jaata.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Custom exceptions should follow the 3-constructor convention: parameterless, `(string message)`, `(string message, Exception inner)`
+- `ApplicationException` was the old guidance (inherit custom exceptions from it) — this is now considered legacy/deprecated; inherit from `Exception` directly
+- Exception filters (`catch (Ex e) when (...)`) have been available since C# 6.0 (2015)
+- `[Serializable]` was relevant for cross-AppDomain/remoting scenarios — largely irrelevant on modern .NET (Core/5+), where remoting doesn't exist
+- Throwing and catching an exception is measurably more expensive than a normal return path (stack trace capture) — a well-known reason not to use exceptions for expected/frequent outcomes
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Main custom exception tabhi banata hoon jab caller ko specifically alag handle karna ho us failure ko — jaise `InsufficientFundsException` jisme structured data (requested amount, available balance) attach hoti hai jo generic exception nahi de sakta. Convention follow karta hoon — `Exception` se inherit, teen standard constructors, `innerException` chaining support karta hoon taaki original error context lose na ho. Aur main exceptions ko control flow ke liye use nahi karta — agar ek outcome expected hai jaise 'record not found,' main usko nullable return ya result pattern se handle karta hoon, exception throw nahi karta."
+
+**Almost-guaranteed follow-up:** "Ek example do jahan tumne production me exceptions ka misuse dekha ho ya khud kiya ho" — is follow-up ke liye ek concrete before/after story ready rakho (jaise "user not found" ko exception se null-check me convert karna).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har naye error scenario ke liye naya custom exception class bana dena, bina ye check kiye ki koi built-in type (`ArgumentException`, `InvalidOperationException`) already kaam kar sakta tha — unnecessary type clutter.
+
+</Mistake>
+
+<Mistake>
+
+Custom exception me sirf message pass karna, structured data (jaise `RequestedAmount`) add na karna — jabki custom exception banane ka poora fayda hi ye hai ki tum extra context attach kar sako jo caller programmatically use kar sake.
+
+</Mistake>
+
+<Mistake>
+
+Expected/frequent outcomes (jaise "user not found" ek lookup me) ke liye exceptions throw karna instead of nullable return ya result pattern — performance aur readability dono ko hurt karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`catch (Exception ex) { }` jaisa empty/silent catch block likhna — error ko completely swallow kar dena, koi logging ya rethrow ke bina, debugging ko production me impossible bana deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Exception rethrow karte waqt `throw ex;` likhna instead of sirf `throw;` — `throw ex` original stack trace ko reset kar deta hai, debugging ke liye original failure point lose ho jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Failure occurs] --> B{Is this a genuinely distinct,<br/>caller-actionable failure mode?}
+    B -->|No, generic error| C[Reuse built-in: ArgumentException,<br/>InvalidOperationException, etc.]
+    B -->|Yes, needs specific handling| D[Create custom exception:<br/>inherit Exception, 3 constructors,<br/>add structured data]
+    A --> E{Is this actually an<br/>EXPECTED outcome?}
+    E -->|Yes, e.g. 'not found'| F[Don't throw — use nullable<br/>return or a result type]
+    E -->|No, truly exceptional| B
+`}
+  caption="The real decision tree: first check if it's even truly exceptional (vs an expected outcome), then decide custom vs built-in exception type."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Create a custom exception only when callers need to handle that specific failure differently — not just for a different name
+- Follow convention: inherit from `Exception` (not `ApplicationException`), provide the 3 standard constructors
+- `innerException` chaining preserves the original error when wrapping in a higher-level exception
+- Exception filters (`catch (Ex e) when (condition)`) let you conditionally handle without catch-then-rethrow
+- Exceptions are for exceptional conditions — never use them for expected/frequent outcomes like "not found"
+- `throw;` preserves the original stack trace; `throw ex;` resets it — always prefer `throw;` in a rethrow
+- Never leave an empty `catch` block — log or rethrow, never silently swallow
+- Add structured data (not just a message) to a custom exception so callers can act on it programmatically
+
+</QuickRevision>

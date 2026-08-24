@@ -1,0 +1,309 @@
+---
+slug: "dotnet-design-patterns-factory-strategy-singleton-decorator"
+title: ".NET Design Patterns Tour — Factory, Strategy, Singleton, Decorator, Options, Mediator"
+section: "oops-dotnet"
+module: "solid-patterns"
+order: 6
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["dependency-inversion-vs-injection", "service-lifetimes-captive-dependency"]
+tags: ["dotnet", "design-patterns", "factory", "strategy", "singleton", "decorator", "csharp"]
+englishDefinition: "Design patterns are proven, reusable solutions to recurring object-oriented design problems; in real .NET codebases, several classic Gang-of-Four patterns — Factory, Strategy, Singleton, Decorator — appear constantly, often disguised inside framework features like the DI container's Singleton lifetime, the Options pattern, or MediatR-style CQRS handlers, rather than as textbook implementations."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Flipkart", "Razorpay", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+Design patterns are proven, reusable solutions to recurring object-oriented design problems; in real .NET codebases, several classic Gang-of-Four patterns — Factory, Strategy, Singleton, Decorator — appear constantly, often disguised inside framework features like the DI container's Singleton lifetime, the Options pattern, or MediatR-style CQRS handlers, rather than as textbook implementations.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interview ke LLD (Low-Level Design) round me design patterns almost hamesha aate hain, lekin sabse valuable skill hai ye pehchaanna ki tum **already** in patterns ko daily kaam me use kar rahe ho — bas naam nahi pata. Ye topic 6 patterns cover karta hai jo real ASP.NET Core codebases me constantly dikhte hain, har ek ka ek short real example ke saath.
+
+### Requirements — kya samajhna hai is topic me
+
+Interviewer ka goal sirf pattern-naam yaad karwana nahi hai — wo ye dekhna chahta hai ki tum: (1) pattern ko sahi problem ke saath match kar sakte ho, (2) real .NET framework feature me pattern pehchaan sakte ho, aur (3) bata sakte ho ye pattern kab **zaroorat se zyada** ho jaata hai (over-engineering). Chalo ek-ek karke dekhte hain.
+
+### Factory Pattern — object creation ko caller se decouple karna
+
+Jab object creation logic complex ho ya runtime pe decide karna ho **kaunsa concrete type** banana hai, Factory pattern us decision ko ek jagah centralize karta hai:
+
+```csharp
+public interface IPaymentGateway
+{
+    Task<bool> ProcessPaymentAsync(decimal amount);
+}
+
+public class RazorpayGateway : IPaymentGateway
+{
+    public Task<bool> ProcessPaymentAsync(decimal amount) => Task.FromResult(true);
+}
+
+public class PayUGateway : IPaymentGateway
+{
+    public Task<bool> ProcessPaymentAsync(decimal amount) => Task.FromResult(true);
+}
+
+public interface IPaymentGatewayFactory
+{
+    IPaymentGateway Create(string gatewayName);
+}
+
+public class PaymentGatewayFactory : IPaymentGatewayFactory
+{
+    private readonly IServiceProvider _serviceProvider;
+    public PaymentGatewayFactory(IServiceProvider serviceProvider) => _serviceProvider = serviceProvider;
+
+    public IPaymentGateway Create(string gatewayName) => gatewayName switch
+    {
+        "Razorpay" => _serviceProvider.GetRequiredService<RazorpayGateway>(),
+        "PayU" => _serviceProvider.GetRequiredService<PayUGateway>(),
+        _ => throw new ArgumentException($"Unknown gateway: {gatewayName}")
+    };
+}
+```
+
+Caller code (`CheckoutService`) ko `IPaymentGatewayFactory` inject karwa do — wo runtime pe user ki saved preference ke basis pe sahi gateway choose kar sakta hai bina khud `new RazorpayGateway()` ya `new PayUGateway()` likhe. Ye decision-making ek jagah rehta hai.
+
+### Strategy Pattern — cross-reference
+
+Strategy pattern iss module ke Topic 2 (`open-closed-strategy-pattern`) me detail me cover hua hai — quick recap: jab tumhe **interchangeable algorithms/behaviors** chahiye jo runtime pe select ho (discount calculation ka example), Strategy pattern ek interface + ek class-per-variant deta hai. Factory aur Strategy aksar saath chalte hain — Factory decide karta hai *kaunsi* strategy banani hai, Strategy khud *kaise* execute hoti hai wo define karta hai.
+
+### Singleton Pattern — DI container ka Singleton lifetime, properly managed
+
+Classic GoF Singleton pattern (ek `private static readonly instance` field, `private constructor`, global `GetInstance()` method) ek **anti-pattern** ban chuka hai modern .NET me — kyunki ye global mutable state create karta hai, testing mushkil banata hai (mock nahi kar sakte), aur thread-safety khud manually handle karni padti hai:
+
+```csharp
+// Classic GoF Singleton — ASP.NET Core me avoid karo
+public class ConfigManager
+{
+    private static readonly ConfigManager _instance = new();
+    public static ConfigManager Instance => _instance;
+    private ConfigManager() { }
+}
+```
+
+ASP.NET Core ka DI container **wahi Singleton guarantee deta hai** (ek instance poore application lifetime ke liye), lekin **properly managed**:
+
+```csharp
+builder.Services.AddSingleton<ICacheService, InMemoryCacheService>();
+```
+
+Ye bhi Singleton pattern **hi hai** — ek hi `InMemoryCacheService` instance poore app me share hota hai. Farak: DI container ke through registered hone ki wajah se ye **testable** hai (mock kar sakte ho `ICacheService` interface ke through), koi hardcoded global state nahi hai, aur container khud thread-safe instantiation handle karta hai (double-checked locking wagera manually nahi likhna padta). Interview me ye contrast batana — "classic Singleton anti-pattern hai kyunki testability/coupling problem hai, lekin DI container ka Singleton lifetime wahi guarantee properly deta hai" — senior-level signal hai.
+
+### Decorator Pattern — behavior wrap karna bina original class chhue
+
+Decorator pattern ek existing implementation ko ek same-interface wrapper se **wrap** karta hai, taaki naya cross-cutting behavior (logging, caching) add ho sake bina original class ko modify kiye:
+
+```csharp
+public interface IOrderService
+{
+    Task<Order> GetOrderAsync(int id);
+}
+
+public class OrderService : IOrderService
+{
+    public Task<Order> GetOrderAsync(int id) => /* real DB call */;
+}
+
+// Decorator — same interface, wraps the real implementation
+public class CachingOrderServiceDecorator : IOrderService
+{
+    private readonly IOrderService _inner;
+    private readonly IMemoryCache _cache;
+
+    public CachingOrderServiceDecorator(IOrderService inner, IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public async Task<Order> GetOrderAsync(int id)
+    {
+        if (_cache.TryGetValue(id, out Order cached)) return cached;
+        var order = await _inner.GetOrderAsync(id);
+        _cache.Set(id, order, TimeSpan.FromMinutes(5));
+        return order;
+    }
+}
+
+// Registration — decorator wraps the real service
+builder.Services.AddScoped<OrderService>();
+builder.Services.AddScoped<IOrderService>(sp =>
+    new CachingOrderServiceDecorator(sp.GetRequiredService<OrderService>(), sp.GetRequiredService<IMemoryCache>()));
+```
+
+`CachingOrderServiceDecorator` khud `IOrderService` implement karta hai aur andar ek real `IOrderService` (`_inner`) ko wrap karta hai — caller (jaise `OrdersController`) ko koi fark nahi padta, wo bas `IOrderService` use karta hai. Logging decorator bhi isi tarah add ho sakta hai — decorators **chain** ho sakte hain (logging decorator, caching decorator ko wrap kare, jo real service ko wrap kare).
+
+### Options Pattern — ek .NET-specific pattern jo bahut candidates miss karte hain
+
+`IOptions<T>` .NET-specific hai — strongly-typed configuration binding ka pattern hai jo `appsettings.json` values ko typed C# classes me bind karta hai:
+
+```csharp
+public class EmailSettings
+{
+    public string SmtpHost { get; set; } = "";
+    public int SmtpPort { get; set; }
+}
+
+// Program.cs
+builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
+
+// Consumer
+public class EmailService
+{
+    private readonly EmailSettings _settings;
+    public EmailService(IOptions<EmailSettings> options) => _settings = options.Value;
+}
+```
+
+Ye pattern strongly-typed config access deta hai (no magic strings like `Configuration["Email:SmtpHost"]` scattered everywhere), aur `IOptionsSnapshot<T>`/`IOptionsMonitor<T>` variants runtime config-reload bhi support karte hain. Kai candidates isko "just a config feature" samajhte hain, ye na realize karte hue ki ye khud ek design pattern hai (dependency-injected, strongly-typed configuration binding).
+
+### Mediator/CQRS — MediatR-style request/handler separation
+
+Mediator pattern components ke beech direct coupling hatata hai — sab communication ek central "mediator" ke through hoti hai. .NET ecosystem me `MediatR` library is pattern ka popular implementation hai, often CQRS (Command Query Responsibility Segregation) ke saath combine hoti hai:
+
+```csharp
+public record GetOrderQuery(int OrderId) : IRequest<Order>;
+
+public class GetOrderHandler : IRequestHandler<GetOrderQuery, Order>
+{
+    private readonly IOrderRepository _repository;
+    public GetOrderHandler(IOrderRepository repository) => _repository = repository;
+
+    public async Task<Order> Handle(GetOrderQuery request, CancellationToken ct) =>
+        await _repository.GetByIdAsync(request.OrderId);
+}
+
+// Controller
+public class OrdersController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    public OrdersController(IMediator mediator) => _mediator = mediator;
+
+    [HttpGet("{id}")]
+    public async Task<Order> Get(int id) => await _mediator.Send(new GetOrderQuery(id));
+}
+```
+
+Controller ab directly `OrderService` ko nahi jaanta — ek query object (`GetOrderQuery`) `IMediator` ko bhej deta hai, aur `MediatR` khud sahi handler dhoondh kar call kar deta hai. Ye particularly badi codebases me useful hai jahan controllers me business-logic-calling code ka volume kam karna ho, aur cross-cutting concerns (logging, validation) ko pipeline behaviors ke through centrally add karna ho. Ye full CQRS deep dive nahi hai — bas itna samajhna kaafi hai ki problem kya solve karta hai: **decoupled request handling**, na ki controller directly service methods calling.
+
+### Follow-Up — jab ye sab overkill ho jaata hai
+
+Har pattern ka apna cost hai — indirection, extra files, learning curve naye developers ke liye. Ek chhoti CRUD API me Factory + Decorator + Mediator sab ek saath use karna genuine over-engineering hai. Interview me ye balance dikhana — "main ye patterns tabhi reach karta hoon jab specific problem present ho (multiple implementations chahiye — Factory/Strategy; cross-cutting behavior wrap karna hai — Decorator; request volume bahut zyada hai controllers me — Mediator), na ki 'design patterns cool hain isliye'" — genuinely senior signal hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Har pattern ka naam aur ek-line "kya problem solve karta hai" bol do — Factory (creation decouple karta hai), Strategy (interchangeable algorithms), Singleton (ek shared instance), Decorator (behavior wrap karta hai bina modify kiye).
+
+**SDE-3/Senior level answer:** Har pattern ko ek real ASP.NET Core feature ke saath connect karo (jaisa upar diya hai — DI container ka Singleton lifetime, Options pattern, MediatR), aur explicitly batao classic GoF Singleton anti-pattern kyun hai modern .NET me lekin DI-managed Singleton lifetime achha hai. Over-engineering ka awareness dikhao — kab ye patterns zaroorat se zyada ho jaate hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka built-in DI container khud `AddSingleton`, `AddScoped`, `AddTransient` ke through Singleton pattern (aur variants) ko first-class support deta hai — framework khud recommend karta hai classic static-instance Singleton avoid karke container-managed lifetime use karna, testability aur thread-safety dono ke liye. `IOptions<T>` bhi Microsoft.Extensions.Options package ka hissa hai, .NET Core 1.0 se hi built-in.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Payments Platform">
+
+Ek Indian fintech me `IPaymentGatewayFactory` pattern real production me use hota hai — checkout flow user ki region/preference ke basis pe Razorpay, PayU, ya Cashfree me se runtime pe choose karta hai. Isi codebase me ek `LoggingOrderServiceDecorator` bhi hai jo har order-fetch call ko log karta hai bina `OrderService` ke actual business logic ko chhue — dono patterns ek saath, apne specific problems solve karte hue, koi ek "do it all" mega-class nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- The 4 patterns core-covered here (Factory, Strategy, Singleton, Decorator) are 4 of the original 23 Gang-of-Four patterns from the 1994 "Design Patterns" book
+- `Microsoft.Extensions.Options` (the Options pattern) has shipped as a built-in .NET package since .NET Core 1.0 (2016)
+- MediatR is a popular third-party NuGet package, not part of the .NET BCL — CQRS/Mediator concepts are framework-agnostic
+- ASP.NET Core DI container supports 3 lifetimes (Singleton, Scoped, Transient) — Singleton pattern maps directly onto the first
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Design patterns proven solutions hain recurring problems ke liye, aur main inhe daily ASP.NET Core code me already use karta hoon — bas kabhi textbook naam se nahi sochta. Factory pattern jab runtime pe decide karna ho kaunsa concrete implementation banana hai — jaise payment gateway choose karna. Strategy jab interchangeable algorithms chahiye — jaise discount calculation. Singleton — main classic static-instance GoF Singleton avoid karta hoon kyunki wo testability todta hai, uski jagah DI container ka AddSingleton use karta hoon jo wahi guarantee properly deta hai. Decorator jab cross-cutting behavior (caching, logging) add karna ho bina original service ko modify kiye. Aur Options pattern strongly-typed config binding ke liye, MediatR bade codebases me controller-to-handler decoupling ke liye."
+
+Ye answer 6 patterns ko concise, real-usage-connected tareeke se cover karta hai — interviewer ko dikhata hai ki candidate ne inhe production me actually use kiya hai, sirf memorize nahi kiya. **Almost-guaranteed follow-up:** "Classic Singleton pattern anti-pattern kyun mana jaata hai — exact reasons do."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Classic GoF Singleton (static instance, private constructor) aur ASP.NET Core ka `AddSingleton` lifetime ko same maan lena — dono ek hi guarantee dete hain (ek shared instance) lekin implementation aur testability me bahut fark hai. Interview me isko distinguish na kar paana ek common gap hai.
+
+</Mistake>
+
+<Mistake>
+
+Har problem ke liye ek design pattern force karna — chhoti CRUD API me Factory + Decorator + Mediator sab ek saath use karna genuine over-engineering hai. Patterns tabhi lao jab specific, present problem ho.
+
+</Mistake>
+
+<Mistake>
+
+Decorator pattern ko middleware se confuse karna — dono conceptually similar hain (wrap + delegate) lekin Decorator ek specific interface ko wrap karta hai (jaise `IOrderService`), middleware poori HTTP request pipeline ko.
+
+</Mistake>
+
+<Mistake>
+
+Options pattern ko "sirf config feature" samajhna, design pattern na maanna — `IOptions<T>` actually strongly-typed configuration binding ke liye ek deliberate, DI-integrated pattern hai, sirf ek config-reading utility nahi.
+
+</Mistake>
+
+<Mistake>
+
+Mediator/CQRS ko poora "microservices ke liye zaroori" bol dena — MediatR ek monolith ke andar bhi useful hai controllers ko thin rakhne ke liye; CQRS aur microservices independent concerns hain, ek dusre ke liye zaroori nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Client Request] --> B[OrdersController]
+    B --> C{IMediator}
+    C --> D[GetOrderHandler]
+    D --> E[IOrderRepository]
+    B -.->|"or directly (no Mediator)"| F[CachingOrderServiceDecorator]
+    F --> G[OrderService - real impl]
+    H[IPaymentGatewayFactory] -->|creates| I[RazorpayGateway]
+    H -->|creates| J[PayUGateway]
+`}
+  caption="Factory decides which concrete type to create; Decorator wraps a real implementation with extra behavior; Mediator decouples the controller from the handler that does the real work."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Factory: centralizes runtime decision of which concrete type to create (e.g. payment gateway selection)
+- Strategy: interchangeable algorithms behind one interface, selected at runtime (see Topic 2 of this module)
+- Singleton: classic GoF static-instance version is an anti-pattern in modern .NET — `AddSingleton` in the DI container gives the same guarantee, properly testable
+- Decorator: wraps a real implementation with the same interface to add cross-cutting behavior (caching, logging) without modifying it
+- Options pattern (`IOptions<T>`): strongly-typed, DI-integrated configuration binding — a real, often-unrecognized .NET-specific pattern
+- Mediator/MediatR + CQRS: decouples controllers from handlers via a central dispatch mechanism — useful in monoliths too, not just microservices
+- Every pattern has a real cost (indirection, extra files) — apply only when the specific problem is actually present
+- All 4 core GoF patterns here map onto everyday ASP.NET Core features, not abstract textbook examples
+
+</QuickRevision>

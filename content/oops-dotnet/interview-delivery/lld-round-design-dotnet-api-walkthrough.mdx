@@ -1,0 +1,387 @@
+---
+slug: "lld-round-design-dotnet-api-walkthrough"
+title: "LLD Round Walkthrough: Designing a Library Management API Live"
+section: "oops-dotnet"
+module: "interview-delivery"
+order: 5
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["dependency-injection-ioc-oop-payoff", "abstract-class-vs-interface-decision", "single-responsibility-real-refactor", "dtos-model-binding-validation-mapping"]
+tags: ["dotnet", "oop", "csharp", "lld", "case-study", "solid", "capstone"]
+englishDefinition: "A low-level design (LLD) interview round asks a candidate to design a small but real system incrementally, live, as requirements evolve — this walkthrough transcribes exactly such a round for a Library Management API, deliberately exercising interfaces, dependency injection, a justified small class hierarchy, and DTOs together, the way an actual interview unfolds rather than as a finished textbook design."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Microsoft", "Flipkart", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+A low-level design (LLD) interview round asks a candidate to design a small but real system incrementally, live, as requirements evolve — this walkthrough transcribes exactly such a round for a Library Management API, deliberately exercising interfaces, dependency injection, a justified small class hierarchy, and DTOs together, the way an actual interview unfolds rather than as a finished textbook design.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye is poore section ka capstone topic hai — ab tak jo bhi seekha hai (encapsulation se lekar DI, SOLID, exceptions, testing tak), sab ek saath, ek real LLD interview round jaisa transcript me use hoga. Format hai: **Interviewer** poochta hai, **Candidate** design karta hai, incrementally, requirements evolve hoti hain jaise real round me hoti hain.
+
+### Requirements — Round Shuru Hota Hai
+
+**Interviewer:** "Ek Library Management API design karo — books track ho, members books borrow/return kar sakein. Keep it simple initially, hum requirements grow karenge as we go."
+
+**Candidate:** "Theek hai, shuru me main clarify kar leta hoon scope. Core entities lagte hain: `Book`, `Member`, aur ek `BorrowRecord` jo track kare kaunsi book kis member ne kab li. Main REST API design karunga — `POST /books/{id}/borrow`, `POST /books/{id}/return`, `GET /books` jaise endpoints. Main shuru se hi interfaces ke peeche business logic rakhunga taaki testable rahe aur baad me storage swap ho sake bina controller touch kiye."
+
+### Key Entities aur Architecture
+
+**Candidate continues:** "Main teen layers me sochunga — Controller (HTTP concerns), Service (business logic — jaise 'available copies hain ya nahi' check karna), aur Repository (data access). Har layer apni interface ke peeche abstract hogi taaki layers loosely coupled rahein."
+
+```csharp
+public class Book
+{
+    public int Id { get; init; }
+    public required string Title { get; init; }
+    public required string Author { get; init; }
+    public int TotalCopies { get; set; }
+    public int AvailableCopies { get; set; }
+}
+
+public class Member
+{
+    public int Id { get; init; }
+    public required string Name { get; init; }
+    public List<int> BorrowedBookIds { get; } = new();
+}
+
+public interface IBookRepository
+{
+    Book? GetById(int id);
+    void Update(Book book);
+    IEnumerable<Book> GetAll();
+}
+
+public interface ILibraryService
+{
+    Task BorrowBookAsync(int bookId, int memberId);
+    Task ReturnBookAsync(int bookId, int memberId);
+}
+```
+
+**Interviewer:** "Achha — `AvailableCopies` ko public settable kyun rakha? Koi bhi caller directly modify kar sakta hai ye to."
+
+**Candidate:** "Fair point — ye encapsulation violate karta hai. Main isko private set kar dunga, aur `Borrow()`/`Return()` methods `Book` class ke andar hi rakhunga jo validation ke saath `AvailableCopies` update karein. Domain logic entity ke andar honi chahiye, service layer sirf orchestrate kare."
+
+```csharp
+public class Book
+{
+    public int Id { get; init; }
+    public required string Title { get; init; }
+    public required string Author { get; init; }
+    public int TotalCopies { get; private set; }
+    public int AvailableCopies { get; private set; }
+
+    public void Borrow()
+    {
+        if (AvailableCopies <= 0)
+            throw new InvalidOperationException("No copies available");
+        AvailableCopies--;
+    }
+
+    public void Return()
+    {
+        if (AvailableCopies >= TotalCopies)
+            throw new InvalidOperationException("All copies already returned");
+        AvailableCopies++;
+    }
+}
+```
+
+### Design — Service Layer aur DI
+
+**Interviewer:** "Ab `BorrowBookAsync` implement karo."
+
+**Candidate:**
+
+```csharp
+public class LibraryService : ILibraryService
+{
+    private readonly IBookRepository _bookRepo;
+    private readonly IMemberRepository _memberRepo;
+
+    public LibraryService(IBookRepository bookRepo, IMemberRepository memberRepo)
+    {
+        _bookRepo = bookRepo;
+        _memberRepo = memberRepo;
+    }
+
+    public async Task BorrowBookAsync(int bookId, int memberId)
+    {
+        var book = _bookRepo.GetById(bookId)
+            ?? throw new BookNotFoundException(bookId);
+        var member = _memberRepo.GetById(memberId)
+            ?? throw new MemberNotFoundException(memberId);
+
+        book.Borrow(); // domain validation lives on the entity itself
+        member.BorrowedBookIds.Add(bookId);
+
+        _bookRepo.Update(book);
+        _memberRepo.Update(member);
+    }
+
+    public async Task ReturnBookAsync(int bookId, int memberId)
+    {
+        var book = _bookRepo.GetById(bookId)
+            ?? throw new BookNotFoundException(bookId);
+
+        book.Return();
+        _bookRepo.Update(book);
+    }
+}
+```
+
+"`LibraryService` constructor injection ke through dono repositories leta hai — DI container inject karega actual implementations. Isse main unit tests me dono repositories mock kar sakta hoon, koi real DB chahiye nahi."
+
+**Interviewer:** "Kyun `BookNotFoundException` jaisa custom exception, plain `Exception` kyun nahi?"
+
+**Candidate:** "Kyunki caller (controller) ko is specific case ko differently handle karna hai — `404 Not Found` return karna hai, generic error se alag. Custom exception se controller specifically catch karke sahi HTTP status map kar sakta hai, aur agar structured data (jaise `bookId`) attach karoon exception me, logging bhi better hoti hai."
+
+### Requirements Evolve — A Small, Justified Hierarchy
+
+**Interviewer:** "Ab library do types ke members support karegi — Regular members (max 3 books) aur Premium members (max 10 books, aur late fee waiver). Design isko."
+
+**Candidate:** "Yahan ek decision point hai — inheritance use karoon ya composition. Dono members ka core behavior same hai (borrow/return tracking), sirf policy (max books, fee rules) differ karta hai. Main isse ek `MembershipPolicy` strategy ke through model karunga, na ki `Member` ko subclass karke — kyunki agar kal ek naya membership tier aaya (jaise Student), inheritance approach me naya class banana padta, jabki strategy approach me sirf ek naya policy object."
+
+```csharp
+public interface IMembershipPolicy
+{
+    int MaxBooksAllowed { get; }
+    bool WaivesLateFee { get; }
+}
+
+public class RegularMembershipPolicy : IMembershipPolicy
+{
+    public int MaxBooksAllowed => 3;
+    public bool WaivesLateFee => false;
+}
+
+public class PremiumMembershipPolicy : IMembershipPolicy
+{
+    public int MaxBooksAllowed => 10;
+    public bool WaivesLateFee => true;
+}
+
+public class Member
+{
+    public int Id { get; init; }
+    public required string Name { get; init; }
+    public required IMembershipPolicy Policy { get; init; }
+    public List<int> BorrowedBookIds { get; } = new();
+
+    public void ValidateCanBorrow()
+    {
+        if (BorrowedBookIds.Count >= Policy.MaxBooksAllowed)
+            throw new BorrowLimitExceededException(Id, Policy.MaxBooksAllowed);
+    }
+}
+```
+
+"Ye Strategy pattern hai — `IMembershipPolicy` ke through open/closed principle bhi satisfy ho raha hai: naya membership tier add karne ke liye `Member` class ko modify nahi karna padega, sirf ek naya `IMembershipPolicy` implementation."
+
+**Interviewer:** "Agar main poochoon inheritance kyun nahi (`PremiumMember : Member`) — kya bologe?"
+
+**Candidate:** "Inheritance yahan galat fit hoti — ek member apni membership tier **change** kar sakta hai (Regular se Premium upgrade), aur agar `Member` type hi tier decide karta, runtime pe object ka type change karna possible nahi hai C# me. Composition (policy object) ko runtime pe swap karna trivial hai — `member.Policy = new PremiumMembershipPolicy()`. Ye classic 'favor composition over inheritance jab behavior runtime-mutable ho sakta hai' case hai."
+
+### DTOs at the API Boundary
+
+**Interviewer:** "Controller kaisa dikhega?"
+
+**Candidate:**
+
+```csharp
+public record BorrowRequestDto(int BookId, int MemberId);
+
+[ApiController]
+[Route("api/library")]
+public class LibraryController : ControllerBase
+{
+    private readonly ILibraryService _service;
+    public LibraryController(ILibraryService service) => _service = service;
+
+    [HttpPost("borrow")]
+    public async Task<IActionResult> Borrow(BorrowRequestDto dto)
+    {
+        try
+        {
+            await _service.BorrowBookAsync(dto.BookId, dto.MemberId);
+            return Ok();
+        }
+        catch (BookNotFoundException ex) { return NotFound(ex.Message); }
+        catch (BorrowLimitExceededException ex) { return BadRequest(ex.Message); }
+    }
+}
+```
+
+"Controller `Book`/`Member` entities kabhi directly expose nahi karta — sirf DTOs. Isse internal domain model free rehta hai evolve karne ke liye bina API contract todhe."
+
+### Scaling and Failure Considerations
+
+**Interviewer:** "Agar do requests same book ko simultaneously borrow karne ki koshish karein — last copy ke liye — kya hoga?"
+
+**Candidate:** "Race condition ka risk hai agar `GetById` aur `Update` do alag operations hain bina locking ke — dono requests `AvailableCopies == 1` dekh sakti hain aur dono `Borrow()` succeed kar jaayein, jisse `AvailableCopies` negative ho jaaye. Production fix: database-level optimistic concurrency (a `RowVersion`/`ETag` column) — jab `Update()` call ho aur row already modified ho chuki ho since read, EF Core `DbUpdateConcurrencyException` throw karega, jisse service layer retry ya conflict-error return kar sake. In-memory single-instance scenario me ek `lock` bhi kaam karega, lekin multi-instance deployment me database-level concurrency control hi sahi solution hai."
+
+**Interviewer:** "Testing kaise karoge is `LibraryService` ko?"
+
+**Candidate:** "`IBookRepository`/`IMemberRepository` dono Moq se mock karunga — isliye hi shuru se interfaces rakhe the. AAA structure ke saath xUnit `[Fact]` likhunga — jaise 'BorrowBookAsync throws BorrowLimitExceededException jab member already max books pe ho', mock repository se ek member return karunga jiska `BorrowedBookIds.Count == Policy.MaxBooksAllowed`."
+
+### Follow-Up Questions
+
+**Interviewer's likely follow-ups (and the shape of a good answer):**
+
+- "Late fee calculation kaise design karoge?" — ek `ILateFeeCalculator` interface, `Policy.WaivesLateFee` check karta hai, Strategy pattern hi extend hota hai.
+- "Book search/filter add karna ho to?" — repository interface me `SearchAsync(criteria)` add karo, ya CQRS-style alag read model consider karo agar search complex ho jaaye.
+- "Ye design SOLID principles kaise satisfy karta hai?" — SRP (Book apna borrow/return state khud manage karta hai, Service orchestrate karta hai, Controller sirf HTTP), OCP (naya membership tier bina Member modify kiye), LSP (koi inheritance hi nahi hai jo violate ho), ISP (chhote, focused interfaces — `IBookRepository` sirf book-related), DIP (Service concrete repositories pe nahi, interfaces pe depend karta hai).
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Entities aur ek basic service/repository split de saken, interfaces ka basic idea samjha saken.
+
+**SDE-3/Senior level answer:** Requirements evolve hone par design ko incrementally adapt kar saken (inheritance vs composition trade-off jaisa), concurrency/scaling concerns proactively raise kar saken, aur design ko explicitly SOLID principles se justify kar saken jab poocha jaaye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Amazon-style LLD rounds specifically requirements ko live evolve karte hain (jaise yahan membership tiers add hona) taaki dekha ja sake candidate rigid, over-engineered design se shuru karta hai ya incrementally, YAGNI-respecting design se — jo baad me extend karna easy ho.
+
+</RealWorld>
+
+<RealWorld company="A Bangalore Product Startup">
+
+Ek typical Series-B Indian startup ka backend LLD round bhi isi shape ka hota hai — chhota domain (jaise ek library, ek parking lot, ek ride-booking core), interfaces/DI/SOLID ko concretely apply karte dekhna, na ki sirf definitions bol dena.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A typical LLD round runs 45-60 minutes, with requirements deliberately evolving 2-3 times mid-round
+- This design touches 3 architectural layers (Controller/Service/Repository), 2 interfaces beyond repositories (`ILibraryService`, `IMembershipPolicy`), and 2 custom exceptions
+- EF Core's optimistic concurrency via a `RowVersion`/`ETag` column is the standard production fix for the race condition raised above
+- Composition-over-inheritance is chosen here specifically because membership tier is runtime-mutable — a concrete, defensible reason, not a blanket rule
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud (as an opening move in any LLD round):** "Main pehle scope clarify karunga aur core entities identify karunga, phir ek simple layered design se shuru karunga — Controller, Service, Repository, sab interfaces ke peeche taaki testable aur loosely coupled rahe. Jaise requirements evolve hongi, main design ko incrementally adapt karunga, aur har design decision (jaise composition vs inheritance) ko ek concrete reason ke saath justify karunga, sirf 'best practice hai' bolke nahi."
+
+**Almost-guaranteed follow-up:** "Is design me sabse weak point kya hai abhi?" — is transcript ke case me honest answer hoga concurrency handling (jab tak explicitly discuss na ho jaaye) — proactively is gap ko raise karna khud ek strong signal hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Shuru se hi over-engineered design dena (jaise abhi se CQRS, event sourcing, microservices) jab requirements chhoti hain — interviewer YAGNI-violation ke roop me dekhta hai, "requirements grow karenge as we go" ka signal miss karna.
+
+</Mistake>
+
+<Mistake>
+
+Membership tiers add hone par turant `PremiumMember : Member` jaisi inheritance likh dena bina soche ki tier runtime-mutable hai — ye is exact round ka trap tha.
+
+</Mistake>
+
+<Mistake>
+
+Domain entities (`Book`, `Member`) ko seedha API response me return kar dena, DTOs skip karke — internal model aur external contract couple ho jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Concurrency/race-condition concerns ko bilkul raise na karna jab tak explicitly poocha na jaaye — proactively raise karna senior-level signal hai.
+
+</Mistake>
+
+<Mistake>
+
+Design decisions ko justify na kar paana jab poocha jaaye "ye aisa kyun kiya" — har choice (interface, custom exception, composition) ke peeche ek concrete reason ready rakho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class LibraryController {
+        -ILibraryService service
+        +Borrow(dto) IActionResult
+    }
+    class ILibraryService {
+        <<interface>>
+        +BorrowBookAsync(bookId, memberId)
+        +ReturnBookAsync(bookId, memberId)
+    }
+    class LibraryService {
+        -IBookRepository bookRepo
+        -IMemberRepository memberRepo
+        +BorrowBookAsync(bookId, memberId)
+    }
+    class IBookRepository {
+        <<interface>>
+        +GetById(id) Book
+        +Update(book)
+    }
+    class Book {
+        -int AvailableCopies
+        +Borrow()
+        +Return()
+    }
+    class Member {
+        -IMembershipPolicy Policy
+        +ValidateCanBorrow()
+    }
+    class IMembershipPolicy {
+        <<interface>>
+        +MaxBooksAllowed int
+        +WaivesLateFee bool
+    }
+    class RegularMembershipPolicy
+    class PremiumMembershipPolicy
+
+    LibraryController --> ILibraryService : depends on abstraction
+    ILibraryService <|.. LibraryService
+    LibraryService --> IBookRepository : depends on abstraction
+    LibraryService --> Book
+    Member --> IMembershipPolicy : composition, not inheritance
+    IMembershipPolicy <|.. RegularMembershipPolicy
+    IMembershipPolicy <|.. PremiumMembershipPolicy
+`}
+  caption="Every dependency points at an interface, not a concrete class; membership tiers are modeled with a swappable policy object (composition), not a subclass — the whole design deliberately exercises DI, abstraction, SRP, and OCP together."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Start an LLD round by clarifying scope and entities, then a simple layered design (Controller/Service/Repository) behind interfaces
+- Keep domain validation (like `Book.Borrow()`) on the entity itself, not scattered across the service layer
+- Custom exceptions (`BookNotFoundException`) let the controller map specific failures to specific HTTP statuses
+- When behavior needs to be runtime-swappable (membership tier), prefer composition/strategy over inheritance
+- Never expose domain entities directly from a controller — always a DTO at the boundary
+- Race conditions on shared mutable state (available copies) need real concurrency control (optimistic concurrency), not just a mental note
+- Because every dependency is behind an interface, `LibraryService` is fully unit-testable with Moq, no real DB needed
+- Be ready to explicitly map the finished design back to each SOLID letter when asked
+
+</QuickRevision>

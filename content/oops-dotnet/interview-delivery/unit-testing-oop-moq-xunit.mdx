@@ -1,0 +1,240 @@
+---
+slug: "unit-testing-oop-moq-xunit"
+title: "Unit Testing OOP Code: Moq, xUnit, and Why DI Makes It Possible"
+section: "oops-dotnet"
+module: "interview-delivery"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["dependency-injection-ioc-oop-payoff", "abstract-class-vs-interface-decision"]
+tags: ["dotnet", "testing", "oop", "csharp", "moq", "xunit"]
+englishDefinition: "Unit testing is practical in OOP code specifically because interfaces and dependency injection let you substitute a real dependency with a mock at test time; xUnit provides the test runner and assertion framework ([Fact]/[Theory]), Moq provides mock implementations of interfaces, and the Arrange-Act-Assert structure keeps each test's intent readable."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "Swiggy", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Unit testing is practical in OOP code specifically because interfaces and dependency injection let you substitute a real dependency with a mock at test time; xUnit provides the test runner and assertion framework (`[Fact]`/`[Theory]`), Moq provides mock implementations of interfaces, and the Arrange-Act-Assert structure keeps each test's intent readable.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic explicitly connect karta hai ki OOP sirf theory nahi hai — interfaces aur DI hone ki wajah se hi unit testing **practically possible** hoti hai. Interviewer isko poochh ke check karta hai ki tumhe pata hai testing aur OOP design ek doosre se directly juda hua hai, alag-alag skills nahi.
+
+### OOP na hota to testing kyun mushkil hoti
+
+Socho `OrderService` seedha `SqlOrderRepository` ko `new` kar raha hota class ke andar (tight coupling). Ab is service ko unit test karne ke liye tumhe ek real database chahiye hoga — slow, flaky, aur "unit" test nahi rehta, integration test ban jaata hai. Ab isi service ko `IOrderRepository` interface ke through DI se inject karo — test me tum ek **fake/mock** implementation pass kar sakte ho jo in-memory, predictable data return karta hai, koi real DB touch kiye bina. Ye poora capability sirf isliye possible hai kyunki `OrderService` ek concrete class pe nahi, abstraction (interface) pe depend karta hai — ye seedha polymorphism aur DI ka real-world payoff hai.
+
+### Moq — interfaces ko mock karna
+
+Moq ek popular .NET mocking library hai jo runtime pe ek interface ka fake implementation generate karta hai. Tum specify karte ho "jab ye method is input ke saath call ho, ye return karo" — aur verify bhi kar sakte ho "kya ye method call hua ya nahi, kitni baar." Important nuance: Moq sirf **interfaces aur virtual members** mock kar sakta hai — agar koi method non-virtual/concrete class ka hai bina interface ke, Moq usko mock nahi kar sakta, isliye interfaces yahan bhi zaroori ban jaate hain.
+
+### xUnit basics — `[Fact]` vs `[Theory]`
+
+`[Fact]` ek single, fixed test case represent karta hai — no parameters. `[Theory]` ek parameterized test hai — `[InlineData(...)]` ke saath multiple input combinations ke liye same test logic reuse hoti hai, bina test method duplicate kiye. Dono xUnit ke test discovery mechanism (`dotnet test` runner) ke through automatically discover aur run hote hain.
+
+### AAA — Arrange, Act, Assert
+
+Ye ek structural convention hai jo har test ko readable banata hai: **Arrange** (setup — mocks configure karo, input data banao), **Act** (actual method call jo test kar rahe ho), **Assert** (result verify karo). Isse test intent turant clear hota hai bina poora method line-by-line padhe.
+
+### Code Examples
+
+**Minimal example — mocking an interface with Moq:**
+
+```csharp
+public interface IOrderRepository
+{
+    Order? GetById(int id);
+    void Save(Order order);
+}
+
+// In a test:
+var mockRepo = new Mock<IOrderRepository>();
+mockRepo.Setup(r => r.GetById(1)).Returns(new Order { Id = 1, Total = 500 });
+
+var order = mockRepo.Object.GetById(1);
+// order.Total == 500 — no real database involved
+```
+
+**Real ASP.NET Core example — testing OrderService with a mocked repository, AAA structure:**
+
+```csharp
+public interface IOrderRepository
+{
+    Order? GetById(int id);
+    void Save(Order order);
+}
+
+public class OrderService
+{
+    private readonly IOrderRepository _repo;
+    public OrderService(IOrderRepository repo) => _repo = repo;
+
+    public void ApplyDiscount(int orderId, decimal percent)
+    {
+        var order = _repo.GetById(orderId)
+            ?? throw new InvalidOperationException("Order not found");
+
+        order.Total -= order.Total * (percent / 100);
+        _repo.Save(order);
+    }
+}
+
+public class OrderServiceTests
+{
+    [Fact]
+    public void ApplyDiscount_ReducesTotal_ByCorrectPercentage()
+    {
+        // Arrange
+        var mockRepo = new Mock<IOrderRepository>();
+        var order = new Order { Id = 1, Total = 1000m };
+        mockRepo.Setup(r => r.GetById(1)).Returns(order);
+        var service = new OrderService(mockRepo.Object);
+
+        // Act
+        service.ApplyDiscount(1, 10);
+
+        // Assert
+        Assert.Equal(900m, order.Total);
+        mockRepo.Verify(r => r.Save(order), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(10, 900)]
+    [InlineData(50, 500)]
+    [InlineData(0, 1000)]
+    public void ApplyDiscount_HandlesMultiplePercentages(decimal percent, decimal expectedTotal)
+    {
+        var mockRepo = new Mock<IOrderRepository>();
+        var order = new Order { Id = 1, Total = 1000m };
+        mockRepo.Setup(r => r.GetById(1)).Returns(order);
+        var service = new OrderService(mockRepo.Object);
+
+        service.ApplyDiscount(1, percent);
+
+        Assert.Equal(expectedTotal, order.Total);
+    }
+}
+
+// Note: because OrderService only knows about IOrderRepository, this test
+// never touches a real database, a real connection string, or Entity
+// Framework at all — it runs in milliseconds and is fully deterministic.
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `[Fact]`/`[Theory]` ka basic syntax, AAA structure, aur ek simple mock setup (`Setup().Returns()`) likh saken.
+
+**SDE-3/Senior level answer:** Explicitly connect karo ki testability OOP design (interfaces + DI) ka direct result hai — ek tightly-coupled class ko explain karo kyun mock nahi ho sakti, `Verify()` ke through behavior verification (sirf return value nahi, calls bhi) demonstrate karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka poora testing story `Microsoft.Extensions.DependencyInjection` ke around design hua hai — Microsoft ki apni documentation explicitly recommend karti hai controllers/services ko interfaces ke against likhna specifically taaki `WebApplicationFactory`-based integration tests aur mock-based unit tests dono possible rahein bina production code change kiye.
+
+</RealWorld>
+
+<RealWorld company="A Food-Delivery Backend">
+
+Ek Swiggy/Zomato-style order-assignment service jo delivery partner ko order assign karti hai, `IDeliveryPartnerLocator` interface pe depend karti hai. Unit tests me is interface ko mock karke predictable partner locations return karaye jaate hain — real GPS/location service ko call kiye bina hi assignment logic (nearest partner, load balancing) reliably test ho jaata hai, without network flakiness.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- xUnit test methods are discovered via `[Fact]` (no params) or `[Theory]` (parameterized, with `[InlineData]`) attributes
+- Moq can only mock interfaces and virtual/abstract members — non-virtual concrete methods on a class cannot be mocked
+- `Times.Once`, `Times.Never`, `Times.AtLeast(n)` are the common `Verify()` call-count assertions in Moq
+- A well-isolated unit test (mocked dependencies) typically runs in single-digit milliseconds vs seconds for a real-DB integration test
+- AAA (Arrange-Act-Assert) is a widely-adopted convention, not a compiler-enforced rule — readability discipline only
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Unit testing practical isliye hai hamare code me kyunki hum interfaces aur DI use karte hain — koi bhi service ek concrete implementation ke bajaye abstraction pe depend karta hai, isliye test me main real dependency ko Moq se ek mock se replace kar sakta hoon. Main xUnit use karta hoon, `[Fact]` fixed cases ke liye aur `[Theory]`/`[InlineData]` multiple input combinations ke liye, AAA structure follow karta hoon taaki test intent readable rahe."
+
+**Almost-guaranteed follow-up:** "Agar koi class direct `new SqlConnection()` internally banati hai constructor ke bahar, usko unit test kaise karoge?" — jawaab: usko test karna genuinely mushkil hai bina refactor ke; ideal fix hai us dependency ko bhi ek interface ke through inject karna (yahi is poore topic ka core point hai).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ek concrete class (bina interface ke) ko directly mock karne ki koshish karna — Moq sirf interfaces aur virtual members mock kar sakta hai, isliye ye fail hoga ya silently kaam nahi karega jaisa expect kiya tha.
+
+</Mistake>
+
+<Mistake>
+
+Test me sirf `Assert` pe focus karna, `Verify()` ko bhool jaana — kabhi kabhi ye check karna zaroori hota hai ki ek dependency method call **hua ya nahi**, sirf return value check karna kaafi nahi hota (jaise "kya `Save()` genuinely call hua").
+
+</Mistake>
+
+<Mistake>
+
+Ek hi test method me multiple unrelated assertions/behaviors test karna — test fail hone par pata nahi chalta exactly kya toota, AAA discipline bhi tootne lagta hai.
+
+</Mistake>
+
+<Mistake>
+
+Production code ko sirf "testable banane ke liye" over-abstract kar dena — har single class ke liye interface banana chahe usko kabhi swap karne ki zaroorat na ho — YAGNI principle yahan bhi apply hota hai, sirf genuinely-swappable/mockable dependencies ke liye interface banao.
+
+</Mistake>
+
+<Mistake>
+
+`[Theory]`/`[InlineData]` ki jagah same test logic ko copy-paste karke 5 alag `[Fact]` methods banana — maintainability hurt hoti hai, ek jagah bug fix karna ho to 5 jagah karna padta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Production
+        A[OrderService] -->|depends on| B["IOrderRepository (interface)"]
+        C[SqlOrderRepository] -.implements.-> B
+        A --> C
+    end
+    subgraph Test
+        A2[OrderService] -->|depends on| B2["IOrderRepository (interface)"]
+        D["Mock&lt;IOrderRepository&gt; (Moq)"] -.implements.-> B2
+        A2 --> D
+    end
+`}
+  caption="Because OrderService depends on the interface, not a concrete class, production wiring and test wiring can swap in completely different implementations — that swap IS what makes unit testing possible."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Unit testing is practical because DI + interfaces let you swap a real dependency for a mock — this is OOP's direct payoff
+- Moq mocks interfaces and virtual/abstract members only — not non-virtual concrete class methods
+- `[Fact]` = fixed single test case; `[Theory]` + `[InlineData]` = parameterized test across multiple inputs
+- AAA (Arrange-Act-Assert) keeps each test's intent readable at a glance
+- `mockRepo.Verify(r => r.Save(order), Times.Once)` checks a call happened, not just a return value
+- A tightly-coupled class that `new`s its own dependencies is genuinely hard to unit test without refactoring
+- Don't over-abstract purely "for testability" — only interface genuinely swappable/mockable dependencies
+- Isolated unit tests with mocks run in milliseconds; real-DB integration tests are orders of magnitude slower
+
+</QuickRevision>

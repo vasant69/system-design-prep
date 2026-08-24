@@ -1,0 +1,285 @@
+---
+slug: "liskov-substitution-rectangle-square"
+title: "Liskov Substitution Principle — The Rectangle/Square Trap"
+section: "oops-dotnet"
+module: "solid-patterns"
+order: 3
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["open-closed-strategy-pattern", "inheritance-single-multilevel-no-multiple"]
+tags: ["dotnet", "solid", "lsp", "inheritance", "csharp"]
+englishDefinition: "The Liskov Substitution Principle states that objects of a derived type must be substitutable for objects of the base type without altering the correctness of the program — a subtype should honor the base type's behavioral contract, not just its data shape, and the classic Rectangle/Square inheritance example shows exactly how this breaks."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+The Liskov Substitution Principle states that objects of a derived type must be substitutable for objects of the base type without altering the correctness of the program — a subtype should honor the base type's behavioral contract, not just its data shape, and the classic Rectangle/Square inheritance example shows exactly how this breaks.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+LSP sabse "mathematically named" SOLID principle hai (Barbara Liskov ne 1987 me formally define kiya), lekin core idea simple hai: agar `B` class `A` se inherit karti hai, to jahan bhi `A` ka object use ho sakta hai, wahan `B` ka object bhi use ho sakna chahiye **bina program ka behavior galat kiye**. Ye sirf "compile ho jaana" ke baare me nahi hai — ye **behavioral contract** ke baare me hai.
+
+### Classic example — Rectangle aur Square
+
+Mathematically, ek square ek special rectangle hai (jiski width aur height equal hain) — isliye lagta hai `Square : Rectangle` ek natural inheritance hai. Dekhte hain ye kaise tootta hai:
+
+```csharp
+public class Rectangle
+{
+    public virtual int Width { get; set; }
+    public virtual int Height { get; set; }
+
+    public int Area() => Width * Height;
+}
+
+public class Square : Rectangle
+{
+    public override int Width
+    {
+        get => base.Width;
+        set { base.Width = value; base.Height = value; } // Square: width badle to height bhi badhni chahiye
+    }
+
+    public override int Height
+    {
+        get => base.Height;
+        set { base.Height = value; base.Width = value; } // Height badle to width bhi badhni chahiye
+    }
+}
+```
+
+Ye "mathematically correct" lagta hai — Square hamesha apne dono sides equal rakhta hai. Ab ek caller ka code dekho jo sirf `Rectangle` type pe kaam karta hai:
+
+```csharp
+public void ResizeAndVerify(Rectangle rect)
+{
+    rect.Width = 5;
+    rect.Height = 10;
+    Console.WriteLine(rect.Area()); // Rectangle expect karta hai: 50
+}
+
+ResizeAndVerify(new Rectangle()); // Prints 50 — sahi
+ResizeAndVerify(new Square());    // Prints 100 — GALAT (caller ki expectation todi)
+```
+
+`Square` ke saath, `rect.Height = 10` set karne se `Width` bhi silently `10` ho jaata hai (kyunki `Square` ka override dono ko sync rakhta hai). Caller ne `Rectangle`-based contract assume kiya tha — "`Width` set karna sirf `Width` change karta hai, `Height` set karna sirf `Height` change karta hai, dono independent hain" — aur `Square` ne is **implicit behavioral contract ko violate** kiya. `Square` type-wise compile ho jaata hai (`is-a Rectangle` syntactically valid hai), lekin **substitutability** break hoti hai — yehi LSP violation hai.
+
+### Kyun ye sirf "data" ka issue nahi, "behavior" ka hai
+
+Interviewer yahan exactly ye test karta hai: kya candidate samajhta hai ki LSP sirf "Square ke paas Rectangle ke saare fields hain" (data shape) ke baare me nahi hai, balki "Rectangle base type ka jo *implicit contract* hai — Width aur Height independently settable hain — usko Square silently todta hai" (behavior) ke baare me hai. Ye subtle hai: dono classes compile-time type-safe hain, LSP violation **runtime behavior** me hai.
+
+### Fix — composition, ya shared abstraction jisse dono derive na karein
+
+Sahi fix hai inheritance relationship hi hata dena. Do achhe approaches:
+
+```csharp
+// Option 1: Koi inheritance nahi, dono independent, ek common IShape abstraction
+public interface IShape
+{
+    int Area();
+}
+
+public class Rectangle : IShape
+{
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public int Area() => Width * Height;
+}
+
+public class Square : IShape
+{
+    public int Side { get; set; }
+    public int Area() => Side * Side;
+}
+```
+
+Ab `Rectangle` aur `Square` dono `IShape` implement karte hain, lekin ek dusre se inherit nahi karte. `Square` ka apna `Side` property hai, `Rectangle` ka `Width`/`Height` — koi implicit expectation nahi todi jaati kyunki dono independent hain. Har jagah jahan `IShape` expect hota hai, dono substitutable hain kyunki `IShape` ka contract sirf `Area()` hai — jo dono correctly implement karte hain.
+
+### General rule — jab bhi override behavior "surprise" kare
+
+LSP violation identify karne ka practical signal: agar ek derived class ke method ko override karte waqt base class ke method se **zyada restrictive precondition** lagani pade, ya **kam guarantee wala postcondition** return karna pade, ya ek **unexpected side effect** add karna pade (jaisa Square ne `Width` set karne pe `Height` bhi badal diya) — ye LSP violation ka strong signal hai.
+
+### Code Examples
+
+**Minimal example — precondition strengthening violation:**
+
+```csharp
+public class FileReader
+{
+    public virtual string Read(string path) => File.ReadAllText(path);
+}
+
+public class SecureFileReader : FileReader
+{
+    public override string Read(string path)
+    {
+        if (!path.StartsWith("/secure/"))
+            throw new UnauthorizedAccessException(); // Base class caller ye exception expect nahi karta
+        return base.Read(path);
+    }
+}
+// Koi bhi caller jo FileReader.Read() ko "kabhi UnauthorizedAccessException nahi throw karega" maan kar likha gaya tha,
+// SecureFileReader substitute karne par crash ho sakta hai — precondition strengthen hui, LSP violation
+```
+
+**Real ASP.NET Core example — service substitution:**
+
+```csharp
+public interface INotificationService
+{
+    Task SendAsync(string userId, string message);
+}
+
+public class EmailNotificationService : INotificationService
+{
+    public async Task SendAsync(string userId, string message) => await Task.CompletedTask; // sends email
+}
+
+public class SmsNotificationService : INotificationService
+{
+    public async Task SendAsync(string userId, string message)
+    {
+        if (message.Length > 160)
+            throw new ArgumentException("SMS too long"); // NAYI restriction jo INotificationService contract me nahi thi
+        await Task.CompletedTask;
+    }
+}
+// SmsNotificationService LSP violate karta hai agar controller code EmailNotificationService assume karke likha gaya
+// tha (koi length limit expect nahi karta) — ye exact wahi Rectangle/Square-style trap hai, service layer me
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Rectangle/Square example bolo — Square, Height set karne par Width bhi badal deta hai, jo Rectangle-expecting caller ko todta hai. Fix: inheritance hatao.
+
+**SDE-3/Senior level answer:** "Behavioral contract" framing use karo — precondition strengthening, postcondition weakening, unexpected side effects ke teeno signals batao generic terms me, na sirf Rectangle/Square specific. Ek apna real example do (jaise service-layer substitution jahan ek naya implementation extra validation add karke caller ko surprise karta hai) — ye dikhata hai ki LSP ko ek generic detection-skill ki tarah samajhte ho, sirf ek memorized textbook example nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's own collection interfaces (`ICollection<T>`, `IList<T>`) documentation explicitly warns about LSP-style traps — e.g. a read-only collection implementing `ICollection<T>` must throw `NotSupportedException` on `Add()`, which technically violates the "any `ICollection<T>` should support Add" implicit contract that most callers assume. This is a well-known, acknowledged LSP tension even in the BCL (Base Class Library) itself.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Payments API">
+
+Ek Indian fintech me ek `IPaymentGateway` interface tha jiska contract tha "PayAsync kabhi 30 seconds se zyada block nahi karega." Ek naya `InternationalPaymentGateway` implementation add hua jo actually ek external bank API ko synchronously 45 seconds tak wait karta tha — ye technically interface implement karta tha (compile hota tha), lekin callers jo timeout assumptions pe likhe gaye the, unke liye behavior violate ho gaya. Classic LSP violation, sirf Rectangle/Square se bahar real production code me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- LSP is the third of the 5 SOLID principles, formally introduced by Barbara Liskov in a 1987 conference keynote, later refined with Jeannette Wing (the "Liskov-Wing" formal definition)
+- The Rectangle/Square example is one of the most commonly asked LSP interview questions across .NET and Java interviews alike
+- Three concrete signals of an LSP violation: strengthened preconditions, weakened postconditions, unexpected side effects/exceptions not in the base contract
+- `virtual`/`override` in C# (used in the Rectangle/Square example) is what makes the substitution mechanically possible — but LSP is about behavior correctness, not compile-time override mechanics
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "LSP kehta hai ki derived type ka object base type ke object ko substitute kar sakna chahiye bina program ka correctness break kiye. Rectangle/Square classic example hai — Square, Rectangle se inherit karta hai, lekin Height set karne par Width bhi silently badal deta hai taaki square property maintain rahe. Ye Rectangle-expecting caller ke liye surprise hai jo assume karta hai Width aur Height independent hain. Ye compile-time issue nahi hai, ye behavioral contract violation hai. Fix: inheritance hatao, dono ko ek IShape interface implement karwao independently, ya composition use karo."
+
+Ye answer example ko sahi 'behavioral contract' framing ke saath deta hai, na ki sirf "Square Rectangle se inherit nahi karna chahiye" bol dena bina reasoning ke. **Almost-guaranteed follow-up:** "Fix ke alawa, is violation ko generalize karke bolo — kaise pata chalega ki koi bhi random inheritance LSP violate kar rahi hai?"
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+LSP ko sirf "Square, Rectangle se inherit nahi karna chahiye" jaisa memorized fact bol dena bina underlying reasoning (behavioral contract violation) explain kiye — interviewer turant ek naya, unseen example dega test karne ke liye.
+
+</Mistake>
+
+<Mistake>
+
+LSP violation ko compile-time error samajhna — LSP violations ALWAYS compile hote hain (type system unhe nahi pakadta), ye runtime behavior correctness ka issue hai. Ye samajh na hona ek bada gap hai.
+
+</Mistake>
+
+<Mistake>
+
+"is-a" relationship ko sirf data/structure ke basis pe judge karna — mathematically "square is-a rectangle" sahi hai, lekin OOP inheritance me "is-a" ka matlab hai "behaviorally substitutable hai," sirf data-shape "is-a" nahi.
+
+</Mistake>
+
+<Mistake>
+
+Fix karte waqt sirf `virtual`/`override` hata dena ya `sealed` laga dena bina actual design problem (galat inheritance hierarchy) solve kiye — asli fix composition ya shared abstraction hai, keyword-level patch nahi.
+
+</Mistake>
+
+<Mistake>
+
+LSP violations ko sirf inheritance-based examples tak limit samajhna — interface implementations bhi LSP violate kar sakte hain (jaisa `SmsNotificationService` example dikhata hai — naya implementation extra restriction add karta hai jo interface ke implicit contract me nahi thi).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class Rectangle {
+        +int Width
+        +int Height
+        +Area() int
+    }
+    class Square {
+        +int Width
+        +int Height
+        +Area() int
+    }
+    Rectangle <|-- Square : LSP VIOLATION — Height set karne se Width bhi badalta hai
+
+    class IShape {
+        <<interface>>
+        +Area() int
+    }
+    class RectangleFixed {
+        +int Width
+        +int Height
+        +Area() int
+    }
+    class SquareFixed {
+        +int Side
+        +Area() int
+    }
+    IShape <|.. RectangleFixed : CORRECT — independent
+    IShape <|.. SquareFixed : CORRECT — independent
+`}
+  caption="Inheriting Square from Rectangle breaks substitutability; a shared IShape abstraction with no inheritance between the two fixes it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- LSP: a derived type must be substitutable for its base type without breaking program correctness
+- Rectangle/Square: Square overriding Height to also change Width breaks a caller that assumes Width/Height are independent
+- This is a compile-time-valid, runtime-behavior-broken violation — LSP is never caught by the type checker
+- Three violation signals: strengthened preconditions, weakened postconditions, unexpected side effects/exceptions
+- Fix: remove the inheritance, use a shared abstraction (interface) that both implement independently, or composition
+- LSP violations happen in interface implementations too, not just class inheritance
+- "is-a" in OOP means behaviorally substitutable, not just structurally similar
+- Even the .NET BCL (e.g. read-only `ICollection<T>` throwing on Add) has acknowledged LSP tension
+
+</QuickRevision>

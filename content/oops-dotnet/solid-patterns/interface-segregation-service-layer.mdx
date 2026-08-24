@@ -1,0 +1,269 @@
+---
+slug: "interface-segregation-service-layer"
+title: "Interface Segregation Principle — Splitting Fat Service Interfaces"
+section: "oops-dotnet"
+module: "solid-patterns"
+order: 4
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["liskov-substitution-rectangle-square", "interfaces-explicit-implementation-dim"]
+tags: ["dotnet", "solid", "isp", "interfaces", "csharp"]
+englishDefinition: "The Interface Segregation Principle states that clients should not be forced to depend on methods they do not use — a single fat interface with many unrelated methods should be split into smaller, role-specific interfaces so implementers only need to fulfil the contract they actually care about."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Flipkart", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+The Interface Segregation Principle states that clients should not be forced to depend on methods they do not use — a single fat interface with many unrelated methods should be split into smaller, role-specific interfaces so implementers only need to fulfil the contract they actually care about.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+ISP interview me thoda kam pucha jaata hai SRP/OCP/LSP ke comparison me, lekin jab pucha jaata hai to usually ek **fat interface** scenario ke saath — ek interface jisme itne saare unrelated methods hain ki har implementer ko jo methods use nahi karne, unko bhi stub (ya `NotImplementedException` throw) karna padta hai. Core idea: **clients ko sirf wahi methods depend karne dena chahiye jo wo actually use karte hain**, na ki ek giant "sab kuch" interface.
+
+### Fat interface problem — production me kaise dikhta hai
+
+```csharp
+// BEFORE — ek fat IOrderService, sab order-related operations ek jagah
+public interface IOrderService
+{
+    Task<Order> GetOrderAsync(int id);
+    Task<Order> CreateOrderAsync(CreateOrderDto dto);
+    Task UpdateOrderAsync(int id, UpdateOrderDto dto);
+    Task CancelOrderAsync(int id);
+    Task<byte[]> GenerateInvoicePdfAsync(int id);
+    Task RefundOrderAsync(int id, decimal amount);
+    Task<IEnumerable<Order>> GetOrdersByCustomerAsync(int customerId);
+    Task ExportOrdersToCsvAsync(DateTime from, DateTime to);
+}
+```
+
+Ab socho tumhe ek **read-only reporting service** likhna hai jo sirf order data read karta hai (dashboard ke liye). Is fat interface ko implement karne ka matlab hai `CreateOrderAsync`, `CancelOrderAsync`, `RefundOrderAsync` jaise methods bhi implement karne padenge — jinka reporting context me koi matlab nahi:
+
+```csharp
+public class ReadOnlyOrderReportingService : IOrderService
+{
+    public Task<Order> GetOrderAsync(int id) => /* real implementation */;
+    public Task<IEnumerable<Order>> GetOrdersByCustomerAsync(int customerId) => /* real implementation */;
+
+    // Baaki sab methods jo reporting me matlab hi nahi rakhte:
+    public Task<Order> CreateOrderAsync(CreateOrderDto dto) => throw new NotImplementedException();
+    public Task UpdateOrderAsync(int id, UpdateOrderDto dto) => throw new NotImplementedException();
+    public Task CancelOrderAsync(int id) => throw new NotImplementedException();
+    public Task<byte[]> GenerateInvoicePdfAsync(int id) => throw new NotImplementedException();
+    public Task RefundOrderAsync(int id, decimal amount) => throw new NotImplementedException();
+    public Task ExportOrdersToCsvAsync(DateTime from, DateTime to) => throw new NotImplementedException();
+}
+```
+
+Ye code smell hai — `NotImplementedException` se bhara hua class dikhata hai ki interface ka contract khud galat hai. Isse do real problems hote hain: pehla, koi caller jo `IOrderService` type pe generically kaam karta hai, runtime pe crash ho sakta hai agar galti se `ReadOnlyOrderReportingService` ko pass kar diya aur `CancelOrderAsync` call kar diya. Dusra, jab bhi `IOrderService` interface me koi naya method add hota hai (jaise `GenerateInvoicePdfAsync` ka naya overload), **har single implementer** ko touch karna padta hai — chahe unka use-case us method se related ho ya na ho.
+
+### AFTER — role-specific, segregated interfaces
+
+```csharp
+public interface IOrderReader
+{
+    Task<Order> GetOrderAsync(int id);
+    Task<IEnumerable<Order>> GetOrdersByCustomerAsync(int customerId);
+}
+
+public interface IOrderWriter
+{
+    Task<Order> CreateOrderAsync(CreateOrderDto dto);
+    Task UpdateOrderAsync(int id, UpdateOrderDto dto);
+    Task CancelOrderAsync(int id);
+}
+
+public interface IOrderInvoicing
+{
+    Task<byte[]> GenerateInvoicePdfAsync(int id);
+    Task RefundOrderAsync(int id, decimal amount);
+}
+
+public interface IOrderExport
+{
+    Task ExportOrdersToCsvAsync(DateTime from, DateTime to);
+}
+```
+
+Ab `ReadOnlyOrderReportingService` sirf `IOrderReader` implement karta hai — koi stub, koi `NotImplementedException` nahi:
+
+```csharp
+public class ReadOnlyOrderReportingService : IOrderReader
+{
+    public Task<Order> GetOrderAsync(int id) => /* real implementation */;
+    public Task<IEnumerable<Order>> GetOrdersByCustomerAsync(int customerId) => /* real implementation */;
+}
+```
+
+Aur ek full-featured `OrderService` chahe to sab interfaces ek saath implement kar sakti hai (C# me multiple interface implementation allowed hai):
+
+```csharp
+public class OrderService : IOrderReader, IOrderWriter, IOrderInvoicing, IOrderExport
+{
+    // sab methods implement karta hai, kyunki genuinely sab responsibilities uski hain
+}
+```
+
+Callers ab exactly wahi interface depend karte hain jo unhe chahiye — ek `OrdersController` jo sirf orders dikhata hai `IOrderReader` inject karega, ek admin refund-processing controller `IOrderInvoicing` inject karega. Ye compile-time hi enforce karta hai ki koi caller accidentally aisa method call na kare jo uske use-case me valid nahi hai.
+
+### ISP aur SRP me connection, lekin difference bhi
+
+ISP aur SRP dono "responsibility ko chhota rakho" ki taraf point karte hain, lekin alag level pe: **SRP ek class ke andar** responsibilities ke baare me hai (ek class ka ek reason to change), **ISP ek interface ke consumer** ke baare me hai (client ko sirf wahi expose karo jo use karta hai). Ek class SRP follow kar sakti hai lekin ek fat interface ke peeche ho — ISP alag se apply hota hai interface design pe.
+
+### Code Examples
+
+**Minimal example — client-specific interface segregation:**
+
+```csharp
+public interface IPrintable
+{
+    void Print();
+}
+
+public interface IScannable
+{
+    void Scan();
+}
+
+// SimplePrinter sirf IPrintable implement karta hai — Scan() ka stub nahi banana padta
+public class SimplePrinter : IPrintable
+{
+    public void Print() => Console.WriteLine("Printing...");
+}
+
+// MultiFunctionDevice dono implement karta hai kyunki genuinely dono kaam karta hai
+public class MultiFunctionDevice : IPrintable, IScannable
+{
+    public void Print() => Console.WriteLine("Printing...");
+    public void Scan() => Console.WriteLine("Scanning...");
+}
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Clients ko unused methods pe depend nahi karna chahiye" bolo, aur fat-interface-to-segregated-interfaces example do.
+
+**SDE-3/Senior level answer:** ISP aur SRP ka difference crisply explain karo (class-level vs interface-consumer-level), aur batao ki ISP violation ka concrete symptom `NotImplementedException`-heavy classes hain — jo code review me ek red flag hona chahiye. Ye bhi mention karo ki C# multiple interface implementation allow karta hai, isliye segregation "extra work" nahi hai — ek full-featured class sab chhoti interfaces ek saath implement kar sakti hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's own `System.IO` namespace ISP ko demonstrate karta hai — `Stream` class ke paas `CanRead`, `CanWrite`, `CanSeek` jaisi properties hain kyunki alag-alag stream types (network stream, read-only file stream) alag capabilities support karte hain. Modern .NET me kai jagah chhote, focused interfaces (`IAsyncDisposable`, `IObserver<T>`, `IObservable<T>`) hain instead of ek giant "IStreamEverything" interface.
+
+</RealWorld>
+
+<RealWorld company="A Food Delivery Platform">
+
+Ek Indian food-delivery backend (Swiggy/Zomato-style) me ek `IRestaurantService` shuru me 12+ methods ke saath ban gaya tha — menu management, order routing, rating, payout calculation sab ek interface me. Alag teams (menu team, payments team) jab apne feature ke liye is interface ko mock karte the testing me, unhe irrelevant 8-9 methods bhi stub karne padte the. Segregation ke baad (`IMenuService`, `IOrderRoutingService`, `IPayoutService`) har team sirf apni relevant interface ke saath kaam karti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- ISP is the fourth of the 5 SOLID principles, formalized by Robert C. Martin while consulting for Xerox in the late 1990s
+- A class implementing an unrelated method with `throw new NotImplementedException()` is the single most common ISP-violation code smell
+- C# supports implementing multiple interfaces on one class — segregation costs zero extra boilerplate for a class that genuinely needs all the roles
+- `IEnumerable<T>` vs `ICollection<T>` vs `IList<T>` in the BCL is itself a real, deliberate ISP-style progressive interface segregation (read-only iteration → mutable collection → indexed access)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "ISP kehta hai ki clients ko sirf wahi methods pe depend karna chahiye jo wo actually use karte hain. Maine ek fat IOrderService dekha hai jisme reporting-only service ko bhi CreateOrder, CancelOrder, RefundOrder jaise unrelated methods NotImplementedException ke saath stub karne padte the. Maine isko IOrderReader, IOrderWriter, IOrderInvoicing jaisi role-specific interfaces me split kiya — reporting service sirf IOrderReader implement karta hai, full service sab implement karta hai C# ke multiple-interface support ki wajah se."
+
+Ye answer ISP ko ek concrete code-smell (`NotImplementedException`) ke saath connect karta hai, jo interviewer ko dikhata hai candidate ne real code me ye pattern spot kiya hai. **Almost-guaranteed follow-up:** "ISP aur SRP me exact difference kya hai — dono to 'chhota rakho' hi keh rahe hain?"
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+ISP aur SRP ko same principle samajhna — SRP class-level (ek class ka ek reason to change) hai, ISP interface-consumer-level (client ko sirf zaroori methods expose karo) hai. Ye alag concerns hain jo overlap karte hain lekin same nahi hain.
+
+</Mistake>
+
+<Mistake>
+
+Har interface me sirf ek method rakhna zaroori samajhna — ISP "role-specific" ka matlab hai related methods ek saath (jaise `IOrderReader` ke andar 2 read methods), na ki literally ek method per interface.
+
+</Mistake>
+
+<Mistake>
+
+`NotImplementedException` throw karne wale stub methods ko "temporary, baad me fix karenge" bol kar ignore karna — ye almost always ek design smell hai jo batata hai interface fat hai aur segregate hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Segregation ke baad implementer classes ko duplicate karne ka fear rakhna — C# multiple interfaces ek saath implement karne deta hai, isliye ek full-featured class ko sab chhoti interfaces implement karne me koi extra cost nahi hai, sirf interface declarations badalte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class IOrderReader {
+        <<interface>>
+        +GetOrderAsync(id) Order
+        +GetOrdersByCustomerAsync(id) IEnumerable
+    }
+    class IOrderWriter {
+        <<interface>>
+        +CreateOrderAsync(dto) Order
+        +CancelOrderAsync(id) void
+    }
+    class IOrderInvoicing {
+        <<interface>>
+        +GenerateInvoicePdfAsync(id) byte
+        +RefundOrderAsync(id, amt) void
+    }
+    class ReadOnlyOrderReportingService {
+        +GetOrderAsync(id) Order
+    }
+    class OrderService {
+        +GetOrderAsync(id) Order
+        +CreateOrderAsync(dto) Order
+        +GenerateInvoicePdfAsync(id) byte
+    }
+    IOrderReader <|.. ReadOnlyOrderReportingService
+    IOrderReader <|.. OrderService
+    IOrderWriter <|.. OrderService
+    IOrderInvoicing <|.. OrderService
+`}
+  caption="ReadOnlyOrderReportingService only depends on the interface it actually needs; OrderService implements all three because it genuinely has all three responsibilities."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- ISP: clients should not be forced to depend on methods they do not use
+- Fat interface smell: many `NotImplementedException` stubs in an implementing class
+- Fix: split into small, role-specific interfaces (`IOrderReader`, `IOrderWriter`, `IOrderInvoicing`)
+- C# allows multiple interface implementation — a full-featured class implements all needed roles at zero extra cost
+- ISP is interface-consumer-level; SRP is class-level — related but distinct principles
+- Segregated interfaces make mocking in unit tests smaller and more targeted
+- Don't over-segregate to one method per interface — group genuinely related methods together
+- The BCL's `IEnumerable<T>`/`ICollection<T>`/`IList<T>` progression is a real ISP example
+
+</QuickRevision>

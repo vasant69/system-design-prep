@@ -1,0 +1,299 @@
+---
+slug: "single-responsibility-real-refactor"
+title: "Single Responsibility Principle — A Real .NET Refactor"
+section: "oops-dotnet"
+module: "solid-patterns"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["what-is-oop-and-why-dotnet", "encapsulation-beyond-private-fields"]
+tags: ["dotnet", "solid", "srp", "refactoring", "csharp"]
+englishDefinition: "The Single Responsibility Principle states that a class should have only one reason to change — one actor or business concern it is accountable to — not that it should have only one method; a class mixing validation, persistence, and notification logic has three separate reasons to change and violates SRP."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+The Single Responsibility Principle states that a class should have only one reason to change — one actor or business concern it is accountable to — not that it should have only one method; a class mixing validation, persistence, and notification logic has three separate reasons to change and violates SRP.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+SRP interview me sabse zyada **misunderstood** SOLID principle hai. Log isko galat samajh lete hain "ek class me ek hi method honi chahiye" — ye bilkul galat hai. Actual definition Robert Martin ne di thi: "A class should have only one reason to change." Reason to change ka matlab hai — **kaunsa actor ya business concern** is class ko modify karwa sakta hai. Agar teen alag stakeholders (business team jo validation rules badalta hai, DBA jo storage schema badalta hai, marketing jo email template badalta hai) ek hi class ko touch kar sakte hain, to us class ke paas teen reasons to change hain — ye SRP violation hai.
+
+### Ek real example — jaisa production me dikhta hai
+
+Socho ek `UserRegistrationService` hai jo naya user register karta hai. Bina SRP soche likha gaya version aksar aisa dikhta hai:
+
+```csharp
+// BEFORE — SRP violation, teen alag responsibilities ek class me
+public class UserRegistrationService
+{
+    private readonly AppDbContext _db;
+    private readonly SmtpClient _smtp;
+
+    public UserRegistrationService(AppDbContext db, SmtpClient smtp)
+    {
+        _db = db;
+        _smtp = smtp;
+    }
+
+    public async Task RegisterAsync(RegisterUserDto dto)
+    {
+        // Responsibility 1: validation
+        if (string.IsNullOrWhiteSpace(dto.Email) || !dto.Email.Contains("@"))
+            throw new ArgumentException("Invalid email");
+        if (dto.Password.Length < 8)
+            throw new ArgumentException("Password too short");
+
+        // Responsibility 2: persistence
+        var user = new User { Email = dto.Email, PasswordHash = Hash(dto.Password) };
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
+
+        // Responsibility 3: notification
+        var message = new MailMessage("no-reply@app.com", dto.Email, "Welcome!", "Thanks for registering.");
+        await _smtp.SendMailAsync(message);
+    }
+
+    private string Hash(string password) => BCrypt.Net.BCrypt.HashPassword(password);
+}
+```
+
+Ye class **compile hoti hai, kaam bhi karti hai** — lekin teen alag reasons se change hogi: agar validation rules badlein (business), agar storage strategy badle (DBA — jaise ab Users table ki jagah ek external identity provider use karna hai), ya agar email template/provider badle (marketing/infra). Ek reason ka change dusre do ko accidentally touch karne ka risk create karta hai, aur unit testing bhi mushkil hai — validation test karne ke liye bhi ek real SMTP client mock karna padega.
+
+### AFTER — teen collaborating classes, ek-ek responsibility
+
+```csharp
+public interface IUserValidator
+{
+    void Validate(RegisterUserDto dto);
+}
+
+public class UserValidator : IUserValidator
+{
+    public void Validate(RegisterUserDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Email) || !dto.Email.Contains("@"))
+            throw new ArgumentException("Invalid email");
+        if (dto.Password.Length < 8)
+            throw new ArgumentException("Password too short");
+    }
+}
+
+public interface IUserRepository
+{
+    Task AddAsync(User user);
+}
+
+public class UserRepository : IUserRepository
+{
+    private readonly AppDbContext _db;
+    public UserRepository(AppDbContext db) => _db = db;
+
+    public async Task AddAsync(User user)
+    {
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
+    }
+}
+
+public interface IWelcomeNotifier
+{
+    Task NotifyAsync(string email);
+}
+
+public class EmailWelcomeNotifier : IWelcomeNotifier
+{
+    private readonly SmtpClient _smtp;
+    public EmailWelcomeNotifier(SmtpClient smtp) => _smtp = smtp;
+
+    public async Task NotifyAsync(string email)
+    {
+        var message = new MailMessage("no-reply@app.com", email, "Welcome!", "Thanks for registering.");
+        await _smtp.SendMailAsync(message);
+    }
+}
+
+// Orchestrator — apni ek hi responsibility hai: registration FLOW ko coordinate karna
+public class UserRegistrationService
+{
+    private readonly IUserValidator _validator;
+    private readonly IUserRepository _repository;
+    private readonly IWelcomeNotifier _notifier;
+
+    public UserRegistrationService(IUserValidator validator, IUserRepository repository, IWelcomeNotifier notifier)
+    {
+        _validator = validator;
+        _repository = repository;
+        _notifier = notifier;
+    }
+
+    public async Task RegisterAsync(RegisterUserDto dto)
+    {
+        _validator.Validate(dto);
+        var user = new User { Email = dto.Email, PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password) };
+        await _repository.AddAsync(user);
+        await _notifier.NotifyAsync(dto.Email);
+    }
+}
+```
+
+Ab har class ka apna, ek-hi reason to change hai. `UserValidator` sirf validation rules ke liye badalta hai, `UserRepository` sirf persistence strategy ke liye, `EmailWelcomeNotifier` sirf notification mechanism ke liye. Unit testing bhi trivial ho gaya — `UserRegistrationService` ko test karne ke liye teeno interfaces ko mock kar do, koi real DB ya SMTP nahi chahiye.
+
+### Kahan zyada mat le jao — over-application ka trap
+
+SRP ka matlab ye nahi hai ki har class me ek method ho. Agar teeno responsibilities genuinely ek hi reason se change hoti hain (jaise ek chhoti internal tool jisme koi separate stakeholders hi nahi hain), to unko split karna unnecessary indirection add karta hai bina real benefit ke. SRP ek judgment call hai — "kitne alag actors is class ko change karwa sakte hain" poochna, na ki "kitne methods hain."
+
+### Code Examples
+
+**Minimal example — orchestrator delegating, not doing:**
+
+```csharp
+public class OrderProcessor
+{
+    private readonly IOrderValidator _validator;
+    private readonly IOrderRepository _repository;
+
+    public OrderProcessor(IOrderValidator validator, IOrderRepository repository)
+    {
+        _validator = validator;
+        _repository = repository;
+    }
+
+    public async Task ProcessAsync(Order order)
+    {
+        _validator.Validate(order);
+        await _repository.SaveAsync(order);
+    }
+}
+// OrderProcessor ka ek hi reason to change hai: registration FLOW badle (naya step add ho)
+// validation rules ya storage logic badalne se ye class touch nahi hoti
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "One reason to change" definition bolo, aur ek simple before/after example do jisme ek class do responsibilities mix kar rahi thi.
+
+**SDE-3/Senior level answer:** "Reason to change" ko "actor/stakeholder" ke saath connect karo (Robert Martin ki actual framing), over-application ka trap mention karo (SRP judgment call hai, dogmatic rule nahi), aur batao ki SRP-split classes testability aur parallel-team-development me kaise directly help karte hain — production codebase me multiple teams ek hi service pe kaam kar rahe hon to alag responsibilities alag classes me hona merge conflicts bhi kam karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka own architecture SRP ko heavily follow karta hai — Controller sirf HTTP concerns (routing, model binding, status codes) handle karta hai, business logic ek Service layer me hota hai, data access ek Repository ya seedha `DbContext` me. Ye layering deliberate hai — framework khud is principle ko apne design me demonstrate karta hai taaki developers isi pattern ko apne code me follow karein.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Payments API">
+
+Ek typical Indian fintech backend me ek `PaymentProcessingService` jo pehle validation + fraud-check + gateway-call + notification sab ek class me karta tha, real production incident ka source bana — fraud-check logic ka ek chhota change accidentally notification flow break kar diya kyunki dono same class me the aur ek engineer doosre part se anjaan tha. Split karne ke baad (`IFraudChecker`, `IPaymentGateway`, `INotifier` alag interfaces) ye class of bugs khatam ho gayi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- SRP is the first of the 5 SOLID principles, introduced by Robert C. Martin (Uncle Bob) in the early 2000s
+- "One reason to change" — not "one method" — is the exact, commonly misquoted definition
+- A class with N unrelated responsibilities typically needs N times the test setup complexity to isolate one behavior
+- Constructor injection (used in the AFTER example) is the standard .NET DI pattern for wiring SRP-split collaborators together
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "SRP ka matlab hai ek class ka sirf ek reason to change hona chahiye — matlab sirf ek actor ya business concern usko modify karwa sakta hai. Ye 'ek class, ek method' nahi hai. Maine ek real example dekha hai jahan ek UserRegistrationService validation, persistence, aur email notification teeno kar raha tha — maine isko IUserValidator, IUserRepository, aur IWelcomeNotifier me split kiya, aur orchestrator class sirf flow coordinate karti hai. Isse testing aasan hui aur ek responsibility ka change doosri ko accidentally break nahi karta."
+
+Ye answer definition ko correct actor-based framing ke saath deta hai (common misquote avoid karta hai), aur ek concrete before/after example deta hai jo interviewer ko dikhata hai ki ye theory nahi, applied knowledge hai. **Almost-guaranteed follow-up:** "Isse over-engineering kaise avoid karoge — har class ko itna chhota split karna kab zyada ho jaata hai?"
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+SRP ko "ek class me ek hi method hona chahiye" samajhna — ye galat hai. Ek class me kai methods ho sakte hain jab tak wo sab EK hi responsibility ke around hon (jaise `UserValidator` ke andar `ValidateEmail`, `ValidatePassword` dono methods theek hain).
+
+</Mistake>
+
+<Mistake>
+
+Har chhoti cheez ko alag class me split karna bina real benefit ke — agar do responsibilities genuinely kabhi independently change nahi hongi, to unhe split karna sirf unnecessary indirection add karta hai.
+
+</Mistake>
+
+<Mistake>
+
+"Reason to change" ko method count se confuse karna interview me — interviewer turant follow-up poochta hai "to phir ek 3-method class SRP follow karti hai ya nahi," aur candidate confuse ho jaata hai agar definition crisp nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Refactor karte waqt orchestrator class ko bhool jaana — sirf responsibilities split kar dena kaafi nahi, unko coordinate karne wali ek clean orchestrator class (jaise `UserRegistrationService`) bhi chahiye, warna calling code khud teeno collaborators ko manually wire karega.
+
+</Mistake>
+
+<Mistake>
+
+SRP violation ko sirf "class bahut badi hai" se identify karna — line count SRP ka indicator nahi hai, reasons-to-change count hai. Ek chhoti class bhi SRP violate kar sakti hai agar do unrelated concerns mix kar rahi ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class UserRegistrationService {
+        -IUserValidator validator
+        -IUserRepository repository
+        -IWelcomeNotifier notifier
+        +RegisterAsync(dto) Task
+    }
+    class IUserValidator {
+        <<interface>>
+        +Validate(dto) void
+    }
+    class IUserRepository {
+        <<interface>>
+        +AddAsync(user) Task
+    }
+    class IWelcomeNotifier {
+        <<interface>>
+        +NotifyAsync(email) Task
+    }
+    UserRegistrationService --> IUserValidator
+    UserRegistrationService --> IUserRepository
+    UserRegistrationService --> IWelcomeNotifier
+`}
+  caption="Each collaborator has exactly one reason to change; UserRegistrationService's only job is to coordinate them."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- SRP: a class should have one reason to change — one actor/business concern, not "one method"
+- Reason to change means "which stakeholder can force a modification here"
+- Mixed validation + persistence + notification in one class is the classic violation example
+- Fix: split into collaborating classes behind interfaces, coordinated by a thin orchestrator
+- Over-splitting into needless tiny classes is a real anti-pattern too — SRP is judgment, not dogma
+- SRP-split classes are dramatically easier to unit test — mock one interface instead of a whole dependency graph
+- ASP.NET Core's own Controller/Service/Repository layering is a real-world SRP demonstration
+
+</QuickRevision>
