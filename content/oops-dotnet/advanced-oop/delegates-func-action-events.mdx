@@ -1,0 +1,240 @@
+---
+slug: "delegates-func-action-events"
+title: "Delegates, Func/Action, and Events"
+section: "oops-dotnet"
+module: "advanced-oop"
+order: 4
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["what-is-oop-and-why-dotnet"]
+tags: ["dotnet", "oop", "csharp", "delegates", "events", "advanced"]
+englishDefinition: "A delegate is a type-safe reference to one or more methods with a matching signature; Func<> and Action<> are built-in generic delegates for methods with and without a return value, and events wrap a delegate to restrict external code to only subscribing or unsubscribing, never invoking or clearing it directly."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Zomato", "Paytm"]
+---
+
+<SimpleDefinition>
+
+A delegate is a type-safe reference to one or more methods with a matching signature; `Func<>` and `Action<>` are built-in generic delegates for methods with and without a return value, and events wrap a delegate to restrict external code to only subscribing or unsubscribing, never invoking or clearing it directly.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Delegates C# ka wo feature hai jo functions ko "first-class citizen" banata hai — matlab function ko bhi ek variable ki tarah store, pass, aur invoke kiya ja sakta hai. Interview me isko "type-safe function pointer" bolna sahi hai, lekin sirf itna bolna adhoora hai — asli depth `Func`/`Action`/`event` ke practical use cases me hai.
+
+### Delegate — type-safe function reference
+
+`delegate` keyword se ek naya type define hota hai jo ek specific method signature (parameters + return type) ko describe karta hai:
+
+```csharp
+public delegate int Operation(int a, int b);
+```
+
+Ab `Operation` type ka koi bhi variable kisi bhi method ko point kar sakta hai jiska signature match karta ho — `int Add(int a, int b)`, `int Multiply(int a, int b)`, dono valid hain. "Type-safe" isliye kyunki compiler signature mismatch ko compile time pe hi catch kar leta hai — C ke raw function pointers jaise koi undefined behavior risk nahi hai.
+
+### `Func<>`, `Action<>`, `Predicate<>` — pehle se defined generic delegates
+
+Har baar custom `delegate` type define karne ki zaroorat nahi — BCL ye teen family already deti hai:
+
+- **`Func<T1, ..., TResult>`** — method jo **value return** karta hai. Last type parameter hamesha return type hai. `Func<int, int, int>` matlab do `int` params leta hai, `int` return karta hai.
+- **`Action<T1, ...>`** — method jo **kuch return nahi karta** (void). `Action<string>` matlab ek `string` param leta hai, kuch return nahi karta. Parameter-less version bhi hai — sirf `Action`.
+- **`Predicate<T>`** — `bool Predicate<T>(T obj)` — semantically `Func<T, bool>` jaisa hi hai, mostly purani APIs me dikhta hai (jaise `List<T>.Find(Predicate<T> match)`).
+
+Ye teeno up to 16 type parameters support karte hain — 99% cases me tumhe custom `delegate` type banane ki zaroorat hi nahi padti, `Func`/`Action` se kaam chal jaata hai.
+
+### Multicast delegates — ek delegate, multiple methods
+
+C# me delegates inherently **multicast** hote hain (`System.MulticastDelegate` se derive karte hain). `+=` operator se ek delegate variable me multiple methods attach ki ja sakti hain — invoke karne pe sab order me call hoti hain:
+
+```csharp
+Action<string> logger = Console.WriteLine;
+logger += msg => File.AppendAllText("log.txt", msg);
+logger("Order placed"); // dono methods call hongi
+```
+
+**Ek genuine gotcha:** agar delegate **return value** deta hai (jaise `Func<>`), aur multiple methods attached hain, sirf **last invoked method ka return value** caller ko milta hai — baaki sab ke return values silently discard ho jaate hain. Isliye return-value-wale delegates ko multicast karna generally avoid kiya jaata hai, ya explicitly `GetInvocationList()` se har method ka result alag se collect kiya jaata hai agar zaroorat ho.
+
+### event — ek constrained, safer delegate
+
+`event` keyword ek delegate ko **wrap** karta hai aur access ko restrict karta hai — ye khud OOP ka encapsulation principle hai, applied to delegates specifically:
+
+```csharp
+public class OrderService
+{
+    public event Action<Order> OrderPlaced;
+
+    public void PlaceOrder(Order order)
+    {
+        // ... order processing ...
+        OrderPlaced?.Invoke(order); // sirf declaring class isse invoke kar sakti hai
+    }
+}
+```
+
+Bahar se koi bhi code sirf `orderService.OrderPlaced += handler;` (subscribe) ya `-= handler` (unsubscribe) kar sakta hai. Bahar se **invoke** karna (`orderService.OrderPlaced(order)`) ya **direct assign karke sab subscribers clear kar dena** (`orderService.OrderPlaced = someHandler;`) — dono **compile error** dete hain agar class ke bahar se try kiya jaaye. Ye exact wahi protection hai jo `private` field ko controlled method ke through expose karne se milti hai — sirf yahan delegate invocation protect ho raha hai.
+
+### Pub/Sub — event ka real payoff
+
+`OrderService` ko ye pata hi nahi hona chahiye ki kaun-kaun `OrderPlaced` sunna chahta hai — email notifier, inventory updater, analytics logger — sab independently subscribe kar sakte hain. Naya subscriber add karne ke liye `OrderService` ka code touch hi nahi karna padta — ye Open/Closed Principle ka ek natural real-world example hai, aur OOP ke abstraction/polymorphism principles ko ek concrete decoupling pattern me convert karta hai.
+
+**Thread-safety ka ek subtle point:** `OrderPlaced?.Invoke(order)` single-threaded code me safe hai, lekin agar multiple threads simultaneously subscribe/unsubscribe kar rahe hon, technically ek race condition possible hai (null-check ke baad, invoke se pehle, delegate null ho sakta hai agar last subscriber ne unsubscribe kar diya). Safe pattern: pehle local variable me copy karo, phir usko invoke karo — `var handler = OrderPlaced; handler?.Invoke(order);`.
+
+### Code Examples
+
+**Minimal example — Func/Action basics:**
+
+```csharp
+Func<int, int, int> add = (a, b) => a + b;
+Action<string> log = message => Console.WriteLine($"[LOG] {message}");
+
+int sum = add(3, 4);   // 7
+log("Sum calculated"); // [LOG] Sum calculated
+```
+
+**Real ASP.NET Core example — event-based pub/sub in a service:**
+
+```csharp
+public class OrderService
+{
+    public event Action<Order>? OrderPlaced;
+
+    public async Task<Order> PlaceOrderAsync(CreateOrderDto dto)
+    {
+        var order = new Order { ProductId = dto.ProductId, Quantity = dto.Quantity };
+        // ... save to DB ...
+
+        var handler = OrderPlaced;   // race-condition-safe copy
+        handler?.Invoke(order);
+
+        return order;
+    }
+}
+
+// Startup/composition root me subscribers register hote hain:
+orderService.OrderPlaced += order => emailService.SendConfirmation(order);
+orderService.OrderPlaced += order => inventoryService.ReserveStock(order);
+
+// Bahar se ye compile error dega:
+// orderService.OrderPlaced(someOrder);       // CS0070 — event sirf declaring class ke andar invoke ho sakta hai
+// orderService.OrderPlaced = someHandler;    // CS0079 — direct assignment allowed nahi
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Delegate ko "function pointer jaisa" bata do, `Func`/`Action` ka basic use example do (jaise LINQ ke saath). Itna kaafi hai.
+
+**SDE-3/Senior level answer:** Multicast delegate ka return-value-discard gotcha naam lo, event ka encapsulation angle explain karo (kyun `event` sirf `delegate` field se better hai), aur thread-safe invocation pattern (`var handler = ...`) dikhao — ye batata hai production-grade code likha hai, sirf syntax nahi seekha.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka poora middleware pipeline aur `IHostApplicationLifetime` jaise interfaces internally delegates/events pe based hain — jaise `IHostApplicationLifetime.ApplicationStarted`/`ApplicationStopping` events jo apps ko startup/shutdown ke specific moments pe hook karne dete hain bina framework ke internal lifecycle code ko modify kiye.
+
+</RealWorld>
+
+<RealWorld company="A Food Delivery Order Platform">
+
+Ek typical Indian food-delivery backend (Zomato/Swiggy-style) me `OrderService` ek `OrderStatusChanged` event raise karta hai jab order "Preparing" se "Out for Delivery" ho. Alag-alag subscribers — push notification service, delivery-partner-assignment service, customer-facing live-tracking updater — sab independently is event ko subscribe karte hain bina `OrderService` ko unke baare me kuch jaane. Naya feature (jaise ek analytics dashboard) add karne ke liye sirf ek naya subscriber jodna hota hai, core order logic touch nahi hota.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `Func<>` and `Action<>` support up to 16 type parameters (`Func<T1...T16, TResult>`, `Action<T1...T16>`)
+- All C# delegates are inherently multicast, deriving from `System.MulticastDelegate`
+- For a multicast delegate with a return value, only the LAST invoked method's return value reaches the caller — earlier results are silently discarded
+- `event` restricts external code to `+=`/`-=` only — direct invocation or assignment from outside the declaring class is a compile-time error (CS0070/CS0079)
+- The null-conditional invoke pattern (`handler?.Invoke(...)`) alone isn't fully thread-safe — copying to a local variable first closes the race window
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Delegate ek type-safe reference hai ek ya zyada methods ka jinka signature match karta hai. Func aur Action pehle se defined generic delegates hain — Func return value deta hai, Action nahi. Delegates inherently multicast hote hain, +=  se multiple methods attach ho sakti hain, lekin return-value wale delegates me sirf last method ka result milta hai baaki discard ho jaate hain. event keyword delegate ko wrap karke encapsulation deta hai — bahar se sirf subscribe/unsubscribe ho sakta hai, invoke ya clear nahi. Main isko pub/sub pattern ke liye use karta hoon — jaise OrderService ek OrderPlaced event raise karta hai aur multiple independent subscribers (email, inventory) usse react karte hain bina OrderService ko unke baare me jaane."
+
+Ye answer delegate ke core mechanism, multicast gotcha, event ka WHY (encapsulation), aur ek real pub/sub example — sab cover karta hai crisply. **Almost-guaranteed follow-up:** "delegate field aur event me exact difference kya hai — event kyun use karein sirf public delegate field ki jagah?" — jawaab: public delegate field ko bahar se koi bhi directly invoke ya `= null` karke sab subscribers clear kar sakta hai; event ye dono operations sirf declaring class tak restrict karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Delegate ko "function pointer" bol kar chhod dena bina "type-safe" qualifier ke — interviewer turant C ke raw function pointers se contrast poochta hai, aur type safety hi wo core differentiator hai.
+
+</Mistake>
+
+<Mistake>
+
+Multicast delegate (return-value wala) use karke ye assume kar lena ki sab attached methods ka result mil jaayega — sirf last method ka return value caller tak pahunchta hai, baaki silently discard ho jaate hain. Ye ek real, subtle production bug source hai.
+
+</Mistake>
+
+<Mistake>
+
+`event` aur plain `public delegate` field ko interchangeable samajh lena — event specifically bahar se invoke/clear hone se protect karta hai, plain delegate field nahi karta. Interview me ye distinction bina bataye "event basically ek delegate hai" bol dena adhoora hai.
+
+</Mistake>
+
+<Mistake>
+
+`SomethingHappened?.Invoke(args)` ko fully thread-safe maan lena — single-threaded context me theek hai, lekin multi-threaded scenario me race condition possible hai; local variable me copy karke invoke karna safer pattern hai.
+
+</Mistake>
+
+<Mistake>
+
+Event subscribe karne ke baad `-=` se unsubscribe karna bhool jaana (especially UI/long-lived object scenarios me) — isse ek memory leak jaisa pattern banta hai kyunki publisher subscriber ko reference hold kiye rehta hai, jisse subscriber garbage collect nahi ho paata.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Controller
+    participant OrderService
+    participant EmailService
+    participant InventoryService
+
+    Controller->>OrderService: PlaceOrderAsync(dto)
+    OrderService->>OrderService: Save order to DB
+    OrderService->>OrderService: OrderPlaced event raise
+    OrderService-->>EmailService: OrderPlaced(order)
+    OrderService-->>InventoryService: OrderPlaced(order)
+    EmailService->>EmailService: SendConfirmation(order)
+    InventoryService->>InventoryService: ReserveStock(order)
+    OrderService-->>Controller: return order
+`}
+  caption="OrderService raises one event; multiple independent subscribers react without OrderService knowing they exist — this is the decoupling payoff of event over a direct method call."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A delegate is a type-safe reference to one or more methods with a matching signature — compile-time checked, unlike a raw C function pointer
+- `Func<T1...TResult>` returns a value (last type param is the return type); `Action<T1...>` returns void; `Predicate<T>` is `Func<T, bool>` by another name
+- All delegates are inherently multicast (`System.MulticastDelegate`) — `+=` attaches multiple methods
+- For a multicast delegate with a return value, only the LAST invoked method's return value reaches the caller
+- `event` wraps a delegate to restrict external code to `+=`/`-=` only — no direct invocation, no clearing with `= null`
+- The null-conditional invoke pattern has a subtle thread-safety gap — copy to a local variable first for true safety
+- Events are the concrete, everyday implementation of a pub/sub pattern — publisher never needs to know its subscribers
+- Always unsubscribe (`-=`) long-lived event subscriptions to avoid a reference-holding memory leak
+
+</QuickRevision>

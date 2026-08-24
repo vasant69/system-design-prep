@@ -1,0 +1,233 @@
+---
+slug: "abstract-classes-deep-dive"
+title: "Abstract Classes Deep Dive"
+section: "oops-dotnet"
+module: "abstraction-tools"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["what-is-oop-and-why-dotnet", "inheritance-single-multilevel-no-multiple", "abstraction-hiding-how-exposing-what"]
+tags: ["dotnet", "oop", "csharp", "abstract-class", "inheritance"]
+englishDefinition: "An abstract class is a class marked with the abstract keyword that cannot be instantiated directly, is meant to be a base for other classes, and can mix abstract members (a signature with no body, forcing derived classes to implement it) with fully concrete members that provide shared, ready-to-use implementation."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Cognizant", "Amazon"]
+---
+
+<SimpleDefinition>
+
+An abstract class is a class marked with the `abstract` keyword that cannot be instantiated directly, is meant to be a base for other classes, and can mix abstract members (a signature with no body, forcing derived classes to implement it) with fully concrete members that provide shared, ready-to-use implementation.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`abstract class` ka sabse simple mental model ye hai: "ye ek incomplete blueprint hai." Poori class definition nahi hai — kuch parts (`abstract` members) jaan-boojh kar khaali chhode gaye hain, aur derived class ko unhe fill karna hi padega. Isi wajah se `new AbstractClassName()` likhna seedha compile error hai — CS0144, "Cannot create an instance of the abstract class." Compiler tumhe yaad dilata hai ki ye type incomplete hai, use karne se pehle koi concrete class isko complete kare.
+
+### Abstract members vs concrete members — dono ek saath
+
+Ye abstract class ka sabse underrated feature hai, aur interview me ye hi differentiator poocha jaata hai interfaces ke against. Ek `abstract` class me:
+
+- **Abstract members** — sirf signature, koi body nahi (`public abstract double Area();`) — har concrete derived class ko `override` karna zaroori hai.
+- **Concrete members** — poori implementation ke saath (`public void PrintSummary() { ... }`) — sab derived classes ko **free me** milte hain, koi repeat karne ki zaroorat nahi.
+
+Pre-C#-8 duniya me (default interface methods aane se pehle), yahi tha abstract class ka sabse bada advantage interface ke against: interface sirf contract de sakta tha, ek bhi line implementation nahi. Abstract class dono de sakta tha — "ye tumhe khud likhna hai" (abstract member) aur "ye already ready hai, bas use karo" (concrete member) — ek hi type ke andar. Aaj bhi, jab shared **state** (fields) ki zaroorat ho, abstract class hi ek option hai — interface, default methods ke saath bhi, instance fields kabhi nahi rakh sakta.
+
+### Constructor kyun hota hai jab class instantiate hi nahi ho sakti
+
+Ye ek classic confusion point hai — "abstract class ka constructor kis kaam ka agar `new AbstractClass()` allowed hi nahi?" Answer: constructor khud directly kabhi call nahi hota, lekin **derived class ka constructor use implicitly ya explicitly `base()` ke through call karta hai**, aur wahi jagah hai jahan abstract class apna shared state initialize karta hai — required fields set karna, validation karna, ya logging setup karna jo har derived type ko chahiye.
+
+Socho `NotificationSender` ek abstract class hai jisme `ILogger` field hai. Ye field har concrete sender (`EmailNotificationSender`, `SmsNotificationSender`) ko chahiye, lekin logic same hai — to abstract class ka constructor ye ek jagah handle karta hai, aur har derived class sirf `base(logger)` call karke isse reuse karta hai, apna khud ka logger-assignment code repeat kiye bina. Agar abstract class ke paas constructor hi nahi hota, ye shared initialization logic har derived class me duplicate karni padti.
+
+### Kab abstract class reach for karo
+
+Jab implementers ke beech **genuinely shared state ya implementation** ho — sirf ek naam-match wala contract nahi. Agar `EmailNotificationSender` aur `SmsNotificationSender` dono ko same logging pattern, same retry-count field, same validation logic chahiye — abstract class isko ek jagah likhne deta hai. Agar dono ke paas sirf method-signature-level similarity hai koi shared state nahi — interface (agla topic) better fit hai.
+
+### Code Examples
+
+**Minimal example — abstract + concrete members together:**
+
+```csharp
+public abstract class Shape
+{
+    // Abstract — har derived class ko apna implementation dena hi padega
+    public abstract double Area();
+
+    // Concrete — sab derived classes ko free me milta hai, bina repeat kiye
+    public void PrintArea() => Console.WriteLine($"Area: {Area():F2}");
+}
+
+public class Circle : Shape
+{
+    public double Radius { get; init; }
+    public override double Area() => Math.PI * Radius * Radius;
+}
+
+// var shape = new Shape();       // Compile error: Cannot create an instance of the abstract class 'Shape'
+var circle = new Circle { Radius = 5 };
+circle.PrintArea(); // Area: 78.54 — PrintArea() Shape se aaya, Area() Circle ne override kiya
+```
+
+**Real ASP.NET Core example — shared constructor logic across notification senders:**
+
+```csharp
+public abstract class NotificationSender
+{
+    protected readonly ILogger _logger;
+
+    // Constructor kabhi directly call nahi hota — derived class ke base() ke through hi chalta hai
+    protected NotificationSender(ILogger logger)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public abstract Task SendAsync(string to, string message);
+
+    // Concrete, shared — har derived sender ko free me milta hai
+    protected void LogAttempt(string channel, string to) =>
+        _logger.LogInformation("Sending via {Channel} to {To}", channel, to);
+}
+
+public class EmailNotificationSender : NotificationSender
+{
+    public EmailNotificationSender(ILogger<EmailNotificationSender> logger) : base(logger) { }
+
+    public override async Task SendAsync(string to, string message)
+    {
+        LogAttempt("Email", to);
+        await Task.CompletedTask; // actual SMTP/SendGrid call yahan
+    }
+}
+
+public class SmsNotificationSender : NotificationSender
+{
+    public SmsNotificationSender(ILogger<SmsNotificationSender> logger) : base(logger) { }
+
+    public override async Task SendAsync(string to, string message)
+    {
+        LogAttempt("SMS", to);
+        await Task.CompletedTask; // actual SMS gateway call yahan
+    }
+}
+```
+
+`_logger` field aur null-check dono base constructor me sirf ek baar likhe hain — `EmailNotificationSender` aur `SmsNotificationSender` dono isse reuse karte hain, `LogAttempt` bhi duplicate nahi hota. Ye hi asli payoff hai shared state + shared implementation ka, jo ek interface (pre-DIM) kabhi nahi de sakta tha.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `abstract` class instantiate nahi ho sakti, abstract members ko derived class implement karti hai, `override` keyword lagta hai. Ek simple `Shape`/`Circle` example bol do.
+
+**SDE-3/Senior level answer:** Ye bhi bolo ki abstract class ka real payoff sirf "contract" nahi, **shared state + shared implementation** hai — jo interfaces (even with default methods) nahi de sakte kyunki interfaces instance fields nahi rakh sakte. Constructor ka role explain karo (derived class ke `base()` ke through shared initialization), aur ek production example do jahan multiple derived classes same constructor logic reuse karte hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET BCL (Base Class Library) khud abstract classes se bhara hua hai — `Stream` (base for `FileStream`, `MemoryStream`, `NetworkStream`), `TextReader`/`TextWriter`. `Stream` ek abstract class hai kyunki ye genuinely shared behavior deta hai (jaise `CopyToAsync`, jo internally `Read`/`Write` ke abstract methods use karke likha gaya hai) — sirf ek naam-match wala contract nahi.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Onboarding Service">
+
+Ek KYC onboarding flow me alag-alag document verifiers hote hain — `PanCardVerifier`, `AadhaarVerifier`, `PassportVerifier` — sab ek abstract `DocumentVerifierBase` se derive karte hain jo shared logging, shared retry logic, aur ek constructor rakhta hai jo har verifier ko ek common `IAuditService` deta hai. Har concrete verifier sirf apna khud ka `abstract Task<bool> VerifyAsync(byte[] document)` implement karta hai — baaki sab base class se free me milta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `abstract` keyword C# 1.0 (2002) se hi language ka hissa hai — koi naya addition nahi
+- Instantiating an abstract class directly is a compile-time error (CS0144), not a runtime one — caught before code even runs
+- An abstract class can have 0 or more abstract members — even zero is legal, though unusual (used purely to block direct instantiation)
+- Unlike interfaces (single inheritance of interfaces is NOT the limit, a class can implement many), a class can inherit from only ONE abstract (or any) base class — the single-inheritance rule applies equally to abstract classes
+- Default interface methods (C# 8, 2019) narrowed the implementation gap between interfaces and abstract classes, but instance fields remain abstract-class-only, even today
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Abstract class ek incomplete base type hai jo directly instantiate nahi ho sakti — kuch members `abstract` (sirf signature) hote hain jo derived class ko implement karne padte hain, aur kuch concrete hote hain jo sab derived classes ko shared implementation ke roop me free milte hain. Iska sabse bada use case tab hai jab multiple derived types ke beech genuinely shared **state** ya **implementation** ho — jaise ek common logger field ya common validation logic — kyunki interfaces, default methods hone ke baad bhi, instance fields nahi rakh sakte."
+
+Ye answer signal karta hai ki tumhe "abstract vs interface" ka asli deciding factor pata hai — sirf syntax nahi, **state ownership**. **Almost-guaranteed follow-up:** "To phir interface kab use karoge abstract class ki jagah?" — jiska poora jawaab agle topic (`abstract-class-vs-interface-decision`) me hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Bolna ki "abstract class me sirf abstract members ho sakte hain" — galat hai. Abstract class me concrete (fully implemented) members bhi ho sakte hain, aur yahi iska real differentiator hai interfaces ke against, khaaskar pre-C#-8 duniya me.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki abstract class ka constructor "dead code" hai kyunki class khud instantiate nahi ho sakti. Actually constructor har baar chalta hai jab bhi koi derived class ka instance banta hai — sirf directly call nahi ho sakta.
+
+</Mistake>
+
+<Mistake>
+
+`abstract` aur `virtual` ko confuse karna — `abstract` member ka koi body hi nahi hota aur `override` mandatory hai; `virtual` member ka default body hota hai aur `override` optional hai. Interview me ye distinction casually miss karna common gap hai.
+
+</Mistake>
+
+<Mistake>
+
+Har jagah abstract class use karna sirf isliye kyunki "OOP me hierarchy honi chahiye" — agar implementers ke beech koi shared state nahi hai, sirf naam-match wala contract hai, to interface zyada flexible aur testable choice hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye bhool jaana ki `abstract` class ke bhi non-abstract (concrete) methods `virtual` mark kiye bina overridable nahi hote — agar derived class ko ek concrete method ka behavior override karna hai, use bhi explicitly `virtual` mark karna padega, warna wo method hide hoga, override nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class NotificationSender {
+        <<abstract>>
+        #ILogger logger
+        +SendAsync(to, message)* Task
+        #LogAttempt(channel, to)
+    }
+    class EmailNotificationSender {
+        +SendAsync(to, message) Task
+    }
+    class SmsNotificationSender {
+        +SendAsync(to, message) Task
+    }
+    NotificationSender <|-- EmailNotificationSender
+    NotificationSender <|-- SmsNotificationSender
+`}
+  caption="SendAsync is abstract — each derived sender must implement it. The constructor and LogAttempt are concrete — shared, written once in the base class."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `abstract` class cannot be instantiated directly — compile error CS0144 if you try
+- Can mix abstract members (no body, must override) with concrete members (full implementation, shared for free)
+- The real differentiator vs interfaces: abstract classes can hold instance **state** (fields) — interfaces still can't, even with default methods
+- Constructor exists to run shared initialization logic — called implicitly/explicitly via `base()` from every derived class's constructor, never directly
+- `abstract` member has no body and mandatory `override`; `virtual` member has a default body and optional `override` — don't confuse the two
+- Concrete methods in an abstract class are NOT automatically overridable — mark them `virtual` explicitly if derived classes should be able to change them
+- Reach for abstract class when derived types share real state/implementation, not just a name-matching contract
+- Single inheritance still applies — a class can extend only one abstract (or any) base class
+
+</QuickRevision>

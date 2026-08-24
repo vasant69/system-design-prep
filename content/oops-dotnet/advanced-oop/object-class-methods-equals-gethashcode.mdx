@@ -1,0 +1,225 @@
+---
+slug: "object-class-methods-equals-gethashcode"
+title: "Object Class Methods — ToString, Equals, and the GetHashCode Contract"
+section: "oops-dotnet"
+module: "advanced-oop"
+order: 1
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["what-is-oop-and-why-dotnet"]
+tags: ["dotnet", "oop", "csharp", "equals", "gethashcode", "advanced"]
+englishDefinition: "Every C# type inherits ToString(), Equals(), and GetHashCode() from System.Object; overriding Equals() without also overriding GetHashCode() breaks the contract that equal objects must produce equal hash codes, silently corrupting hash-based collections like Dictionary and HashSet."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Every C# type inherits `ToString()`, `Equals()`, and `GetHashCode()` from `System.Object`; overriding `Equals()` without also overriding `GetHashCode()` breaks the contract that equal objects must produce equal hash codes, silently corrupting hash-based collections like `Dictionary` and `HashSet`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne dekha tha har type `System.Object` se derive karta hai, aur usse 4 methods free me milte hain: `ToString()`, `Equals()`, `GetHashCode()`, `GetType()`. Interview me ye ek "easy" lagne wala topic hai jab tak interviewer follow-up na poochhe — aur yahan wahi log fasenge jo sirf "override Equals for custom equality" bol dete hain bina uske consequences samjhe.
+
+### ToString() — debug output se zyada
+
+Default `ToString()` sirf fully-qualified type name return karta hai (jaise `"MyApp.Models.Order"`) — logs me ye bekaar hota hai. Isko override karna chahiye jab bhi object ka meaningful string representation chahiye — debugging, logging, ya quick console output ke liye. Ye sabse low-risk override hai teeno me se.
+
+### Equals() — reference equality vs value equality
+
+Class (reference type) ke liye default `Equals()` **reference equality** karta hai — bilkul `ReferenceEquals()` jaisa, sirf check karta hai ki dono variables same memory location point kar rahe hain ya nahi, content compare nahi karta. Struct (value type) ke liye default `Equals()` — jo `System.ValueType` se inherited hota hai — **field-by-field comparison** karta hai reflection ke through. Ye kaam to karta hai lekin slow hai, kyunki reflection aur (agar struct me koi reference-type field ho to) boxing involve ho sakti hai.
+
+**Important nuance jo interview me pakda jaata hai:** `Equals()` ko override karne se `==` operator apne aap change nahi hota. `==` ek separate operator hai — classes ke liye default reference equality hi rehta hai jab tak tum explicitly `operator ==` bhi overload na karo. Ye do alag mechanisms hain jo accidentally same lag sakte hain.
+
+### Equals aur GetHashCode ka contract — dono saath override karna MUST hai
+
+Ye is poore topic ka core hai. Contract simple hai: **agar do objects `Equals()` se equal hain, to unka `GetHashCode()` bhi zaroor same return karna chahiye.** Reverse zaroori nahi — do alag objects same hash code share kar sakte hain (collision), ye normal hai, sirf ek minor perf hit hai.
+
+Ye contract kyun matter karta hai — `Dictionary<TKey, TValue>` aur `HashSet<T>` internally is tarah kaam karte hain: pehle `GetHashCode()` call karke ek "bucket" locate karte hain, phir usi bucket ke andar entries ke saath `Equals()` compare karte hain. Agar tumne sirf `Equals()` override kiya, `GetHashCode()` nahi (jo default me object identity pe based hota hai), to do "logically equal" objects **different buckets** me chale jaayenge — aur `dictionary.TryGetValue(equalKey)` **silently `false` return karega**, chahe ek "equal" entry already dictionary me maujood ho. Ye bug crash nahi karta, isliye production me miss ho jaata hai — bas galat results deta hai.
+
+Standard override pattern: null check, type check (`is` pattern preferred over `GetType()` unless tumhe exact-type match chahiye, kyunki `is` derived types ko bhi match karega), field-by-field comparison. `GetHashCode()` ke liye `HashCode.Combine(field1, field2, ...)` use karo — ye .NET Core 2.1 se available `System.HashCode` struct hai, khud achha hash distribution deta hai bina manual XOR/prime-number logic likhe.
+
+Ek aur cheez jo cause banti hai bugs ki: agar object dictionary me key ke roop me use ho raha hai, aur uske hash-contributing fields **mutate** ho jaate hain object insert hone ke baad — hash code badal jaata hai, aur ab tum wo key kabhi dictionary me dhoond nahi paoge, chahe wahi object reference tumhare paas ho. Isliye hash-key objects ke fields immutable rakhna best practice hai.
+
+`IEquatable<T>` interface implement karna (`Equals(T other)`) ek performance optimization hai — typed comparisons boxing avoid kar paate hain jo `Equals(object)` me hoti.
+
+### record — ek forward pointer
+
+`record` types (C# 9) ye poora contract — `Equals`, `GetHashCode`, `ToString` — **automatically generate** karte hain structural (value-based) equality ke saath, saath me `EqualityContract` bhi jo record inheritance me exact-type safety deta hai. Poora deep dive agle topic me hai — yahan sirf itna samajh lo ki jo manual boilerplate abhi tum likh rahe ho, record usko compiler se generate karwa deta hai.
+
+### Code Examples
+
+**Minimal example — override karna aur `==` vs `Equals()` ka fark dikhana:**
+
+```csharp
+public class Point
+{
+    public int X { get; }
+    public int Y { get; }
+    public Point(int x, int y) { X = x; Y = y; }
+
+    public override bool Equals(object? obj) =>
+        obj is Point other && X == other.X && Y == other.Y;
+
+    public override int GetHashCode() => HashCode.Combine(X, Y);
+
+    public override string ToString() => $"Point({X}, {Y})";
+}
+
+var p1 = new Point(3, 4);
+var p2 = new Point(3, 4);
+
+// p1 == p2                              -> false (== operator overload nahi kiya, still reference equality)
+// p1.Equals(p2)                         -> true  (Equals override X, Y compare karta hai)
+// p1.GetHashCode() == p2.GetHashCode()  -> true  (contract satisfy ho raha hai)
+```
+
+**Real ASP.NET Core example — value object ke Dictionary key ke roop me use hone ka risk:**
+
+```csharp
+public class Money
+{
+    public decimal Amount { get; }
+    public string Currency { get; }
+    public Money(decimal amount, string currency) { Amount = amount; Currency = currency; }
+
+    public override bool Equals(object? obj) =>
+        obj is Money other && Amount == other.Amount && Currency == other.Currency;
+
+    public override int GetHashCode() => HashCode.Combine(Amount, Currency);
+}
+
+public class ExchangeRateService
+{
+    private readonly Dictionary<Money, decimal> _rateCache = new();
+
+    public decimal GetOrFetchRate(Money from)
+    {
+        if (_rateCache.TryGetValue(from, out var cachedRate))
+            return cachedRate; // sirf isliye kaam karta hai kyunki Equals AND GetHashCode dono correctly overridden hain
+
+        var rate = FetchFromProvider(from);
+        _rateCache[from] = rate;
+        return rate;
+    }
+
+    private decimal FetchFromProvider(Money m) => 83.12m; // stub
+}
+```
+
+Agar `Money` me sirf `Equals()` override hota, `GetHashCode()` nahi — `TryGetValue` upar almost hamesha `false` return karta, chahe same `Amount`/`Currency` wala naya `Money` object dobara pass karo, kyunki default `GetHashCode()` object identity pe based hota — har naya instance ek naya hash code deta.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Bol do ki `Equals()` aur `GetHashCode()` dono saath override karne chahiye, aur ek chhota example do (jaise `Point` class). Itna kaafi hai.
+
+**SDE-3/Senior level answer:** `==` vs `Equals()` ka independent-mechanism nuance explain karo, batao ki mutable hash-key fields ek real production bug source hain, `IEquatable<T>` aur `HashCode.Combine` ka naam lo, aur record types ki taraf forward-connect karo ki modern C# me ye poora boilerplate compiler generate kar deta hai — ye dikhata hai tumhe manual approach ki limitations bhi pata hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`System.String` khud isi contract ka best example hai — .NET team ne `string` ke liye `Equals()` aur `GetHashCode()` dono ko override kiya hai taaki `"hello" == "hello"` **content-based** comparison de, reference-based nahi (jabki `string` khud ek reference type hai). Isi wajah se do alag `string` literals jo same text hold karte hain, `Dictionary<string, T>` me sahi se same key ki tarah behave karte hain.
+
+</RealWorld>
+
+<RealWorld company="A Fintech Reconciliation Service">
+
+Ek typical Indian fintech backend me transaction reconciliation ke liye ek `TransactionKey` value object (BankReferenceId + Amount + Date) banaya jaata hai jo `HashSet<TransactionKey>` me duplicate-detection ke liye use hota hai. Agar `GetHashCode()` miss ho jaaye, duplicate transactions silently detect nahi hote — ye ek real, hard-to-debug production bug hai jo sirf tab pakda jaata hai jab reconciliation report me mismatch dikhta hai, exception kabhi nahi aati.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `ToString()`, `Equals(object)`, and `GetHashCode()` are `virtual` on `System.Object` — overridable; `GetType()` is not virtual, it's sealed by design
+- `System.HashCode.Combine(...)` has been available since .NET Core 2.1 (2018) — the modern, recommended way to write `GetHashCode()`
+- Default struct `Equals()` (from `System.ValueType`) uses reflection for field comparison — measurably slower than an explicit override
+- `record` types (C# 9, 2020) auto-generate the entire `Equals`/`GetHashCode`/`ToString` contract correctly, by construction
+- A `Dictionary<TKey,TValue>` lookup is effectively O(1) only when `GetHashCode()` distributes keys well — a bad or broken hash function degrades it toward O(n) within a bucket
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "System.Object se har type ko Equals, GetHashCode, aur ToString milte hain. Classes ke liye default Equals reference equality karta hai, structs ke liye reflection-based field comparison. Jab bhi main Equals() ko custom logic ke liye override karta hoon, GetHashCode() bhi zaroor saath override karta hoon — kyunki Dictionary aur HashSet pehle GetHashCode se bucket locate karte hain, phir Equals se compare karte hain. Agar dono sync me na hon, to ek logically-equal object dictionary me silently 'not found' aa sakta hai. Main GetHashCode ke liye HashCode.Combine use karta hoon, aur == operator ko alag se treat karta hoon kyunki wo Equals override se automatically nahi badalta."
+
+Ye answer contract ka *why* clearly explain karta hai, `==` ka nuance pakadta hai (jo bahut candidates miss karte hain), aur `HashCode.Combine` naam leke practical implementation knowledge dikhata hai. **Almost-guaranteed follow-up:** "Agar object ko Dictionary key banaya, aur uske fields baad me mutate ho jaayein, to kya hoga?" — jawaab: hash code change ho jaata hai, wo key phir kabhi milegi hi nahi, isliye hash-key objects immutable rakhne chahiye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`Equals()` override karna lekin `GetHashCode()` bhool jaana (ya vice versa) — compiler warning deta hai lekin build fail nahi hoti, isliye ye bug silently production tak pahunch jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki `Equals()` override karne se `==` operator bhi automatically same behavior le lega — nahi leta, `==` ek independent operator overload hai jo classes ke liye alag se define karna padta hai.
+
+</Mistake>
+
+<Mistake>
+
+Dictionary/HashSet key object ke un fields ko mutable rakhna jo `GetHashCode()` calculate karne me use hote hain — object insert hone ke baad field change hone se hash code badal jaata hai aur wo entry effectively "lost" ho jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+`Equals()` override me null-check ya type-check chhod dena — `obj is Point other` jaisa pattern match miss karke direct cast karna `InvalidCastException` ya `NullReferenceException` dega galat inputs pe.
+
+</Mistake>
+
+<Mistake>
+
+Interview me sirf "Equals override karo custom equality ke liye" bol dena bina ye mention kiye ki GetHashCode contract kya hai aur kyun zaroori hai — ye interviewer ko turant lagta hai ki candidate ne ye kabhi production me debug nahi kiya.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Dictionary.TryGetValue(key)"] --> B["key.GetHashCode() compute karo"]
+    B --> C["Us hash se bucket locate karo"]
+    C --> D{"Bucket me entries hain?"}
+    D -->|No| E["Not Found return"]
+    D -->|Yes| F["Bucket ke har entry ke saath key.Equals(entry.Key) check karo"]
+    F -->|Match mila| G["Found return"]
+    F -->|Koi match nahi| E
+`}
+  caption="Dictionary lookup pehle GetHashCode se bucket dhoondta hai, phir usi bucket ke andar Equals se match confirm karta hai — dono sync me na hon to lookup silently fail ho jaata hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `ToString()`, `Equals()`, `GetHashCode()` are virtual and inherited from `System.Object` — `GetType()` is not overridable
+- Default `Equals()` is reference equality for classes, reflection-based field comparison for structs
+- Overriding `Equals()` does NOT automatically change `==` behavior — that needs a separate operator overload
+- Rule: if you override `Equals()`, you MUST override `GetHashCode()` too — equal objects must produce equal hash codes
+- The reverse isn't required — unequal objects CAN share a hash code (collision), that's just a minor perf cost
+- Dictionary/HashSet use `GetHashCode()` to pick a bucket, then `Equals()` within that bucket — a broken contract causes silent lookup failures, not exceptions
+- Never let hash-key object fields mutate after insertion — the object becomes unfindable
+- `record` types (C# 9) auto-generate this entire contract with structural equality
+
+</QuickRevision>

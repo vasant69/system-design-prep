@@ -1,0 +1,258 @@
+---
+slug: "fields-properties-auto-properties-init-required"
+title: "Fields vs Properties, Auto-Properties, init and required"
+section: "oops-dotnet"
+module: "oop-foundations"
+order: 4
+difficulty: "beginner"
+readingTime: 13
+prerequisites: ["what-is-oop-and-why-dotnet", "class-vs-object-vs-instance"]
+tags: ["dotnet", "oop", "csharp", "properties", "encapsulation", "init", "required"]
+englishDefinition: "A field is a raw variable holding a class's state directly; a property wraps that state behind get/set accessor methods so validation or logic can run on read or write without changing the class's public surface — auto-properties generate a hidden backing field automatically, init restricts a setter to run-only-during-construction, and required (C# 11) forces the caller to set a member via object-initializer syntax at compile time."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A field is a raw variable holding a class's state directly; a property wraps that state behind get/set accessor methods so validation or logic can run on read or write without changing the class's public surface — auto-properties generate a hidden backing field automatically, `init` restricts a setter to run-only-during-construction, and `required` (C# 11) forces the caller to set a member via object-initializer syntax at compile time.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Field aur property me kya difference hai, aur property kyun exist karti hai jab field se bhi kaam chal sakta tha" — ye question simple lagta hai lekin bahut candidates sirf syntax bata dete hain ("property me get-set hota hai") aur **why** miss kar dete hain, jo interviewer actually test kar raha hota hai.
+
+### Field — raw storage, koi control nahi
+
+Field seedha class ke andar declare hota hai, koi accessor logic ke bina:
+
+```csharp
+public class BankAccount
+{
+    public decimal Balance; // PUBLIC FIELD — koi bhi bina check ke direct set kar sakta hai
+}
+
+var acc = new BankAccount();
+acc.Balance = -5000; // ye compile hoga, run karega — koi validation nahi roki
+```
+
+Problem clear hai: kisi bhi caller ne field ko public rakha, wo bina kisi validation ke seedha value set kar sakta hai. Isse business rules silently violate ho sakte hain.
+
+### Property — wahi state, lekin ek controlled gateway ke through
+
+Property syntactically field jaisi dikhti hai use karte waqt (`acc.Balance`), lekin actually ye do methods hain — `get` aur `set` — jo compiler ke through generate/call hote hain. Isse read/write pe logic run karne ka mauka milta hai:
+
+```csharp
+public class BankAccount
+{
+    private decimal _balance; // backing field, PRIVATE
+    public decimal Balance
+    {
+        get => _balance;
+        set
+        {
+            if (value < 0) throw new ArgumentException("Balance cannot be negative");
+            _balance = value;
+        }
+    }
+}
+```
+
+Ab `acc.Balance = -5000` runtime exception throw karega — validation enforced hai, bina API surface change kiye (caller ko abhi bhi `acc.Balance = x` hi likhna hai, syntax same hai). Yahi property ka core payoff hai: **encapsulation without changing how callers interact with the type.**
+
+### Auto-property — jab custom logic ki zaroorat nahi
+
+Zyada tar cases me get/set me koi extra logic nahi chahiye hoti — bas ek clean, controlled wrapper chahiye hota hai. Auto-properties compiler ko hidden backing field khud generate karne dete hain:
+
+```csharp
+public class BankAccount
+{
+    public decimal Balance { get; private set; } // compiler backing field khud banata hai
+}
+```
+
+`{ get; private set; }` pattern bahut common hai — external world sirf read kar sakta hai, sirf class ke andar ka code (constructor, methods) write kar sakta hai.
+
+### `init` — construction ke baad immutable (C# 9, 2020)
+
+`init` accessor set ki tarah kaam karta hai, lekin **sirf object-initializer ya constructor ke andar** call ho sakta hai — ek baar object fully constructed ho gaya, wo property fir kabhi set nahi ho sakti, `private set` se bhi zyada strict:
+
+```csharp
+public class Order
+{
+    public string OrderId { get; init; } = "";
+}
+
+var order = new Order { OrderId = "ORD-123" }; // OK — construction ke dauraan
+order.OrderId = "ORD-456"; // COMPILE ERROR — init ke baad kabhi set nahi ho sakti
+```
+
+`init` un cases ke liye perfect hai jahan object create hone ke baad kabhi mutate nahi hona chahiye (DTOs, value-like entities), lekin object-initializer syntax bhi chahiye (flexible construction).
+
+### `required` — compiler-enforced "ye field bhoolna mat" (C# 11, 2022)
+
+Constructor ke through 6 parameters lena ek classic anti-pattern hai — readability kharab, order galat hone ka risk. `init`-only auto-properties isko object-initializer se replace karte hain, lekin problem: **compiler force nahi karta ki har property set ho** — koi zaroori field bhool sakta hai. `required` isko fix karta hai:
+
+```csharp
+public class CreateUserRequest
+{
+    public required string Email { get; init; }
+    public required string Name { get; init; }
+    public int Age { get; init; } // required nahi — optional
+}
+
+var req = new CreateUserRequest { Name = "Asha" }; // COMPILE ERROR — Email required hai, missing hai
+```
+
+`required` ke bina, `Email` bhool jaana sirf runtime pe pakda jaata (ya kabhi nahi, silently null reh jaata). `required` isse **compile time** pe pakadta hai.
+
+### Code Examples
+
+**Minimal example — evolution field se required tak:**
+
+```csharp
+// Step 1: raw field — no control
+public class V1 { public string Name; }
+
+// Step 2: property with validation — controlled
+public class V2
+{
+    private string _name = "";
+    public string Name { get => _name; set => _name = value ?? throw new ArgumentNullException(); }
+}
+
+// Step 3: auto-property with init — immutable after construction
+public class V3 { public string Name { get; init; } = ""; }
+
+// Step 4: required — compiler enforces it's set
+public class V4 { public required string Name { get; init; } }
+```
+
+**Real ASP.NET Core example — DTO with backing-field validation vs required init:**
+
+```csharp
+public class UpdateProfileDto
+{
+    // Backing field needed here — custom validation logic beyond a simple type check
+    private string _phoneNumber = "";
+    public string PhoneNumber
+    {
+        get => _phoneNumber;
+        set => _phoneNumber = value.Length == 10 ? value : throw new ArgumentException("Invalid phone number");
+    }
+
+    // No custom logic needed — required + init is enough
+    public required string DisplayName { get; init; }
+}
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Field raw variable hai, property get/set ke through control deti hai" — auto-property syntax dikhao, `init` ka one-liner ("construction ke baad set nahi ho sakta").
+
+**SDE-3/Senior level answer:** Ye bhi explain karo ki property ka real payoff hai encapsulation **bina API surface change kiye** (caller ka syntax same rehta hai), `required` (C# 11) ne kaise "constructor with 6 parameters" anti-pattern ko replace kiya bina object-initializer ki flexibility khoye, aur kab backing field ke saath custom logic zaroori hai vs kab plain auto-property kaafi hai — ye judgment call hi senior-level signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+C# team ne `init` (C# 9) aur `required` (C# 11) explicitly is gap ko fix karne ke liye add kiye: pehle immutable objects banane ke liye ya to ek bada constructor likhna padta tha (readability issue) ya `set` public rakhna padta tha (mutability leak). `record` types (C# 9) inhi `init` properties ko heavily use karte hain apne default immutable design ke liye — ye Microsoft ka apna recommended pattern hai for DTOs aur value-like types in modern C#.
+
+</RealWorld>
+
+<RealWorld company="A Banking KYC Onboarding API">
+
+Ek typical Indian fintech KYC onboarding flow me `CreateKycRequest` DTO `required` fields use karta hai (`PanNumber`, `AadhaarLast4`, `FullName`) — agar frontend team galti se ek required field bhej na paaye, ye **compile time** pe hi backend developer ko pakad jaata hai jab wo test/mock request banata hai, runtime pe silently null jaane ke bajaye. Ye chhota sa language feature production me galat/incomplete KYC records banne se directly bachata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Auto-properties (`{ get; set; }`) available since C# 3.0 (2007) — the backing field is compiler-generated and invisible to your code
+- `init`-only setters introduced in C# 9 (2020)
+- `required` members introduced in C# 11 (2022) — enforced at compile time, not runtime
+- A property compiles down to two hidden methods: `get_PropertyName()` and `set_PropertyName()` — this is why properties don't break binary compatibility the way public fields do
+- `record` types (C# 9) default to using `init`-only auto-properties for their positional parameters
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Field raw state store karta hai bina kisi control ke — koi bhi caller directly modify kar sakta hai. Property wahi state expose karti hai lekin get/set methods ke peeche, jisse validation ya custom logic run ho sakti hai bina caller ke syntax change kiye. Auto-property jab custom logic nahi chahiye tab compiler se backing field generate karwati hai. `init` property ko sirf construction ke dauraan set hone deta hai, uske baad immutable ho jaata hai — ye C# 9 me aaya. `required` (C# 11) compiler ko force karta hai ki caller us property ko object-initializer me zaroor set kare, warna compile error — isne 'constructor with 6 parameters' anti-pattern ko replace kar diya."
+
+**Almost-guaranteed follow-up:** "`init` aur `private set` me kya difference hai — dono to immutability jaisa hi lagte hain?" (Answer: `private set` class ke andar kabhi bhi set ho sakta hai, `init` sirf construction ke exact moment pe, class ke andar bhi baad me nahi.)
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Property ko sirf "syntax sugar" samajhna, encapsulation payoff miss kar dena — asli point ye hai ki property API surface change kiye bina validation/logic add karne deti hai, isliye future me field ko property me convert karna breaking change hota, lekin property ko field jaisa hi use karna kabhi breaking nahi hota agar shuru se property rakho.
+
+</Mistake>
+
+<Mistake>
+
+`init` aur `private set` ko same samajh lena — `private set` class ke andar (kisi bhi method se) kabhi bhi call ho sakta hai, lekin `init` sirf object construction ke exact window me, class ke andar se bhi baad me nahi.
+
+</Mistake>
+
+<Mistake>
+
+`required` ko runtime validation samajhna — actually ye ek **compile-time** check hai. Agar object JSON deserialization jaisi kisi reflection-based path se banaya jaye jo constructor bypass kare, `required` runtime pe enforce nahi hoti waise (System.Text.Json isko specially handle karta hai, lekin ye ek nuance hai jo blindly assume nahi karni chahiye).
+
+</Mistake>
+
+<Mistake>
+
+Public field seedha use karna "quick hai isliye" bolke — chhoti si DTO me bhi, agar kal validation ya logic add karni pade, field-to-property conversion binary-incompatible change hoti hai compiled consumers ke liye. Property shuru se hi safer default hai.
+
+</Mistake>
+
+<Mistake>
+
+Version pinning galat karna — `init` ko C# 11 ka bolna ya `required` ko C# 9 ka bolna (ulta). Interview me exact version bolna confidence dikhata hai, galat version bolna red flag hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["public decimal Balance;\n(raw field)"] -->|"evolve"| B["decimal Balance { get; set; }\n(auto-property)"]
+    B -->|"add validation"| C["decimal Balance { get; set { if(value<0) throw...; _balance=value; } }\n(backing field + logic)"]
+    B -->|"immutability needed"| D["decimal Balance { get; init; }\n(construction-only)"]
+    D -->|"must not be forgotten"| E["required decimal Balance { get; init; }\n(compiler-enforced)"]
+`}
+  caption="Fields to properties to init to required is a real evolution path in C# — each step trades a little verbosity for a stronger, compiler-enforced guarantee."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Field = raw variable, no control; property = get/set methods that look like field access from the caller's side
+- Property's real payoff: add validation/logic later without changing the class's public API surface
+- Auto-property (`{ get; set; }`, C# 3.0) lets the compiler generate the hidden backing field for you
+- `init` (C# 9, 2020) allows setting only during construction — stricter than `private set`, which can be set anytime from inside the class
+- `required` (C# 11, 2022) is a compile-time check forcing the caller to set that member via object-initializer syntax
+- `required` replaces the "constructor with 6 parameters" anti-pattern while keeping object-initializer flexibility
+- A backing field is still needed whenever custom get/set logic (validation, transformation) is required
+- `record` types default to `init`-only auto-properties, reinforcing their immutable-by-default design
+
+</QuickRevision>

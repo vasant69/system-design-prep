@@ -1,0 +1,242 @@
+---
+slug: "filters-and-custom-attributes"
+title: "Filters & Custom Attributes — Metadata-Driven Behavior"
+section: "oops-dotnet"
+module: "oop-in-aspnet-core"
+order: 5
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["middleware-pipeline-chain-of-responsibility", "abstract-classes-deep-dive"]
+tags: ["dotnet", "oop", "aspnet-core", "filters", "attributes", "reflection", "action-filter"]
+englishDefinition: "ASP.NET Core filters (Authorization, Resource, Action, Exception, Result) are pipeline hooks that run at specific points inside MVC's request handling, distinct from middleware which wraps the whole pipeline; custom filters are typically written as attribute classes, letting the framework discover and invoke your code declaratively via reflection rather than you wiring it manually into every action."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core filters (Authorization, Resource, Action, Exception, Result) are pipeline hooks that run at specific points inside MVC's request handling, distinct from middleware which wraps the whole pipeline; custom filters are typically written as attribute classes, letting the framework discover and invoke your code declaratively via reflection rather than you wiring it manually into every action.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me middleware dekha — poori pipeline ke around. Filters ek level **andar** kaam karte hain, specifically MVC action-invocation ke around, aur ye "attributes + reflection" wala pattern demonstrate karte hain jo interview me alag se poochha jaata hai.
+
+### Filters vs Middleware — exact boundary
+
+Middleware **poori** HTTP pipeline ko wrap karta hai — routing se pehle bhi chal sakta hai, static files serve kar sakta hai, kisi bhi controller se koi lena-dena nahi hota. Filters sirf **MVC action-invocation ke andar** chalte hain — inhe pata hota hai kaunsa controller, kaunsa action, kaunse arguments — ye context middleware ke paas nahi hota (middleware ko sirf raw `HttpContext` milta hai, action-level detail nahi).
+
+### Paanch filter types, order ke sequence me
+
+1. **Authorization filters** — sabse pehle chalte hain, decide karte hain user allowed hai ya nahi (`[Authorize]` khud isi ka implementation hai)
+2. **Resource filters** — authorization ke baad, model binding se **pehle** — caching jaisa kaam yahan fit hota hai (agar cached response hai, model binding/action call ki zaroorat hi nahi)
+3. **Action filters** — action method chalne se **theek pehle aur theek baad** — sabse zyada commonly custom-written filter type, logging/validation/timing ke liye
+4. **Exception filters** — agar action (ya kisi filter) me exception aaye, isko handle karne ka mauka
+5. **Result filters** — action ka result (`IActionResult`) client ko bhejne se pehle aur baad me chalte hain — response modify karne ke liye
+
+### Custom `ActionFilterAttribute` — code se
+
+`ActionFilterAttribute` ek abstract base class hai jo `IActionFilter`/`IAsyncActionFilter` implement karti hai — tumhe sirf jo methods chahiye unhe override karna hai:
+
+```csharp
+public class LogExecutionTimeAttribute : ActionFilterAttribute
+{
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        context.HttpContext.Items["StartTime"] = DateTime.UtcNow;
+    }
+
+    public override void OnActionExecuted(ActionExecutedContext context)
+    {
+        var start = (DateTime)context.HttpContext.Items["StartTime"]!;
+        var elapsed = DateTime.UtcNow - start;
+        var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<LogExecutionTimeAttribute>>();
+        logger.LogInformation("{Action} took {Ms}ms", context.ActionDescriptor.DisplayName, elapsed.TotalMilliseconds);
+    }
+}
+```
+
+Use karna sirf ek attribute lagana hai:
+
+```csharp
+[LogExecutionTime]
+[HttpGet("{id}")]
+public async Task<IActionResult> GetById(int id) { /* ... */ }
+```
+
+### Attributes + reflection — "metadata-driven behavior" ka matlab
+
+Yahan interview-worthy asli concept hai. `[LogExecutionTime]` ek **declaration** hai — tumne kahin explicit call nahi kiya "is method se pehle ye filter run karo." Framework startup pe (aur request-handling ke time) har action method ko **reflection** ke through inspect karta hai, uspe declare hue attributes dhoondta hai, aur agar koi attribute `IFilterMetadata` implement karta hai, use pipeline me automatically shaamil kar leta hai.
+
+Ye ek fundamentally alag programming style hai — **imperative** ("mujhe ye function explicitly call karna hai") vs **declarative/metadata-driven** ("mujhe bas is class/method pe ek marker lagana hai, framework baaki sambhal lega"). `[Authorize]`, `[HttpGet]`, `[Route]`, `[ApiController]` — ye saare isi pattern ka use hain. Ye pattern tabhi possible hai kyunki .NET ka reflection API runtime pe kisi bhi type ke attributes, methods, properties ko inspect kar sakta hai — ek core CLR capability jo attributes ko sirf documentation se kahin zyada powerful banati hai.
+
+### `Attribute` khud kya hai — OOP ke through
+
+`Attribute` khud .NET ka ek base class hai (`System.Attribute`) — jab tum `public class LogExecutionTimeAttribute : ActionFilterAttribute` likhte ho, tum inheritance hi use kar rahe ho. Attribute usage (`[LogExecutionTime]`) compile-time pe ek instance-jaisi metadata attach karta hai type/method ko, jo reflection ke through baad me retrieve ho sakti hai.
+
+### Code Examples
+
+**Minimal example — reflection se ek custom attribute read karna (concept isolate karke):**
+
+```csharp
+[AttributeUsage(AttributeTargets.Method)]
+public class AuditAttribute : Attribute
+{
+    public string Action { get; }
+    public AuditAttribute(string action) => Action = action;
+}
+
+public class ReportService
+{
+    [Audit("GenerateReport")]
+    public void Generate() { }
+}
+
+var method = typeof(ReportService).GetMethod("Generate")!;
+var audit = method.GetCustomAttribute<AuditAttribute>();
+// audit?.Action == "GenerateReport" — read purely via reflection, no explicit call anywhere
+```
+
+**Real ASP.NET Core example — exception filter for consistent error responses:**
+
+```csharp
+public class ApiExceptionFilter : ExceptionFilterAttribute
+{
+    public override void OnException(ExceptionContext context)
+    {
+        context.Result = context.Exception switch
+        {
+            KeyNotFoundException => new NotFoundObjectResult(new { error = context.Exception.Message }),
+            ValidationException ve => new BadRequestObjectResult(new { error = ve.Message }),
+            _ => new ObjectResult(new { error = "Unexpected error" }) { StatusCode = 500 },
+        };
+        context.ExceptionHandled = true;
+    }
+}
+
+// Program.cs
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ApiExceptionFilter>(); // global — applies to every controller
+});
+```
+
+Is `Filters.Add<T>()` ke through, `ApiExceptionFilter` **har** controller/action pe automatically apply hota hai — koi individual attribute lagane ki zaroorat nahi, framework khud isko poore MVC pipeline me discover-and-invoke kar leta hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Filters MVC pipeline ke andar specific points pe chalte hain (before/after action), `[Authorize]` ek filter attribute ka example hai.
+
+**SDE-3/Senior level answer:** Paanch filter types ka exact order batao, filters ko middleware se explicitly differentiate karo (scope: poori pipeline vs sirf MVC action-invocation), aur "metadata-driven behavior" wala concept explain karo — attributes reflection ke through framework ko declaratively discover-and-invoke karne dete hain, ye imperative wiring se fundamentally alag programming style hai — ye samajh dikhata hai ki tumne `[Authorize]`/`[ApiController]` jaisi cheezein sirf use nahi ki, unke peeche ka mechanism bhi samjha hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka `[Authorize]` attribute khud ek Authorization filter ka implementation hai — jab tum `[Authorize(Roles = "Admin")]` likhte ho, framework reflection se is attribute ko discover karta hai aur request ke authorization filter stage me automatically evaluate karta hai. Microsoft ki filter documentation explicitly ye five-stage order (Authorization → Resource → Action → Exception → Result) define karti hai — ye framework ka core, well-documented execution model hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI Audit-Logging Platform">
+
+Ek typical Indian banking/fintech backend me regulatory compliance ke liye har sensitive API call (jaise fund transfer, KYC update) ka audit trail chahiye hota hai. Team ek `[AuditLog("FundTransfer")]` jaisa custom action filter banati hai jo action se pehle request details, aur action ke baad result/status, ek audit table me likh deta hai. Developer ko har controller me manually audit-logging code likhne ki zaroorat nahi — sirf attribute lagana hota hai, aur naye endpoints ke liye bhi ye consistently enforce ho jaata hai, missed hone ka risk kam hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 5 distinct filter types in ASP.NET Core MVC, running in this exact order: Authorization, Resource, Action, Exception, Result
+- `ActionFilterAttribute` provides 4 overridable hooks: `OnActionExecuting`, `OnActionExecuted`, `OnResultExecuting`, `OnResultExecuted` (sync) plus async equivalents
+- `[Authorize]`, `[ApiController]`, `[Route]`, `[HttpGet]` — all built-in ASP.NET Core attributes are examples of this exact declarative, reflection-discovered pattern
+- Filters can be applied at 3 scopes: global (`options.Filters.Add<T>()`), controller-level (attribute on the class), or action-level (attribute on the method) — closer scope generally overrides broader scope
+- `System.Attribute` is the CLR base class every custom attribute (including filter attributes) ultimately derives from
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Filters middleware se ek level andar chalte hain — inhe MVC action-level context (controller, action, arguments) pata hota hai, middleware ko nahi. Paanch types hain, ek fixed order me — Authorization, Resource, Action, Exception, Result. Main custom filters usually `ActionFilterAttribute` extend karke likhta hoon, aur ye attribute-based approach interesting hai kyunki ye declarative hai — main sirf ek attribute lagata hoon jaise `[LogExecutionTime]`, aur framework khud reflection ke through discover karke automatically invoke karta hai, mujhe kahin explicitly wire karne ki zaroorat nahi padti."
+
+Ye answer scope-boundary (filters vs middleware), exact ordering, aur reflection-based mechanism — teeno cover karta hai. **Almost-guaranteed follow-up:** "Filter aur middleware me se kab konsa use karoge — decision kaise loge?" (jawaab: agar action-level context — model, arguments, `ActionDescriptor` — chahiye, filter; agar poore pipeline pe kaam hai jisko controllers se koi lena dena nahi, jaise CORS ya static files, middleware).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Filters aur middleware ko interchangeably bol dena, dono me difference na kar pana — filters ko MVC action-context pata hota hai, middleware ko nahi; middleware poori pipeline wrap karta hai (routing se bhi pehle chal sakta hai), filters sirf action-invocation ke andar.
+
+</Mistake>
+
+<Mistake>
+
+Filter order ko galat yaad rakhna ya "sab ek saath chalta hai" jaisa vague answer dena — exact sequence (Authorization → Resource → Action → Exception → Result) ek concrete, testable fact hai jo interviewer directly poochh sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Custom filter ke andar heavy business logic likh dena jo genuinely action-specific hai — filters cross-cutting concerns (logging, caching, validation, error-shaping) ke liye hain, core business logic service layer me hi rehni chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ye na samajh pana ki attribute usage khud kuch "execute" nahi karta — `[LogExecutionTime]` sirf metadata attach karta hai method pe; asli execution framework ke reflection-based discovery aur invocation se hota hai, attribute khud se kabhi automatically nahi chalta agar koi usse read/invoke na kare.
+
+</Mistake>
+
+<Mistake>
+
+`OnActionExecuting`/`OnActionExecuted` (sync) aur unke async equivalents (`OnActionExecutionAsync`) ko mix kar dena ek hi filter me bina samjhe kaunsa kab use karna hai — dono ek saath override karna undefined/confusing behavior de sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Req([Request reaches MVC]) --> AF[Authorization Filters]
+    AF --> RF[Resource Filters]
+    RF --> MB[Model Binding]
+    MB --> ActF[Action Filters - OnActionExecuting]
+    ActF --> Action[Controller Action Runs]
+    Action --> ActF2[Action Filters - OnActionExecuted]
+    ActF2 --> ExF{Exception?}
+    ExF -->|yes| ExcF[Exception Filters]
+    ExF -->|no| ResF[Result Filters]
+    ExcF --> ResF
+    ResF --> Res([Response to Client])
+`}
+  caption="Filters run at fixed, well-defined points inside MVC action invocation — a narrower, more context-rich scope than the outer middleware pipeline."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Filters run inside MVC action-invocation with action-level context (controller, action, arguments); middleware wraps the entire HTTP pipeline with only raw `HttpContext`
+- 5 filter types, fixed order: Authorization, Resource, Action, Exception, Result
+- Custom filters are usually written as attribute classes extending `ActionFilterAttribute`/`ExceptionFilterAttribute` etc.
+- `[Authorize]`, `[ApiController]`, `[Route]` are all built-in examples of this same declarative, attribute-based pattern
+- Attributes are pure metadata (derive from `System.Attribute`) — they do nothing by themselves until reflection discovers and invokes them
+- This is "metadata-driven" / declarative programming, contrasted with imperative explicit-call wiring
+- Filters can be scoped globally, per-controller, or per-action
+- Keep filters for cross-cutting concerns (logging, auditing, error shaping) — real business logic belongs in the service layer
+
+</QuickRevision>

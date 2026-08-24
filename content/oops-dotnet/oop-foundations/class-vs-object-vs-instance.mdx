@@ -1,0 +1,221 @@
+---
+slug: "class-vs-object-vs-instance"
+title: "Class vs Object vs Instance — What Actually Happens in Memory"
+section: "oops-dotnet"
+module: "oop-foundations"
+order: 2
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["what-is-oop-and-why-dotnet"]
+tags: ["dotnet", "oop", "csharp", "fundamentals", "memory", "clr"]
+englishDefinition: "A class is a compile-time blueprint describing fields, properties, and methods; an object (or instance) is the actual runtime entity created by the new keyword, allocated in memory with its own independent state — one class can produce many objects, each with data the others cannot see or affect."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Wipro", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+A class is a compile-time blueprint describing fields, properties, and methods; an object (or instance) is the actual runtime entity created by the `new` keyword, allocated in memory with its own independent state — one class can produce many objects, each with data the others cannot see or affect.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Class aur object me difference batao" — ye sabse zyada poocha jaane wala OOP question hai, aur sabse zyada log ise ratta-maar ke answer karte hain ("class blueprint hai, object instance hai") bina ye samjhe ki memory me actually kya hota hai. Interviewer isi gap ko test karta hai — "achha, memory me kya hota hai jab tum `new` likhte ho?" Agar iska answer nahi pata, to definition ratta lagna kaam nahi aayega.
+
+### Class — sirf ek definition, koi per-object memory nahi
+
+Jab tum `public class BankAccount { ... }` likhte ho, ye sirf ek **type definition** hai — compile time pe C# compiler isse IL (Intermediate Language) metadata me convert karta hai. Jab assembly load hoti hai, CLR is metadata ko ek baar load karta hai (type ke liye ek `MethodTable`/type-handle CLR internally maintain karta hai) — chahe tum us class ke 0 objects banao ya 10,000, class definition khud sirf ek baar memory me rehti hai. Class **khud kabhi `new` nahi hoti** — sirf uske objects `new` hote hain.
+
+### Object — `new` chalne par kya hota hai
+
+Jab tum `new BankAccount()` likhte ho, teen cheezein hoti hain:
+
+1. CLR **heap** par utni memory allocate karta hai jitni `BankAccount` ke fields ko chahiye (plus a small object header).
+2. Constructor run hota hai, fields ko unke initial values se set karta hai.
+3. `new` expression **heap address ka ek reference return karta hai**, jo tum variable me store karte ho.
+
+Ye variable (jaise `var acc1 = new BankAccount();`) khud object nahi hai — ye ek **reference** hai, jo **stack** par (ya jis bhi container me variable declare hua hai) store hoti hai, aur heap par actual object ki taraf point karti hai. Isliye jab tum `acc1` ko kisi method me pass karte ho, reference copy hoti hai — object nahi.
+
+### Multiple objects, ek class, independent state
+
+Yahi core insight hai jo interviewer sunna chahta hai: `BankAccount` class sirf ek baar define hoti hai, lekin har `new BankAccount()` call apna **alag heap memory block** allocate karta hai. `acc1.Balance` aur `acc2.Balance` completely independent locations hain — ek ko modify karne se doosra untouched rehta hai, chahe dono same class ke instances hon aur same method call kar rahe hon. Method definitions (jaise `Deposit()`) khud sirf ek baar exist karti hain (class metadata ka part), lekin jab `acc1.Deposit(500)` call hota hai, method ke andar `this` implicitly `acc1` ki taraf point karta hai — isliye sirf `acc1` ka state change hota hai.
+
+### "Instance" — object ka hi doosra naam, thoda zyada precise
+
+"Object" aur "instance" almost hamesha interchangeably use hote hain, lekin "instance" thoda zyada precise term hai jab tum kisi specific class ke context me baat kar rahe ho — "`acc1` `BankAccount` ka ek instance hai" zyada natural sounds hai bajaye "`acc1` ek object hai jiska type `BankAccount` hai" ke, lekin dono technically correct hain. Interview me dono terms confidently use kar sakte ho, bas inconsistent mat raho beech me.
+
+### Code Examples
+
+**Minimal example — ek class, do independent instances:**
+
+```csharp
+public class Counter
+{
+    public int Value { get; private set; }
+    public void Increment() => Value++;
+}
+
+var c1 = new Counter();
+var c2 = new Counter();
+c1.Increment();
+c1.Increment();
+c2.Increment();
+
+// c1.Value == 2, c2.Value == 1
+// Ek hi class, ek hi method definition — lekin do alag heap allocations,
+// isliye state completely independent hai
+```
+
+**Real ASP.NET Core example — request ke har call pe naya instance:**
+
+```csharp
+public interface INotificationService
+{
+    Task SendAsync(string userId, string message);
+}
+
+public class EmailNotificationService : INotificationService
+{
+    private readonly ILogger<EmailNotificationService> _logger;
+    private int _sentCount; // per-instance state
+
+    public EmailNotificationService(ILogger<EmailNotificationService> logger) => _logger = logger;
+
+    public async Task SendAsync(string userId, string message)
+    {
+        _sentCount++;
+        _logger.LogInformation("Sent {Count} emails so far in this instance", _sentCount);
+        await Task.CompletedTask;
+    }
+}
+```
+
+Agar `EmailNotificationService` ko DI container me `Transient` register kiya hai, to har jagah jahan ye inject hoga, ek **naya object** banega — `_sentCount` har instance ke liye independently 0 se start hoga. Yahi class-vs-object distinction production DI behavior ko directly explain karta hai — service lifetimes ka poora deep dive Module 5 me hai, lekin foundation yahi hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Class blueprint hai, object uska instance hai jo memory me actually exist karta hai" — ek simple example (`BankAccount`, do objects, independent balance) ke saath. Itna kaafi hai.
+
+**SDE-3/Senior level answer:** Ye bhi bolo ki class definition sirf ek baar (metadata ke roop me) load hoti hai chahe kitne bhi objects banao, `new` heap par memory allocate karta hai aur reference return karta hai jo stack pe store hoti hai, aur ye distinction directly explain karta hai ki DI service lifetimes (`Transient` vs `Singleton`) actually kaam kaise karte hain — theory ko ek real framework behavior se connect karna hi senior-level signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka `System.Type` object (jo `obj.GetType()` se milta hai) actually class ki metadata ko represent karta hai — reflection APIs isi ke through class ke fields/methods/attributes ko runtime pe inspect karte hain. Har type ke liye CLR sirf **ek** `Type` object maintain karta hai, chahe us type ke kitne bhi instances (`objects`) ban jayein — ye class-vs-object separation ka ek direct, observable proof hai `typeof(BankAccount) == acc1.GetType()` hamesha `true` hoga, chahe `acc1` kitna bhi alag object ho.
+
+</RealWorld>
+
+<RealWorld company="A Food-Delivery Order Service (Swiggy/Zomato-style)">
+
+Ek order-processing backend me `Order` class ek baar define hoti hai, lekin peak lunch-hour traffic me ek second me hazaaron `Order` objects heap par allocate hote hain — har ek apna independent `OrderId`, `Items`, `Total` carry karta hai. Agar galti se ek shared/static `Order` instance use kar liya jaaye (bajaye har request pe naya banane ke), do customers ke orders ka data silently mix ho sakta hai — ye exactly wahi bug class hai jo class-vs-object distinction clearly samajhne se avoid hoti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A class's metadata (its `MethodTable`/type info) is loaded by the CLR once per type, regardless of how many objects are created from it
+- Every `new` call on a reference type allocates on the **heap**, plus a small object header (roughly 8-16 bytes on 64-bit, implementation detail, not guaranteed) before the actual field data
+- A reference variable itself (the thing pointing at the object) typically lives on the stack if it's a local variable — 8 bytes on a 64-bit runtime, same size regardless of the object's actual size
+- `object.ReferenceEquals(acc1, acc2)` returns `false` for two separately-`new`'d objects of the same class, even with identical field values — proof they're distinct memory locations
+- `typeof(T)` and `instance.GetType()` both resolve to the exact same single `Type` object per type, no matter how many instances exist
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Class ek compile-time blueprint hai — fields, properties, methods define karti hai, khud koi per-object memory nahi leti, sirf metadata ke roop me ek baar load hoti hai. Object us blueprint ka actual runtime instance hai — jab main `new` likhta hoon, CLR heap par memory allocate karta hai aur ek reference return karta hai. Ek class se main kitne bhi objects bana sakta hoon, aur har ek apna independent state carry karta hai — ek object ka field modify karne se doosre pe koi asar nahi padta, chahe dono same class ke ho aur same method call kar rahe hon."
+
+**Almost-guaranteed follow-up:** "To phir memory me exactly kahan store hota hai object, aur variable kahan?" — jiska jawaab value-vs-reference types wale topic me hai (stack vs heap ki poori nuance ke saath).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Class memory leti hai" bol dena bina qualify kiye — class ki metadata thodi memory leti hai (ek baar, type load hone par), lekin **per-object data** class khud nahi carry karti. Interviewer isko precisely differentiate karne ki expect karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki har `object` variable khud object hai — actually variable ek **reference** hoti hai jo heap par object ki taraf point karti hai. Ye confusion aage value-vs-reference types topic me bade bugs ka source banta hai agar clear nahi kiya.
+
+</Mistake>
+
+<Mistake>
+
+"Instance" aur "object" ko alag-alag concepts samajhna — dono almost hamesha same cheez ke liye use hote hain. Interview me inconsistently use karna (jaise ek confuse hoke bolna "instance object se different hai") crisp knowledge ki kami dikhata hai.
+
+</Mistake>
+
+<Mistake>
+
+Example dete waqt sirf ek object dikhana — interviewer specifically "do objects, independent state" wala example sunna chahta hai kyunki yahi asli distinction prove karta hai. Ek object ka example is core point ko miss kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Method call karte waqt ye bhool jaana ki method definition khud sirf ek baar exist karti hai (class ka part), aur `this` implicitly bataata hai kaunse object pe operate ho raha hai — is nuance ko na jaanna DI service lifetime jaisi advanced topics me confusion create karta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class BankAccount {
+        <<class definition — loaded once>>
+        +string Owner
+        +decimal Balance
+        +Deposit(amount)
+    }
+    note for BankAccount "Metadata loaded ONCE by CLR,\nregardless of how many objects\nare created"
+
+    class acc1_object {
+        <<heap object>>
+        Owner = "Asha"
+        Balance = 500
+    }
+    class acc2_object {
+        <<heap object>>
+        Owner = "Rohit"
+        Balance = 0
+    }
+
+    BankAccount ..> acc1_object : new BankAccount()
+    BankAccount ..> acc2_object : new BankAccount()
+`}
+  caption="One class definition (loaded once), many independent heap objects — each new call allocates a fresh block of memory with its own state."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Class = compile-time blueprint, loaded once as metadata by the CLR regardless of how many objects get created from it
+- Object/instance = the actual runtime entity created by `new`, allocated on the heap with its own independent state
+- A reference-type variable holds a reference (pointer) to the heap object, not the object itself
+- Two objects from the same class have completely independent state — modifying one never affects the other
+- "Object" and "instance" are used interchangeably — stay consistent when speaking in an interview
+- `typeof(T)` / `instance.GetType()` always resolve to the same single `Type` object per type, no matter how many instances exist
+- This distinction directly explains how DI service lifetimes (`Transient` creates a new object each time) actually work under the hood
+- `object.ReferenceEquals()` returns `false` for two separately-created objects even with identical field values
+
+</QuickRevision>

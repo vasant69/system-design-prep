@@ -1,0 +1,210 @@
+---
+slug: "static-classes-members-constructors"
+title: "Static Classes, Static Members & Static Constructors"
+section: "oops-dotnet"
+module: "abstraction-tools"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["what-is-oop-and-why-dotnet", "class-vs-object-vs-instance", "constructors-chaining-object-initializers"]
+tags: ["dotnet", "oop", "csharp", "static", "constructors"]
+englishDefinition: "A static class cannot be instantiated and every member inside it must also be static; a static member on a normal class is shared across all instances rather than owned per-object; a static constructor runs at most once per type, has no parameters, cannot be called explicitly, and is guaranteed to run before the type's first use — whether that first use is a static member access or the first instance creation."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Accenture", "Amazon", "Paytm"]
+---
+
+<SimpleDefinition>
+
+A static class cannot be instantiated and every member inside it must also be static; a static member on a normal class is shared across all instances rather than owned per-object; a static constructor runs at most once per type, has no parameters, cannot be called explicitly, and is guaranteed to run before the type's first use — whether that first use is a static member access or the first instance creation.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`static` keyword teen alag jagah teen alag cheezein karta hai — ek class pe, ek member pe, ek constructor pe. Interview me in teenon ko clearly separate karke bolna hi is topic ka asli test hai.
+
+### Static class — poori class hi shared, instantiate nahi ho sakti
+
+`static class MathHelpers { }` likhne ka matlab: (1) `new MathHelpers()` compile error hai, (2) class ke andar HAR member static hona zaroori hai — koi instance field/method allowed hi nahi (compiler khud enforce karta hai). Ye tab use hota hai jab poori class hi ek namespace-jaisi grouping hai — koi state ki zaroorat hi nahi, sirf related helper functions ka bundle. `Math`, `Console`, LINQ ke `Enumerable` — sab static classes hain.
+
+### Static members on a normal class — per-TYPE, per-instance nahi
+
+Ye jyada nuanced hai. Ek normal (non-static) class ke andar ek member ko `static` mark karo — ab wo member **poore type ke liye ek hi copy** hai, har object apna alag copy nahi rakhta. Socho `BankAccount` class me `static int TotalAccountsCreated` field hai — har `new BankAccount()` call ek shared counter increment karta hai, aur `acc1.TotalAccountsCreated` aur `acc2.TotalAccountsCreated` dono EXACT SAME value dikhaate hain, kyunki dono ek hi memory location ko point kar rahe hain, apna-apna alag copy nahi.
+
+**Ye instance fields se fundamentally alag hai:** instance field har object ka apna, independent copy hota hai (jaisa `class-vs-object-vs-instance` topic me dekha); static field poore type ka ek shared, single copy hota hai — object ke bina bhi exist karta hai (class load hote hi allocate ho jaata hai).
+
+### Static constructor — exactly ek baar, guaranteed timing
+
+Static constructor (`static BankAccount() { ... }`) ek bilkul alag beast hai:
+
+- **No parameters** — kabhi accept nahi karta.
+- **Kabhi explicitly call nahi ho sakta** — tum `BankAccount.StaticCtor()` jaisa kuch nahi likh sakte.
+- **Automatically, lazily trigger hota hai** — CLR guarantee karta hai ki ye us type ke **first use se pehle** exactly ek baar chalega. "First use" ka matlab: type ka koi bhi static member access karna, YA us type ka pehla instance banana — jo bhi pehle ho.
+- **Thread-safe by CLR guarantee** — agar do threads simultaneously pehli baar type access karein, CLR khud lock lagata hai taaki static constructor sirf ek hi baar chale, race condition nahi.
+
+Iska real use case: ek expensive, one-time setup jo poore type ke liye sirf ek baar hona chahiye — jaise ek configuration value validate karna, ya ek static lookup dictionary populate karna.
+
+### Static vs Singleton — ye trap interview me bahut common hai
+
+Bahut candidates "static" aur "singleton (DI pattern)" ko interchange kar dete hain — ye galat hai. Static state **poore AppDomain ke liye, application ke poore lifetime tak** shared rehta hai, aur unit tests me reset karna mushkil hota hai (ek test ka static state doosre test ko silently affect kar sakta hai). DI Singleton, iske against, container ke lifetime se scoped hota hai, easily mockable/replaceable hai testing me (interface ke through), aur explicitly configuration se control hota hai. Production code me shared, mutable state ke liye almost hamesha DI Singleton better choice hai static field se — sirf truly constant ya stateless helpers ke liye static theek hai.
+
+### Code Examples
+
+**Minimal example — static class vs static member on a normal class:**
+
+```csharp
+public static class MathHelpers
+{
+    public static double SquareRoot(double x) => Math.Sqrt(x);
+}
+// var m = new MathHelpers();   // Compile error — static class instantiate nahi ho sakti
+
+public class BankAccount
+{
+    private static int _totalAccountsCreated;   // shared across ALL instances
+    public string Owner { get; init; } = "";
+
+    public BankAccount() => _totalAccountsCreated++;
+
+    public static int TotalAccountsCreated => _totalAccountsCreated;
+}
+
+var acc1 = new BankAccount { Owner = "Asha" };
+var acc2 = new BankAccount { Owner = "Rohit" };
+Console.WriteLine(BankAccount.TotalAccountsCreated); // 2 — ek hi shared counter, per-instance nahi
+```
+
+**Real ASP.NET Core example — static constructor for one-time, guaranteed setup:**
+
+```csharp
+public class ConnectionStringValidator
+{
+    private static readonly Regex _validFormat;
+
+    // Static constructor — CLR guarantees ye exactly ek baar chalega,
+    // ConnectionStringValidator ka pehla use hone se pehle
+    static ConnectionStringValidator()
+    {
+        _validFormat = new Regex(@"^Server=.+;Database=.+;");
+        Console.WriteLine("Regex compiled once, ever.");
+    }
+
+    public bool IsValid(string connectionString) => _validFormat.IsMatch(connectionString);
+}
+
+var v1 = new ConnectionStringValidator();
+var v2 = new ConnectionStringValidator();
+// "Regex compiled once, ever." sirf EK BAAR print hoga, chahe kitni bhi instances banao
+```
+
+Ye pattern real code me tab use hota hai jab ek expensive one-time computation (regex compile karna, ek static lookup table build karna) sab instances ke beech share karni ho — DI Singleton se alag hai kyunki ye per-TYPE hai, container-managed nahi.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `static class` instantiate nahi ho sakti aur sab members static hone chahiye; static member sab instances ke beech shared hota hai. Ek `TotalAccountsCreated`-jaisa example bol do.
+
+**SDE-3/Senior level answer:** Static constructor ki exact timing guarantee explain karo (first-use-se-pehle, thread-safe, CLR-managed), aur "static vs DI Singleton" distinction crisply bolo — static state testing me problematic kyun hai (global, hard-to-reset, hidden dependency), aur production code me DI Singleton kab better hota hai. Ye distinction hi is topic ka senior-level signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`Math`, `Console`, `Enumerable` (jispe saare LINQ methods based hain) — sab `static class` hain. Ye classic use case dikhaate hain: koi state nahi chahiye, sirf related, stateless helper functions ka logical grouping. `Math.Sqrt(x)` ke liye kisi `Math` instance ki zaroorat kabhi nahi hoti.
+
+</RealWorld>
+
+<RealWorld company="A UPI Transaction Processing Service">
+
+Ek transaction service me `TransactionIdGenerator` static class hoti hai jisme ek `static long _counter` field hota hai (thread-safe `Interlocked.Increment` ke saath) jo poori application ke liye unique, sequential transaction IDs generate karta hai — genuinely shared state jo har request ke beech consistent rehna chahiye, isliye static (ya isse behind ek DI Singleton wrap karna) sahi fit hai, per-request instance nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A static constructor runs at most ONCE per type, per AppDomain — guaranteed by the CLR, even under concurrent multi-threaded first access
+- Static constructors cannot take parameters and cannot be called explicitly — the CLR alone decides exactly when to invoke them
+- A static class's members are all implicitly `static` — the compiler enforces this, you cannot accidentally add an instance member
+- Static fields are allocated once per type and live for the lifetime of the AppDomain — not garbage collected until the type itself is unloaded (rare in a typical ASP.NET Core app's lifetime)
+- `static` has been part of C# since 1.0 (2002) — one of the language's oldest, most stable features
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Static class instantiate nahi ho sakti aur sab members static hone chahiye — ye ek stateless helper-function grouping ke liye hai, jaise `Math`. Normal class ke andar static member poore type ke liye ek hi shared copy hota hai, har instance ka apna alag nahi — jaise ek total-count counter. Static constructor no-parameter hota hai, explicitly call nahi ho sakta, aur CLR guarantee karta hai ki wo type ke first use se pehle, exactly ek baar, thread-safe tareeke se chalega. Main static state ko production shared-mutable-state ke liye avoid karta hoon — us case me DI Singleton better hai kyunki wo testable aur container-scoped hai, static field global aur hard-to-mock hota hai."
+
+Ye answer static-vs-singleton distinction ko explicitly cover karta hai, jo senior-level signal hai. **Almost-guaranteed follow-up:** "Agar static field thread-safe nahi hai, kya problem ho sakta hai production me?" — jawaab: race condition, jaise do concurrent requests same counter ko increment karein aur ek update lost ho jaaye bina proper synchronization (`lock`, `Interlocked`) ke.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Static" aur "DI Singleton" ko interchangeable samajhna — static state poore AppDomain ke liye global hota hai, hard-to-test/hard-to-reset; DI Singleton container-scoped, interface ke through mockable, aur explicitly configured hota hai. In dono ko same bolna ek common, senior-level red flag hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki static constructor ko explicitly call kiya jaa sakta hai ya usme parameters pass kiye jaa sakte hain — dono galat hain, CLR khud decide karta hai kab chalana hai, no parameters allowed.
+
+</Mistake>
+
+<Mistake>
+
+Mutable static fields ko bina thread-safety ke production code me use karna (jaise plain `_counter++` bina `lock`/`Interlocked` ke) — ASP.NET Core me concurrent requests same static field ko simultaneously modify kar sakte hain, race conditions create karte hue.
+
+</Mistake>
+
+<Mistake>
+
+Static class ke andar galti se instance member add karne ki koshish karna aur confuse hona jab compiler error deta hai — yaad rakho, static class ke andar HAR member static hona hi hoga, compiler ise strictly enforce karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Static constructor ki timing ko "application startup pe chalta hai" bol dena — galat hai. Ye type ke FIRST USE se pehle chalta hai, jo application startup se kaafi der baad bhi ho sakta hai agar type tab tak touch hi na hua ho (lazy initialization).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[First access to the type] --> B{Static constructor\nalready run?}
+    B -->|No| C[CLR runs static constructor\nexactly once, thread-safe]
+    C --> D[Proceed with the access\nstatic member OR new instance]
+    B -->|Yes| D
+`}
+  caption="The CLR's exact static-constructor timing guarantee: it runs once, lazily, before the very first static-member access or object creation for the type — whichever happens first."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `static class`: cannot be instantiated, every member must also be static — used for stateless helper groupings like `Math`
+- Static member on a normal class: ONE shared copy across all instances, not a per-object copy — contrast with instance fields
+- Static constructor: no parameters, cannot be called explicitly, runs at most once per type
+- Timing guarantee: runs before the type's first use — first static member access OR first instance creation, whichever comes first
+- The CLR guarantees thread-safety for static constructor execution even under concurrent first access
+- Static state != DI Singleton — static is AppDomain-global and hard to mock/reset in tests; DI Singleton is container-scoped and swappable via interfaces
+- Mutable static fields need explicit synchronization (`lock`, `Interlocked`) in concurrent code like ASP.NET Core request handling
+- Prefer DI Singleton over a mutable static field for shared application state in real projects; reserve static for genuinely stateless helpers or true constants
+
+</QuickRevision>

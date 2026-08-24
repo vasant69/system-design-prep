@@ -1,0 +1,235 @@
+---
+slug: "generics-constraints-variance"
+title: "Generics, Constraints, and Variance (in/out)"
+section: "oops-dotnet"
+module: "advanced-oop"
+order: 2
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["what-is-oop-and-why-dotnet"]
+tags: ["dotnet", "oop", "csharp", "generics", "variance", "advanced"]
+englishDefinition: "Generics let you write type-safe, reusable code without duplicating it per type or paying boxing costs; constraints restrict what a type parameter can be, while covariance (out) and contravariance (in) control which direction a generic interface or delegate can safely be substituted."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Accenture", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Generics let you write type-safe, reusable code without duplicating it per type or paying boxing costs; constraints restrict what a type parameter can be, while covariance (`out`) and contravariance (`in`) control which direction a generic interface or delegate can safely be substituted.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Generics C# 2.0 (2005) me aaye — ye .NET history ka ek genuinely bada moment tha, kyunki isse pehle collections ka poora model boxing pe based tha. Agar interviewer "generics kyun banaye gaye" poochhe, to sirf "type safety" bolna adhoora jawaab hai — asli story boxing ki performance problem se shuru hoti hai.
+
+### Generics se pehle — ArrayList ka dard
+
+C# 1.0 me `ArrayList` tha, jo `object` store karta tha. Isme `int` add karne ka matlab tha — value ko box karo (heap pe wrap karo), aur retrieve karte time explicit cast karke unbox karo. Do problems: pehla, **perf cost** — har add/retrieve pe heap allocation. Doosra, **koi compile-time type safety nahi** — tum galti se ek `string` bhi usi `ArrayList` me daal sakte the jisme `int` hone chahiye the, aur ye error sirf runtime pe `InvalidCastException` ke through pakda jaata.
+
+`List<T>` generics ke saath in dono problems ko solve karta hai: `List<int>` compile time pe hi enforce karta hai ki sirf `int` hi add ho sakta hai, aur value types ke liye koi boxing nahi hoti — element seedha typed storage me jaata hai.
+
+### Constraints — type parameter ko restrict karna
+
+`where T : ...` clause batata hai T kya ho sakta hai:
+
+- `where T : class` — T ek reference type hona chahiye
+- `where T : struct` — T ek non-nullable value type hona chahiye
+- `where T : new()` — T ka ek parameterless (public) constructor hona chahiye; ye constraint agar combine ho rahi hai to hamesha list me **last** aana chahiye
+- `where T : BaseClass` — T BaseClass ya uska derived type hona chahiye
+- `where T : IInterface` — T ko wo interface implement karna hi hoga
+- Multiple constraints comma se combine ho sakte hain: `where T : class, IEntity, new()`
+- `where T : U` — ek "naked type constraint," T dusre type parameter U ke same ya uska derived hona chahiye
+
+Ye constraints batati hain compiler ko ki generic method/class ke andar T pe kaunse operations safe hain — jaise `where T : IComparable<T>` ke bina tum `T` values ko `<`/`>` se compare nahi kar sakte, kyunki compiler ko pata hi nahi ki har possible T comparable hoga ya nahi.
+
+### Covariance (`out`) aur Contravariance (`in`)
+
+Ye wo topic hai jahan zyada candidates ghabra jaate hain — lekin intuition simple hai agar ek real example se socho.
+
+**Covariance (`out`)** — C# 4.0 (2010) me aaya. `IEnumerable<out T>` jaisa interface batata hai T sirf "output positions" me use hota hai (return types, jaise `IEnumerator<T> GetEnumerator()`), kabhi input parameter ki tarah nahi. Isi wajah se ye safe hai:
+
+```csharp
+IEnumerable<string> strings = new List<string> { "a", "b" };
+IEnumerable<object> objects = strings; // valid — covariance ki wajah se
+```
+
+Intuition: agar tumhe sirf strings **milne** wali hain (produce ho rahi hain), to unhe `object` ki tarah treat karna hamesha safe hai — `object` ek weaker guarantee hai jo `string` already satisfy karta hai.
+
+**Contravariance (`in`)** — `IComparer<in T>` jaisa interface batata hai T sirf "input positions" me use hota hai (method parameters, jaise `int Compare(T x, T y)`). Isi wajah se ulta direction safe hai:
+
+```csharp
+IComparer<object> objComparer = new ObjectComparer();
+IComparer<string> strComparer = objComparer; // valid — contravariance ki wajah se
+```
+
+Intuition: agar ek comparer **kisi bhi** `object` ko compare kar sakta hai, to wo definitely `string` bhi compare kar sakta hai — ek zyada general capability ek zyada specific case ke liye use ho sakti hai.
+
+Dono sirf **interfaces aur delegates** pe apply hote hain, classes pe nahi — `List<T>` khud invariant hai, `List<string>` ko `List<object>` ki tarah treat nahi kar sakte (agar allow hota, to koi `List<object>`-typed reference ke through us list me ek `int` add kar deta, jo underlying `List<string>` ko corrupt kar deta — isliye C# generic classes ko intentionally invariant rakhta hai).
+
+Ek interesting contrast: **C# arrays covariant hain but type-unsafe** — `object[] arr = new string[3];` compile ho jaata hai, lekin `arr[0] = 42;` runtime pe `ArrayTypeMismatchException` deta hai, kyunki array apna actual element type runtime pe track karta hai lekin compiler ise catch nahi kar pata. Generic `out`/`in` iske comparison me poori tarah compile-time type-safe hain — ye interview me ek achha differentiator point hai.
+
+`Func<>` aur `Action<>` bhi variance follow karte hain: `Func<out TResult>` covariant hai return type me, aur agar multiple type parameters hon (jaise `Func<in T, out TResult>`), input parameters contravariant hote hain, sirf last (return) type covariant hota hai.
+
+### Code Examples
+
+**Minimal example — constraint-based generic method:**
+
+```csharp
+public interface IEntity { int Id { get; } }
+
+public class Repository<T> where T : class, IEntity, new()
+{
+    private readonly List<T> _items = new();
+
+    public T CreateNew()
+    {
+        var item = new T(); // sirf 'new()' constraint ki wajah se possible hai
+        _items.Add(item);
+        return item;
+    }
+
+    public T? FindById(int id) => _items.FirstOrDefault(x => x.Id == id);
+}
+```
+
+**Real ASP.NET Core example — generic API response wrapper aur covariance:**
+
+```csharp
+public class ApiResponse<T>
+{
+    public bool Success { get; init; }
+    public T? Data { get; init; }
+    public string? Error { get; init; }
+
+    public static ApiResponse<T> Ok(T data) => new() { Success = true, Data = data };
+}
+
+// Controller me generic method use hota hai, T infer hota hai
+[HttpGet("{id}")]
+public ActionResult<ApiResponse<OrderDto>> GetOrder(int id)
+{
+    var order = _orderService.GetById(id);
+    return Ok(ApiResponse<OrderDto>.Ok(order));
+}
+
+// IEnumerable<out T> covariance ka real use — koi extra cast ki zaroorat nahi
+IEnumerable<OrderDto> orderDtos = GetActiveOrders();
+IEnumerable<object> asObjects = orderDtos; // valid, sirf reading ke liye use ho raha hai
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Generics kyun (type safety + no boxing), aur ek simple constraint example (`where T : class`) bata do — kaafi hai.
+
+**SDE-3/Senior level answer:** Variance ka intuition clearly explain karo (`out`/`in` ka safe-direction reasoning), array covariance ke unsafe-vs-generic-variance-safe contrast ko naam lo, aur batao classes invariant kyun hain (mutation safety). Ye dikhata hai type system ki deeper understanding hai, na ki sirf syntax memorize kiya hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+BCL (Base Class Library) ke `IEnumerable<out T>`, `IReadOnlyList<out T>`, aur `IComparer<in T>`/`IEqualityComparer` (partial) jaise interfaces intentionally variance ke saath design kiye gaye hain — .NET team ne generics ke launch ke kuch saal baad (C# 4.0, 2010) in interfaces ko retrofit kiya taaki existing code naturally covariant/contravariant substitutions allow kar sake bina breaking changes ke.
+
+</RealWorld>
+
+<RealWorld company="A Logistics Tracking Platform">
+
+Ek typical Indian logistics/delivery backend (Swiggy/Zomato/Delhivery-style) me ek generic `Repository<T> where T : class, IEntity` pattern common hai — `Repository<Order>`, `Repository<DeliveryPartner>`, `Repository<Restaurant>` sab ek hi generic implementation reuse karte hain, per-entity duplicate CRUD code likhne ki jagah. Constraint (`IEntity` requiring an `Id` property) ensure karta hai ki generic code safely `.Id` access kar sake kisi bhi T ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Generics shipped in C# 2.0 / .NET Framework 2.0 (2005) — one of the largest additions to the language after 1.0
+- Variance (`in`/`out` on interfaces and delegates) shipped in C# 4.0 (2010)
+- `Func<>` supports up to 16 input parameters plus a return type (`Func<T1, ..., T16, TResult>`)
+- Variance applies only to interfaces and delegates in C# — generic classes are always invariant
+- Arrays are covariant but NOT compile-time type-safe (`ArrayTypeMismatchException` at runtime) — generic `out`/`in` variance IS fully compile-time type-safe
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Generics type safety aur performance dono deta hai — pehle ArrayList jaisi collections boxing ke through object store karti thi, jisme heap allocation cost hoti thi aur type errors sirf runtime pe pakde jaate the. Generics constraints (`where T : ...`) batate hain T pe kya operations safe hain. Covariance (`out`) allow karta hai ek more-derived type ko less-derived ki jagah use karna jab T sirf output positions me ho — jaise `IEnumerable<string>` ko `IEnumerable<object>` ki jagah pass karna. Contravariance (`in`) ulta allow karta hai jab T sirf input positions me ho — jaise `IComparer<object>` ko `IComparer<string>` ki jagah use karna. Ye sirf interfaces/delegates pe apply hota hai, classes invariant rehti hain mutation safety ke liye."
+
+Ye answer boxing ka historical context deta hai (jo interviewer ko pata chalta hai candidate ne 'why' samjha hai), aur variance ko intuition ke saath explain karta hai na ki sirf keyword memorize kiya hai. **Almost-guaranteed follow-up:** "List&lt;T&gt; covariant kyun nahi hai, jabki IEnumerable&lt;T&gt; hai?" — jawaab: List&lt;T&gt; mutable hai (Add method leti hai T input ke roop me), isliye agar covariant hoti, type-unsafe writes possible ho jaate.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Generics ka fayda sirf "type safety" bol dena, boxing/performance angle completely miss kar dena — ye adhoora jawaab hai jo interviewer ko lagta hai candidate ne historical context nahi padha.
+
+</Mistake>
+
+<Mistake>
+
+`out`/`in` ko yaad rakhne ki koshish karna bina intuition ke — "out matlab return type, in matlab parameter" jaisa rote-learning galat directions me confuse ho jaata hai stress me. Intuition-based samajhna (produce vs consume) zyada reliable hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `List<T>` bhi covariant hai jaise `IEnumerable<T>` — `List<string>` ko `List<object>` assign karne ki koshish compile error degi, kyunki generic classes invariant hoti hain, sirf interfaces/delegates variance support karte hain.
+
+</Mistake>
+
+<Mistake>
+
+`where T : new()` constraint ko kisi bhi order me likhna — ye constraint hamesha list me last hona chahiye jab multiple constraints combine kar rahe ho, warna compile error aata hai.
+
+</Mistake>
+
+<Mistake>
+
+Array covariance (`object[] arr = new string[3]`) ko generic variance jaisa hi type-safe samajh lena — arrays runtime pe crash kar sakte hain (`ArrayTypeMismatchException`), generic `out`/`in` variance fully compile-time checked hai, ye bada difference hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class IEnumerable_out_T {
+        <<interface>>
+        +GetEnumerator() IEnumerator
+    }
+    class IComparer_in_T {
+        <<interface>>
+        +Compare(T x, T y) int
+    }
+    note for IEnumerable_out_T "Covariant: IEnumerable~string~ can be used as IEnumerable~object~ — T only appears in OUTPUT positions"
+    note for IComparer_in_T "Contravariant: IComparer~object~ can be used as IComparer~string~ — T only appears in INPUT positions"
+`}
+  caption="Covariance (out) flows from more-derived to less-derived for producers; contravariance (in) flows the opposite direction for consumers — both are compile-time type-safe, unlike array covariance."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Generics (C# 2.0, 2005) give compile-time type safety and avoid the boxing cost that `ArrayList`-style non-generic collections paid
+- Constraints (`where T : ...`) restrict what T can be — `class`, `struct`, `new()` (must be last), a base class, or an interface
+- `where T : new()` requires a public parameterless constructor and must be the last constraint listed
+- Covariance (`out`, C# 4.0) — safe when T only appears in output/return positions — `IEnumerable<out T>`
+- Contravariance (`in`) — safe when T only appears in input/parameter positions — `IComparer<in T>`
+- Variance applies only to interfaces and delegates — generic classes like `List<T>` are always invariant
+- Arrays are covariant but NOT type-safe at compile time — generic variance IS fully compile-time safe
+- `Func<>` return type is covariant, its input parameters are contravariant
+
+</QuickRevision>

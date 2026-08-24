@@ -1,0 +1,217 @@
+---
+slug: "method-hiding-vs-overriding"
+title: "Method Hiding vs Overriding — The Classic Trap"
+section: "oops-dotnet"
+module: "four-pillars"
+order: 6
+difficulty: "advanced"
+readingTime: 11
+prerequisites: ["runtime-polymorphism-virtual-override-vtable"]
+tags: ["dotnet", "oop", "csharp", "polymorphism", "method-hiding", "trap-question"]
+englishDefinition: "Method hiding (using the `new` keyword) declares a derived-class member that is unrelated to a same-named base member and is resolved by the reference's compile-time (static) type, while overriding (`override`) replaces the base implementation in the same virtual dispatch slot and is resolved by the object's runtime type — the two give different results for the exact same call when accessed through a base-typed reference."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+Method hiding (using the `new` keyword) declares a derived-class member that is unrelated to a same-named base member and is resolved by the reference's compile-time (static) type, while overriding (`override`) replaces the base implementation in the same virtual dispatch slot and is resolved by the object's runtime type — the two give different results for the exact same call when accessed through a base-typed reference.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye interview ka **the** classic trap question hai — aur genuinely har level (SDE-1 se SDE-3 tak) ke candidates isme phaste hain agar concept crisp nahi hai. Setup simple hai: base class ka ek method hai jo `virtual` nahi hai. Derived class usi naam ka method `new` keyword ke saath declare karti hai. Ab base-typed reference se call karo — kya milta hai?
+
+### `new` (hiding) vs `override` — fundamentally alag mechanism
+
+- **`override`**: derived method **same virtual slot** ko replace karta hai jo base class ne banaya tha. Ek hi "identity" hai method ki, sirf implementation badal rahi hai. Resolution: **runtime pe actual object type se**.
+- **`new`** (method hiding): derived method ek **bilkul naya, unrelated** method hai jo sirf naam se base method jaisa dikhta hai. Do completely alag slots hain — base ka apna, derived ka apna. Resolution: **compile-time pe reference ke declared/static type se**.
+
+Ye distinction hi poori trap ka core hai: overriding runtime type dekhta hai, hiding compile-time type dekhta hai. Same call, do fundamentally alag decision rules.
+
+### The exact trap — code jo different results deta hai
+
+```csharp
+public class Animal
+{
+    public string Describe() => "I am an Animal";   // NOT virtual
+    public virtual string Speak() => "...generic sound...";
+}
+
+public class Dog : Animal
+{
+    public new string Describe() => "I am a Dog";    // HIDES Animal.Describe — new slot
+    public override string Speak() => "Woof!";        // OVERRIDES Animal.Speak — same slot
+}
+```
+
+Ab dekho base-typed reference se calls kaise resolve hote hain:
+
+```csharp
+Animal a = new Dog();
+
+Console.WriteLine(a.Describe()); // "I am an Animal"  <- HIDDEN method: compile-time type (Animal) decides
+Console.WriteLine(a.Speak());    // "Woof!"            <- OVERRIDDEN method: runtime type (Dog) decides
+
+Dog d = new Dog();
+Console.WriteLine(d.Describe()); // "I am a Dog"  <- now declared type IS Dog, so Dog's version resolves
+Console.WriteLine(d.Speak());    // "Woof!"        <- always Dog's, regardless of reference type
+```
+
+Yehi hai wo cheez jo interviewer dekhna chahta hai: **same underlying object (`new Dog()`), same method name pattern, lekin `a.Describe()` aur `a.Speak()` alag rules follow karte hain** — sirf isliye kyunki ek `new` se hidden hai aur doosra `override` se overridden hai. `Describe()` compile-time type (`Animal`, kyunki `a` ki declared type Animal hai) ko dekhta hai; `Speak()` runtime type (`Dog`, actual object) ko dekhta hai.
+
+### Yaad rakhne ka tareeka
+
+Ek line jo interview me bolne layak hai: **"Hiding compile-time resolve hota hai (jaisa overloading), overriding runtime resolve hota hai — aur ye poori tarah independent hai reference ke actual object se, sirf uske declared type se."** Agar tumhe kabhi confuse ho jaaye, socho: `new` matlab "ek naya, unrelated method — jo dikhta same hai naam se, lekin connection nahi hai base wale se." `override` matlab "same method, replaced implementation."
+
+### Compiler warning — C# tumhe batata hai
+
+Agar tum `Describe()` ko base me non-virtual rakhte ho aur derived me same signature likhte ho **bina** `new` ya `override` ke, C# compiler ek warning deta hai: *"'Dog.Describe()' hides inherited member 'Animal.Describe()'. Use the new keyword if hiding was intended."* Ye compiler ka polite tareeka hai batane ka ki "tumne accidentally hiding kar di hai, kya ye intentional tha?" — `new` add karke is warning ko silence karna best practice hai taaki future readers ko pata chale ye intentional hai.
+
+### Ye real code me kyun hota hai (accidentally)
+
+Sabse common real-world scenario: base class library update hoti hai aur ek naya method add hota hai jiska naam accidentally tumhare derived class ke existing method se clash kar jaata hai. Tumhara method automatically "hide" karna shuru kar deta hai base wale ko — bina tumhare kuch kiye. Ye NuGet package upgrade ke baad silent, confusing bugs create kar sakta hai — isiliye compiler warning ko kabhi ignore mat karo.
+
+### Code Examples
+
+**Real ASP.NET Core-flavored example — logging base class, accidental hiding bug:**
+
+```csharp
+public class BaseAuditLogger
+{
+    public virtual void Log(string message) => Console.WriteLine($"[AUDIT] {message}");
+}
+
+public class SecurityAuditLogger : BaseAuditLogger
+{
+    // Forgot `override`! Meant to override, but signature matches so this HIDES instead
+    // (in this exact case C# would actually give a compile error/warning suggesting `override`
+    // exists — but if the base method were non-virtual, this compiles silently as hiding)
+    public new void Log(string message) => Console.WriteLine($"[SECURITY-AUDIT] {message}");
+}
+
+BaseAuditLogger logger = new SecurityAuditLogger();
+logger.Log("Login attempt"); // "[AUDIT] Login attempt" — NOT the security-specific log!
+// A security team relying on SecurityAuditLogger's behavior through a BaseAuditLogger-typed
+// list (e.g. `List<BaseAuditLogger> loggers`) would silently get the WRONG log format —
+// a real, dangerous bug class in security/compliance-sensitive code.
+```
+
+Ye exactly wo scenario hai jahan hiding vs overriding ka confusion production me real damage kar sakta hai — agar `Log` `virtual`/`override` hota (sahi design), `SecurityAuditLogger.Log` hamesha chalta chahe base-typed reference se hi call ho.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "`new` method hide karta hai, `override` method replace karta hai — inka behavior alag hota hai jab base-typed reference se call karo." Ek chhota code example de do.
+
+**SDE-3/Senior level answer:** Exact resolution rule bolo — hiding compile-time (declared) type se resolve hota hai, overriding runtime (actual) type se — aur ek real production scenario do jahan accidental hiding (missing `override`, ya library upgrade se naming clash) ek silent bug create kar sakta hai. Compiler warning ka mention karna bhi signal hai ki tumne ye scenario actually face kiya hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET BCL me kabhi-kabhi jaan-boojh kar method hiding use hoti hai jab ek derived class ko base method ka signature to same rakhna ho lekin return type covariantly narrow karna ho (jaise `new` ke saath ek zyada specific return type dena) — ye ek legitimate, intentional use case hai, accidental clash nahi. Lekin Microsoft ki apni guidance bhi yehi kehti hai: hiding ko jab bhi possible ho avoid karo, kyunki ye confusion ka sabse bada source hai — `override` almost hamesha sahi choice hai jab dono option available hon.
+
+</RealWorld>
+
+<RealWorld company="A Compliance Logging System">
+
+Ek Indian BFSI backend me agar ek `TransactionLogger` base class hai aur `RbiComplianceLogger` derived class accidentally `new` se `LogTransaction()` ko hide kar de (missing `override`), to koi bhi code jo `List<TransactionLogger>` ke through polymorphically log karta hai, silently base class ka generic logging use karega, RBI-compliance-specific format ka nahi — ek regulatory audit failure jo sirf tab pakda jaata hai jab audit trail me missing fields dikhte hain, bahut der se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `new` (method hiding modifier) and `override` have both existed in C# since version 1.0 (2002) — this trap has been possible since day one
+- Omitting both `new` and `override` when a derived member's signature matches a NON-virtual base member is a compile-time WARNING (CS0108), not an error — the code still compiles and silently hides
+- Omitting `override` when the base member IS `virtual`/`abstract` and you use the same signature without any modifier is also CS0108 — but if you truly meant to change behavior polymorphically, this is a strong signal something's wrong
+- Hiding resolution cost: zero extra runtime work — it's a direct, compile-time-resolved call, same as any non-virtual method
+- Overriding resolution cost: one method-table lookup per call (see the previous topic) — the two approaches aren't just semantically different, one is also mechanically cheaper
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "`new` aur `override` dono se derived class ek same-named base method ko redefine kar sakti hai, lekin mechanism poori tarah alag hai. `override` same virtual slot replace karta hai, aur resolution RUNTIME pe object ke actual type se hoti hai. `new` ek bilkul naya, unrelated method banata hai jo sirf naam se match karta hai, aur resolution COMPILE-TIME pe reference ke declared type se hoti hai. Isi wajah se agar tum ek base-typed reference se call karo, dono alag results de sakte hain — overridden method hamesha derived wala chalega, hidden method reference ke declared type pe depend karega. Ye ek genuinely dangerous bug source hai agar accidentally `override` ki jagah signature match ho jaaye bina keyword ke — compiler warning deta hai, jo kabhi ignore nahi karna chahiye."
+
+Ye answer mechanism, resolution rule, aur real-world risk teeno cover karta hai. **Almost-guaranteed follow-up:** "Code likh ke dikhao jahan same object, same method name, base-typed reference se do alag results de" — jiske liye upar wala `Animal`/`Dog` example ready rakho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sochna ki `new` aur `override` same cheez hain, bas alag keyword. Ye fundamentally alag resolution mechanisms hain — compile-time (hiding) vs runtime (overriding) — jo different results de sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki base-typed reference se call karne par hamesha derived class ka version chalega. Sirf tab jab method `virtual`/`override` ho. Agar `new` se hidden hai, base-typed reference base ka hi version dega.
+
+</Mistake>
+
+<Mistake>
+
+Compiler ki CS0108 warning ("hides inherited member") ko ignore kar dena. Ye warning batati hai ki accidental hiding ho rahi hai — agar intentional nahi tha, ye ek latent bug hai jo sirf polymorphic call path pe surface hoga.
+
+</Mistake>
+
+<Mistake>
+
+Interview me code likhte waqt `new`/`override` add karna bhool jaana aur assume kar lena ki compiler khud sahi behavior "figure out" kar lega — actual behavior depend karta hai exactly kaunsa keyword (ya koi nahi) use hua, isse.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki hiding "galat" hai aur kabhi use nahi karni chahiye. Rare, intentional cases me (jaise covariant return type ke liye) `new` valid use case hai — lekin default assumption `override` honi chahiye jab dono available hon.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Hiding["new (hiding) — Describe()"]
+        H1["Animal a = new Dog();"] --> H2["a.Describe() called"]
+        H2 --> H3{"Reference DECLARED type?"}
+        H3 -->|"Animal"| H4["Animal.Describe() runs -> 'I am an Animal'"]
+    end
+    subgraph Overriding["override — Speak()"]
+        O1["Animal a = new Dog();"] --> O2["a.Speak() called"]
+        O2 --> O3{"Object ACTUAL runtime type?"}
+        O3 -->|"Dog"| O4["Dog.Speak() runs -> 'Woof!'"]
+    end
+`}
+  caption="Same object (new Dog()), same base-typed reference (a), but two completely different resolution rules — hiding follows the declared type, overriding follows the actual runtime type."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `override` replaces the SAME virtual slot; `new` creates a completely UNRELATED method that just shares a name
+- Overriding resolves by the object's RUNTIME (actual) type — always the most-derived override, regardless of reference type
+- Hiding resolves by the reference's COMPILE-TIME (declared) type — same call, different reference type, different result
+- The classic trap: `Animal a = new Dog();` — `a.Speak()` (overridden) runs Dog's version; `a.Describe()` (hidden) runs Animal's version
+- Omitting `new`/`override` when signatures clash triggers compiler warning CS0108 — never ignore it
+- Accidental hiding (missing `override`, or a base-library update introducing a name clash) is a real, silent production bug source
+- Hiding has zero virtual-dispatch cost (direct call); overriding costs one method-table lookup per call
+- Default assumption should be `override`, not `new` — hiding is a rare, deliberate exception
+
+</QuickRevision>

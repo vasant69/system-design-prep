@@ -1,0 +1,234 @@
+---
+slug: "repository-unit-of-work-efcore"
+title: "Repository & Unit of Work — Do You Even Need Them With EF Core?"
+section: "oops-dotnet"
+module: "oop-in-aspnet-core"
+order: 7
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["abstract-class-vs-interface-decision", "dtos-model-binding-validation-mapping"]
+tags: ["dotnet", "oop", "efcore", "repository-pattern", "unit-of-work", "design-patterns"]
+englishDefinition: "The Repository pattern abstracts data access behind an interface (hiding the underlying persistence technology), and Unit of Work coordinates multiple repository operations into a single atomic save; with EF Core, DbContext already behaves as a Unit of Work and each DbSet<T> already behaves as a repository, making the classic extra abstraction layer a genuine, debated trade-off rather than an automatic best practice."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+The Repository pattern abstracts data access behind an interface (hiding the underlying persistence technology), and Unit of Work coordinates multiple repository operations into a single atomic save; with EF Core, `DbContext` already behaves as a Unit of Work and each `DbSet<T>` already behaves as a repository, making the classic extra abstraction layer a genuine, debated trade-off rather than an automatic best practice.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye is module ka sabse "opinion-testing" topic hai — interviewer yahan sirf definition nahi, tumhara **engineering judgement** test karta hai. Chalo dono sides fairly dekhte hain.
+
+### Pattern kya hai, pehle basics
+
+**Repository** — data access logic ko ek interface ke peeche abstract karna: `IProductRepository` jisme `GetByIdAsync`, `AddAsync`, `GetAllAsync` jaise methods hon, actual implementation (SQL Server ho, MongoDB ho, kuch bhi ho) caller ko pata hi na ho.
+
+**Unit of Work** — multiple repository operations ko ek hi atomic transaction me coordinate karna: "ye teen changes (order add, inventory update, payment record) ya to sab save hon, ya koi bhi nahi" — ek single `SaveChangesAsync()`-jaisi call ke through.
+
+### Counter-argument — EF Core already ye deta hai
+
+Yahan wo hissa hai jo bahut candidates miss karte hain. `DbContext` khud **already** ek Unit of Work hai — uske andar multiple entities pe changes track hote hain (`Added`, `Modified`, `Deleted` states), aur `SaveChangesAsync()` call karne pe **sab ek hi transaction me** commit hote hain. Aur har `DbSet<T>` khud **already** ek generic repository jaisa hai — `Add`, `Remove`, `FirstOrDefaultAsync`, `Where` — sab kuch jo ek `IRepository<T>` interface offer karta, `DbSet<T>` already deta hai, bina extra code likhe.
+
+Isliye ek "classic" Repository + Unit of Work layer likhna EF Core ke upar — ye literally ek abstraction ke upar doosri abstraction hai jo same cheez repeat karti hai. Well-known criticism (khud Microsoft ke kai engineers aur .NET community ne repeatedly likha hai) ye hai ki ye **needless indirection** ban sakta hai — extra interfaces, extra classes, extra mapping, bina real benefit ke.
+
+### Toh phir ye pattern kabhi useful hai kya
+
+Haan — genuine cases hain jahan extra layer worth hai:
+
+1. **Genuinely swappable data source** — agar future me (ya already) kuch data SQL se aata hai, kuch ek external API/cache se, ek repository abstraction dono ko ek consistent interface ke peeche unify kar sakta hai — ye EF Core akela nahi de sakta.
+2. **Heavy unit-testing needs bina database ke** — `DbContext` ko mock karna genuinely awkward hai (extension methods, `IQueryable` ka full behavior fake karna mushkil hai). Ek thin `IOrderRepository` interface mock karna kahin easier hai — pure unit tests jo database chhoote hi na.
+3. **Domain logic ko persistence se completely isolate karna** (jaise DDD-heavy architecture) — jahan business layer ko EF Core ke concepts (`DbSet`, `Include`, tracking) ka bilkul pata na ho, sirf domain-language method names dikhein.
+
+### Jab NAHI worth hai
+
+Chhoti-medium APIs jahan EF Core hi permanent, single data source hai, aur testing strategy integration-tests (real ya in-memory DB ke saath) pe based hai — yahan Repository/Unit of Work layer sirf extra boilerplate hai jo `DbContext` jo already deta hai wahi repeat karta hai, ek extra indirection ke saath jo debugging thoda harder bana deta hai (ek extra jump karna padta hai actual query dhoondhne ke liye).
+
+### Practical recommendation
+
+Default se **seedha `DbContext`/`DbSet<T>` use karo** service layer ke andar — ye already Unit-of-Work aur Repository dono deta hai, extra code likhne ki zaroorat nahi. **Repository layer tabhi add karo** jab tumhare paas in teen cases me se koi genuine, concrete reason ho — "best practice hai isliye" kabhi kaafi justification nahi hai.
+
+### Code Examples
+
+**Minimal example — `DbSet<T>` already ek repository jaisa behave karta hai:**
+
+```csharp
+public class ProductService
+{
+    private readonly AppDbContext _db;
+    public ProductService(AppDbContext db) => _db = db;
+
+    public async Task<Product?> GetByIdAsync(int id) =>
+        await _db.Products.FirstOrDefaultAsync(p => p.Id == id); // no custom repository needed
+
+    public async Task AddAsync(Product product)
+    {
+        _db.Products.Add(product);
+        await _db.SaveChangesAsync(); // DbContext IS the Unit of Work
+    }
+}
+```
+
+**Real ASP.NET Core example — genuine Repository use case (swappable + testable):**
+
+```csharp
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(int id);
+    Task AddAsync(Order order);
+}
+
+public class EfOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+    public EfOrderRepository(AppDbContext db) => _db = db;
+
+    public Task<Order?> GetByIdAsync(int id) => _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+    public async Task AddAsync(Order order) { _db.Orders.Add(order); await _db.SaveChangesAsync(); }
+}
+
+public class OrderService
+{
+    private readonly IOrderRepository _repository; // easy to mock in unit tests
+    public OrderService(IOrderRepository repository) => _repository = repository;
+
+    public async Task<Order?> GetOrderAsync(int id) => await _repository.GetByIdAsync(id);
+}
+
+// Unit test — no real database needed
+var mockRepo = new Mock<IOrderRepository>();
+mockRepo.Setup(r => r.GetByIdAsync(1)).ReturnsAsync(new Order { Id = 1 });
+var service = new OrderService(mockRepo.Object);
+```
+
+Yahan `IOrderRepository` genuinely payoff de raha hai — `OrderService` ka unit test bina kisi real database ke chal sakta hai, kyunki interface mock ho sakta hai, `DbContext` khud nahi.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Repository pattern data access ko abstract karta hai, Unit of Work multiple changes ko ek transaction me commit karta hai — dono common design patterns hain.
+
+**SDE-3/Senior level answer:** Explicitly bolo ki `DbContext`/`DbSet<T>` already dono patterns implement karte hain, isliye extra layer add karna ek trade-off hai, automatic best practice nahi. Teen concrete cases do jahan ye worth hai (swappable source, heavy mocking-based unit tests, DDD-style isolation), aur ek clear opinion do ki chhoti/medium APIs me seedha `DbContext` use karna better hai. Ye balanced, opinionated answer dena hi senior-level signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET community aur khud kai Microsoft engineers/MVP-level bloggers ne repeatedly likha hai ki EF Core ke upar ek generic Repository + Unit of Work layer likhna ek **"leaky abstraction over an abstraction"** ho sakta hai — ye itna well-known debate hai ki ye almost har senior .NET interview me directly ya indirectly poochha jaata hai. Microsoft ki khud ki EF Core documentation `DbContext` ko explicitly "combination of the Repository and Unit of Work patterns" ki tarah describe karti hai.
+
+</RealWorld>
+
+<RealWorld company="A Multi-Source Payments Platform">
+
+Ek typical Indian fintech backend me jahan transaction data SQL Server me hai lekin fraud-score data ek external microservice/cache se aata hai, ek `ITransactionRepository` abstraction genuinely useful hai — implementation ke andar dono sources ko combine kar sakta hai, aur service layer ko pata hi nahi chalta data kahan se aa raha hai. Ye exactly wo "genuinely swappable/composite data source" case hai jahan Repository pattern apna real value deta hai, sirf EF Core ke upar redundant wrapper nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- EF Core's own official documentation describes `DbContext` as already combining the Repository and Unit of Work patterns — a direct, citable source for this debate
+- `SaveChangesAsync()` wraps all tracked changes (across multiple `DbSet<T>` collections) in a single database transaction by default
+- Mocking `DbContext`/`DbSet<T>` directly for unit tests is widely documented as awkward — `IQueryable` extension methods and change-tracking internals don't mock cleanly, which is the strongest practical argument for a thin repository interface
+- 3 well-established cases where an extra Repository layer earns its cost: genuinely swappable/composite data sources, heavy interface-mocking unit-test strategies, and strict domain-layer isolation (DDD-style architectures)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Repository data access ko interface ke peeche abstract karta hai, Unit of Work multiple changes ko ek atomic save me coordinate karta hai — lekin EF Core ke saath, `DbContext` khud already Unit of Work hai aur har `DbSet<T>` khud already ek repository jaisa behave karta hai. Isliye main inko blindly add nahi karta — main dekhta hoon kya genuinely ek swappable data source hai, ya main heavy mocking-based unit tests chahta hoon jahan `DbContext` mock karna awkward ho — tabhi ek thin repository interface add karta hoon. Chhoti-medium APIs me, jahan EF Core hi permanent data source hai, main seedha `DbContext` use karta hoon service layer ke andar."
+
+Ye answer definition + well-known counter-argument + apna opinionated recommendation — teeno cover karta hai. Ye topic specifically "kya tum sirf patterns yaad karte ho ya kab use karna hai ye bhi samajhte ho" test karta hai. **Almost-guaranteed follow-up:** "Agar tumne Repository layer add kar diya, kya `DbContext` ko bhi expose karoge repository interface se, ya sirf domain-specific methods?" (jawaab: sirf domain-specific methods — `IQueryable<T>` ko bahar leak karna abstraction ka pura point khatam kar deta hai).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Repository + Unit of Work ko bina soche-samjhe "hamesha best practice hai" bol dena — interviewer isko turant probe karta hai "EF Core to already ye deta hai na?" jaise follow-up se, aur jo candidate blindly pattern justify karta hai (bina EF Core ke overlap ka mention kiye) weak signal deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Repository interface se `IQueryable<T>` return kar dena (`IQueryable<Product> GetAll();`) — ye abstraction ka pura point khatam kar deta hai, kyunki caller ab bhi EF Core-specific query composition pe depend kar raha hai, actual persistence technology abstract nahi hui.
+
+</Mistake>
+
+<Mistake>
+
+Har entity ke liye ek separate, near-identical `IProductRepository`, `IOrderRepository`, `ICustomerRepository` bana dena jisme sirf entity type badalta hai, baaki sab boilerplate same — agar genuinely generic hi kaam hai, ek `IRepository<T>` generic interface se ye duplication avoid ho sakta hai, ya better, ye reconsider karo ki itni saari repositories chahiye bhi hain ya nahi.
+
+</Mistake>
+
+<Mistake>
+
+Repository pattern add karne ke baad bhi `DbContext` ko service layer me directly bhi inject karte rehna "kuch specific queries ke liye" — ye hybrid approach abstraction ko half-hearted bana deta hai, na poori consistency milti hai, na testing benefit.
+
+</Mistake>
+
+<Mistake>
+
+Unit of Work ko sirf "ek design pattern jo interview me poochha jaata hai" samajhna, ye na jaanna ki `SaveChangesAsync()` already atomically multiple tracked changes commit karta hai — is practical fact ko na jaanna signal deta hai ki EF Core ka actual internal behavior samjha nahi gaya hai, sirf pattern names ratta laga hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class DbContext {
+        +DbSet~Order~ Orders
+        +DbSet~Product~ Products
+        +SaveChangesAsync() Task
+    }
+    class IOrderRepository {
+        <<interface>>
+        +GetByIdAsync(id) Order
+        +AddAsync(order) Task
+    }
+    class EfOrderRepository {
+        -DbContext db
+        +GetByIdAsync(id) Order
+        +AddAsync(order) Task
+    }
+    class OrderService {
+        -IOrderRepository repository
+        +GetOrderAsync(id) Order
+    }
+    DbContext <.. EfOrderRepository : wraps
+    IOrderRepository <|.. EfOrderRepository
+    OrderService --> IOrderRepository : depends on (mockable)
+`}
+  caption="DbContext already IS a Unit of Work with repository-like DbSet collections — an extra IOrderRepository layer only earns its cost when it buys genuine swappability or mockability."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Repository: abstracts data access behind an interface. Unit of Work: coordinates multiple changes into one atomic save.
+- EF Core's `DbContext` already behaves as a Unit of Work, and `DbSet<T>` already behaves as a repository — Microsoft's own docs say this explicitly
+- Adding an extra Repository/Unit-of-Work layer over EF Core is a trade-off, not an automatic best practice — needless indirection is a well-known, real criticism
+- 3 genuine reasons to still add it: swappable/composite data sources, heavy mocking-based unit tests, strict domain-layer isolation (DDD)
+- Default recommendation: use `DbContext`/`DbSet<T>` directly in the service layer for small-to-medium APIs where EF Core is the permanent data source
+- Never leak `IQueryable<T>` out of a repository interface — it defeats the whole point of the abstraction
+- Mocking `DbContext` directly is genuinely awkward — this is the strongest practical argument for a thin repository interface when you need pure unit tests
+- Don't half-commit — if you add a repository layer, don't also inject `DbContext` directly elsewhere for "just a few queries"
+
+</QuickRevision>

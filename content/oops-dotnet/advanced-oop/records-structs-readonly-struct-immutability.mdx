@@ -1,0 +1,219 @@
+---
+slug: "records-structs-readonly-struct-immutability"
+title: "Records, Record Structs, and Readonly Structs — Immutability in C#"
+section: "oops-dotnet"
+module: "advanced-oop"
+order: 3
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["object-class-methods-equals-gethashcode"]
+tags: ["dotnet", "oop", "csharp", "records", "immutability", "advanced"]
+englishDefinition: "record (C# 9) is a reference type with compiler-generated structural equality and non-destructive with-expression mutation; record struct (C# 10) brings the same to value types, and readonly struct guarantees a value type never mutates after construction, letting the compiler skip defensive copies."
+interviewFrequency: "high"
+companies: ["Microsoft", "Infosys", "Swiggy", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+`record` (C# 9) is a reference type with compiler-generated structural equality and non-destructive `with`-expression mutation; `record struct` (C# 10) brings the same to value types, and `readonly struct` guarantees a value type never mutates after construction, letting the compiler skip defensive copies.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne dekha `Equals()`/`GetHashCode()`/`ToString()` manually override karna kitna boilerplate hai, aur galat karne pe kitne subtle bugs aate hain. `record` (C# 9, 2020) exactly isi boilerplate ko compiler se generate karwane ke liye banaya gaya tha — saath me ek poori immutability-first mindset ke saath.
+
+### record — structural equality, free me
+
+`record` ek reference type hai (jab tak explicitly `record struct` na likho), lekin uska equality behavior class se fundamentally alag hai. `record Point(int X, int Y);` likhne se compiler automatically generate karta hai: `Equals()`/`GetHashCode()` (property-by-property structural comparison), `ToString()` (readable format jaise `Point { X = 3, Y = 4 }`), deconstruction support, aur ek `EqualityContract` property jo inheritance ke case me exact-type safety deta hai (ek `Employee : Person` record kabhi `Person` ke equal nahi hoga chahe saare shared properties match karein — EqualityContract type ko bhi compare karta hai).
+
+Positional syntax (`record Point(int X, int Y)`) internally `init`-only properties generate karta hai — matlab construction ke baad properties reassign nahi ho sakti, record by-default immutable hai.
+
+### `with` expression — non-destructive mutation
+
+Records ka signature feature: `var moved = original with { X = 10 };` — ye `original` ko modify NAHI karta, balki ek **naya** record instance banata hai jisme sirf `X` change hua hai, baaki saari properties `original` se copy ho gayi. Ye functional-programming-style "immutable update" pattern hai — original object hamesha unchanged rehta hai, koi bhi aur reference jo usse hold kar rahi hai wo safe hai.
+
+### record struct (C# 10) aur readonly struct — inka fark samajhna zaroori hai
+
+**`record struct`** (C# 10, 2021) record ka value-type version hai — same `with` expression, positional syntax, aur compiler-generated equality milti hai, lekin ye ek struct hai (stack pe ya containing type ke saath heap pe, GC pressure kam). Important gotcha: `record struct` by default **mutable** hai (jaise normal struct), `record` (class) ki tarah automatically immutable NAHI hai — agar tumhe fully immutable value-type record chahiye, `readonly record struct` likhna padta hai.
+
+**`readonly struct`** (C# 7.2, 2017) — ye records se pehle aaya feature hai, records se independent. Ye guarantee deta hai struct ke SAARE instance fields/properties readonly hain — construction ke baad kabhi mutate nahi ho sakte. Ye sirf ek convention nahi, compiler-enforced hai: agar tum kisi field ko readonly nahi banate `readonly struct` ke andar, compile error aata hai.
+
+### Defensive copies — wo perf trap jo `readonly struct` solve karta hai
+
+Ye ek genuinely subtle, interview-worthy detail hai. Jab tum ek `readonly` field ya parameter (struct type ka) pe koi method call karte ho, aur us struct type `readonly struct` declared NAHI hai — compiler ko pata nahi ki wo method struct ko mutate karega ya nahi. Safety ke liye, compiler **silently ek hidden defensive copy banata hai** aur method usi copy pe call karta hai, taaki original readonly field kabhi accidentally modify na ho. Ye invisible extra struct-copy cost hai jo bade struct ke liye measurable ho sakta hai. `readonly struct` likhne se tum compiler ko batate ho "guarantee hai koi method mutate nahi karega" — compiler defensive copy skip kar deta hai.
+
+### Immutability kyun matter karti hai
+
+Teen concrete reasons: **thread safety** — ek immutable object multiple threads ke beech bina lock ke safely share ho sakta hai, kyunki koi thread usse modify hi nahi kar sakta. **No aliasing bugs** — agar do jagah ek hi reference-type object hold kar rahi hain aur ek jagah usse mutate kar diya, doosri jagah surprise breakage hoti hai; immutable object me ye class of bug exist hi nahi karta. **Predictable equality** — Dictionary keys ya HashSet members jo immutable hain, unka hash code kabhi change nahi hota, isliye pichhle topic wala "lost key" bug automatically avoid ho jaata hai.
+
+Reference topic ka `CreateOrderDto` record isi pattern ka example tha — DTOs naturally immutable hone chahiye kyunki wo sirf data-carry karte hain request se response tak, unhe kisi bhi jagah accidentally mutate hone se bachana chahiye.
+
+### Code Examples
+
+**Minimal example — record equality aur `with`:**
+
+```csharp
+public record Point(int X, int Y);
+
+var p1 = new Point(3, 4);
+var p2 = new Point(3, 4);
+var p3 = p1 with { X = 10 };
+
+// p1 == p2       -> true  (structural equality, class hone ke bawajood)
+// p1.Equals(p2)  -> true  (same reason)
+// p3              -> Point { X = 10, Y = 4 }
+// p1              -> Point { X = 3, Y = 4 }  (unchanged — 'with' naya instance banata hai)
+```
+
+**Real ASP.NET Core example — readonly record struct DTO aur defensive-copy trap:**
+
+```csharp
+public readonly record struct Money(decimal Amount, string Currency);
+
+public class PricingService
+{
+    public Money ApplyDiscount(Money original, decimal percentOff)
+    {
+        var discounted = original.Amount * (1 - percentOff / 100m);
+        return original with { Amount = discounted }; // 'with' record struct pe bhi kaam karta hai
+    }
+}
+
+// readonly struct ka fayda — defensive copy avoid:
+public readonly struct Vector3
+{
+    public readonly double X, Y, Z;
+    public Vector3(double x, double y, double z) { X = x; Y = y; Z = z; }
+    public double Magnitude() => Math.Sqrt(X * X + Y * Y + Z * Z); // koi mutation nahi — compiler ko guarantee hai
+}
+
+// agar Vector3 'readonly struct' declared NA hota, aur ek readonly field/parameter pe
+// Magnitude() call hota, compiler ek silent defensive copy bana kar us par call karta —
+// readonly struct is invisible cost ko eliminate kar deta hai
+```
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `record` batao — value-based equality aur `with` expression, DTO ke liye achha use case. Itna kaafi hai.
+
+**SDE-3/Senior level answer:** `record` vs `record struct` vs `readonly struct` teeno ka exact fark explain karo (kaunsa default mutable hai, kaunsa reference vs value type hai), defensive-copy perf trap ka naam lo, aur immutability ko thread-safety/aliasing-bugs se explicitly connect karo — ye dikhata hai theory ko real production concerns se jodna aata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne `record` ko specifically DTO aur "data-carrying" scenarios ke liye push kiya — ASP.NET Core minimal APIs aur Web API templates me generated request/response models aksar `record` use karte hain by default, kyunki structural equality (do requests jo same data carry karte hain wo "equal" maane jaate hain) aur immutability (ek incoming request object accidentally mutate nahi hona chahiye pipeline ke beech me) dono naturally fit karte hain.
+
+</RealWorld>
+
+<RealWorld company="A Payments Reconciliation Service">
+
+Ek typical Indian fintech backend (Razorpay/PhonePe-style) me transaction amount jaise value objects ke liye `readonly record struct Money(decimal Amount, string CurrencyCode)` common pattern hai — struct hone ki wajah se har transaction record ke liye extra heap allocation nahi hoti (high-throughput reconciliation jobs me lakhon transactions process hoti hain), aur readonly hone ki wajah se koi bhi calculation step accidentally original amount ko mutate nahi kar sakta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `record` (reference type records) shipped in C# 9 / .NET 5 (2020)
+- `record struct` (value type records) shipped in C# 10 / .NET 6 (2021)
+- `readonly struct` shipped earlier, in C# 7.2 / .NET Core 2.1-era (2017) — independent of records
+- A plain `record struct` is mutable by default — only `readonly record struct` guarantees full immutability
+- `record` inheritance is allowed only between records — a record can't inherit a non-record class, and a non-record class can't inherit a record
+- A `with` expression always allocates a new instance — it never mutates the original, even for `record struct`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "record ek reference type hai jisme compiler automatically Equals, GetHashCode, aur ToString generate karta hai structural equality ke saath, plus with expression deta hai non-destructive mutation ke liye — original object kabhi change nahi hota, naya instance banta hai. record struct isi ko value type me laata hai, lekin important gotcha ye hai ki record struct by default mutable hota hai, fully immutable chahiye to readonly record struct likhna padta hai. Main DTOs ke liye records use karta hoon kyunki immutability se thread safety aur predictable equality dono milti hai, aur high-throughput value-type scenarios (jaise Money) me readonly record struct use karta hoon taaki heap allocation avoid ho."
+
+Ye answer teeno types ka precise differentiation deta hai (jo bahut candidates blur kar dete hain), aur immutability ko concrete engineering benefits (thread safety, GC pressure) se connect karta hai. **Almost-guaranteed follow-up:** "readonly struct 'defensive copies' kaise avoid karta hai — wo exactly kya hoti hain?" — jawaab: compiler kisi non-readonly-struct type ke readonly field/parameter pe method call hone par silently ek hidden copy banata hai safety ke liye; readonly struct is cost ko eliminate karta hai kyunki compiler ko guarantee hoti hai koi mutation nahi hoga.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye maan lena ki `record struct` automatically fully immutable hota hai jaise `record` (class) hota hai — galat, `record struct` by default mutable hai; `readonly record struct` likhna padta hai immutability guarantee ke liye.
+
+</Mistake>
+
+<Mistake>
+
+`with` expression ko original object ka mutation samajh lena — ye hamesha ek NAYA instance banata hai, original untouched rehta hai. Isko galat samajhne se subtle bugs aate hain jahan developer sochta hai object update ho gaya lekin actually purana reference hi use ho raha hai.
+
+</Mistake>
+
+<Mistake>
+
+Record ko class se inherit karne ki koshish karna (ya class ko record se) — record hierarchies sirf record-to-record inheritance support karti hain, ye mix-and-match nahi hoti.
+
+</Mistake>
+
+<Mistake>
+
+`readonly struct` ka fayda sirf "immutability" bol dena, defensive-copy perf angle bilkul miss kar dena — interview me ye follow-up almost hamesha aata hai aur adhoora jawaab weak signal deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Records ko har jagah use karna, chahe object me genuinely mutable state honi chahiye (jaise ek long-lived aggregate jiska state business operations ke through evolve hota hai) — records DTOs/value objects ke liye best hain, rich domain entities ke liye nahi jahan controlled mutation hi asli requirement hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class Person {
+        <<record>>
+        +string Name
+        +int Age
+    }
+    class Employee {
+        <<record>>
+        +string EmployeeId
+    }
+    Person <|-- Employee : record inheritance
+
+    class Money {
+        <<readonly record struct>>
+        +decimal Amount
+        +string Currency
+    }
+    note for Money "Value type — no heap allocation, fully immutable, structural equality"
+    note for Employee "Reference type — structural equality via EqualityContract, with-expressions supported"
+`}
+  caption="record supports inheritance (record-to-record only) with structural equality; readonly record struct gives the same equality/with-expression ergonomics as a heap-free, fully immutable value type."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `record` (C# 9, 2020) — reference type, compiler-generated structural equality, immutable by default (init-only properties), `with` expression for non-destructive updates
+- `record struct` (C# 10, 2021) — value-type version of record, but MUTABLE by default unlike `record`
+- `readonly record struct` — combines both: value type AND fully immutable
+- `readonly struct` (C# 7.2, 2017) — independent of records, guarantees all fields are readonly, lets the compiler skip defensive copies
+- Defensive copy: the compiler silently copies a non-readonly struct before calling a method on a readonly field/parameter of it, to protect against possible mutation — a real, avoidable perf cost
+- Record inheritance only works record-to-record, never mixed with plain classes
+- `with` always creates a new instance — it never mutates the original
+- Immutability buys thread safety, no aliasing bugs, and predictable hash-based collection behavior
+
+</QuickRevision>

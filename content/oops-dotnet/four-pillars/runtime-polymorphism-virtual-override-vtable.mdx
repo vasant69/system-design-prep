@@ -1,0 +1,228 @@
+---
+slug: "runtime-polymorphism-virtual-override-vtable"
+title: "Runtime Polymorphism: virtual, override, and the Method Table"
+section: "oops-dotnet"
+module: "four-pillars"
+order: 5
+difficulty: "advanced"
+readingTime: 11
+prerequisites: ["compile-time-polymorphism-overloading"]
+tags: ["dotnet", "oop", "csharp", "polymorphism", "virtual", "clr"]
+englishDefinition: "Runtime polymorphism lets a base-typed reference invoke a derived class's overridden implementation of a virtual method, with the exact method resolved at runtime based on the object's actual type rather than the reference's declared type, via a per-type method table the CLR consults on every virtual call."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Runtime polymorphism lets a base-typed reference invoke a derived class's overridden implementation of a virtual method, with the exact method resolved at runtime based on the object's actual type rather than the reference's declared type, via a per-type method table the CLR consults on every virtual call.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye woh polymorphism hai jiske baare me interviewer sabse zyada baat karta hai jab wo "polymorphism" bolta hai bina qualify kiye — `virtual`/`override`. Idea simple lagta hai upar se: base class ek method ko `virtual` mark karti hai, derived class use `override` karti hai, aur base-typed reference se call karne par bhi derived wala version chalta hai. Interesting (aur senior-level) part hai — **ye actually kaam kaise karta hai** andar se, CLR level pe.
+
+### virtual/override — syntax aur basic behavior
+
+```csharp
+public class Shape
+{
+    public virtual double Area() => 0;
+}
+
+public class Circle : Shape
+{
+    public double Radius { get; init; }
+    public override double Area() => Math.PI * Radius * Radius;
+}
+
+Shape s = new Circle { Radius = 5 };
+Console.WriteLine(s.Area()); // 78.53... — Circle.Area() chalta hai, Shape.Area() nahi
+```
+
+`s` ka declared (compile-time) type `Shape` hai, lekin `s.Area()` call karne par `Circle.Area()` chalta hai — kyunki **runtime pe actual object ka type check hota hai**, declared type nahi. Ye exactly overloading (pichhla topic) se opposite hai, jahan declared type hi decide karta tha.
+
+### Method table (v-table) — actual mechanism
+
+CLR har type ke liye ek **method table** maintain karta hai (informally "vtable" bhi kehte hain, C++ terminology se udhaar) — ek data structure jisme us type ke virtual methods ke actual implementations ke addresses (slots) hote hain. Jab `Circle` `Shape` se inherit karke `Area()` override karta hai, `Circle` ki method table me `Area` slot `Circle.Area`'s implementation ki taraf point karta hai, na ki `Shape.Area` ki taraf.
+
+Har object apne heap memory me ek chhota "type handle" carry karta hai jo uski **actual runtime type** ki method table ki taraf point karta hai — chahe reference variable ka declared type kuch bhi ho. Jab tum `s.Area()` call karte ho:
+
+1. CLR object `s` ke type handle se uski **actual** method table dhundhta hai (Circle ki, na ki Shape ki, kyunki `s` asal me ek Circle object hai)
+2. Us method table me `Area` slot lookup karta hai
+3. Jo bhi implementation address wahan hai, usko invoke karta hai — jo yahan `Circle.Area` hai
+
+Ye lookup **har virtual call pe** hota hai — isliye virtual method call ek non-virtual (direct) call se thoda slower hota hai: ek extra indirection (table lookup) ka cost. Practically ye cost nanoseconds ka hota hai aur 99.9% real applications me measurable difference nahi banata — lekin interviewer isko "why does virtual dispatch cost something" ke roop me pooch sakta hai, aur "kuch cost nahi hota" bolna galat hai.
+
+### Multiple overrides ek chain me — kaunsa version chalta hai
+
+Agar `Shape → Circle → SpecialCircle` chain hai aur teeno `Area()` override karte hain, method table hamesha **most-derived** override point karti hai:
+
+```csharp
+public class SpecialCircle : Circle
+{
+    public override double Area() => base.Area() * 1.1; // 10% extra "special" factor
+}
+
+Shape s2 = new SpecialCircle { Radius = 5 };
+Console.WriteLine(s2.Area()); // uses SpecialCircle.Area — the most-derived override wins
+```
+
+`base.Area()` call current level ke ek level upar wale implementation ko explicitly invoke karta hai — ye method table lookup ko bypass karke directly parent implementation call karta hai, taaki chaining possible ho.
+
+### virtual na ho to kya hota — non-virtual method ka behavior
+
+Agar `Area()` `virtual` nahi hota, `Circle.Area()` sirf ek naya, unrelated method hota (ya compile warning deta agar same signature ho — poora detail agle topic, method hiding, me hai). Base-typed reference se call karne par hamesha `Shape.Area()` hi chalta, chahe actual object Circle ho — kyunki bina `virtual` ke, koi method table lookup hota hi nahi, call directly compile time pe hi resolve ho jaata hai (static binding, non-virtual call).
+
+### Code Examples
+
+**Real ASP.NET Core example — a polymorphic pricing strategy resolved through DI:**
+
+```csharp
+public abstract class DiscountStrategy
+{
+    public abstract decimal Apply(decimal amount);
+}
+
+public class FestiveDiscount : DiscountStrategy
+{
+    public override decimal Apply(decimal amount) => amount * 0.8m; // 20% off
+}
+
+public class LoyaltyDiscount : DiscountStrategy
+{
+    public override decimal Apply(decimal amount) => amount * 0.9m; // 10% off
+}
+
+public class CheckoutService
+{
+    private readonly DiscountStrategy _strategy;
+    public CheckoutService(DiscountStrategy strategy) => _strategy = strategy; // injected as base type
+
+    public decimal ComputeFinalAmount(decimal amount) => _strategy.Apply(amount);
+    // ComputeFinalAmount never knows or cares which concrete strategy it holds —
+    // the CLR resolves the right Apply() at runtime via the method table, every single call
+}
+```
+
+`CheckoutService` sirf `DiscountStrategy` (base/abstract type) reference rakhta hai — DI container chahe `FestiveDiscount` inject kare ya `LoyaltyDiscount`, `ComputeFinalAmount` ka code kabhi change nahi hota, sirf runtime dispatch se sahi behavior automatically milta hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "`virtual` base class me mark karo, `override` derived class me — base-typed reference se call karne par bhi actual (derived) object ka version chalta hai." Ek Shape/Circle jaisa simple example do.
+
+**SDE-3/Senior level answer:** Method table mechanism explain karo — har type ki apni method table hoti hai, object apne actual runtime type ki table point karta hai, aur har virtual call pe ye table lookup hoti hai. Ye bhi bolo ki iska ek chhota, usually-irrelevant perf cost hai (ek extra indirection) vs non-virtual call — aur `base.Method()` kaise chaining allow karta hai lookup ko explicitly bypass karke.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka poora middleware pipeline aur `IActionResult` hierarchy runtime polymorphism pe hi based hai — `ExecuteResultAsync` `ActionResult` ke har derived type (`OkObjectResult`, `NotFoundResult`, `JsonResult`) me override hota hai, aur framework sirf base `IActionResult`/`ActionResult` reference ke through call karta hai. Framework ko compile time pe pata hi nahi hota kaunsa concrete result type aayega — runtime dispatch hi ye decide karta hai kaunsa `ExecuteResultAsync` chalega.
+
+</RealWorld>
+
+<RealWorld company="An Insurance Premium Calculation Engine">
+
+Ek Indian insurance platform (LIC/HDFC Life-style) ke premium calculation engine me `PolicyBase` abstract class hoti hai jisme `CalculatePremium()` virtual/abstract hota hai, aur `TermPolicy`, `HealthPolicy`, `ULIPPolicy` sab apna calculation override karte hain — jinki formula completely alag hoti hai (age-risk tables vs medical history vs market-linked returns). Ek single `PremiumService` sirf `PolicyBase` list ke through loop karta hai aur `CalculatePremium()` call karta hai — runtime dispatch automatically sahi formula chuni jaati hai har policy type ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `virtual`/`override` keywords have been in C# since version 1.0 (2002)
+- A non-virtual method call resolves directly at compile time; a virtual call adds one extra indirection (a method-table lookup) at every invocation — a real but typically negligible cost
+- `abstract` members are implicitly virtual — every `abstract` method MUST be overridden by a concrete derived class, there is no default implementation to fall back to
+- `sealed override` (combining both keywords) lets a derived class override a method while forbidding any further overrides deeper in the hierarchy — and re-enables devirtualization optimizations for that specific call site
+- Every type's method table is built once, at type-load time, not per-instance — instances only carry a pointer to their type's shared table
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Runtime polymorphism `virtual` aur `override` se implement hota hai — base class method ko `virtual` mark karti hai, derived class `override` karti hai, aur base-typed reference se call karne par bhi actual runtime object ka version chalta hai. Ye CLR ke method table (vtable) mechanism se possible hota hai — har type ki apni method table hoti hai jisme uske virtual methods ke actual implementations point hote hain, aur object apni ACTUAL type ki table carry karta hai. Har virtual call pe ye table lookup hoti hai, jo non-virtual call se thoda slower hai — ek extra indirection — lekin ye cost itna chhota hai ki almost hamesha irrelevant hota hai design flexibility ke against."
+
+Ye answer mechanism-level samajh dikhata hai, sirf syntax nahi. **Almost-guaranteed follow-up:** "`new` keyword se method hide karna aur `override` karna — behavior me kya fark aata hai?" — jiska poora answer agle topic (method hiding vs overriding) me hai, wahi C#'s classic trap question hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sochna ki virtual method call ka **koi** cost nahi hota. Ek real (chhota) cost hai — method table lookup — jo non-virtual call me nahi hota. Interview me "zero cost" bolna galat signal hai.
+
+</Mistake>
+
+<Mistake>
+
+`abstract` methods ko "virtual nahi hote" samajh lena — actually `abstract` members implicitly virtual hi hote hain (aur mandatorily override hone chahiye, koi default implementation nahi hoti).
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki base-typed reference se call karne par hamesha base class ka method chalega — sirf tab jab method `virtual` na ho. Agar `virtual`/`override` hai, actual runtime type ka version chalta hai, declared type ka nahi.
+
+</Mistake>
+
+<Mistake>
+
+`base.Method()` call ko galat samajhna — ye poori virtual dispatch chain ko bypass nahi karta, sirf current level se **ek level upar** wala implementation directly invoke karta hai, chaining ke liye.
+
+</Mistake>
+
+<Mistake>
+
+Method table ko per-instance data structure samajh lena — actually ye per-TYPE hoti hai, ek baar type-load time pe banti hai. Har object sirf apni type ki shared table ka pointer carry karta hai, apni khud ki copy nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller as Caller code
+    participant Ref as Shape s (declared type: Shape)
+    participant CLR as CLR runtime
+    participant MT as Circle's Method Table
+    participant Impl as Circle.Area() implementation
+
+    Caller->>Ref: s.Area()
+    Ref->>CLR: dispatch virtual call
+    CLR->>CLR: read s's actual runtime type = Circle
+    CLR->>MT: look up Area slot in Circle's method table
+    MT-->>CLR: address of Circle.Area
+    CLR->>Impl: invoke Circle.Area()
+    Impl-->>Caller: 78.53 (Circle's formula, not Shape's default)
+`}
+  caption="Every virtual call goes through the object's ACTUAL type's method table, not the reference's declared type — this indirection is exactly why a base-typed reference still runs the derived override."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `virtual` (base) + `override` (derived) = runtime polymorphism — actual object type decides which implementation runs, not the reference's declared type
+- The CLR maintains one method table per type, built at type-load time, holding addresses of that type's virtual method implementations
+- Every object carries a handle to its ACTUAL runtime type's method table — this is what makes dispatch work even through a base-typed reference
+- A virtual call adds one indirection (table lookup) vs a non-virtual call — real but almost always negligible cost
+- `abstract` members are implicitly virtual and MUST be overridden — no default implementation exists
+- `base.Method()` explicitly invokes one level up the chain, bypassing dynamic dispatch for that one call
+- `sealed override` stops further overriding deeper in the hierarchy and can re-enable devirtualization
+- Contrast with overloading: overloading is resolved by compile-time declared type, overriding by runtime actual type
+
+</QuickRevision>

@@ -1,0 +1,270 @@
+---
+slug: "constructors-chaining-object-initializers"
+title: "Constructors, Chaining, and Object Initializers"
+section: "oops-dotnet"
+module: "oop-foundations"
+order: 5
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["what-is-oop-and-why-dotnet", "class-vs-object-vs-instance", "fields-properties-auto-properties-init-required"]
+tags: ["dotnet", "oop", "csharp", "constructors", "object-initializers", "primary-constructors"]
+englishDefinition: "A constructor is a special method that runs exactly once when an object is created, responsible for putting the object into a valid initial state; constructor chaining (`: this(...)`) lets one constructor delegate to another in the same class to avoid duplicating initialization logic, and object-initializer syntax (`new T { Prop = value }`) sets properties after the constructor has already fully run."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Accenture", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A constructor is a special method that runs exactly once when an object is created, responsible for putting the object into a valid initial state; constructor chaining (`: this(...)`) lets one constructor delegate to another in the same class to avoid duplicating initialization logic, and object-initializer syntax (`new T { Prop = value }`) sets properties **after** the constructor has already fully run.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Constructor ke baare me sabse zyada miss hone wala point ek hi hai: **object-initializer exactly kab run hota hai relative to constructor body ke** — interviewer ye exact sequence poochta hai kyunki isme ek subtle trap hai jo real bugs create kar sakta hai.
+
+### Default vs parameterized constructor
+
+Agar tum koi constructor define nahi karte, compiler khud ek **parameterless default constructor** generate kar deta hai jo fields ko unke default values (`0`, `null`, `false`) pe set karta hai. Jaise hi tum koi bhi custom constructor define karte ho, compiler ye implicit default constructor generate karna **band** kar deta hai — agar parameterless version bhi chahiye, use explicitly likhna padega.
+
+```csharp
+public class Order
+{
+    public string ProductId { get; set; } = "";
+    public int Quantity { get; set; }
+
+    public Order() { } // ab explicit chahiye, kyunki neeche ek parameterized bhi hai
+
+    public Order(string productId, int quantity)
+    {
+        ProductId = productId;
+        Quantity = quantity;
+    }
+}
+```
+
+### Constructor chaining — `: this(...)` se duplication avoid karo
+
+Jab ek class ke multiple constructors ho, unke beech common initialization logic duplicate na karo — ek constructor doosre ko **call** kar sakta hai `: this(...)` syntax se, jo actual constructor body run hone se **pehle** execute hota hai:
+
+```csharp
+public class Order
+{
+    public string ProductId { get; }
+    public int Quantity { get; }
+    public DateTime CreatedAt { get; }
+
+    public Order(string productId, int quantity)
+        : this(productId, quantity, DateTime.UtcNow) // chain — pehle ye call hota hai
+    {
+    }
+
+    public Order(string productId, int quantity, DateTime createdAt)
+    {
+        ProductId = productId;
+        Quantity = quantity;
+        CreatedAt = createdAt;
+    }
+}
+```
+
+Yahan do-parameter constructor sirf ek line hai — sara real logic ek hi jagah (teen-parameter constructor) hai. Ye "duplication avoid karo" ka classic OOP application hai, DRY principle constructors pe.
+
+### Object initializer — EXACTLY kab run hota hai
+
+Ye sabse important nuance hai. `new Order { ProductId = "P1", Quantity = 5 }` likhne par sequence hai:
+
+1. Sabse pehle chosen constructor **poora** run hota hai (parameterless agar koi aur explicit nahi diya).
+2. Constructor poora khatam hone ke **baad**, object-initializer ki har property assignment ek-ek karke, order me jaise likhi hai, run hoti hai.
+
+```csharp
+public class Debug
+{
+    public int Value { get; set; }
+    public Debug()
+    {
+        Value = 100;
+        Console.WriteLine("Constructor ran, Value = " + Value);
+    }
+}
+
+var d = new Debug { Value = 5 };
+// Prints: "Constructor ran, Value = 100"
+// d.Value == 5 — object-initializer ne constructor ke BAAD Value ko overwrite kiya
+```
+
+Ye trap tab bite karta hai jab constructor ke andar koi validation logic ho jo object-initializer ki property assignment se **bypass** ho jaati hai — kyunki initializer assignments plain property sets hain, constructor body dobara nahi chalta.
+
+### Primary constructors (C# 12, 2023) — briefly
+
+C# 12 ne class declaration ke parentheses me hi constructor parameters likhne diya, bina explicit constructor body ke:
+
+```csharp
+public class Order(string productId, int quantity)
+{
+    public string ProductId { get; } = productId;
+    public int Quantity { get; } = quantity;
+}
+```
+
+Ye particularly chhoti classes/DTOs ke liye boilerplate kam karta hai, lekin behavior ke terms me traditional constructor jaisa hi hai — parameters class ke pure scope me available rehte hain, sirf property initializers me nahi.
+
+### Code Examples
+
+**Minimal example — chaining aur object-initializer order:**
+
+```csharp
+public class Config
+{
+    public string Environment { get; init; } = "Development";
+    public int TimeoutSeconds { get; init; }
+
+    public Config() : this(30) { }
+    public Config(int timeoutSeconds) => TimeoutSeconds = timeoutSeconds;
+}
+
+var cfg = new Config { Environment = "Production" };
+// Constructor chain runs first (TimeoutSeconds = 30),
+// then object-initializer sets Environment = "Production"
+// cfg.TimeoutSeconds == 30, cfg.Environment == "Production"
+```
+
+**Real ASP.NET Core example — constructor injection with chaining for defaults:**
+
+```csharp
+public class OrderService
+{
+    private readonly AppDbContext _db;
+    private readonly ILogger<OrderService> _logger;
+    private readonly TimeSpan _timeout;
+
+    public OrderService(AppDbContext db, ILogger<OrderService> logger)
+        : this(db, logger, TimeSpan.FromSeconds(30)) // default timeout ke saath chain
+    {
+    }
+
+    public OrderService(AppDbContext db, ILogger<OrderService> logger, TimeSpan timeout)
+    {
+        _db = db;
+        _logger = logger;
+        _timeout = timeout;
+    }
+}
+```
+
+Yahan DI container ka istemal 2-parameter constructor pick karega (DI resolve karne ke liye kaunsa constructor use hoga, uska rule alag topic hai — normal case me sabse zyada resolvable params wala), aur 3-parameter version testing me manually timeout override karne ke liye available rehta hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Constructor object banate waqt run hota hai, initial state set karta hai. Object-initializer se properties set kar sakte hain `new T { Prop = value }` syntax se." Basic chaining syntax dikha do.
+
+**SDE-3/Senior level answer:** Ye bhi bolo ki object-initializer constructor ke **baad** run hota hai, isliye constructor ke andar koi validation object-initializer se bypass ho sakti hai — ye ek real trap hai jo `required` + validating constructor ke saath mitigate hoti hai. Primary constructors (C# 12) ka trade-off bhi bolo — boilerplate kam, lekin complex validation logic ke liye traditional constructor better readability deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Entity Framework Core khud constructor overloads pe heavily depend karta hai apne entity types ke liye — EF materialization (database se object banate waqt) ek parameterless (ya specific) constructor dhoondhta hai. Ye exactly wahi wajah hai ki EF entities me typically ek protected/private parameterless constructor rakha jaata hai — EF ke liye, jabki public parameterized constructors application code ke liye — dono ek saath, constructor overloading ka real production use case.
+
+</RealWorld>
+
+<RealWorld company="An E-commerce Checkout Service">
+
+Ek typical Indian e-commerce checkout flow (Flipkart/Myntra-style) me `Order` class ka constructor `OrderId` aur `CreatedAt` jaisi immutable fields set karta hai (business-critical, kabhi change nahi honi chahiye), jabki `ShippingAddress` jaisi optional/mutable fields object-initializer se set hoti hain. Ye split — critical invariants constructor me, flexible fields initializer me — ek real design pattern hai jo teams follow karti hain taaki accidental invalid state avoid ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- If you define ANY constructor explicitly, the compiler stops auto-generating the parameterless default constructor
+- Constructor chaining (`: this(...)`) runs the target constructor to completion FIRST, before the calling constructor's own body executes
+- Object-initializer property assignments run AFTER the constructor has fully completed — this is a fixed, guaranteed order, not implementation-defined
+- Primary constructors were introduced in C# 12 (2023)
+- `record` types (C# 9, 2020) generate a primary constructor automatically from their positional parameter list
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Constructor ek special method hai jo object create hote waqt exactly ek baar run hota hai, object ko valid initial state me laata hai. Multiple constructors ke beech duplication avoid karne ke liye main `: this(...)` se chaining use karta hoon — target constructor pehle poora run hota hai. Object-initializer syntax (`new T { Prop = value }`) constructor ke **baad** run hota hai — ye important hai kyunki agar constructor me validation logic hai, object-initializer se set ki gayi properties us validation ko bypass kar sakti hain agar property ka set accessor khud validation nahi kar raha."
+
+**Almost-guaranteed follow-up:** "To agar main object-initializer ke through ek invalid state create kar doon, isko kaise prevent karoge?" — jiska jawaab hai: property ke apne set/init accessor me hi validation daalo (jaise pichle topic me dekha), sirf constructor pe depend mat karo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye assume karna ki object-initializer constructor se PEHLE run hota hai, ya "same time" — actual order hai: constructor poora pehle, phir initializer assignments. Is order ko galat bolna ek concrete, code-output-testable mistake hai.
+
+</Mistake>
+
+<Mistake>
+
+Constructor me validation likhna aur assume karna ki wo hamesha enforce hogi — agar corresponding property ka `set` accessor khud validation nahi karta, object-initializer us validation ko bypass kar sakta hai, kyunki initializer sirf property set call karta hai, constructor body dobara nahi chalti.
+
+</Mistake>
+
+<Mistake>
+
+Har constructor me poora initialization logic duplicate likh dena bajaye `: this(...)` chaining use karne ke — ye DRY violation hai aur maintenance risk create karta hai (ek jagah bug fix karo, doosri jagah reh jaaye).
+
+</Mistake>
+
+<Mistake>
+
+Custom constructor define karne ke baad ye bhool jaana ki parameterless default constructor ab automatically available nahi hai — agar wo bhi chahiye (jaise EF Core ke liye), explicitly likhna padega.
+
+</Mistake>
+
+<Mistake>
+
+Primary constructors (C# 12) ko har jagah use karna, chahe complex validation logic ho — primary constructors chhoti, simple classes/DTOs ke liye achhe hain; complex initialization logic ke liye traditional constructor zyada readable rehta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant Constructor
+    participant Object
+
+    Caller->>Object: new Order { ProductId = "P1" }
+    Object->>Constructor: Step 1 — run chosen constructor to completion
+    Constructor-->>Object: fields set, constructor body done
+    Object->>Object: Step 2 — object-initializer assignments run (ProductId = "P1")
+    Object-->>Caller: fully constructed object returned
+`}
+  caption="The constructor always runs to completion FIRST — object-initializer property assignments happen only after, which is why they can silently override or bypass constructor-set values."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Defining any explicit constructor stops the compiler from auto-generating a parameterless one
+- `: this(...)` chains one constructor to another in the same class — the target runs to completion first
+- Object-initializer assignments (`new T { Prop = value }`) run strictly AFTER the constructor fully completes
+- This order means object-initializer can silently override or bypass constructor-time values/validation
+- Put validation in the property's own `set`/`init` accessor, not just the constructor, if it must always be enforced
+- Primary constructors (C# 12, 2023) reduce boilerplate for simple classes but trade off readability for complex logic
+- `record` types auto-generate a primary constructor from their positional parameters
+- EF Core relies on constructor overloads — a parameterless one for materialization, parameterized ones for app code
+
+</QuickRevision>

@@ -1,0 +1,218 @@
+---
+slug: "compile-time-polymorphism-overloading"
+title: "Compile-Time Polymorphism: Overloading and Overload Resolution"
+section: "oops-dotnet"
+module: "four-pillars"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["inheritance-single-multilevel-no-multiple"]
+tags: ["dotnet", "oop", "csharp", "polymorphism", "overloading"]
+englishDefinition: "Compile-time polymorphism (method overloading) lets a class declare multiple methods with the same name but different parameter lists, with the compiler deciding at compile time which exact overload a given call resolves to, based purely on the argument types at the call site."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+Compile-time polymorphism (method overloading) lets a class declare multiple methods with the same name but different parameter lists, with the compiler deciding at compile time which exact overload a given call resolves to, based purely on the argument types at the call site.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Polymorphism" sunte hi zyada candidates seedha `virtual`/`override` (runtime polymorphism) pe jump kar jaate hain — jabki overloading, jo har din likhte ho (`Console.WriteLine` ke 19+ overloads), bhi utni hi valid polymorphism hai, bas "compile-time" flavor ki. Fark simple hai: **kaunsa method call hoga, ye decision compile time pe hi ho jaata hai** — argument types dekh kar, purely static analysis se, bina kisi runtime object type check ke. Isiliye isko "static binding" ya "early binding" bhi kehte hain, jabki runtime polymorphism "dynamic/late binding" hai.
+
+### Overloading ke rules
+
+Ek method overload karne ke liye, naya method **signature** me alag hona chahiye — matlab parameter list alag (count, type, ya order). Return type akela alag hone se overload valid nahi banta — compiler error dega.
+
+```csharp
+public class Calculator
+{
+    public int Add(int a, int b) => a + b;
+    public double Add(double a, double b) => a + b;      // different param types — valid
+    public int Add(int a, int b, int c) => a + b + c;     // different param count — valid
+    // public double Add(int a, int b) => a + b;          // INVALID — only return type differs, compile error
+}
+```
+
+### Overload resolution algorithm — compiler kaise decide karta hai
+
+Jab tum `Add(5, 10)` likhte ho, compiler ek specific priority order follow karta hai best match dhundhne ke liye:
+
+1. **Exact match** — agar koi overload arguments ke exact types se match kare, wahi jeet jaata hai. `Add(5, 10)` — dono `int` — seedha `Add(int, int)` match karta hai.
+2. **Implicit conversion** — agar exact match nahi mila, compiler implicit conversions try karta hai (jaise `int` → `long` → `float` → `double`, ek widening conversion). `Add(5, 10.5)` — `5` ko `double` me implicitly convert karke `Add(double, double)` match hota hai.
+3. **`params` array** — sabse last priority. Agar koi fixed-parameter overload match nahi karta, `params` waala overload use hota hai.
+
+Agar do overloads **equally good** match hain (na koi behtar, na koi worse) — compiler resolve nahi kar pata, **"ambiguous call" compile error** deta hai. Ye exactly wahi jagah hai jahan interview me code likhwaya jaata hai aur pucha jaata hai "compile hoga ya nahi."
+
+### Ye "compile-time" kyun hai — vs runtime polymorphism se fark
+
+Overload resolution poori tarah **static type** pe based hai — jo variable ka declared/compile-time type hai, us hisaab se decision hota hai, actual runtime object ka koi role nahi. Isiliye:
+
+```csharp
+object obj = 5; // compile-time type: object, runtime type: int (boxed)
+Print(obj);       // Print(object) call hoga, Print(int) NAHI — kyunki compiler
+                   // sirf `obj` ka DECLARED type (object) dekhta hai, uska runtime
+                   // content (int) nahi
+```
+
+Ye exactly runtime polymorphism (virtual/override, agla-agla topic) se opposite hai, jahan actual runtime type decide karta hai kaunsa override chalega. Ye distinction bahut clean interview signal hai — agar tum ye contrast crisply bol sakte ho, senior-level samajh dikhti hai.
+
+### Code Examples
+
+**Minimal example — overload resolution priority in action:**
+
+```csharp
+void Print(int x) => Console.WriteLine($"int: {x}");
+void Print(double x) => Console.WriteLine($"double: {x}");
+void Print(object x) => Console.WriteLine($"object: {x}");
+
+Print(5);        // "int: 5" — exact match wins
+Print(5.5);      // "double: 5.5" — exact match wins
+Print(5L);       // "double: 5" — long has no exact/int overload here, widens to double (implicit conversion) before falling to object
+Print("hello");  // "object: hello" — no int/double overload fits, falls to object
+```
+
+**Real ASP.NET Core example — overloaded query-building method in a repository:**
+
+```csharp
+public class OrderRepository
+{
+    private readonly AppDbContext _db;
+    public OrderRepository(AppDbContext db) => _db = db;
+
+    public Task<Order?> FindAsync(int id) =>
+        _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+
+    public Task<Order?> FindAsync(string trackingNumber) =>
+        _db.Orders.FirstOrDefaultAsync(o => o.TrackingNumber == trackingNumber);
+
+    public Task<List<Order>> FindAsync(DateTime placedOn) =>
+        _db.Orders.Where(o => o.PlacedAt.Date == placedOn.Date).ToListAsync();
+}
+
+// Caller code reads naturally — the right overload resolves purely from the argument's compile-time type
+var byId = await repo.FindAsync(42);
+var byTracking = await repo.FindAsync("TRK-9981");
+var byDate = await repo.FindAsync(DateTime.Today);
+```
+
+Ye teeno methods same name (`FindAsync`) share karte hain lekin poori tarah alag query logic — caller ko sirf ek intuitive API dikhti hai, compiler exact match compile time pe resolve kar deta hai, koi runtime type-checking (`if (arg is int)`) ki zaroorat hi nahi.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** "Overloading matlab same method name, different parameters — compiler compile time pe hi decide kar leta hai kaunsa version chalega." Ek simple example de do.
+
+**SDE-3/Senior level answer:** Overload resolution priority (exact match > implicit conversion > `params`) explain karo, aur "compile-time type decide karta hai, runtime type nahi" wala distinction crisply bolo — ek `object`-typed variable ka example do jahan ye counter-intuitive lag sakta hai. Ye bhi mention karo ki ambiguous overloads compile error hain, runtime issue nahi — early failure hai, jo ek design plus point hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`Console.WriteLine` khud .NET ka sabse famous overloading example hai — 19+ overloads hain (`string`, `int`, `double`, `bool`, `object`, `char[]`, aur formatted-string variants), sab same name share karte hain. Compiler compile time pe exact overload pick karta hai argument type dekh kar — yehi wajah hai `Console.WriteLine(42)` aur `Console.WriteLine("42")` dono kaam karte hain bina caller ko kabhi socna pade "kaunsa method call karoon."
+
+</RealWorld>
+
+<RealWorld company="A Logistics Tracking API">
+
+Ek Indian logistics/delivery platform (Delhivery/Shiprocket-style) ke backend me ek `TrackShipment` method overloaded hota hai — `TrackShipment(string awbNumber)`, `TrackShipment(int orderId)`, `TrackShipment(string phoneNumber, DateTime bookedOn)` — kyunki customer support team, mobile app, aur partner integrations teeno alag identifiers se shipment track karna chahte hain. Overloading ek clean, single-name API surface deta hai bina caller ko internally alag method names yaad rakhne pade.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Method overloading has existed in C# since version 1.0 (2002) — one of the language's original OOP features
+- `Console.WriteLine` alone has 19 overloads in the .NET base class library
+- Return type alone is NEVER sufficient to distinguish an overload — the C# compiler requires a difference in the parameter list
+- Overload resolution happens entirely at compile time — zero runtime cost for "picking" the right overload, unlike virtual dispatch
+- Ambiguous overload calls are always a compile-time error (CS0121) in C#, never a silent runtime pick
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "Overloading compile-time polymorphism hai — same method name, alag parameter lists, aur compiler compile time pe hi decide kar leta hai kaunsa version call karna hai, based on argument types. Resolution algorithm priority follow karta hai: pehle exact type match, phir implicit conversion, phir `params` array. Agar do overloads equally achhe match hote hain, compiler ambiguous-call compile error deta hai — runtime pe koi decision nahi hoti. Ye runtime polymorphism (virtual/override) se fundamentally alag hai, jahan actual object ka runtime type decide karta hai, na ki compile-time declared type."
+
+Ye answer resolution mechanism ka real understanding dikhata hai, sirf definition nahi. **Almost-guaranteed follow-up:** "Agar ek variable ka compile-time type `object` hai lekin runtime me wo actually `int` hai, `Print(obj)` kaunsa overload call karega?" — jawaab: `Print(object)`, kyunki overload resolution sirf compile-time (declared) type dekhta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sochna ki return type change karke bhi overload bana sakte ho — `int Add(int,int)` aur `double Add(int,int)` saath me valid nahi hai, compile error dega. Signature sirf parameters se define hota hai, return type se nahi.
+
+</Mistake>
+
+<Mistake>
+
+"Polymorphism" ka matlab sirf virtual/override samajh lena, overloading ko polymorphism hi na maanna — dono valid forms hain, bas alag binding time (compile-time vs runtime) ki.
+
+</Mistake>
+
+<Mistake>
+
+Overload resolution ko runtime behavior samajh lena. Ye poori tarah compile-time decision hai — variable ka DECLARED type (not actual runtime content) determine karta hai kaunsa overload chuna jaayega.
+
+</Mistake>
+
+<Mistake>
+
+Ambiguous overload scenarios (do equally-good matches) ko runtime exception samajhna — ye hamesha compile-time error hota hai, code chalta hi nahi hai jab tak fix na ho.
+
+</Mistake>
+
+<Mistake>
+
+`params` overload ki priority galat samajhna — `params` array wala overload sabse last try hota hai, exact match aur implicit conversion overloads hamesha pehle prefer hote hain agar available hon.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Call["Print(5.5) call site"] --> Check1{Exact type match?}
+    Check1 -->|"Print(double) exists"| Pick1[Use Print double — resolved]
+    Check1 -->|No exact match| Check2{Implicit conversion possible?}
+    Check2 -->|"e.g. int widens to double"| Pick2[Use best implicit-conversion overload]
+    Check2 -->|No| Check3{params array overload exists?}
+    Check3 -->|Yes| Pick3[Use params overload]
+    Check3 -->|No| Error[Compile error: no matching overload]
+    Pick1 --> Done[Decision made — baked in at compile time]
+    Pick2 --> Done
+    Pick3 --> Done
+`}
+  caption="Overload resolution priority: exact match, then implicit conversion, then params array — and the whole decision is finished before the program ever runs."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Overloading = same method name, different parameter lists (count/type/order) — resolved entirely at compile time
+- Return type alone never distinguishes an overload — the compiler requires the parameter list to differ
+- Resolution priority: exact type match, then implicit conversion, then `params` array as last resort
+- Two equally-good matches cause a compile-time "ambiguous call" error — never a silent runtime pick
+- Overload resolution uses the variable's compile-time (declared) type, not its runtime type — an `object`-typed `int` still resolves to the `object` overload
+- Zero runtime cost — the exact method to call is baked into the compiled code
+- Contrast with runtime polymorphism: overloading is static/early binding, virtual/override is dynamic/late binding
+- `Console.WriteLine`'s 19 overloads are the most common real-world example every .NET developer has already used
+
+</QuickRevision>

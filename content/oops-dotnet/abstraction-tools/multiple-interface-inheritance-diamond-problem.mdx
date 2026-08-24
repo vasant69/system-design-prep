@@ -1,0 +1,254 @@
+---
+slug: "multiple-interface-inheritance-diamond-problem"
+title: "Multiple Interface Inheritance & the Diamond Problem"
+section: "oops-dotnet"
+module: "abstraction-tools"
+order: 4
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["interfaces-explicit-implementation-dim", "inheritance-single-multilevel-no-multiple"]
+tags: ["dotnet", "oop", "csharp", "interfaces", "dim", "diamond-problem"]
+englishDefinition: "A C# class can implement any number of interfaces, but if two of those interfaces each provide a default implementation for a member with the identical signature, the compiler refuses to guess which one applies — it forces the class to resolve the ambiguity itself, either with one combined implementation or with two separate explicit implementations, one per interface."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "TCS", "Flipkart", "Paytm"]
+---
+
+<SimpleDefinition>
+
+A C# class can implement any number of interfaces, but if two of those interfaces each provide a default implementation for a member with the identical signature, the compiler refuses to guess which one applies — it forces the class to resolve the ambiguity itself, either with one combined implementation or with two separate explicit implementations, one per interface.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+C# ek class ko `class Foo : Base { }` — sirf ek base class dene deta hai, lekin interfaces ke saath koi aisi limit nahi: `class Foo : IBar, IBaz, IQux { }` bilkul valid hai, jitne chaho utne interfaces implement karo. Ye asymmetry jaan-boojh kar hai, aur isi se ek interesting sawaal uthta hai: agar do interfaces same-signature member define karte hain (dono default body ke saath, DIM ke through), aur ek class dono implement kare bina kuch khud likhe — compiler kya karega?
+
+### The exact diamond scenario
+
+Socho do interfaces hain, dono ek `Notify(string message)` method ko default implementation dete hain:
+
+```csharp
+public interface INotifier
+{
+    void Notify(string message) => Console.WriteLine($"[Notifier] {message}");
+}
+
+public interface IAlertable
+{
+    void Notify(string message) => Console.WriteLine($"[Alertable] {message}");
+}
+
+public class SystemMonitor : INotifier, IAlertable
+{
+    // Kuch bhi nahi likha — dono interfaces ka Notify() inherit hone ki koshish
+}
+```
+
+Ye **compile hi nahi hoga.** Compiler ke paas do default implementations hain same signature ke liye, aur dono equally "valid" hain — koi ek doosre se zyada specific nahi. Ye ambiguity hai, aur C# design team ne isse silently resolve karne (jaise "pehla wala jeetega") ki jagah **hard compile error** banaya — kyunki silent resolution bugs ko chhupa deta, jabki compile error tumhe force karta hai decide karne ke liye.
+
+### Exact fix — do tareeke
+
+**Fix 1: `SystemMonitor` apna khud ka implementation de.** Ye ambiguity ko poori tarah khatam kar deta hai — class ka apna implementation dono interface ke default se "zyada specific" mana jaata hai, isliye ye automatically jeet jaata hai:
+
+```csharp
+public class SystemMonitor : INotifier, IAlertable
+{
+    public void Notify(string message) =>
+        Console.WriteLine($"[SystemMonitor] {message}");
+}
+
+// SystemMonitor ka apna Notify() chalega, chahe INotifier reference se call karo ya IAlertable se
+```
+
+**Fix 2: Dono ko explicit implement karo, agar alag behavior chahiye har interface ke liye:**
+
+```csharp
+public class SystemMonitor : INotifier, IAlertable
+{
+    void INotifier.Notify(string message) =>
+        Console.WriteLine($"As INotifier: {message}");
+
+    void IAlertable.Notify(string message) =>
+        Console.WriteLine($"As IAlertable: {message}");
+}
+
+INotifier notifier = new SystemMonitor();
+notifier.Notify("disk space low");   // "As INotifier: disk space low"
+
+IAlertable alertable = new SystemMonitor();
+alertable.Notify("disk space low");  // "As IAlertable: disk space low"
+```
+
+Dono fixes valid hain — Fix 1 tab jab ek hi unified behavior chahiye, Fix 2 tab jab genuinely alag behavior chahiye per-interface (jaisa `interfaces-explicit-implementation-dim` topic me collision-resolution pattern dekha).
+
+### Ye class-inheritance diamond problem se kaise alag hai
+
+Traditional OOP languages (jaise C++) me "diamond problem" ka matlab hota hai: do base classes, dono ek common ancestor se same member inherit karte hain, aur ek derived class dono ko multiply-inherit kare to compiler confuse ho jaata hai **kaunsa ancestor's version use ho.** C# ne ye poora problem class-level pe **avoid** kar diya — bas multiple class inheritance allow hi nahi karta (`class C : A, B` jahan A aur B dono classes hain, seedha compile error, koi ambiguity-resolution ki zaroorat hi nahi padi).
+
+Interfaces ke saath, C# ko multiple inheritance allow karna hi tha (contracts ka multi-implement karna bahut common, valuable pattern hai) — lekin jab DIM aaya (C# 8), pehli baar interfaces me bhi "implementation collision" possible hua, isliye compiler ko ek naya ambiguity-resolution rule chahiye tha, jo humne upar dekha. **Bina DIM ke ye problem exist hi nahi karta tha** — pure signature-only interfaces me koi collision nahi ho sakta, sirf naam clash hota hai jo explicit implementation se hamesha resolve ho jaata hai (koi "compiler confusion" nahi, sirf "class ko dono ke liye implementation dena hai").
+
+### Code Examples
+
+**Minimal example — the exact error, in isolation:**
+
+```csharp
+public interface IA
+{
+    void Ping() => Console.WriteLine("IA");
+}
+public interface IB
+{
+    void Ping() => Console.WriteLine("IB");
+}
+
+public class C : IA, IB { }
+// Compile error — C does not implement Ping(), and neither IA's nor IB's
+// default is more specific than the other. Must be resolved explicitly.
+```
+
+**Real ASP.NET Core-flavored example — two cross-cutting interfaces colliding:**
+
+```csharp
+public interface IEmailNotifiable
+{
+    Task NotifyAsync(string message) =>
+        Console.Out.WriteLineAsync($"Emailing: {message}");
+}
+
+public interface IPushNotifiable
+{
+    Task NotifyAsync(string message) =>
+        Console.Out.WriteLineAsync($"Pushing: {message}");
+}
+
+// OrderStatusChangeHandler chahta hai dono channels alag behave karein
+public class OrderStatusChangeHandler : IEmailNotifiable, IPushNotifiable
+{
+    Task IEmailNotifiable.NotifyAsync(string message) =>
+        Console.Out.WriteLineAsync($"[Email] {message}");
+
+    Task IPushNotifiable.NotifyAsync(string message) =>
+        Console.Out.WriteLineAsync($"[Push] {message}");
+}
+```
+
+Ye pattern real background-job/event-handler code me dikhta hai jab ek handler class multiple, unrelated notification contracts ko satisfy karti hai lekin har channel ka behavior genuinely alag hota hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** Bolo ki class multiple interfaces implement kar sakti hai, lekin sirf ek class extend kar sakti hai. Agar poocha jaaye diamond problem ke baare me, bolo ki C# multiple class inheritance allow hi nahi karta, isliye classic diamond problem C# me nahi hota.
+
+**SDE-3/Senior level answer:** DIM-specific diamond scenario ka exact code dikhao — do interfaces same-signature default method ke saath, class implement karti hai bina override kiye, compile error deti hai. Fix dono tareeke se explain karo (own implementation vs dual explicit implementation), aur clearly bolo ki ye sirf DIM ke aane ke baad (C# 8) possible hua — pehle interfaces me implementation hi nahi thi, isliye ye ambiguity exist hi nahi karti thi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+C# language design team ne DIM (C# 8) design karte waqt explicitly is exact ambiguity scenario ko handle kiya — official docs "most specific override" rule define karte hain: agar ek interface doosre se derive karta hai aur override karta hai, wo zyada specific maana jaata hai; agar dono unrelated hain (jaise humara `INotifier`/`IAlertable` example), koi bhi zyada specific nahi hai, aur compiler error force karta hai.
+
+</RealWorld>
+
+<RealWorld company="A UPI Payments Notification Service">
+
+Ek payments platform me `OrderStatusChangeHandler` jaisi class ko kai baar `IEmailNotifiable` aur `IPushNotifiable` dono jaise cross-cutting interfaces implement karne padte hain (dono default `NotifyAsync` ke saath, taaki simple handlers kuch likhe bina bhi kaam kar sakein). Jab ek handler ko dono channels par genuinely alag content bhejna ho (email me detail, push me summary), explicit implementation hi clean solution hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A class can implement an unbounded number of interfaces — the language imposes no upper limit
+- The diamond-via-DIM ambiguity is only possible from C# 8 (2019) onward — before DIM, interfaces had zero implementation, so zero collision was possible
+- The "most specific override" resolution rule is deterministic and well-defined by the C# spec — it is not a runtime coin-flip, it is a compile-time refusal when no interface is provably more specific
+- C# fully sidesteps the classic multi-base-class diamond problem by disallowing multiple class inheritance outright — zero runtime or compile-time ambiguity rules were needed for that case
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "C# me ek class multiple interfaces implement kar sakti hai, lekin sirf ek class extend kar sakti hai — isliye classic multi-base-class diamond problem C# me hoti hi nahi, language design se hi avoid ho gaya. Lekin default interface methods (C# 8) ke aane ke baad ek naya, narrower diamond scenario possible hai: agar do interfaces same-signature member ko default implementation dete hain aur ek class dono implement kare bina apna khud ka version likhe, compiler ambiguity error deta hai — ise resolve karne ke do tareeke hain: ek unified implementation likho, ya dono ko explicit implement karo agar genuinely alag behavior chahiye."
+
+Ye answer dono concepts (class-level diamond avoidance vs interface-level DIM ambiguity) ko clearly separate karta hai — bahut candidates in dono ko mix kar dete hain. **Almost-guaranteed follow-up:** "Agar ek interface doosre interface se inherit karta hai aur usi member ko override karta hai, kya tab bhi ambiguity hogi?" — jawaab: nahi, "most specific override" rule us case me clearly decide kar leta hai (jo derive/override karta hai wo jeetega).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Diamond problem ko sirf "C# multiple class inheritance allow nahi karta" tak simplify kar dena, aur DIM-specific interface-level diamond scenario ka zikr hi na karna — ye advanced follow-up ka jawaab miss kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki agar do interfaces same-signature default method dete hain, C# automatically "pehla implemented interface" ya "alphabetically pehla" ko pick kar lega — galat, ye hamesha compile error hai jab tak class khud resolve na kare.
+
+</Mistake>
+
+<Mistake>
+
+Explicit implementation ko diamond problem ka "only" fix samajhna — agar ek unified behavior chahiye (dono interfaces ke liye same), class apna khud ka ek public implementation de sakti hai, dono ko explicit karna zaroori nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye bolna ki "interfaces me multiple inheritance allowed hai isliye ye bhi ek diamond problem hai jaisa C++ me hota hai" bina distinguish kiye ki C++ ka diamond problem runtime/memory-layout ambiguity ke baare me hota hai, jabki C# ka DIM-diamond scenario purely ek compile-time signature-resolution rule hai — bahut kam severe, aur hamesha compile-time pe catch hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Pre-C#-8 interfaces me bhi "diamond problem" dhundhne ki koshish karna — bina implementation ke, do interfaces ka same-signature member sirf ek naming collision hai (explicit implementation se trivially resolve), koi genuine ambiguity nahi — diamond scenario sirf tab exist karta hai jab dono ke paas competing DEFAULT IMPLEMENTATIONS hon.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class INotifier {
+        <<interface>>
+        +Notify(message) [default impl]
+    }
+    class IAlertable {
+        <<interface>>
+        +Notify(message) [default impl]
+    }
+    class SystemMonitor {
+        +Notify(message)
+    }
+    INotifier <|.. SystemMonitor
+    IAlertable <|.. SystemMonitor
+    note for SystemMonitor "Without its own Notify(),\nthis is a compile error —\nneither default is more specific"
+`}
+  caption="Two interfaces with colliding default implementations force SystemMonitor to resolve the ambiguity itself — either one unified method, or two explicit implementations."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A class can implement unlimited interfaces — no diamond problem from that alone, pre-DIM
+- The DIM-specific diamond: two interfaces both give a default implementation to the same-signature member → compile error if the implementing class doesn't resolve it
+- Fix 1: give the class its own public implementation — automatically wins as "most specific"
+- Fix 2: implement both explicitly with different bodies, if the two interfaces genuinely need different behavior
+- This ambiguity is only possible from C# 8 (2019) onward — before default interface methods existed, interfaces had zero implementation to collide over
+- C# sidesteps the classic MULTI-BASE-CLASS diamond problem entirely by disallowing multiple class inheritance — `class C : A, B` where A, B are classes is a flat compile error
+- "Most specific override" is the compiler's deterministic rule: if one interface derives from and overrides the other, that one wins — no ambiguity in that case
+- Don't confuse this narrow, compile-time-caught DIM scenario with the more severe runtime/layout ambiguity diamond problem in languages like C++
+
+</QuickRevision>

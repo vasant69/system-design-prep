@@ -1,0 +1,233 @@
+---
+slug: "sealed-partial-nested-classes"
+title: "Sealed, Partial & Nested Classes"
+section: "oops-dotnet"
+module: "abstraction-tools"
+order: 6
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["inheritance-single-multilevel-no-multiple", "abstract-classes-deep-dive"]
+tags: ["dotnet", "oop", "csharp", "sealed", "partial", "nested-classes"]
+englishDefinition: "sealed prevents a class (or an overridden member) from being further inherited or overridden — an intentional design lock with a small JIT de-virtualization benefit; partial lets one class's definition be split across multiple files, most commonly to keep generated code and hand-written code separate; a nested class is a type declared inside another class, used for a small helper type that has no meaning outside its container."
+interviewFrequency: "medium"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+`sealed` prevents a class (or an overridden member) from being further inherited or overridden — an intentional design lock with a small JIT de-virtualization benefit; `partial` lets one class's definition be split across multiple files, most commonly to keep generated code and hand-written code separate; a nested class is a type declared inside another class, used for a small helper type that has no meaning outside its container.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye teeno keywords/features ek-doosre se unrelated hain, lekin sab "class ko kis tarah organize/control karo" bucket me aate hain, isliye ek hi topic me cover hote hain.
+
+### `sealed` — jaan-boojh kar inheritance rokna
+
+`sealed class Foo { }` likhne ka matlab: koi bhi class `Foo` se further inherit nahi kar sakti. Do genuine reasons hain iske liye:
+
+1. **Intentional design lock.** Kabhi tum NAHI chahte ki koi class tumhari class ko extend kare — jaise ek `string`-jaisi immutable value-semantics class, ya ek framework ka event-handler jisme extend karna galat usage patterns ko encourage karega. `sealed` isse language-level pe enforce karta hai, sirf documentation/comment se nahi.
+2. **Chhota, real perf benefit — de-virtualization.** Agar ek class `sealed` hai, JIT compiler ko guarantee milta hai ki koi override kabhi nahi aayega — isliye wo virtual method calls ko directly (non-virtual, kabhi kabhi inline bhi) resolve kar sakta hai, v-table lookup ka overhead skip karke. Ye benefit chhota hai (usually measurable sirf hot-path, high-call-count scenarios me), isliye "performance ke liye sealed lagao" akela reason nahi hona chahiye — real primary reason design intent hai.
+
+`sealed` ek individual OVERRIDDEN member pe bhi lag sakta hai (`sealed override`), poori class pe nahi — ye tab useful hai jab ek intermediate class ek specific method ka further override rokna chahe, baaki class extendable rakhte hue.
+
+### `partial` — ek class, multiple files
+
+`partial class Foo { }` do ya zyada files me likha jaa sakta hai — compiler in sabko compile time pe ek hi class me merge kar deta hai. Ye classic real use case hai: **generated code + hand-written code ko alag rakhna.** EF Core scaffolding (`dotnet ef dbcontext scaffold`) ek entity class generate karta hai (jaise `Customer.cs`) — agar tum isme apna custom method ya validation logic seedha add karo, agli baar jab scaffold command phir se chalega, tumhara code overwrite ho jaayega. Solution: entity ko `partial class Customer` banao, apna custom logic ek alag file (`Customer.Custom.cs`) me `partial class Customer` ke through add karo — dono compile-time pe merge ho jaate hain, aur regeneration sirf generated file ko touch karta hai, tumhara hand-written code safe rehta hai.
+
+ASP.NET Core me Blazor components bhi `.razor` + `.razor.cs` (code-behind) pattern me isi mechanism ka use karte hain.
+
+### Nested classes — jab helper type ka apna koi meaning nahi hota bahar
+
+Ek class ke andar ek doosri class define karna (`nested class`) tab sahi hai jab wo inner type genuinely sirf apne container ke context me hi meaningful ho — kahin aur use hone ka koi practical scenario hi nahi. Classic examples: ek custom collection ka `Enumerator` (jaise `List<T>.Enumerator` — BCL me hi ye pattern hai), ya ek fluent Builder pattern ka internal state-holder.
+
+Overuse se bacho — agar wo inner type genuinely standalone/reusable ban sakta hai, use top-level class hi rehne do. Nested classes discoverability aur testability thodi kam karti hain (external code se directly reference karna verbose hota hai, `Outer.Inner`).
+
+### Code Examples
+
+**Minimal example — all three, in isolation:**
+
+```csharp
+// sealed — no further inheritance allowed
+public sealed class ApiKeyValidator
+{
+    public bool IsValid(string key) => !string.IsNullOrWhiteSpace(key) && key.Length == 32;
+}
+// public class MyValidator : ApiKeyValidator { }   // Compile error — cannot derive from sealed type
+
+// partial — split across two conceptual files
+public partial class Customer
+{
+    public string Name { get; set; } = "";   // generated by a scaffolding tool
+}
+public partial class Customer
+{
+    public string DisplayLabel => $"Customer: {Name}";   // hand-written, in a separate file in real code
+}
+
+// nested — a helper with no meaning outside its container
+public class OrderBuilder
+{
+    private readonly List<string> _items = new();
+    public OrderBuilder AddItem(string item) { _items.Add(item); return this; }
+    public Result Build() => new Result(_items);
+
+    public class Result
+    {
+        public IReadOnlyList<string> Items { get; }
+        internal Result(List<string> items) => Items = items;
+    }
+}
+```
+
+**Real ASP.NET Core example — EF Core scaffolded entity kept safe via partial:**
+
+```csharp
+// ApplicationUser.cs — regenerated every time `dotnet ef dbcontext scaffold` runs
+public partial class ApplicationUser
+{
+    public string Id { get; set; } = "";
+    public string Email { get; set; } = "";
+}
+
+// ApplicationUser.Custom.cs — hand-written, NEVER touched by scaffolding, safe forever
+public partial class ApplicationUser
+{
+    public string MaskedEmail =>
+        Email.Length > 3 ? $"{Email[..3]}***@{Email.Split('@')[1]}" : "***";
+}
+
+// A sealed handler — an intentional design lock, common in MediatR-style event handlers
+public sealed class OrderCreatedEventHandler
+{
+    public Task HandleAsync(OrderCreatedEvent evt)
+    {
+        // Sealed because this handler is a leaf: no one should ever extend/override
+        // its specific handling logic — a new requirement means a new handler class.
+        return Task.CompletedTask;
+    }
+}
+```
+
+Ye pattern real .NET projects me bahut common hai — EF Core ya kisi bhi code-generation tool ke saath kaam karte waqt `partial` hi safe, maintainable approach hai.
+
+</Hinglish>
+
+### Kab Kya Depth Chahiye
+
+<Callout type="tip">
+
+**SDE-1 level answer:** `sealed` further inheritance rokta hai, `partial` ek class ko multiple files me split karta hai, nested class ek class ke andar doosri class hoti hai. Ek-ek line example bol do.
+
+**SDE-3/Senior level answer:** `sealed` ke dono reasons distinguish karo (design intent vs de-virtualization, aur design intent ko primary bolo), `partial` ka real production use case (EF Core scaffolding + hand-written extension, regeneration-safe) concrete example ke saath do, aur nested class ka trade-off explain karo (discoverability/testability cost vs tight-coupling benefit) — isse pata chalta hai tumne production codebases me ye patterns actually use kiye hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+EF Core ka scaffolding tool (`dotnet ef dbcontext scaffold`) `partial class` pattern par hi built hai — har generated entity aur `DbContext` `partial` hote hain specifically taaki developers apna custom logic ek alag file me add kar sakein bina regeneration se overwrite hone ke risk ke. `sealed` BCL me `string` jaisi core types pe lagaya gaya hai — koi bhi class `string` ko extend nahi kar sakti, ek intentional, foundational design decision.
+
+</RealWorld>
+
+<RealWorld company="A Ride-Hailing Backend">
+
+Ek Ola/Uber-style backend me `FareCalculator` class `sealed` hoti hai — fare calculation logic ek single, audited, well-tested implementation honi chahiye, koi team accidentally extend karke custom (potentially incorrect) fare logic na inject kar de. Wahin `Driver` entity (EF Core scaffolded) `partial` hoti hai — generated fields alag file me, hand-written helper properties (jaise `IsEligibleForPremiumRides`) doosri file me, safely coexist karte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `sealed` and `partial` have both been in C# since version 1.0/2.0 respectively (`sealed` from 1.0, 2002; `partial` from C# 2.0, 2005, added specifically to support designer-generated code like WinForms)
+- Sealing a class or method gives the JIT a de-virtualization opportunity — a real but typically small perf gain, most measurable in tight, high-call-count loops
+- A `partial` class's pieces must all share the same accessibility and the same containing namespace — they are merged at compile time, not at runtime
+- Nested classes have full access to their outer class's private members (including private static members) — a level of access no external class gets
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**Say this out loud:** "`sealed` further inheritance ko rokta hai — main isse tab use karta hoon jab design intent yehi ho ki koi is class ko extend na kare, jaise ek core business-logic calculator jiska sirf ek correct implementation hona chahiye. Chhota perf benefit bhi milta hai JIT de-virtualization se, lekin wo primary reason nahi hota. `partial` production me sabse zyada EF Core scaffolding ke saath dikhta hai — generated aur hand-written code ko alag files me rakhta hai taaki regeneration custom logic ko overwrite na kare. Nested class main tab use karta hoon jab ek helper type genuinely sirf apne container ke context me meaningful ho, jaise ek Builder pattern ka internal Result type."
+
+Ye answer teeno ko concrete, production-grounded examples ke saath connect karta hai, sirf definitions nahi. **Almost-guaranteed follow-up:** "Kya `sealed` class ke andar ek unsealed nested class ho sakti hai jo extend ho sake?" — jawaab: haan, `sealed` sirf outer class pe apply hota hai, nested types independently apna khud ka sealed/unsealed status rakhte hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`sealed` ko sirf "performance ke liye" bolna — real primary reason design intent (misuse prevention) hai, perf benefit ek chhota, secondary bonus hai jo sirf hot paths me measurable hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki `partial` class ki pieces alag-alag namespaces ya alag accessibility level (jaise ek `public partial`, ek `internal partial`) rakh sakti hain — galat, sab pieces same namespace aur consistent accessibility share karni chahiye, warna compile error aata hai.
+
+</Mistake>
+
+<Mistake>
+
+Nested classes ko overuse karna sirf "organization ke liye" — agar inner type genuinely standalone/reusable ban sakta hai, nested banana discoverability aur testability ko unnecessarily kam karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Generated code (jaise EF Core scaffolded entities) me directly custom logic add kar dena bina `partial` pattern use kiye — agli regeneration me sara hand-written code silently overwrite ho jaata hai, aksar bina kisi warning ke.
+
+</Mistake>
+
+<Mistake>
+
+`sealed` aur `private` ko confuse karna — `sealed` inheritance ko control karta hai (kaun extend kar sakta hai), `private` visibility ko control karta hai (kaun access kar sakta hai) — dono completely alag concerns hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+classDiagram
+    class ApiKeyValidator {
+        <<sealed>>
+        +IsValid(key) bool
+    }
+    class OrderBuilder {
+        -List items
+        +AddItem(item) OrderBuilder
+        +Build() Result
+    }
+    class Result {
+        <<nested>>
+        +Items IReadOnlyList
+    }
+    OrderBuilder *-- Result : nested inside
+    note for ApiKeyValidator "sealed — no class can\nfurther inherit from this"
+`}
+  caption="sealed blocks further inheritance entirely; a nested class (Result) lives inside its container and typically has no meaning used standalone."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `sealed class`: cannot be further inherited — primary reason is intentional design lock, secondary is a small JIT de-virtualization perf gain
+- `sealed` can also apply to a single overridden member (`sealed override`), blocking further overrides of just that member without sealing the whole class
+- `partial class`: one class split across multiple files, merged at compile time — all pieces must share the same namespace and accessibility
+- Classic real use case for `partial`: separating generated code (EF Core scaffolding, Blazor code-behind) from hand-written code so regeneration never overwrites custom logic
+- Nested class: a type declared inside another class, used when the inner type has no meaning outside its container (e.g. a Builder's internal Result type)
+- Nested classes get full access to their outer class's private members, including private statics — a privilege no external class has
+- Don't confuse `sealed` (controls inheritance) with `private` (controls visibility) — different concerns entirely
+- Overusing nested classes hurts discoverability and testability — reach for a top-level class if the type could plausibly stand alone
+
+</QuickRevision>
