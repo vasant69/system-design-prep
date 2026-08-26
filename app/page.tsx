@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { ArrowRight, BookOpen, GitBranch as DiagramIcon, Globe2, Lock, MessageSquareText } from "lucide-react";
+import { ArrowRight, BookOpen, GitBranch as DiagramIcon, Globe2, Languages, Lock, MessageSquareText } from "lucide-react";
 import { getAllSections } from "@/lib/sections";
 import { getAllTopicsMeta } from "@/lib/content";
 import { sectionIconMap } from "@/components/icon-map";
 import { getSectionTheme } from "@/lib/section-theme";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { dictionaryEntries } from "@/lib/dictionary-data";
 
 const FEATURES = [
   {
@@ -153,6 +154,33 @@ export default function HomePage() {
               </Link>
             );
           })}
+
+          {/* Dictionary — a standalone glossary page, not part of the module/topic content pipeline */}
+          <Link
+            href="/dictionary"
+            className={cn(
+              "group relative overflow-hidden rounded-xl border border-border bg-card p-6 transition-colors",
+              "hover:border-amber-500/40",
+            )}
+          >
+            <div
+              aria-hidden
+              className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-amber-500/20 via-amber-500/5 to-transparent opacity-0 transition-opacity group-hover:opacity-100"
+            />
+            <div className="relative flex items-start justify-between">
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500/15">
+                <Languages className="h-5 w-5 text-amber-400" />
+              </span>
+            </div>
+            <h3 className="relative mt-4 text-xl font-semibold tracking-tight">Dictionary</h3>
+            <p className="relative mt-1.5 text-sm leading-relaxed text-muted-foreground">
+              Every word a developer actually hears at work — one-line Hinglish meanings, no fluff.
+            </p>
+            <div className="relative mt-4 flex items-center gap-1.5 text-sm font-medium text-amber-400">
+              {dictionaryEntries.length} words
+              <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+            </div>
+          </Link>
         </div>
       </div>
     </div>

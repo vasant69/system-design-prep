@@ -48,7 +48,7 @@ const THEMES: Record<string, SectionTheme> = {
     ring: "ring-teal-500/40",
     progressBar: "bg-teal-400",
   },
-  "english-learning": {
+  dictionary: {
     gradient: "from-amber-500/20 via-amber-500/5 to-transparent",
     iconBg: "bg-amber-500/15",
     iconColor: "text-amber-400",

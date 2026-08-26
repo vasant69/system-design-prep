@@ -382,12 +382,4 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
-  {
-    slug: "english-learning",
-    title: "English Learning",
-    description: "Interview communication, vocabulary, and spoken English practice.",
-    icon: "Languages",
-    enabled: false,
-    modules: [],
-  },
 ];
