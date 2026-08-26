@@ -1,0 +1,183 @@
+---
+slug: "datetime-and-time-handling"
+title: "DateTime vs DateTimeOffset, TimeSpan, DateOnly/TimeOnly"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 7
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: []
+tags: ["dotnet", "csharp", "datetime", "dateonly", "timeonly", "utc"]
+englishDefinition: "DateTime carries an ambiguous Kind property (Utc, Local, or Unspecified) that is easy to get wrong across service boundaries, while DateTimeOffset carries an explicit UTC offset alongside the value, making it unambiguous which moment in time it represents; TimeSpan represents a duration, and DateOnly/TimeOnly (C# 10) are dedicated types for date-only or time-only values that replace the old workaround of using DateTime and ignoring the part you don't need."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+`DateTime` carries an ambiguous `Kind` property (`Utc`, `Local`, or `Unspecified`) that is easy to get wrong across service boundaries, while `DateTimeOffset` carries an explicit UTC offset alongside the value, making it unambiguous which moment in time it represents; `TimeSpan` represents a duration, and `DateOnly`/`TimeOnly` (C# 10) are dedicated types for date-only or time-only values that replace the old workaround of using `DateTime` and ignoring the part you don't need.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+DateTime handling C# me sabse zyada real-world bugs cause karne wale areas me se ek hai — na ki syntax complex hai, balki concept genuinely subtle hai aur teams isse casually treat karte hain jab tak production me time-zone bug na aaye.
+
+### `DateTime.Kind` — ye classic gotcha
+
+`DateTime` struct ke andar ek `Kind` property hai jo teen values le sakti hai: `DateTimeKind.Utc`, `DateTimeKind.Local`, ya `DateTimeKind.Unspecified`. Problem ye hai ki **`Kind` sirf metadata hai — ye value ko khud transform nahi karta, aur bahut saari operations (jaise database se read karna, JSON deserialize karna) chupchaap `Unspecified` de deti hain**, jisse downstream code galat assumption bana leta hai ki value UTC hai ya local hai.
+
+```csharp
+DateTime now = DateTime.Now;      // Kind = Local
+DateTime utcNow = DateTime.UtcNow; // Kind = Utc
+DateTime fromDb = reader.GetDateTime(0); // Kind = Unspecified — database ne bataya hi nahi ye UTC hai ya local!
+```
+
+Ek genuine bug scenario: ek service UTC time database me store karta hai, lekin jab wo value read hoti hai, `Kind` `Unspecified` aa jaata hai. Agar koi doosra developer is value pe `.ToLocalTime()` call kare, .NET assume karega ki value already local hai aur galat conversion karega — silently wrong time, koi exception nahi.
+
+### `DateTimeOffset` — explicit offset se ambiguity khatam
+
+`DateTimeOffset` `DateTime` ki tarah hi ek date/time value store karta hai, lekin saath me ek **explicit UTC offset** bhi carry karta hai (jaise `+05:30` India ke liye). Isse ye pata chalta hai exactly "ye moment kaunse absolute point in time ko represent karta hai" — bina kisi implicit assumption ke.
+
+```csharp
+DateTimeOffset now = DateTimeOffset.Now;   // e.g. 2026-08-25T14:30:00+05:30
+DateTimeOffset utcNow = DateTimeOffset.UtcNow; // e.g. 2026-08-25T09:00:00+00:00
+```
+
+Interview me ye distinction precisely samajhna zaroori hai: `DateTime` sirf "ek wall-clock reading" store karta hai jiski interpretation `Kind` pe depend karti hai (aur `Kind` unreliable hai), jabki `DateTimeOffset` genuinely ek **unambiguous point in time** represent karta hai kyunki offset khud value ka part hai.
+
+### Standard practice — UTC store karo, local display karo
+
+Almost universal industry guidance: **database me hamesha UTC store karo** (ya to `DateTime` with `Kind = Utc`, ya `DateTimeOffset`), aur **display time UI layer pe user ke local timezone me convert karo**. Ye ek single source of truth deta hai — server timezone, deployment region, ya user ka timezone change hone se stored data ki meaning nahi badalti.
+
+```csharp
+// Store: hamesha UTC
+order.CreatedAt = DateTimeOffset.UtcNow;
+
+// Display: user ke timezone me convert karo (frontend pe ya explicit TimeZoneInfo conversion se)
+var istTime = TimeZoneInfo.ConvertTime(order.CreatedAt, TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
+```
+
+### `TimeSpan` — duration, ek point-in-time nahi
+
+`TimeSpan` do time points ke beech ka **difference/duration** represent karta hai — "3 ghante 30 minute," "2 din," na ki koi specific calendar date.
+
+```csharp
+TimeSpan duration = endTime - startTime;
+TimeSpan fiveMinutes = TimeSpan.FromMinutes(5);
+Console.WriteLine(duration.TotalHours);
+```
+
+### `DateOnly`/`TimeOnly` (C# 10) — jab sirf ek hissa chahiye
+
+Purana pattern: agar sirf date chahiye (jaise "date of birth," jahan time-of-day irrelevant hai), developers `DateTime` use karte the aur time part ko ignore/zero-out kar dete the — jo confusing aur error-prone tha (kya `00:00:00` genuinely "no time" ka matlab hai, ya midnight ka ek specific record?). C# 10 ne `DateOnly` aur `TimeOnly` dedicated types diye:
+
+```csharp
+DateOnly dateOfBirth = new DateOnly(1995, 6, 15);
+TimeOnly openingTime = new TimeOnly(9, 0);   // 9:00 AM
+
+DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+```
+
+Ye types database ke `DATE`/`TIME` SQL types ke saath bhi cleanly map hote hain (EF Core support karta hai), aur intent ko explicit banate hain — koi ambiguity nahi ki "kya time part matter karta hai is field me."
+
+</Hinglish>
+
+<Callout type="trap">
+
+"`DateTime.Kind = Unspecified` ka matlab hai value UTC hai" — ye galat assumption hai jo real bugs cause karti hai. `Unspecified` ka literal matlab hai .NET ko pata hi nahi ye UTC hai ya local — koi bhi conversion operation (`.ToLocalTime()`/`.ToUniversalTime()`) apni khud ki assumption bana legi, jo galat ho sakti hai. Database se aane wali values ke liye explicitly verify/set karo ki Kind sahi hai, ya `DateTimeOffset` use karo jahan ye ambiguity structurally exist hi nahi karti.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne `DateOnly`/`TimeOnly` (C# 10, .NET 6) ko specifically is decades-old community complaint ke response me add kiya ki "date-only" data ke liye `DateTime` use karna aur time part ignore karna ek permanent source of subtle bugs tha — dedicated types se intent compiler-level pe explicit ho gaya.
+
+</RealWorld>
+
+<RealWorld company="An Indian Airline Booking Platform">
+
+Ek team ka flight-booking system UTC me flight times store karta tha, lekin ek reporting service `DateTime.Now` (server local time, jo UTC nahi tha) use kar raha tha comparisons ke liye — result: kuch flights "already departed" dikh rahi thi jab wo actually future me thi, kyunki do alag time references (UTC stored data vs server-local `.Now`) compare ho rahe the bina explicit conversion ke. Fix: poore codebase me consistently `DateTimeOffset.UtcNow` use karna, aur display layer pe hi local conversion karna.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `DateTime.Kind`: `Utc`, `Local`, or `Unspecified` — metadata only, doesn't transform the value
+- `DateTimeOffset` carries an explicit UTC offset (e.g. `+05:30`) alongside the value — unambiguous point in time
+- Standard practice: store UTC, convert to local only at the display layer
+- `TimeSpan` represents a duration (difference between two points), not a specific calendar moment
+- `DateOnly`/`TimeOnly` — C# 10 / .NET 6, dedicated date-only and time-only types, map cleanly to SQL `DATE`/`TIME`
+- Database reads via raw ADO.NET typically return `DateTime` with `Kind = Unspecified` — a common source of silent bugs
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`DateTime` aur `DateTimeOffset` me kya fark hai?" ka strong answer: "`DateTime` ka `Kind` property (`Utc`/`Local`/`Unspecified`) sirf metadata hai jo value ko khud transform nahi karta — bahut saari operations `Unspecified` de deti hain, jisse ambiguity aati hai. `DateTimeOffset` ek explicit UTC offset carry karta hai value ke saath, isliye ye genuinely unambiguous point-in-time represent karta hai. Standard practice hai database me UTC store karna aur sirf display layer pe local time me convert karna." Follow-up jo aata hai: "date-of-birth field ke liye kaunsa type use karoge?" — jawaab: `DateOnly`, kyunki time-of-day genuinely irrelevant hai us data ke liye, aur ye intent ko explicit banata hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`DateTime.Kind = Unspecified` ko UTC ya Local assume kar lena bina explicitly verify kiye — silent, hard-to-debug time-zone bugs ka classic source.
+
+</Mistake>
+
+<Mistake>
+
+Server-local `DateTime.Now` ko UTC-stored data ke saath directly compare karna — do alag time references bina conversion ke compare karna galat results deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Date-only data (jaise date of birth) ke liye purana `DateTime` + time-ignore pattern use karna instead of `DateOnly` — intent ambiguous rehta hai aur accidental time-component bugs ka risk rehta hai.
+
+</Mistake>
+
+<Mistake>
+
+`TimeSpan` aur `DateTime`/`DateTimeOffset` ko conceptually confuse karna — `TimeSpan` ek duration hai, koi specific calendar moment nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Need to represent time"] --> B{"Point in time or duration?"}
+    B -->|Point in time, ambiguity risk| C["DateTime — Kind metadata, easy to misuse"]
+    B -->|Point in time, unambiguous| D["DateTimeOffset — explicit UTC offset"]
+    B -->|Duration| E["TimeSpan"]
+    A --> F{"Only date or only time needed?"}
+    F -->|Date only| G["DateOnly"]
+    F -->|Time only| H["TimeOnly"]
+`}
+  caption="DateTimeOffset removes the Kind ambiguity that DateTime carries; DateOnly/TimeOnly express intent explicitly when only part of a moment matters."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `DateTime.Kind` (`Utc`/`Local`/`Unspecified`) is metadata only — it doesn't transform the value, and is easy to get wrong
+- `DateTimeOffset` carries an explicit UTC offset — genuinely unambiguous about which moment it represents
+- Standard practice: store UTC everywhere, convert to local time only at the display layer
+- Raw ADO.NET reads typically return `DateTime` with `Kind = Unspecified` — verify before converting
+- `TimeSpan` = a duration between two points, not a calendar moment
+- `DateOnly`/`TimeOnly` (C# 10) replace the old "DateTime + ignore part of it" workaround
+- Never compare a UTC-stored value against server-local `DateTime.Now` without explicit conversion
+
+</QuickRevision>

@@ -1,0 +1,200 @@
+---
+slug: "fluent-api-vs-data-annotations"
+title: "Fluent API vs Data Annotations — Two Ways to Configure an EF Core Model"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 6
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["efcore-dbcontext-dbset-fundamentals"]
+tags: ["dotnet", "efcore", "fluent-api", "data-annotations", "model-configuration"]
+englishDefinition: "Data Annotations configure an EF Core entity's mapping by placing attributes directly on the class ([Required], [MaxLength], [Key]), keeping configuration co-located with the entity; Fluent API configures the same mappings centrally inside DbContext.OnModelCreating using a chainable, code-based API, and is strictly more powerful — some configuration (composite keys, certain relationship nuances, table splitting) has no attribute equivalent at all."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Data Annotations configure an EF Core entity's mapping by placing attributes directly on the class (`[Required]`, `[MaxLength]`, `[Key]`), keeping configuration co-located with the entity; Fluent API configures the same mappings centrally inside `DbContext.OnModelCreating` using a chainable, code-based API, and is strictly more powerful — some configuration (composite keys, certain relationship nuances, table splitting) has no attribute equivalent at all.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+EF Core ko batana hota hai ki C# class database schema me kaise map hoti hai — kaunsi property primary key hai, kaunsi required hai, string ki max length kya hai, relationships kaise configure hain. Ye information do jagah likh sakte ho, aur interview me exact trade-off poocha jaata hai.
+
+### Data Annotations — attributes seedha class pe
+
+```csharp
+public class Product
+{
+    [Key]
+    public int Id { get; set; }
+
+    [Required]
+    [MaxLength(100)]
+    public string Name { get; set; } = string.Empty;
+
+    [Column(TypeName = "decimal(18,2)")]
+    public decimal Price { get; set; }
+
+    [ForeignKey(nameof(Category))]
+    public int CategoryId { get; set; }
+    public Category Category { get; set; } = null!;
+}
+```
+
+Fayda: configuration entity ke saath hi dikhti hai — class kholo, saari mapping rules waheen mil jaati hain, extra file dhoondhne ki zaroorat nahi.
+
+### Fluent API — centralized, `OnModelCreating` ke andar
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Product>(entity =>
+    {
+        entity.HasKey(p => p.Id);
+        entity.Property(p => p.Name).IsRequired().HasMaxLength(100);
+        entity.Property(p => p.Price).HasColumnType("decimal(18,2)");
+        entity.HasOne(p => p.Category)
+              .WithMany(c => c.Products)
+              .HasForeignKey(p => p.CategoryId);
+    });
+}
+```
+
+Fayda: entity classes **clean** rehti hain (koi EF Core-specific attribute nahi, agar tum entities ko persistence-agnostic rakhna chahte ho — DDD-style thinking), aur configuration ek jagah centralized hoti hai jahan bade/complex mappings readable rehte hain.
+
+### Jab Fluent API hi mandatory hai — attribute equivalent hi nahi hai
+
+Ye interview ka asli test-point hai — sirf "dono options hain" bolna kaafi nahi, ye jaanna zaroori hai ki **kab Fluent API ke alawa koi rasta nahi hai:**
+
+1. **Composite primary keys** — attribute se ek composite key (do properties milkar ek key) configure hi nahi ho sakti, sirf Fluent API se:
+```csharp
+modelBuilder.Entity<OrderItem>().HasKey(oi => new { oi.OrderId, oi.ProductId });
+```
+
+2. **Table splitting / Owned entity types (advanced)** — ek se zyada entity ko ek hi table me map karna, ya value objects (`Address`) ko owned type ki tarah configure karna — attribute se possible nahi.
+
+3. **Kuch relationship nuances** — jaise multiple relationships ek hi pair of entities ke beech (ek `Order` me `ShippingAddress` aur `BillingAddress` dono `Address` type ke, alag foreign keys ke saath) — attributes ambiguous ho jaate hain, Fluent API explicit control deta hai.
+
+4. **Query filters (global filters, jaise soft-delete)** — `HasQueryFilter()` sirf Fluent API me hai.
+
+5. **Index configuration with names/uniqueness combos, check constraints** — Fluent API zyada expressive hai.
+
+### Precedence — agar dono use kiye jaayein ek hi property pe
+
+Agar ek property pe Data Annotation bhi hai aur Fluent API config bhi (conflicting), **Fluent API jeetta hai** — ye zyada specific, explicit configuration maana jaata hai, isliye override karta hai.
+
+### Practical recommendation
+
+Chhoti, simple properties (required, max length, key) ke liye Data Annotations convenient hain aur readability improve karte hain. Complex relationships, composite keys, ya kuch bhi jo attribute support nahi karta — Fluent API mandatory hai. Bade production codebases me common pattern: **Fluent API ko primary approach banao** (`IEntityTypeConfiguration<T>` classes ke through, ek class per entity, `OnModelCreating` me sab apply karo) taaki consistency rahe, aur entities ko clean/POCO rakho.
+
+```csharp
+public class ProductConfiguration : IEntityTypeConfiguration<Product>
+{
+    public void Configure(EntityTypeBuilder<Product> builder)
+    {
+        builder.Property(p => p.Name).IsRequired().HasMaxLength(100);
+    }
+}
+
+// OnModelCreating:
+modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+```
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Data Annotations aur Fluent API functionally equivalent hain, bas style ka farak hai" — ye galat hai. Fluent API **strictly superset** hai — kuch configurations (composite keys, query filters, table splitting) sirf Fluent API se possible hain, Data Annotations se kabhi nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+EF Core ki official documentation explicitly recommend karti hai `IEntityTypeConfiguration<T>` pattern (Fluent API ka organized version) use karna jaise-jaise model badi hoti hai — ek single `OnModelCreating` method me sab kuch likhna bade projects me unmanageable ho jaata hai, isliye per-entity configuration classes ek clean separation dete hain.
+
+</RealWorld>
+
+<RealWorld company="A Multi-Tenant SaaS Platform">
+
+Ek typical Indian multi-tenant SaaS product me, har query automatically current tenant ke data tak restrict honi chahiye — ye `HasQueryFilter(e => e.TenantId == _currentTenantId)` (Fluent API-only feature) se globally configure hota hai ek baar `OnModelCreating` me, aur har LINQ query automatically filtered ho jaati hai bina developer ko har query me manually `Where(tenantId)` likhna pade. Ye exactly wo scenario hai jahan Data Annotations kaam hi nahi aa sakti — Fluent API genuinely mandatory hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Fluent API is a strict superset — composite keys, query filters, table splitting, owned types have NO Data Annotation equivalent at all
+- Conflict resolution: Fluent API configuration always wins over a Data Annotation on the same property
+- `IEntityTypeConfiguration<T>` + `ApplyConfigurationsFromAssembly` is the recommended pattern for organizing Fluent API config in larger models
+- Data Annotations keep configuration co-located with the entity — zero extra files for simple cases
+- `[Required]`, `[MaxLength]`, `[Key]`, `[ForeignKey]`, `[Column]` are the most commonly used annotations
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Fluent API aur Data Annotations me kya fark hai, aur kab kaunsa use karoge?" ka strong answer: "Data Annotations attributes hain jo directly entity class pe likhte hain — chhote, simple configurations (required, max length) ke liye convenient hain kyunki configuration entity ke saath hi visible hai. Fluent API `OnModelCreating` me centralized configuration hai — ye strictly zyada powerful hai, kyunki kuch cheezein (composite keys, global query filters, table splitting) sirf Fluent API se possible hain, koi attribute equivalent hi nahi hai. Bade projects me, main Fluent API ko primary approach banata hoon `IEntityTypeConfiguration<T>` classes ke through, taaki entities clean POCOs rahein aur configuration consistently ek jagah organize ho." Almost-certain follow-up: "agar dono ek hi property pe conflicting configuration den, kaun jeetega?" — jawaab: Fluent API.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye sochna ki Data Annotations aur Fluent API functionally identical hain aur "sirf style preference" hai — Fluent API strictly superset hai, kuch configurations sirf usi se possible hain.
+
+</Mistake>
+
+<Mistake>
+
+Composite primary key ke liye Data Annotation dhoondhna aur na milne par confuse ho jaana — composite keys ke liye Fluent API (`HasKey` with an anonymous type) hi eksathe rasta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi property pe conflicting Data Annotation aur Fluent API configuration likh dena bina samjhe ki Fluent API override karega — confusion aur unexpected behavior create karta hai debugging me.
+
+</Mistake>
+
+<Mistake>
+
+Bade models me sab kuch ek hi giant `OnModelCreating` method me likhte rehna — `IEntityTypeConfiguration<T>` pattern use na karna maintainability ko significantly kharaab kar deta hai jaise-jaise entities badhti hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Need to configure an EF Core mapping"] --> B{"Simple property config?\n(Required, MaxLength, Key)"}
+    B -->|Yes, either works| C["Data Annotation OR Fluent API"]
+    B -->|"Composite key, query filter,\ntable splitting, owned types"| D["Fluent API — MANDATORY,\nno attribute equivalent exists"]
+    C --> E["If both configure the same property: Fluent API wins"]
+`}
+  caption="Fluent API is a strict superset of Data Annotations — some configuration has no attribute form at all, and Fluent API always wins on conflict."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Data Annotations: attributes on the entity class, co-located, good for simple config
+- Fluent API: centralized in `OnModelCreating`, strictly more powerful
+- Composite keys, global query filters (`HasQueryFilter`), table splitting, owned types — Fluent API ONLY, no annotation equivalent
+- On conflict between the two for the same property, Fluent API wins
+- Use `IEntityTypeConfiguration<T>` + `ApplyConfigurationsFromAssembly` to organize Fluent API config for larger models
+- Data Annotations couple your domain entities to EF Core attributes; Fluent API keeps entities as clean POCOs
+
+</QuickRevision>

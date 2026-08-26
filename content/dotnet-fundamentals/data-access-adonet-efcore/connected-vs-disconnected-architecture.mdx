@@ -1,0 +1,164 @@
+---
+slug: "connected-vs-disconnected-architecture"
+title: "Connected vs Disconnected Architecture — SqlDataReader vs DataSet, and Connection Pooling"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 2
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["adonet-fundamentals"]
+tags: ["dotnet", "adonet", "connection-pooling", "sqldatareader", "dataset", "data-access"]
+englishDefinition: "Connected architecture (SqlDataReader) keeps the database connection open for the duration of data access, streaming results row by row with minimal memory footprint; disconnected architecture (DataSet/DataTable) loads the full result into memory upfront and releases the connection immediately, at the cost of higher memory use. Connection pooling is what makes repeatedly opening and closing SqlConnection objects cheap in practice, regardless of which model is used."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Connected architecture (`SqlDataReader`) keeps the database connection open for the duration of data access, streaming results row by row with minimal memory footprint; disconnected architecture (`DataSet`/`DataTable`) loads the full result into memory upfront and releases the connection immediately, at the cost of higher memory use. Connection pooling is what makes repeatedly opening and closing `SqlConnection` objects cheap in practice, regardless of which model is used.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne `SqlDataReader` aur `DataTable`/`DataSet` dono dekhe. Ab inhe explicitly do architecture models ki tarah compare karte hain, kyunki interview me exactly yahi framing poochi jaati hai — "connected vs disconnected."
+
+### Connected architecture — connection khula rehta hai jab tak kaam chal raha hai
+
+`SqlDataReader` connected model ka example hai — jab tak tum rows read kar rahe ho, connection **open** rehna chahiye. Ye ek live, active stream hai database se. Fayda: memory me sirf current row hoti hai, chahe result set me lakhon rows hon. Nuksaan: connection uss poore duration ke liye "busy" rehta hai — agar processing slow hai (jaise har row pe koi heavy computation ya external API call), connection unnecessarily der tak occupied rehta hai, jo connection pool pe pressure daalta hai.
+
+```csharp
+using SqlConnection connection = new SqlConnection(connectionString);
+await connection.OpenAsync();
+using SqlCommand command = new SqlCommand("SELECT Id, Name FROM Customers", connection);
+using SqlDataReader reader = await command.ExecuteReaderAsync();
+// connection OPEN yahan se leke reader dispose hone tak
+while (await reader.ReadAsync())
+{
+    Process(reader.GetInt32(0), reader.GetString(1)); // agar ye slow hai, connection der tak block rehta hai
+}
+```
+
+### Disconnected architecture — data lo, connection chhodo
+
+`DataSet`/`DataTable` + `SqlDataAdapter` disconnected model hai — `Fill()` call karte ho, adapter internally connection open karta hai, poora result memory me copy karta hai, **aur turant connection close kar deta hai.** Uske baad tumhare paas ek in-memory snapshot hai jise tum jitni der chaho process/edit kar sakte ho, bina kisi database connection occupy kiye.
+
+```csharp
+SqlDataAdapter adapter = new SqlDataAdapter("SELECT Id, Name FROM Customers", connectionString);
+DataTable table = new DataTable();
+adapter.Fill(table); // connection open -> fill -> close, sab automatic
+
+// connection ab CLOSED hai — jitna time chaho process karo, koi connection occupied nahi
+foreach (DataRow row in table.Rows)
+{
+    Process(row);
+}
+```
+
+Trade-off clear hai: disconnected model connection ko jaldi free kar deta hai (achha for scalability under load), lekin poora result set memory me hona zaroori hai (bad for very large result sets).
+
+### Connection Pooling — dono models isi ke upar chalte hain
+
+Ek genuine misconception: log sochte hain `SqlConnection.Open()`/`Close()` har baar ek fresh, expensive TCP handshake + authentication karta hai. **Actually nahi** — ADO.NET providers connection pooling automatically karte hain. Jab tum `Close()`/`Dispose()` karte ho, physical connection database se turant nahi tootta — wo ek **pool** me wapas chala jaata hai (same connection string ke liye), ready to reuse. Agla `Open()` call, agar pool me ek available connection hai, use us existing physical connection ko turant reuse kar leta hai — expensive handshake dobara nahi hota.
+
+Isi wajah se "connection ko baar-baar open/close karna expensive hai" — ye ek common galat assumption hai. Best practice actually **short-lived connections** hai — connection ko jab tak zaroorat ho tabhi tak open rakho, kaam hote hi dispose karo (jo pool me return kar deta hai). Connection ko "hold karke rakhna" (jaise ek static, application-lifetime connection) galat pattern hai — pool ka poora point defeat ho jaata hai, aur concurrent requests ke beech connection sharing conflicts create hota hai.
+
+Pool ki size configurable hai connection string me (`Max Pool Size`, default 100) — agar concurrent demand pool size se zyada ho jaaye, naye requests queue hote hain, aur agar timeout ke andar koi connection available nahi hoti, "Timeout expired" exception aata hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Practical rule: chhote, short-lived `using` blocks me connection open/close karo — pooling ke wajah se ye cheap hai. Connection ko manually cache/reuse karne ki koshish mat karo across requests — ADO.NET ka pooling layer ye already efficiently karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET's `SqlClient` provider (aur most ADO.NET providers) connection pooling ko transparently, connection-string-level pe manage karte hain — same connection string wale requests automatically ek shared pool use karte hain. Ye itna fundamental hai ki EF Core aur Dapper dono bhi is layer ke upar directly rely karte hain, apna khud ka pooling logic implement nahi karte.
+
+</RealWorld>
+
+<RealWorld company="An E-commerce Order API">
+
+Ek typical high-traffic order-processing API me, ek developer ne galti se ek static, shared `SqlConnection` instance bana diya application startup pe, "performance ke liye connection reuse karne" ke intent se. Result: concurrent requests same connection object pe race karne lage, intermittent "connection already open with a pending operation" errors aaye. Fix simple tha — har request apna khud ka short-lived connection le (`using` ke andar), aur pooling layer automatically underlying physical connections efficiently reuse karega. Yahi lesson interview me poocha jaata hai: connection ko manually "optimize" karne ki koshish mat karo, ADO.NET pooling already ye kaam karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Connected model (`SqlDataReader`): O(1) memory relative to result-set size — sirf current row
+- Disconnected model (`DataTable`/`DataSet`): O(n) memory — poora result set upfront
+- Default `Max Pool Size` connection-string setting: 100 connections per unique connection string
+- Connection pooling ke bina, ek TCP handshake + SQL Server login/auth cycle ek connection open karne me typically low-single-digit milliseconds se zyada le sakta hai — pooling se ye baar-baar avoid hota hai
+- Best practice: connection lifetime chhota rakho (`using` block-scoped), pool khud reuse handle karta hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Connected aur disconnected architecture me fark batao" ka strong answer: "`SqlDataReader` connected model hai — connection open rehta hai jab tak rows stream ho rahi hain, memory-efficient hai bade result sets ke liye. `DataSet`/`DataTable` disconnected model hai — `SqlDataAdapter.Fill()` poora result memory me copy karta hai aur turant connection close kar deta hai, jisse connection jaldi free ho jaata hai lekin memory zyada lagta hai." Almost-guaranteed follow-up: "to phir connection ko baar-baar open/close karna expensive nahi hai?" — jawaab: nahi, ADO.NET connection pooling ke wajah se — `Close()`/`Dispose()` physical connection ko database se disconnect nahi karta, use ek pool me wapas daal deta hai reuse ke liye, isliye short-lived connections best practice hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Connection ko "performance ke liye" static/shared/application-lifetime bana dena — ye pooling ka fayda khatam kar deta hai aur concurrent-access bugs create karta hai. Connection lifetime hamesha short-lived rakhna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki connection open/close baar-baar karna expensive hai isliye avoid karna chahiye — ADO.NET connection pooling ke wajah se ye actually cheap hai; short-lived connections hi correct pattern hain.
+
+</Mistake>
+
+<Mistake>
+
+`SqlDataReader` ke saath connection ko unnecessarily der tak open rakhna (jaise reader ke andar slow external calls karna) — ye connection pool pe pressure daalta hai, high load me pool exhaustion ki taraf le jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Bade result sets ke liye `DataTable`/`DataSet` use karna sirf convenience ke liye, bina memory impact soche — lakhon rows ka poora result memory me load karna production me OutOfMemory ya severe GC pressure create kar sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Connected["Connected — SqlDataReader"]
+        A1[Open Connection] --> A2[Stream row 1] --> A3[Stream row 2] --> A4["... connection stays open"] --> A5[Close Connection]
+    end
+    subgraph Disconnected["Disconnected — DataSet/DataTable"]
+        B1[Open Connection] --> B2[Fill entire result into memory] --> B3[Close Connection immediately] --> B4["Process/edit offline — no connection held"]
+    end
+`}
+  caption="Connected keeps the connection open for the full read; disconnected loads everything upfront and releases the connection immediately."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Connected (`SqlDataReader`): connection open throughout, minimal memory, streaming
+- Disconnected (`DataTable`/`DataSet`): connection released immediately after fill, higher memory, offline-editable
+- Connection pooling makes repeated `Open()`/`Close()` cheap — physical connections are reused, not torn down each time
+- Best practice: keep connections short-lived (`using`-scoped), let pooling handle reuse
+- Never hold a static/shared connection across requests — defeats pooling and causes concurrency bugs
+- Default pool size is 100 per unique connection string — configurable via `Max Pool Size`
+
+</QuickRevision>

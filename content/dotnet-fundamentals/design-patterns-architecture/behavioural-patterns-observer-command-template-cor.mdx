@@ -1,0 +1,244 @@
+---
+slug: "behavioural-patterns-observer-command-template-cor"
+title: "Behavioural Patterns — Observer, Command, Template Method, Chain of Responsibility"
+section: "dotnet-fundamentals"
+module: "design-patterns-architecture"
+order: 2
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["delegates-func-action-events", "middleware-pipeline-chain-of-responsibility", "dotnet-design-patterns-factory-strategy-singleton-decorator"]
+tags: ["dotnet", "csharp", "design-patterns", "observer", "command", "template-method", "chain-of-responsibility"]
+englishDefinition: "Behavioural design patterns describe how objects communicate and distribute responsibility at runtime: Observer lets subscribers react to a subject's state changes (C#'s built-in event mechanism is a direct implementation), Command encapsulates a request as a standalone object, Template Method fixes an algorithm's skeleton in a base class while letting subclasses fill in specific steps, and Chain of Responsibility passes a request along a sequence of handlers until one handles it."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Flipkart", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+Behavioural design patterns describe how objects communicate and distribute responsibility at runtime: Observer lets subscribers react to a subject's state changes (C#'s built-in event mechanism is a direct implementation), Command encapsulates a request as a standalone object, Template Method fixes an algorithm's skeleton in a base class while letting subclasses fill in specific steps, and Chain of Responsibility passes a request along a sequence of handlers until one handles it.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic 4 behavioural patterns cover karta hai — inme se do (Observer aur Chain of Responsibility) ka to tumne shayad already use kiya hoga bina naam jaane, kyunki C# ka `event` keyword aur ASP.NET Core ka poora middleware pipeline exactly yahi patterns hain. Baaki do (Command, Template Method) genuinely naye concepts hain jo `oops-dotnet` me cover nahi hue.
+
+### Observer — C# ka `event` keyword khud hi ye pattern hai
+
+Observer pattern ka idea simple hai: ek "subject" (publisher) apni state change hone par sabhi "observers" (subscribers) ko notify karta hai, bina unhe directly jaante hue kaun kaun subscribe kiya hai. `oops-dotnet` ke `delegates-func-action-events` topic me events ka poora mechanism (delegate wrapping, `+=`/`-=`, `EventHandler`/`EventArgs`) already deeply cover ho chuka hai — us depth ko yahan repeat nahi kar rahe. Interview ke liye important connection sirf ye hai: **`event` C#'s language-level implementation of Observer hai.**
+
+```csharp
+public class OrderProcessor
+{
+    public event EventHandler<OrderCompletedEventArgs>? OrderCompleted;
+
+    public void ProcessOrder(Order order)
+    {
+        // ... processing logic ...
+        OrderCompleted?.Invoke(this, new OrderCompletedEventArgs(order));
+    }
+}
+
+// Multiple independent observers subscribe — OrderProcessor ko unke baare me kuch pata nahi
+processor.OrderCompleted += (s, e) => emailService.SendConfirmation(e.Order);
+processor.OrderCompleted += (s, e) => inventoryService.DeductStock(e.Order);
+processor.OrderCompleted += (s, e) => analyticsService.TrackSale(e.Order);
+```
+
+`OrderProcessor` (subject) ko `EmailService`, `InventoryService`, `AnalyticsService` (observers) ke baare me kuch pata nahi — wo sirf apna event raise karta hai. Ye loose coupling hi Observer pattern ka poora point hai, aur C# me isse hand-roll karne ki zaroorat nahi kyunki `event` keyword directly ye deta hai.
+
+### Command — ek request ko object banana
+
+Command pattern ek operation (aur uske parameters) ko ek standalone object me encapsulate karta hai, taaki usse queue kiya ja sake, log kiya ja sake, undo kiya ja sake, ya later execute kiya ja sake — bina caller ko implementation details janne diye. MediatR-style CQRS is pattern ka sabse common real-world .NET manifestation hai.
+
+```csharp
+public interface ICommand<TResult>
+{
+    Task<TResult> ExecuteAsync();
+}
+
+public class CreateOrderCommand : ICommand<Guid>
+{
+    private readonly Order _order;
+    private readonly IOrderRepository _repository;
+
+    public CreateOrderCommand(Order order, IOrderRepository repository)
+    {
+        _order = order; _repository = repository;
+    }
+
+    public async Task<Guid> ExecuteAsync()
+    {
+        await _repository.AddAsync(_order);
+        return _order.Id;
+    }
+}
+```
+
+MediatR jaisi library isi idea ko framework-level standardize karti hai — ek `IRequest<TResponse>` (command/query object) aur ek separate `IRequestHandler<TRequest, TResponse>` (execution logic). `oops-dotnet`'s design-patterns topic me Mediator pattern aur CQRS ki depth already cover ho chuki hai (`dotnet-design-patterns-factory-strategy-singleton-decorator` — us topic ka Mediator section dekho), isliye yahan hum sirf itna samajhte hain: **Command pattern hi wo foundational idea hai jispar MediatR-style CQRS command objects bane hote hain** — "encapsulate a request as an object" ka pure form.
+
+Command pattern ka ek classic use case undo functionality hai:
+
+```csharp
+public interface IUndoableCommand
+{
+    void Execute();
+    void Undo();
+}
+
+public class AddItemCommand : IUndoableCommand
+{
+    private readonly List<string> _cart;
+    private readonly string _item;
+    public AddItemCommand(List<string> cart, string item) { _cart = cart; _item = item; }
+    public void Execute() => _cart.Add(_item);
+    public void Undo() => _cart.Remove(_item);
+}
+```
+
+Ek `Stack<IUndoableCommand>` executed commands ko track karta hai — undo ka matlab hai top command ka `Undo()` call karna. Ye pattern text editors, shopping carts, aur "action history" wale kisi bhi feature me use hota hai.
+
+### Template Method — algorithm ka skeleton base class me, steps subclass me
+
+Template Method ek base class me ek algorithm ka overall structure (steps ka order) fix karta hai, lekin individual steps ko `abstract`/`virtual` methods ke through subclasses par chhod deta hai. Ye inheritance-based hai (Strategy composition-based hota hai — us contrast ko interview me clearly bolna important hai).
+
+```csharp
+public abstract class ReportGenerator
+{
+    // Template Method — algorithm ka fixed skeleton
+    public void Generate()
+    {
+        var data = FetchData();
+        var formatted = FormatData(data);
+        SaveReport(formatted);
+        NotifyStakeholders();
+    }
+
+    protected abstract IEnumerable<object> FetchData();
+    protected abstract string FormatData(IEnumerable<object> data);
+
+    protected virtual void SaveReport(string content) => File.WriteAllText("report.txt", content);
+    protected virtual void NotifyStakeholders() => Console.WriteLine("Report ready.");
+}
+
+public class SalesReportGenerator : ReportGenerator
+{
+    protected override IEnumerable<object> FetchData() => new[] { "Sale1", "Sale2" };
+    protected override string FormatData(IEnumerable<object> data) => string.Join(", ", data);
+}
+```
+
+`Generate()` (the template method) kabhi override nahi hota — sequence fixed hai. Subclasses sirf `FetchData`/`FormatData` jaise specific steps customize karte hain. Ye Strategy se genuinely different hai: Strategy me poora algorithm hi ek swappable object hota hai (composition), Template Method me sirf **kuch steps** customizable hote hain, overall flow fixed rehta hai (inheritance).
+
+### Chain of Responsibility — ASP.NET Core middleware pipeline khud isi ka example hai
+
+`oops-dotnet`'s `middleware-pipeline-chain-of-responsibility` topic me is pattern ka poora deep-dive already ho chuka hai — har middleware component request ko receive karta hai, decide karta hai handle karna hai ya next component ko pass karna hai (ya dono), aur har middleware same polymorphic `InvokeAsync` shape expose karta hai. Yahan hum sirf itna name-check karte hain: **agar interview me "Chain of Responsibility ka real .NET example do" poocha jaaye, ASP.NET Core middleware pipeline sabse strong, canonical answer hai** — ek request `app.Use(...)`-registered handlers ki chain se guzarta hai, har handler independently decide karta hai age badhna hai ya rukna hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview me pattern-naam-drop se zyada value ye dikhane me hai ki tumne pattern ko **already-existing framework feature me pehchana** hai — "Observer? Wo to bas humara `event` keyword hai" ya "Chain of Responsibility? Middleware pipeline exactly ye hai" jaisa jawab senior-level signal deta hai, textbook definition se zyada.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka `IHostedService`/`BackgroundService` startup aur `IHost` ka poora lifecycle event-driven hai — `IHostApplicationLifetime.ApplicationStarted`/`ApplicationStopping` events Observer pattern ka direct use hain, jahan multiple independent components (logging, health-check registration, background workers) host ke lifecycle changes pe react karte hain bina host ko unke baare me kuch jaante hue.
+
+</RealWorld>
+
+<RealWorld company="A Food-Delivery Platform Team">
+
+Ek Indian food-delivery backend me order-status-change notifications (SMS, push notification, restaurant dashboard update, delivery-partner assignment) sabhi ek single `OrderStatusChanged` event pe subscribe karte the. Jab team ne ek naya "loyalty points credit" feature add kiya, unhe sirf ek naya observer subscribe karna pada — `OrderProcessor` ki core logic me ek line bhi change nahi hui. Ye Observer pattern ka exact payoff hai: naye subscribers add karna existing code ko touch kiye bina.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Observer = C#'s `event` keyword — koi separate implementation nahi chahiye, language-level support hai
+- Command pattern hi foundational idea hai jispar MediatR-style CQRS command/query objects bane hain
+- Template Method: inheritance-based, sirf specific steps customizable; Strategy: composition-based, poora algorithm swappable
+- Chain of Responsibility ka sabse canonical .NET example: ASP.NET Core middleware pipeline (`app.Use(...)` chain)
+- 4 patterns yahan, 4 alag "communication style": broadcast (Observer), encapsulated-request (Command), fixed-skeleton (Template Method), sequential-handoff (Chain of Responsibility)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Template Method aur Strategy pattern me kya fark hai — dono to 'customizable algorithm' jaisa lagte hain?" ka strong answer: "Template Method inheritance-based hai — base class me algorithm ka poora skeleton (steps ka order) fixed rehta hai, subclasses sirf individual abstract/virtual steps override karte hain. Strategy composition-based hai — poora algorithm hi ek interchangeable object hota hai jo runtime pe inject/swap kiya ja sakta hai, base class ka koi fixed skeleton nahi hota. Simplest litmus test: agar sirf 'ek step' change karna hai poore flow ko fixed rakhte hue, Template Method; agar poora algorithm hi swap karna hai, Strategy." Follow-up almost certain: "Command pattern ka MediatR se kya connection hai?" — answer: "MediatR ka `IRequest`/`IRequestHandler` pair Command pattern ka framework-level, standardized implementation hai — request ek self-contained object hai jo apna execution logic se decoupled hai."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Observer pattern ko explain karte waqt C#'s `event` keyword ka mention na karna — interviewer ye specifically test karta hai ki tumhe pata hai ki language-level feature hi is pattern ka implementation hai, sirf textbook definition kaafi nahi.
+
+</Mistake>
+
+<Mistake>
+
+Template Method aur Strategy ko confuse karna — dono "customizable behavior" jaise lagte hain, lekin mechanism (inheritance vs composition) aur scope (kuch steps vs poora algorithm) genuinely alag hain.
+
+</Mistake>
+
+<Mistake>
+
+Command pattern ko sirf "MediatR use karna" tak simplify kar dena — underlying idea (request ko ek standalone, executable object banana) samajhna zaroori hai, sirf library ka naam yaad rakhna kaafi nahi.
+
+</Mistake>
+
+<Mistake>
+
+Chain of Responsibility explain karte waqt middleware pipeline ka mention na karna — ye sabse strong, sabse relatable real-world example hai jo har .NET developer ne already use kiya hai.
+
+</Mistake>
+
+<Mistake>
+
+Template Method me base class ka template method (jaise `Generate()`) khud ko override-able bana dena — is method ko `sealed`/non-virtual (ya kam se kam documentation se "don't override" clear) rakhna chahiye, sirf individual steps override-able hone chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Subject["OrderProcessor (subject)"] -->|OrderCompleted event| Obs1["EmailService"]
+    Subject -->|OrderCompleted event| Obs2["InventoryService"]
+    Subject -->|OrderCompleted event| Obs3["AnalyticsService"]
+
+    Client["Client"] -->|creates & queues| Cmd["CreateOrderCommand (ICommand)"]
+    Cmd -->|ExecuteAsync| Repo["OrderRepository"]
+
+    Base["ReportGenerator (Template Method)"] -->|fixed skeleton: Generate()| Steps["FetchData -> FormatData -> Save -> Notify"]
+    Sub["SalesReportGenerator"] -.overrides FetchData/FormatData.-> Base
+
+    Req["HTTP Request"] --> MW1["Auth Middleware"] --> MW2["Logging Middleware"] --> MW3["Endpoint"]
+`}
+  caption="Observer broadcasts to independent subscribers, Command wraps a request as an object, Template Method fixes the skeleton while subclasses fill steps, Chain of Responsibility passes work along a sequence of handlers."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Observer = C#'s `event` keyword — subject notifies subscribers without knowing who they are (see `oops-dotnet`'s delegates/events topic for the full mechanism)
+- Command encapsulates a request as an object — foundational idea behind MediatR-style CQRS commands (see `oops-dotnet`'s Mediator coverage for the framework depth)
+- Template Method: inheritance-based, base class fixes the algorithm's skeleton, subclasses override individual steps
+- Strategy vs Template Method: composition + swap the whole algorithm (Strategy) vs inheritance + override a few steps (Template Method)
+- Chain of Responsibility's canonical .NET example: the ASP.NET Core middleware pipeline (see `oops-dotnet`'s middleware topic for the full deep-dive)
+- All four are behavioural patterns — they're about how objects communicate/distribute responsibility at runtime, not how they're created (creational) or structured (structural)
+
+</QuickRevision>

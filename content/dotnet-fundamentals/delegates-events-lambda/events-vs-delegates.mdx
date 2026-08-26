@@ -1,0 +1,210 @@
+---
+slug: "events-vs-delegates"
+title: "Events vs Delegates"
+section: "dotnet-fundamentals"
+module: "delegates-events-lambda"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["delegates-and-multicast", "delegates-func-action-events"]
+tags: ["dotnet", "csharp", "events", "delegates", "eventhandler", "pub-sub"]
+englishDefinition: "An event is a constrained, encapsulated wrapper around a multicast delegate — the declaring class alone can invoke it or assign it directly, while subscribers outside the class can only add or remove handlers with += and -=, which prevents subscribers from clearing the list or firing the event themselves; EventHandler and EventArgs form the standard signature convention used across .NET for this publish-subscribe pattern."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+An event is a constrained, encapsulated wrapper around a multicast delegate — the declaring class alone can invoke it or assign it directly, while subscribers outside the class can only add or remove handlers with `+=` and `-=`, which prevents subscribers from clearing the list or firing the event themselves; `EventHandler` and `EventArgs` form the standard signature convention used across .NET for this publish-subscribe pattern.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pehle topic me humne dekha delegate multicast kaise kaam karta hai — `+=` se subscribe, invoke karne par sab call. `event` keyword isi mechanism ke upar ek **encapsulation layer** hai, aur exactly ye encapsulation hi interview ka core point hai. (`oops-dotnet`'s `delegates-func-action-events` topic already events ka basic intro deta hai — yahan hum specifically encapsulation-level difference aur real pub/sub pattern pe focus karenge.)
+
+### Problem jo plain delegate field me hoti hai
+
+Agar tum ek plain public delegate field expose karo:
+
+```csharp
+public class Publisher
+{
+    public Action<string> OnMessage; // plain delegate field — NOT an event
+}
+
+// Bahar se, koi bhi ye sab kar sakta hai:
+var pub = new Publisher();
+pub.OnMessage += msg => Console.WriteLine(msg);   // subscribe (theek hai)
+pub.OnMessage = null;                              // sab subscribers CLEAR kar diye!
+pub.OnMessage("hacked message");                   // event ko directly INVOKE kar diya!
+```
+
+Ek plain delegate field ke saath, koi bhi outside code (a) poori invocation list clear kar sakta hai `=` assignment se, aur (b) delegate ko directly invoke kar sakta hai, jaise wo khud publisher ho. Ye clearly galat encapsulation hai — sirf declaring class ko "event fire karne" ka right hona chahiye.
+
+### `event` keyword ka fix
+
+```csharp
+public class Publisher
+{
+    public event Action<string> OnMessage; // 'event' keyword add kiya
+
+    public void Publish(string msg)
+    {
+        OnMessage?.Invoke(msg); // sirf CLASS KE ANDAR invoke kar sakte hain
+    }
+}
+
+var pub = new Publisher();
+pub.OnMessage += msg => Console.WriteLine(msg); // subscribe — allowed
+// pub.OnMessage = null;      // COMPILE ERROR — bahar se assignment allowed nahi
+// pub.OnMessage("test");     // COMPILE ERROR — bahar se invoke allowed nahi
+pub.Publish("Hello subscribers!"); // sirf class ke andar se hi invoke ho sakta hai
+```
+
+`event` keyword add karte hi compiler restrictions enforce karta hai: class ke BAHAR se sirf `+=`/`-=` allowed hai, `=` assignment aur direct `Invoke()`/`()` call sirf declaring class ke ANDAR allowed hain. Internally, `event` abhi bhi ek multicast delegate hi hai — bas compiler iske around access-control add kar deta hai, bilkul jaise property `get`/`set` ek field ke around access-control add karti hai.
+
+### `EventHandler`/`EventArgs` — standard convention
+
+.NET me events ka conventional signature hai — `void Handler(object? sender, TEventArgs e)`:
+
+```csharp
+public class OrderPlacedEventArgs : EventArgs
+{
+    public string OrderId { get; }
+    public decimal Amount { get; }
+    public OrderPlacedEventArgs(string orderId, decimal amount)
+    {
+        OrderId = orderId;
+        Amount = amount;
+    }
+}
+
+public class OrderService
+{
+    public event EventHandler<OrderPlacedEventArgs>? OrderPlaced;
+
+    public void PlaceOrder(string orderId, decimal amount)
+    {
+        // ... order placing logic ...
+        OrderPlaced?.Invoke(this, new OrderPlacedEventArgs(orderId, amount));
+    }
+}
+
+// Subscriber side:
+var service = new OrderService();
+service.OrderPlaced += (sender, e) =>
+{
+    Console.WriteLine($"Order {e.OrderId} placed for {e.Amount}");
+};
+service.PlaceOrder("ORD-123", 4999.00m);
+```
+
+`EventHandler<TEventArgs>` ek built-in generic delegate hai (`Func`/`Action` ki tarah) jiska signature fix hai: `(object? sender, TEventArgs e) -> void`. `sender` batata hai event kisne fire kiya (polymorphic scenarios me useful — ek shared handler multiple publishers ko handle kar sakta hai), `EventArgs` (ya usse derive hone wali class) event ke saath extra data carry karta hai. Ye convention itna standard hai ki .NET ke almost sab built-in events (`Button.Click`, `Timer.Elapsed`, etc.) isi shape ko follow karte hain.
+
+### Callback vs Event — jab dono me se kaunsa
+
+Callback (agla topic me detail me) **direct, one-to-one** hota hai — ek method doosre method ko directly ek function pass karta hai, jaise "jab tum khatam ho, mujhe wapas call karna." Event **broadcast, one-to-many** hai — publisher ko pata bhi nahi hota kitne subscribers hain (zero, ek, ya sau), publisher sirf "ye hua" announce karta hai, jo interested hai wo sun le. Use event jab multiple, decoupled parts of the system ko ek hi occurrence pe react karna ho; use a plain callback jab ek direct, specific "jab ye khatam ho to ye method call karo" relationship ho.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["event encapsulation enforce karta hai — bahar se list clear ya direct invoke nahi ho sakta", "EventHandler/EventArgs convention se poore .NET ecosystem me consistent signature milta hai", "Multiple, decoupled subscribers ek hi occurrence pe independently react kar sakte hain"]}
+  cons={["Plain delegate field se thoda zyada boilerplate (EventArgs class banani padti hai proper pattern ke liye)", "Subscribers unsubscribe karna bhool jaayein to memory leak ho sakta hai (publisher subscriber ko rooted rakhta hai)", "Exception ek subscriber me poori invocation chain rok deta hai, jaisa plain multicast delegate me hota hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+WinForms/WPF ka poora UI event model (`Button.Click`, `TextBox.TextChanged`) `event` keyword aur `EventHandler`/`EventArgs` convention pe based hai. Microsoft ne is convention ko itna consistently poore framework me follow kiya ki koi bhi .NET developer kisi bhi UI control ka event handler dekhkar turant pattern pehchaan leta hai — `(object? sender, EventArgs e)` shape har jagah same hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Ride-Hailing Backend">
+
+Ek ride-hailing service me, jab driver ek ride accept karta hai, teen alag subsystems ko react karna hota hai — rider ko push notification bhejna, ETA calculate karna, aur analytics log karna. Team ne ek `event EventHandler<RideAcceptedEventArgs> RideAccepted` design kiya `RideService` class me. Naye features add hote gaye (jaise "surge pricing recalculation"), team ne bas ek naya subscriber `+=` kar diya `RideService` ka code touch kiye bina — ye exactly event-driven decoupling ka fayda hai jo agar sab kuch direct method calls se hardcoded hota, har naye feature ke liye `RideService` ko modify karna padta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `event` keyword C# 1.0 se hai — delegates ka encapsulated wrapper, feature launch se hi core part
+- `event` field ke bahar se sirf `+=`/`-=` allowed — `=` assignment aur direct invoke sirf declaring class ke andar
+- `EventHandler<TEventArgs>` — built-in generic delegate, signature: `(object? sender, TEventArgs e) -> void`
+- `?.Invoke()` (null-conditional) event fire karne ka standard-safe pattern hai — agar koi subscriber nahi, `NullReferenceException` avoid karta hai
+- Har event subscriber publisher ke through indirectly rooted reh sakta hai — unsubscribe na karna ek classic memory-leak cause hai (memory-leak-wale topic me detail me)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Event aur delegate me kya fark hai?" — bahut candidates ye keh dete hain "event ek special delegate hai" aur ruk jaate hain, jo incomplete hai. Strong answer: "Event internally ek multicast delegate hi hai, lekin `event` keyword ek ENCAPSULATION layer add karta hai — declaring class ke bahar se sirf `+=`/`-=` allowed hai, `=` assignment (jo poori invocation list clear kar sakta hai) aur direct invoke dono sirf class ke andar allowed hain. Plain public delegate field me ye protection nahi hoti — koi bhi bahar se list clear ya event ko directly fire kar sakta hai, jo galat hai kyunki 'event fire karna' sirf publisher ka right hona chahiye." Follow-up jo aksar aata hai: "`EventHandler<T>` kyun use karte hain custom delegate ke bajaye?" — answer: convention consistency, poore .NET ecosystem me `(sender, args)` shape predictable rehti hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`event` aur plain delegate field ko interchangeable samajhna — plain delegate field bahar se `=` assignment aur direct invoke allow karta hai, jo encapsulation todta hai. `event` keyword ye specifically prevent karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Event fire karte waqt `?.Invoke()` (null-conditional) use na karna — agar koi subscriber nahi hai, event field `null` hota hai, aur direct `OnEvent(args)` call `NullReferenceException` de sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Subscribers ko unsubscribe (`-=`) karna bhoolna jab unki zaroorat khatam ho jaaye — event publisher subscriber ko indirectly rooted rakhta hai, jisse subscriber object garbage-collect nahi hota, memory leak hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Har situation me event use karna, chahe ek simple direct one-to-one callback kaafi ho — event ka overhead (EventArgs class, encapsulation boilerplate) un cases me unnecessary hai jahan ek plain `Action`/`Func` parameter sufficient tha.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph Publisher class
+    A["private multicast delegate\n(compiler-generated)"]
+    B["public event wrapper"]
+    A --- B
+    end
+    C["Subscriber 1"] -->|"+="| B
+    D["Subscriber 2"] -->|"+="| B
+    E["Outside code"] -.->|"= null (BLOCKED)"| B
+    F["Outside code"] -.->|"direct Invoke() (BLOCKED)"| B
+    B -->|"?.Invoke() — only from inside Publisher"| C
+    B -->|"?.Invoke() — only from inside Publisher"| D
+`}
+  caption="The event keyword wraps the same multicast delegate mechanism, but blocks external assignment and invocation — only += / -= are allowed from outside the declaring class."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `event` = a multicast delegate + compiler-enforced encapsulation: outside code can only `+=`/`-=`
+- A plain public delegate field allows outside code to `= null` (clear all subscribers) or invoke it directly — `event` blocks both
+- `EventHandler<TEventArgs>` is the standard .NET signature: `(object? sender, TEventArgs e) -> void`
+- Fire an event with `?.Invoke()` — the null-conditional guards against zero subscribers
+- Callback = direct, one-to-one ("call me back when done"); Event = broadcast, one-to-many, publisher doesn't know or care who's listening
+- Forgetting to unsubscribe (`-=`) keeps the subscriber rooted through the publisher — a classic memory leak
+- Internally it's still just `Delegate.Combine`/`Delegate.Remove` under the hood — `event` is a language-level access-control feature, not a different runtime mechanism
+
+</QuickRevision>

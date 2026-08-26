@@ -1,0 +1,200 @@
+---
+slug: "async-void-vs-async-task-and-valuetask"
+title: "async void vs async Task, and ValueTask"
+section: "dotnet-fundamentals"
+module: "async-threading-parallel"
+order: 6
+difficulty: "advanced"
+readingTime: 11
+prerequisites: ["async-await-mechanics"]
+tags: ["dotnet", "csharp", "async-void", "async-task", "valuetask", "exception-handling"]
+englishDefinition: "async void should be used ONLY for event handlers because exceptions thrown inside it cannot be caught by the caller and instead crash the process; async Task is the correct default for everything else since exceptions propagate through the returned Task; ValueTask is a struct-based alternative to Task<T> that avoids a heap allocation for the common case where the operation completes synchronously."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Accenture"]
+---
+
+<SimpleDefinition>
+
+`async void` should be used ONLY for event handlers because exceptions thrown inside it cannot be caught by the caller and instead crash the process; `async Task` is the correct default for everything else since exceptions propagate through the returned `Task`; `ValueTask` is a struct-based alternative to `Task<T>` that avoids a heap allocation for the common case where the operation completes synchronously.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek async method likhte waqt teen return-type choices hote hain: `async void`, `async Task`, `async Task<T>` (ya `ValueTask`/`ValueTask<T>`). In teeno me se galat choice production me ek genuinely dangerous bug bana sakti hai — is topic ka focus yehi hai.
+
+### `async void` — sirf event handlers ke liye, aur kyun
+
+```csharp
+async void ButtonClick(object sender, EventArgs e)
+{
+    await SaveDataAsync(); // agar ye fail ho jaaye...
+}
+```
+
+Event handlers (`void OnClick(...)`) ka signature framework (WinForms, WPF, ASP.NET) already fixed karta hai — wo `Task` return nahi kar sakte, kyunki event-invocation mechanism `void`-returning delegates expect karta hai. Isliye `async void` **ek necessary exception** hai — event handlers ke liye ye legitimate, sanctioned use case hai.
+
+**Lekin har jagah aur `async void` use karna genuinely dangerous hai.** Wajah: `async Task` me, agar method ke andar exception aaye, wo exception `Task` object me capture ho jaati hai — jab caller us Task ko `await` karta hai, exception wahan re-throw hoti hai, normal try/catch se catchable. `async void` me **koi Task hai hi nahi jisme exception capture ho** — exception seedha current `SynchronizationContext` par throw hoti hai, jo usually process ko crash kar deta hai, **caller ka try/catch ise catch nahi kar sakta**, chahe kitni bhi carefully wrap kiya ho:
+
+```csharp
+async void RiskyOperation()
+{
+    throw new InvalidOperationException("Boom");
+}
+
+try
+{
+    RiskyOperation(); // ye exception yahan CATCH NAHI hogi
+}
+catch (Exception ex)
+{
+    Console.WriteLine("Caught: " + ex.Message); // ye line kabhi nahi chalegi
+}
+// process crash ho jaayega (unhandled exception), try/catch bekaar gaya
+```
+
+Ye is topic ka **sabse critical interview point** hai: `async void` ke andar ek exception literally caller ke try/catch ko bypass karke process ko crash kar sakti hai — kyunki exception ke liye "wapas jaane ka raasta" (Task) exist hi nahi karta.
+
+### `async Task` — correct default har jagah aur
+
+```csharp
+async Task SafeOperationAsync()
+{
+    throw new InvalidOperationException("Boom");
+}
+
+try
+{
+    await SafeOperationAsync(); // ye exception yahan CATCH ho jaayegi
+}
+catch (Exception ex)
+{
+    Console.WriteLine("Caught: " + ex.Message); // ye line chalegi
+}
+```
+
+`async Task` (aur `async Task<T>`) me exception `Task` object me capture hoti hai, aur `await` karne par caller ke context me properly re-throw hoti hai — normal exception handling kaam karta hai. **Ye default hona chahiye har method ke liye** jab tak wo genuinely ek event handler na ho jise koi framework signature force kar raha ho.
+
+### `ValueTask<T>` — allocation avoid karne ke liye, jab operation aksar synchronously complete hoti hai
+
+`Task<T>` ek **reference type (class)** hai — har baar `Task.Run` ya `async` method call hone par, agar ek naya Task object banana pade, ye ek heap allocation hai. Zyadatar cases me ye acceptable overhead hai. Lekin **hot-path scenarios** me — jahan ek method **bahut baar** call hoti hai aur **aksar synchronously, turant complete ho jaati hai** (jaise ek cache-hit path) — har call par ek naya `Task<T>` allocate karna measurable GC pressure create kar sakta hai.
+
+```csharp
+public ValueTask<int> GetValueAsync(string key)
+{
+    if (_cache.TryGetValue(key, out int cached))
+        return new ValueTask<int>(cached); // NO heap allocation — struct wraps the value directly
+
+    return new ValueTask<int>(FetchFromDatabaseAsync(key)); // genuine async path, Task allocate hota hai
+}
+```
+
+`ValueTask<T>` ek **struct** hai — jab operation synchronously complete ho jaati hai (cache hit), koi heap allocation nahi hoti, value directly struct ke andar store ho jaata hai. Jab genuinely async kaam karna padta hai, `ValueTask<T>` internally ek `Task<T>` ko wrap kar leta hai (tab allocation hoti hai, lekin sirf genuinely-async path par).
+
+**`ValueTask` ki important limitation**: ise **sirf ek baar await kiya ja sakta hai**, aur `.Result`/`.GetAwaiter().GetResult()` ko carelessly multiple baar call karna undefined behavior de sakta hai — `Task<T>` ke opposite, jise multiple baar safely await/access kiya ja sakta hai (kyunki wo already-completed state ko cache karke rakhta hai). Isliye `ValueTask` sirf specific, measured-performance-critical scenarios ke liye hai — **default `Task<T>` hi rehna chahiye** jab tak profiling se allocation genuinely ek problem na dikhe.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"`async void` methods ke exceptions ko `try/catch` se wrap karke handle kiya ja sakta hai" — ye galat hai, aur is topic ka sabse commonly-tested misconception hai. `async void` ke andar exception ke liye Task-based "wapas jaane ka raasta" exist nahi karta — wo seedha `SynchronizationContext` par throw hoti hai aur process crash kar deti hai, koi bhi caller-side try/catch ise catch nahi kar sakta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka async guidance documentation explicitly "async void ko avoid karo, event handlers ke alawa" ko ek top-level best practice ke roop me list karta hai — is exact reason se ki exceptions caller ko propagate nahi hoti. `System.Text.Json` aur high-performance ASP.NET Core internals me `ValueTask`/`ValueTask<T>` strategically use hota hai un hot paths par jahan synchronous completion common hai (jaise buffered stream reads), taaki per-call allocation avoid ho.
+
+</RealWorld>
+
+<RealWorld company="An Indian Banking App">
+
+Ek team ka background notification-sending code `async void SendNotification()` ke roop me likha gaya tha (ek helper method, event handler nahi) — jab notification service down hua aur exception throw hui, poora application process crash ho gaya, kyunki exception kisi bhi try/catch se catch nahi ho payi. Root-cause analysis ke baad method ko `async Task` me convert kiya gaya, calling code me properly `await` aur `try/catch` add kiya gaya — ab notification failures gracefully log hoti hain, poora app crash nahi hota.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `async void`: exceptions bypass the caller's try/catch entirely, propagate to `SynchronizationContext`, typically crash the process
+- `async Task`/`async Task<T>`: exceptions captured in the Task, re-thrown on `await` — normal try/catch works
+- `ValueTask<T>` is a struct — zero heap allocation on the synchronous-completion path
+- `ValueTask<T>` can safely be awaited only ONCE — repeated awaiting/access is unsupported, unlike `Task<T>`
+- `async void` should have exactly one legitimate use case in application code: event handlers with a framework-fixed `void` signature
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`async void` kyun dangerous hai, aur ise kab use karna chahiye?" ka strong answer: "`async void` sirf event handlers ke liye use karna chahiye, kyunki unka signature framework dwara fixed hota hai (`void`-returning delegate) aur wo `Task` return nahi kar sakte. Har jagah aur `async void` dangerous hai kyunki uske andar ek exception ko Task-based koi 'wapas jaane ka raasta' nahi milta — exception seedha `SynchronizationContext` par throw hoti hai, jo process ko crash kar deta hai, aur caller ka try/catch ise bilkul catch nahi kar sakta, chahe kitni bhi carefully wrap kiya ho. Isliye default hamesha `async Task` hona chahiye, jahan exceptions Task object me properly capture hoke `await` par re-throw hoti hain." Follow-up jo aksar aata hai: "`ValueTask` kab use karoge `Task` ki jagah?" — jawab: sirf measured, hot-path scenarios me jahan operation aksar synchronously complete hoti hai (cache hits) aur allocation genuinely profiling se ek problem dikhi ho — default phir bhi `Task<T>` hi rehna chahiye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`async void` ko non-event-handler methods me use karna "convenience" ke liye — exceptions caller ke try/catch ko bypass karke process crash kar sakti hain, ye ek genuinely production-breaking mistake hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `async void` ke exceptions ko koi bhi wrapping technique se catch kiya ja sakta hai — nahi kiya ja sakta, Task-based propagation path exist hi nahi karta is case me.
+
+</Mistake>
+
+<Mistake>
+
+`ValueTask<T>` ko har jagah `Task<T>` ki jagah use karna "performance ke liye" bina measure kiye — `ValueTask` ki multiple-await limitation aur added complexity zyadatar cases me `Task<T>` ke simple, safe default se worse trade-off hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+`ValueTask<T>` ko multiple baar await karna ya uska result multiple baar access karna — undefined behavior de sakta hai, `Task<T>` ke opposite jo safely repeat-accessible hota hai.
+
+</Mistake>
+
+<Mistake>
+
+`async void` event handler ke andar exception handling completely skip kar dena "chalta hai" soch kar — event handlers ke andar bhi apna try/catch hona chahiye, kyunki caller-side catch kaam nahi karega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Exception thrown inside async method"] --> B{"Return type?"}
+    B -->|async void| C["Thrown directly on SynchronizationContext"]
+    C --> D["Bypasses caller's try/catch entirely"]
+    D --> E["Process typically crashes"]
+    B -->|async Task / Task&lt;T&gt;| F["Captured inside the Task object"]
+    F --> G["Re-thrown when caller awaits the Task"]
+    G --> H["Caller's try/catch works normally"]
+`}
+  caption="async void gives an exception no Task to travel back through, so it bypasses the caller entirely and crashes the process; async Task captures it for normal propagation on await."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `async void` — use ONLY for event handlers (framework-fixed signature); exceptions bypass the caller's try/catch and crash the process
+- `async Task`/`async Task<T>` — the correct default everywhere else; exceptions are captured and re-thrown on `await`
+- `ValueTask<T>` — a struct alternative to `Task<T>`, avoids heap allocation when the operation completes synchronously (cache hits, hot paths)
+- `ValueTask<T>` can only be awaited/accessed safely ONCE — unlike `Task<T>`
+- Default to `Task<T>`; reach for `ValueTask<T>` only after profiling shows allocation is a real, measured problem
+- No try/catch, however placed, can catch an exception thrown inside `async void`
+- This distinction (async void's broken exception path) is one of the most frequently interview-tested async gotchas in C#
+
+</QuickRevision>

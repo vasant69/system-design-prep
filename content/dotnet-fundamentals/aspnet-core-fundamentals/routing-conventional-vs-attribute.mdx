@@ -1,0 +1,190 @@
+---
+slug: "routing-conventional-vs-attribute"
+title: "Routing: Attribute Routing vs Conventional Routing"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "routing", "webapi"]
+englishDefinition: "Attribute routing places route templates directly on controllers and actions via [Route] and [HttpGet]/[HttpPost] attributes, giving explicit, co-located control over each endpoint's URL — the standard approach for Web APIs; conventional routing defines a small number of URL pattern templates centrally that map to controller/action names by convention, historically used for MVC view-rendering apps and largely irrelevant for API-only projects."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+Attribute routing places route templates directly on controllers and actions via `[Route]` and `[HttpGet]`/`[HttpPost]` attributes, giving explicit, co-located control over each endpoint's URL — the standard approach for Web APIs; conventional routing defines a small number of URL pattern templates centrally that map to controller/action names by convention, historically used for MVC view-rendering apps and largely irrelevant for API-only projects.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Routing ka kaam simple hai — incoming HTTP request (URL + verb) ko sahi controller action tak map karna. Lekin ASP.NET Core me routing define karne ke **do fundamentally different approaches** hain, aur interview me "Web API me tum kaunsa use karoge, aur kyun" ye poocha jaata hai.
+
+### Attribute routing — Web APIs ka default
+
+Attribute routing me route template directly controller/action ke upar attribute ke roop me likha jaata hai — koi central "route table" nahi, har endpoint apna route khud declare karta hai:
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetAll() => Ok(GetOrders());
+
+    [HttpGet("{id:int}")]
+    public IActionResult GetById(int id) => Ok(GetOrder(id));
+
+    [HttpPost]
+    public IActionResult Create([FromBody] CreateOrderRequest request) =>
+        CreatedAtAction(nameof(GetById), new { id = 1 }, request);
+
+    [HttpGet("{id:int}/items")]
+    public IActionResult GetItems(int id) => Ok(GetOrderItems(id));
+}
+```
+
+`[Route("api/[controller]")]` ka `[controller]` token controller class ke naam se `Controller` suffix hata kar automatically substitute ho jaata hai — `OrdersController` -> `api/Orders`. Har action apna HTTP verb attribute (`[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpDelete]`, `[HttpPatch]`) le kar aata hai, optionally ek sub-route template ke saath (`"{id:int}"`).
+
+**Kyun ye Web APIs ke liye standard hai:** route aur action ek hi jagah dikhte hain — kisi bhi endpoint ka exact URL samajhne ke liye sirf uska attribute padhna kaafi hai, kahin aur central config dhoondhna nahi padta. RESTful resource-style URLs (`/api/orders/5/items`) bhi naturally express ho jaate hain, jo conventional routing ke `{controller}/{action}/{id}` pattern me awkward fit hote hain.
+
+### Conventional routing — MVC-view-app ka legacy pattern
+
+Conventional routing centrally, `Program.cs` me, ek ya do generic URL templates define karta hai, jo controller/action naming convention se match hote hain:
+
+```csharp
+app.MapControllerRoute(
+    name: "default",
+    pattern: "{controller=Home}/{action=Index}/{id?}");
+```
+
+Ye pattern automatically `/Products/Details/5` ko `ProductsController.Details(int id)` pe map kar deta hai — bina kisi explicit attribute ke. Ye pattern historically Razor-view MVC apps (jahan `Home`, `Index`, `Details` jaise human-readable page routes chahiye) ke liye design hua tha. Web-API-only projects me ye rarely use hota hai kyunki: (a) RESTful resource URLs is convention me naturally fit nahi hote, (b) explicit per-action control chahiye hota hai (multiple HTTP verbs same action naam ke saath), (c) attribute routing ne isse effectively replace kar diya hai modern Web API development me.
+
+Is site ka focus pure Web API (Controllers/Minimal APIs, JSON responses) hai — isliye conventional routing sirf ye janna kaafi hai ki wo exist karta hai aur MVC-view apps me use hota hai; day-to-day Web API kaam me almost kabhi nahi likhoge.
+
+### Route constraints — URL segment ko type/format se restrict karna
+
+`{id:int}` me `:int` ek **route constraint** hai — ye keh raha hai "ye segment sirf integer ho sakta hai." Agar koi `/api/orders/abc` request kare, routing engine is route ko match hi nahi karega (404, ya agar koi doosra matching route ho to wahi try hoga) — controller action ke andar manual validation likhne ki zaroorat nahi.
+
+Common constraints: `{id:int}`, `{id:guid}`, `{slug:alpha}`, `{price:decimal}`, `{name:minlength(3)}`, `{id:range(1,100)}`. Multiple constraints chain ho sakte hain: `{id:int:min(1)}`.
+
+```csharp
+[HttpGet("{id:guid}")]
+public IActionResult GetByGuid(Guid id) => Ok();
+
+[HttpGet("archive/{year:int:range(2000,2100)}/{month:int:range(1,12)}")]
+public IActionResult GetArchive(int year, int month) => Ok();
+```
+
+Constraints **routing-level filtering** hain, business-rule validation nahi — inka purpose ye ensure karna hai ki sahi overload/action match ho (jaise `GetById(int)` vs `GetByGuid(Guid)` dono same base path pe), aur clearly-malformed URLs ko action method tak pahunchne se pehle hi reject karna. Actual business validation (jaise "id must correspond to an existing order") action ke andar hi hoti hai.
+
+### Minimal APIs ka routing style
+
+.NET 6+ Minimal APIs me routing lambda-style directly define hoti hai, bina controller class ke:
+
+```csharp
+app.MapGet("/api/orders/{id:int}", (int id) => Results.Ok(GetOrder(id)));
+app.MapPost("/api/orders", (CreateOrderRequest request) => Results.Created($"/api/orders/1", request));
+```
+
+Ye conceptually attribute routing jaisa hi hai — route explicit hai, verb explicit hai — bas syntax controller-class ke bajaye inline lambda hai. Route constraint syntax (`{id:int}`) same rehta hai dono me.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core team ne `[ApiController]` attribute ke saath attribute routing ko explicitly Web API ka recommended default banaya — `[ApiController]` automatic model validation, automatic 400 responses on invalid model state, aur `[FromBody]`/`[FromRoute]` binding source inference jaisi conveniences deta hai, jo sirf attribute-routed Web API controllers ke liye design hui hain, conventional MVC controllers ke liye nahi.
+
+</RealWorld>
+
+<RealWorld company="An Indian E-commerce API">
+
+Ek typical order-management API me route hierarchy resource-nesting ko directly reflect karti hai: `api/orders/{orderId:int}/items/{itemId:int}`. Ye sirf attribute routing se naturally possible hai — conventional `{controller}/{action}/{id}` pattern me do-level nested resource IDs express karna awkward workarounds maangta, jaise custom action names ya query strings jo REST semantics se door le jaate.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `[controller]` token: controller class name minus `Controller` suffix (`OrdersController` -> `Orders`)
+- Common route constraints: `int`, `guid`, `alpha`, `decimal`, `bool`, `datetime`, `minlength(n)`, `maxlength(n)`, `range(min,max)`
+- Constraints can chain: `{id:int:min(1)}`
+- `{id?}` — `?` marks a route parameter optional
+- Conventional routing: typically 1-2 templates cover an entire MVC app; attribute routing: one template per action, fully explicit
+- Minimal APIs (`MapGet`/`MapPost`/etc., .NET 6+) use the same constraint syntax as attribute routing
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Web API me attribute routing kyun conventional routing se better hai?" — strong answer: "Attribute routing route definition ko directly controller/action ke saath co-locate karta hai — endpoint ka URL samajhne ke liye ek hi jagah dekhni padti hai, central route table nahi khojni padti. Ye RESTful, resource-oriented URLs (jaise nested `/orders/{id}/items`) naturally express karta hai, jo conventional `{controller}/{action}/{id}` pattern me fit nahi hote. Conventional routing historically Razor-view MVC apps ke liye tha, jahan human-readable page URLs (`/Products/Details/5`) chahiye the — Web-API-only project me ye rarely use hota hai." Follow-up: "Route constraint `{id:int}` kyun likhoge jab action method already `int id` parameter accept kar raha hai?" — answer: constraint routing-match-time pe hi malformed URL ko reject kar deta hai (jaise `/orders/abc`), aur multiple overloads (int vs guid) ko sahi tarike se disambiguate karta hai — ye action method ke andar pahunchne se pehle hi filtering hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Route constraints (`{id:int}`) ko business validation samajh lena — ye sirf URL-shape filtering hai, "does this ID exist" jaisi checks action method ke andar hi honi chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi controller me attribute routing aur conventional routing ko mix karne ki koshish karna bina samjhe — agar controller pe koi bhi action-level `[Route]`/HTTP-verb attribute hai, controller poori tarah attribute-routed maana jaata hai; ye conventional `MapControllerRoute` se match nahi hoga.
+
+</Mistake>
+
+<Mistake>
+
+`[controller]` token ko literal text samajh lena — ye ek placeholder hai jo runtime pe controller class ke naam se replace hota hai, `[Route("api/[controller]")]` string me `[controller]` literally nahi likha hai URL me.
+
+</Mistake>
+
+<Mistake>
+
+Multiple actions ko same route template dena bina disambiguating constraint/HTTP-verb ke — routing engine ambiguous match exception dega runtime pe (ya first-request pe), compile time pe nahi pakda jaata.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant Router as Routing Middleware
+    participant Controller as OrdersController
+
+    Client->>Router: GET /api/orders/5
+    Router->>Router: Match against route templates
+    Router->>Router: Check constraint {id:int} — "5" is valid int
+    Router->>Controller: Invoke GetById(int id = 5)
+    Controller-->>Client: 200 OK + order JSON
+`}
+  caption="Attribute routing matches the request URL against per-action templates, applies any route constraints, then dispatches directly to that action — no central lookup table involved."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Attribute routing: `[Route]`/`[HttpGet]` etc. on controllers/actions — the Web API standard
+- Conventional routing: `MapControllerRoute` with a central `{controller}/{action}/{id}` pattern — MVC-view-app legacy, rare in API-only projects
+- `[controller]` token substitutes the class name minus `Controller` suffix
+- Route constraints (`{id:int}`, `{id:guid}`) filter malformed URLs at match time, not a business-rule substitute
+- `{id?}` makes a route parameter optional
+- Minimal APIs use the same route-template and constraint syntax as attribute routing, just via `MapGet`/`MapPost` lambdas instead of a controller class
+- Mixing attribute-routed actions into a conventionally-routed controller opts that controller entirely out of conventional routing
+
+</QuickRevision>

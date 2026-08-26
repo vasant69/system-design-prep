@@ -1,0 +1,181 @@
+---
+slug: "file-io-fundamentals"
+title: "File I/O Fundamentals — File, FileStream, Path, Async"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 6
+difficulty: "beginner"
+readingTime: 9
+prerequisites: []
+tags: ["dotnet", "csharp", "file-io", "async", "streams"]
+englishDefinition: "The System.IO namespace provides layered file APIs — simple static helpers (File.ReadAllText, File.WriteAllText) for whole-file operations, FileStream/StreamReader/StreamWriter for controlled, buffered, or streaming access, and Path/Directory for path manipulation and filesystem navigation — with async variants (File.ReadAllTextAsync, etc.) that matter even for local disk I/O because disk operations are genuinely blocking system calls, and blocking a thread pool thread under load reduces the server's overall request-handling capacity."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Wipro", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+The `System.IO` namespace provides layered file APIs — simple static helpers (`File.ReadAllText`, `File.WriteAllText`) for whole-file operations, `FileStream`/`StreamReader`/`StreamWriter` for controlled, buffered, or streaming access, and `Path`/`Directory` for path manipulation and filesystem navigation — with async variants (`File.ReadAllTextAsync`, etc.) that matter even for local disk I/O because disk operations are genuinely blocking system calls, and blocking a thread pool thread under load reduces the server's overall request-handling capacity.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+File I/O roz ka kaam hai — logs likhna, config files padhna, uploaded files save karna. .NET is problem ko multiple layers of API se solve karta hai, har layer alag control level deta hai.
+
+### Layer 1 — `File` class ke simple static helpers
+
+Jab poori file ek saath padhni/likhni ho, `File` class ke static methods sabse simple option hain:
+
+```csharp
+string content = File.ReadAllText("data.txt");
+File.WriteAllText("output.txt", content);
+
+string[] lines = File.ReadAllLines("data.txt");
+byte[] bytes = File.ReadAllBytes("image.png");
+```
+
+Ye internally file open/close, buffering, sab handle kar lete hain — chhoti files ke liye perfect, lekin poori file memory me load hoti hai, isliye bahut badi files (GBs) ke liye inefficient ho sakta hai.
+
+### Layer 2 — `FileStream` + `StreamReader`/`StreamWriter` — controlled/streaming access
+
+Jab file line-by-line process karni ho (poori memory me load kiye bina) ya fine-grained control chahiye ho (buffer size, file mode, sharing behavior), `FileStream` ke upar `StreamReader`/`StreamWriter` use karte hain:
+
+```csharp
+using var reader = new StreamReader("large-log.txt");
+string? line;
+while ((line = await reader.ReadLineAsync()) != null)
+{
+    ProcessLine(line);
+}
+```
+
+`using` (ya `using` declaration jaisa upar) zaroori hai — `FileStream` ek unmanaged file handle wrap karta hai, jise explicitly `Dispose()` karna padta hai (`IDisposable` pattern), warna file handle leak ho sakta hai.
+
+### `Path` aur `Directory` — path manipulation, cross-platform correctly
+
+`Path` class OS-specific path separators (`\` Windows pe, `/` Linux/Mac pe) ka manual handling avoid karwata hai:
+
+```csharp
+string fullPath = Path.Combine(baseDirectory, "uploads", fileName); // cross-platform safe
+string extension = Path.GetExtension(fullPath);      // ".pdf"
+string fileNameOnly = Path.GetFileNameWithoutExtension(fullPath);
+
+bool exists = Directory.Exists(uploadsFolder);
+if (!exists) Directory.CreateDirectory(uploadsFolder);
+```
+
+`Path.Combine` hardcoded `"/"` ya `"\\"` string concatenation se hamesha better hai — cross-platform correctness free me milta hai.
+
+### Async file I/O — local disk ke liye bhi kyun matter karta hai
+
+Common misconception: "disk local hai, network jaisa slow nahi, to async ki kya zaroorat?" Ye galat reasoning hai. **Disk I/O ek genuine OS-level blocking system call hai** — jab tak OS disk se data nahi laata, calling thread wait karta hai. Ek ASP.NET Core server me, agar tum `File.ReadAllText(...)` (sync) use karo ek request handler me, us request ko serve kar raha **thread pool thread block ho jaata hai** poore duration ke liye — us thread se aur koi kaam nahi ho sakta, jabki server ke paas limited thread pool threads hain.
+
+```csharp
+// Sync — thread block hota hai jab tak disk read complete na ho
+string content = File.ReadAllText(path);
+
+// Async — thread pool thread free ho jaata hai wait ke dauraan, koi aur request serve kar sakta hai
+string content = await File.ReadAllTextAsync(path);
+```
+
+High-load scenario me (bahut saari concurrent requests, sab file read kar rahi hain), sync I/O thread pool ko exhaust kar sakta hai — server ki overall throughput girti hai, kyunki naye requests ke liye available threads kam ho jaate hain. Async I/O is problem ko avoid karta hai — thread wait karne ke bajaye pool me wapas chala jaata hai, aur jab disk operation complete hota hai, koi bhi available thread continuation resume kar deta hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Rule of thumb: agar code ASP.NET Core (ya kisi bhi server jahan thread pool capacity limited hai) ke andar chal raha hai, hamesha async file I/O APIs (`ReadAllTextAsync`, `ReadAllBytesAsync`, `ReadLineAsync`) use karo — chhoti console utility scripts me sync bhi chalta hai, lekin server code me async default hona chahiye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ki apni file-upload/static-file-serving middleware internally async streams use karti hai — `IFormFile.CopyToAsync(...)` jaisa pattern, taaki file upload/download high-concurrency load ke dauraan bhi server ki thread pool capacity ko exhaust na kare.
+
+</RealWorld>
+
+<RealWorld company="An Indian Document-Management SaaS">
+
+Ek team ne apna PDF-export feature `File.WriteAllBytes` (sync) se implement kiya ek high-traffic endpoint me — load testing me pata chala ki peak hours pe server response times spike ho rahe the. Root cause: sync file write thread pool threads ko block kar raha tha jab concurrent exports zyada ho rahe the. Fix: `WriteAllBytesAsync` pe switch karna, jisse throughput significantly improve hua bina hardware change kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `File.ReadAllText`/`WriteAllText`/`ReadAllLines`/`ReadAllBytes` — simple whole-file static helpers
+- `FileStream` + `StreamReader`/`StreamWriter` — streaming/line-by-line, avoids loading entire file into memory
+- `Path.Combine` — OS-correct path joining, avoids hardcoded `/` vs `\` bugs
+- Async variants (`*Async` suffix) available for nearly every File/Stream operation since early .NET
+- Disk I/O is a genuine OS-level blocking system call — sync I/O in a server context blocks a thread pool thread
+- `FileStream` wraps an unmanaged OS file handle — always `Dispose()` (via `using`)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Local disk I/O ke liye bhi async APIs kyun use karni chahiye?" ka strong answer: "Disk I/O ek genuine OS-level blocking system call hai — sync file read/write us request ko serve kar rahe thread pool thread ko block kar deta hai poore duration ke liye. High-concurrency server scenario me isse thread pool exhaust ho sakta hai, jo overall server throughput girata hai. Async I/O thread ko wait ke dauraan pool me wapas chhod deta hai, koi aur request usi thread se serve ho sakti hai." Follow-up jo aata hai: "console application me bhi ye equally matter karta hai?" — jawaab: kam critical hai, kyunki wahan thread pool contention ka concern nahi hota jaisa server scenario me.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`FileStream` ko `using` ke bina use karna — file handle leak ho sakta hai, aur baad me same file access karne ki koshish "file in use by another process" jaisi error de sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+Server code (ASP.NET Core controllers/handlers) me sync file I/O APIs use karna "disk local hai, fast hai" reasoning se — high-load scenario me thread pool exhaustion ka genuine risk hai.
+
+</Mistake>
+
+<Mistake>
+
+Path banane ke liye hardcoded `"\\"` ya `"/"` string concatenation karna instead of `Path.Combine` — cross-platform bugs create karta hai (Windows vs Linux deployment).
+
+</Mistake>
+
+<Mistake>
+
+Bahut badi file (jaise multi-GB log file) ko `File.ReadAllText` se poora memory me load karne ki koshish — `OutOfMemoryException` ka risk, jab `StreamReader.ReadLineAsync()` se line-by-line process karna genuinely zaroori tha.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["File I/O need"] --> B{"Whole file or streaming?"}
+    B -->|Whole file, small size| C["File.ReadAllText / WriteAllText"]
+    B -->|Streaming / large file| D["FileStream + StreamReader/StreamWriter"]
+    C --> E["Use *Async variant in server code"]
+    D --> E
+`}
+  caption="Choose between whole-file static helpers and streaming APIs based on file size and access pattern; always prefer async variants in server-side code."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `File.ReadAllText`/`WriteAllText` — simple whole-file operations, loads entire content into memory
+- `FileStream`/`StreamReader`/`StreamWriter` — streaming/line-by-line, memory-efficient for large files
+- `Path.Combine` — always prefer over manual string concatenation for cross-platform correctness
+- `FileStream` wraps an unmanaged OS handle — always wrap in `using`
+- Disk I/O is a real blocking system call — async variants matter in server code to avoid thread pool exhaustion
+- `Directory.Exists`/`CreateDirectory` for filesystem navigation and setup
+- Sync I/O is acceptable in simple console scripts; server-side code should default to async
+
+</QuickRevision>

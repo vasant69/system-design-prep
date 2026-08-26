@@ -1,0 +1,186 @@
+---
+slug: "attributes-and-custom-attributes"
+title: "Attributes and Custom Attributes"
+section: "dotnet-fundamentals"
+module: "dotnet-runtime-architecture"
+order: 12
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["assemblyloadcontext-and-reflection", "filters-and-custom-attributes"]
+tags: ["dotnet", "attributes", "reflection", "metadata", "custom-attributes"]
+englishDefinition: "Attributes are declarative metadata attached to types, members, or assemblies — visible at compile time or discovered at runtime via Reflection — used to describe intent without writing imperative code (validation rules, obsolescence warnings, serialization hints). Custom attributes let a codebase define its own metadata vocabulary, which frameworks like ASP.NET Core then discover and act on through Reflection."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Attributes are declarative metadata attached to types, members, or assemblies — visible at compile time or discovered at runtime via Reflection — used to describe intent without writing imperative code (validation rules, obsolescence warnings, serialization hints). Custom attributes let a codebase define its own metadata vocabulary, which frameworks like ASP.NET Core then discover and act on through Reflection.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Attributes har C# developer roz use karta hai — `[Required]`, `[HttpGet]`, `[Obsolete]` — lekin "ye kaam kaise karte hain" poochne par bahut candidates "compiler magic" jaisa vague answer dete hain. Actual mechanism simple aur genuinely interesting hai: attributes sirf **metadata** hain, aur unka "asar" hamesha kisी aur code se aata hai jo reflection se unhe padhta hai.
+
+### Attribute — declarative metadata, khud kuch nahi "karta"
+
+Ek attribute apne aap me **koi behavior nahi** hai — ye sirf ek data annotation hai jo assembly ki metadata me embed ho jaata hai compile time pe. `[Obsolete("Use NewMethod instead")]` khud kuch execute nahi karta — **compiler** hai jo is attribute ko dekh kar warning deta hai jab koi us method ko call kare.
+
+```csharp
+[Obsolete("Use CalculateTotal instead")]
+public decimal GetTotal() { ... }
+
+// Kahin call karne par:
+var t = order.GetTotal(); // Compiler WARNING (attribute + compiler cooperation)
+```
+
+Isi tarah `[Required]` (Data Annotations) khud validation nahi karta — ye sirf ek marker hai. **ASP.NET Core ka model-binding/validation pipeline** hai jo reflection se check karta hai "is property pe `[Required]` attribute hai kya," aur agar hai to validation logic apply karta hai. Attribute passive hai; framework active hai.
+
+### Built-in attributes — kuch common examples
+
+- `[Obsolete]` — compiler warning/error for deprecated members.
+- `[Flags]` — enum ko bitwise-combinable batata hai (readable `ToString()` output ke liye bhi).
+- `[Serializable]` — legacy binary serialization ke liye marker (largely deprecated ab).
+- `[Required]`, `[StringLength]`, `[Range]` (System.ComponentModel.DataAnnotations) — validation metadata.
+- `[HttpGet]`, `[Route]`, `[Authorize]` (ASP.NET Core) — routing/security metadata jo MVC framework discover karta hai.
+
+### Custom attribute banana — teen steps
+
+Apna khud ka attribute banana genuinely simple hai — `System.Attribute` se inherit karo:
+
+```csharp
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public class AuditLogAttribute : Attribute
+{
+    public string Action { get; }
+    public AuditLogAttribute(string action) => Action = action;
+}
+
+public class OrderService
+{
+    [AuditLog("OrderCreated")]
+    public void CreateOrder() { ... }
+}
+```
+
+`[AttributeUsage]` khud ek **meta-attribute** hai — ye batata hai tumhara custom attribute kaha (`AttributeTargets.Method`, `.Class`, `.Property`, etc.) lag sakta hai, aur kya same member pe multiple baar lagाya ja sakta hai (`AllowMultiple`).
+
+### Attribute ko "act" karvana — Reflection se discover karna
+
+Attribute likhna aadha kaam hai — usse **useful** banane ke liye kuch reflection se usko discover aur act karna padta hai:
+
+```csharp
+MethodInfo method = typeof(OrderService).GetMethod("CreateOrder")!;
+var auditAttr = method.GetCustomAttribute<AuditLogAttribute>();
+
+if (auditAttr != null)
+{
+    Console.WriteLine($"This method logs action: {auditAttr.Action}");
+    // Real use case: ek AOP-jaisa interceptor jo actual method call se pehle/baad
+    // is attribute ko dekh kar audit-log entry likh de
+}
+```
+
+Ye exact pattern hai jo ASP.NET Core internally use karta hai — jab tum `[Authorize(Roles = "Admin")]` ek controller action pe lagate ho, ASP.NET Core ka authorization middleware reflection se ye attribute discover karta hai request pipeline ke andar, aur uske basis pe access allow/deny karta hai. **Tumne khud koi `if` check nahi likha — framework ne attribute padha aur decide kiya.**
+
+### Attributes vs interfaces — kab kaunsa
+
+Ek common design question: kisी cross-cutting concern ke liye attribute use karo ya interface? Attributes **declarative, non-invasive** hain — class ka actual contract/inheritance change nahi hota, sirf ek marker add hota hai. Interfaces **behavioral contract** enforce karte hain (compile-time pe type check hota hai). Attributes tab better fit hain jab concern genuinely metadata-jaisा hai (routing, validation rules) aur multiple, unrelated types pe apply hona hai bina inheritance hierarchy force kiye.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Yaad rakhne ka tareeka: Attribute = "sticky note" jo tum kisi class/method pe chipka dete ho. Ye sticky note khud kuch nahi karta — koi (framework, tumhara khud ka reflection code) us note ko padhega tabhi kuch hota hai. Bina padhne wale ke, attribute sirf metadata reh jaata hai, koi runtime effect nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka poora MVC/Web API attribute-routing model (`[HttpGet]`, `[Route]`, `[FromBody]`, `[Authorize]`) isi pattern pe bana hai — framework startup ke time reflection se controllers/actions scan karta hai, unpe lage attributes discover karta hai, aur ek routing table + authorization/model-binding pipeline build karta hai in attributes ke basis pe. Ye poore ASP.NET Core ka architectural foundation hai — declarative metadata + framework-level reflection-based discovery.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Compliance System">
+
+Ek fintech backend ko regulatory requirement thi ki kuch specific API endpoints (jaise fund transfer) har call ka audit trail rakhein — kisne, kab, kya call kiya. Team ne har method ko manually audit-logging code se clutter karne ke bajaye ek custom `[AuditableAction]` attribute banaya, aur ek MVC action filter (reflection se attribute check karta) automatically un methods ke around audit entries likhta tha. Isse business logic clean rahi, aur naya endpoint audit-trail me add karna sirf ek attribute lagana ban gaya, code duplication nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Attributes are pure metadata — zero runtime behavior without something (compiler or Reflection-based code) reading them
+- `[AttributeUsage]` restricts where a custom attribute can be applied and whether it's repeatable (`AllowMultiple`)
+- ASP.NET Core discovers routing/authorization attributes once at startup for performance, not per-request
+- Reflection-based attribute lookup (`GetCustomAttribute<T>()`) has the same caching-matters caveat as general reflection use
+- `System.Attribute` is the required base class for any custom attribute
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`[Required]` attribute actually validation kaise karta hai?" — is question ka weak answer hota hai "attribute validate kar deta hai." Strong answer: "`[Required]` khud koi behavior nahi rakhta — ye sirf metadata hai jo property pe attach ho jaata hai. ASP.NET Core ka model-binding/validation pipeline reflection se check karta hai model ke properties pe kaunse Data Annotation attributes lage hain, aur unke basis pe validation logic khud apply karta hai. Attribute passive hai, framework active hai." Ye distinction samajhna genuinely batata hai ki candidate ne "attributes kaise kaam karte hain" ka mechanism samjha hai, sirf usage nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye maan lena ki attribute lagane se apne aap kuch "ho jaayega" — attribute sirf metadata hai, koi framework/reflection-based code ussे discover aur act nahi karega to wo koi asar nahi karega.
+
+</Mistake>
+
+<Mistake>
+
+`[AttributeUsage]` specify na karna custom attribute banate waqt — bina isके, attribute default se kahi bhi (class, method, property, sab jagah) laga diya ja sakta hai, jo intent ko unclear banata hai.
+
+</Mistake>
+
+<Mistake>
+
+Attribute constructors me heavy logic ya side-effects daal dena — attributes ka instantiate hona (jab reflection unhe padhta hai) predictable, lightweight hona chahiye, ye business logic ka jagah nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Har cross-cutting concern ke liye attribute banana, chahe wo genuinely metadata-jaisa ho ya nahi — kabhi-kabhi ek proper interface/dependency-injected service zyada appropriate hota hai jab concern behavioral contract ho, sirf descriptive marker nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["[AuditLog(\\"OrderCreated\\")] on CreateOrder()"] --> B["Compiled into assembly metadata (passive, no behavior)"]
+    B --> C{"Something reads it via Reflection?"}
+    C -->|No| D["Attribute sits unused — zero runtime effect"]
+    C -->|Yes, e.g. an action filter| E["GetCustomAttribute<AuditLogAttribute>() at runtime"]
+    E --> F["Framework/interceptor acts on the discovered metadata"]
+`}
+  caption="An attribute alone does nothing — its effect always comes from code (compiler or Reflection) that reads and acts on it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Attributes are declarative metadata compiled into assembly metadata — they hold no behavior themselves
+- Built-in examples: `[Obsolete]` (compiler warning), `[Flags]` (bitwise enum), `[Required]`/`[Range]` (Data Annotations), `[HttpGet]`/`[Authorize]` (ASP.NET Core routing/security)
+- Custom attributes inherit from `System.Attribute`, decorated with `[AttributeUsage(...)]` to restrict targets/repeatability
+- An attribute only "does" something because something else (compiler, or Reflection-based framework/interceptor code) reads it and acts
+- `GetCustomAttribute<T>()` is the standard Reflection API to discover an attribute at runtime
+- Prefer attributes for genuinely descriptive/metadata concerns; prefer interfaces/DI when the concern is a real behavioral contract
+
+</QuickRevision>

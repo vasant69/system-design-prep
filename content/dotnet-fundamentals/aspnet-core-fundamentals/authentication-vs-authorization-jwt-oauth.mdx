@@ -1,0 +1,213 @@
+---
+slug: "authentication-vs-authorization-jwt-oauth"
+title: "Authentication vs Authorization, JWT, and OAuth Basics"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "authentication", "authorization", "jwt", "oauth", "security"]
+englishDefinition: "Authentication verifies who a caller is, while authorization determines what that verified caller is allowed to do — two distinct pipeline stages in ASP.NET Core; JWT (JSON Web Token) is a compact, signed, self-contained token format commonly used to carry authentication claims between a client and API without a server-side session store, and OAuth is a delegated-authorization protocol that lets an app act on a user's behalf against a third-party resource without ever seeing that user's password."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Paytm"]
+---
+
+<SimpleDefinition>
+
+Authentication verifies who a caller is, while authorization determines what that verified caller is allowed to do — two distinct pipeline stages in ASP.NET Core; JWT (JSON Web Token) is a compact, signed, self-contained token format commonly used to carry authentication claims between a client and API without a server-side session store, and OAuth is a delegated-authorization protocol that lets an app act on a user's behalf against a third-party resource without ever seeing that user's password.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Authentication aur authorization same cheez hai" — ye sabse common beginner mistake hai, aur interview me sabse pehla trap question yahi hota hai. Dono genuinely alag concerns hain, alag pipeline stages hain ASP.NET Core me, aur inhe confuse karna real production security bugs ki wajah ban sakta hai.
+
+### Authentication — "Tum kaun ho"
+
+Authentication (AuthN) ye verify karta hai ki request bhejne wala genuinely who it claims to be. Credentials check hote hain (password, token, certificate), aur agar valid hain, ek `ClaimsPrincipal` (identity + claims) request context me populate ho jaata hai. Isके baad hi request "authenticated" maani jaati hai.
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = "myapi.com",
+            ValidAudience = "myapi-clients",
+            IssuerSigningKey = new SymmetricSecurityKey(secretKeyBytes)
+        };
+    });
+
+app.UseAuthentication(); // Middleware order matters — before UseAuthorization
+app.UseAuthorization();
+```
+
+### Authorization — "Tum kya kar sakte ho"
+
+Authorization (AuthZ) authentication ke **baad** aata hai — ye assume karta hai identity already verified ho chuki hai, aur ab decide karta hai ki ye verified identity kis resource/action ko access kar sakti hai.
+
+```csharp
+[Authorize] // Sirf authenticated hona kaafi hai
+[HttpGet("profile")]
+public IActionResult GetProfile() => Ok(User.Identity?.Name);
+
+[Authorize(Roles = "Admin")] // Authenticated + specific role chahiye
+[HttpDelete("{id:int}")]
+public IActionResult Delete(int id) => Ok();
+```
+
+**Precise distinction jo interview me expected hai:** ek user genuinely authenticated ho sakta hai (valid login, valid token) lekin phir bhi ek specific action ke liye unauthorized ho — jaise ek logged-in "Customer" role wala user `DELETE /admin/users/5` call kare. Response `401 Unauthorized` nahi, `403 Forbidden` hona chahiye — kyunki identity verify ho chuki hai (authentication successful), sirf permission nahi hai (authorization failed). Ye ek common mistake hai — 401 aur 403 ko galat context me use karna.
+
+- **401 Unauthorized** — authentication hi fail hui, ya missing hai (invalid/expired/missing token)
+- **403 Forbidden** — authentication successful thi, lekin is authenticated identity ko permission nahi hai requested action ke liye
+
+### JWT — structure aur validation basics
+
+JWT (JSON Web Token) teen parts ka ek compact, base64url-encoded string hai, dot (`.`) se separated:
+
+```
+header.payload.signature
+```
+
+- **Header** — token type (`JWT`) aur signing algorithm (`HS256`, `RS256`)
+- **Payload (claims)** — actual data: `sub` (subject/user ID), `exp` (expiry), `iss` (issuer), `aud` (audience), plus custom claims (roles, email)
+- **Signature** — header + payload ka cryptographic hash, secret key (ya private key) se signed — ye ensure karta hai token tamper nahi hua
+
+**Key property: JWT self-contained hai.** Server ko har request pe database/session-store check karne ki zaroorat nahi — token khud claims carry karta hai, aur signature verify karke server confirm kar sakta hai ki claims tamper nahi hui. Ye stateless authentication enable karta hai — horizontally scaled APIs ke liye ideal, kyunki koi shared session state maintain nahi karni padti.
+
+**Validation steps jo `AddJwtBearer` internally karta hai:** signature verify (key se), expiry check (`exp` claim), issuer match (`iss`), audience match (`aud`). Agar koi bhi fail ho, request `401` ke saath reject ho jaati hai authentication stage pe hi.
+
+**Important caveat:** JWT payload **encrypted nahi hai**, sirf base64-encoded aur signed hai — koi bhi token ko decode karke claims padh sakta hai (jwt.io pe paste karke dekho). Signature sirf **tampering detect** karta hai, content ko **hide** nahi karta. Isliye sensitive data (passwords, full card numbers) kabhi JWT payload me nahi honi chahiye.
+
+### Cookie authentication — briefly
+
+Traditional server-rendered apps aur kuch Web APIs (jab client browser hi ho) cookie-based auth use karte hain — server login pe ek session identifier cookie set karta hai, browser automatically har request ke saath cookie bhejta hai. JWT ke comparison me: cookie approach typically server-side session state maintain karta hai (ya encrypted cookie payload), CSRF protection ki extra zaroorat hoti hai browser context me. Modern Web API (mobile clients, SPA, third-party integrations) me JWT-bearer-token approach zyada common hai kyunki wo stateless hai aur non-browser clients ke liye naturally fit hota hai.
+
+### OAuth — delegated authorization, conceptually
+
+OAuth ek **authorization** protocol hai (naam me confusion hai — "OAuth" me "Auth" authentication jaisa lagta hai, lekin core purpose authorization hai), jo ek app ko user ke resources access karne deta hai **bina user ka password kabhi dekhe**. Classic example: "Sign in with Google" — tumhara app Google se ek token maangta hai jo scope-limited access deta hai (jaise sirf email/profile), bina tumhare app ko Google password kabhi handle karne ki zaroorat ke. OpenID Connect (OIDC) OAuth ke upar ek authentication layer add karta hai (identity verification), jo ye clarify karta hai ki pure OAuth authorization ke liye hai, authentication ke liye OIDC chahiye.
+
+</Hinglish>
+
+<Callout type="trap">
+
+401 aur 403 ko interchangeably use karna ek genuine, frequently-asked interview trap hai. Yaad rakho: 401 = "Main tumhe pehchanta hi nahi (ya credentials invalid hain)." 403 = "Main tumhe pehchanta hoon, lekin tumhe ye karne ki permission nahi hai."
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka authentication/authorization middleware deliberately do alag pipeline stages me split hai (`UseAuthentication()` phir `UseAuthorization()`) — ye architectural separation directly reflect karta hai ki dono genuinely alag concerns hain: authentication identity establish karta hai, authorization us established identity ke against decisions leta hai. Middleware order galat hone par (authorization pehle) authorization checks ko pata hi nahi chalega user kaun hai, aur sab kuch fail ho jaayega.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech App">
+
+Ek typical UPI/payments app me login flow OTP-based authentication use karta hai (phone number verify karke), jiske baad server ek short-lived JWT issue karta hai jisme user ID aur account-tier claims hote hain. Har subsequent API call (balance check, transfer) is JWT ko `Authorization: Bearer <token>` header me carry karta hai — server database session lookup kiye bina hi request authenticate kar leta hai, sirf signature aur expiry verify karke. High-value operations (jaise transfer above a threshold) ke liye ek additional authorization layer (policy-based check) lagti hai jo account-tier aur transaction-limit claims check karti hai — authentication ek baar hoti hai login pe, authorization har sensitive action pe alag se evaluate hoti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- JWT structure: `header.payload.signature` — three base64url-encoded, dot-separated parts
+- 401 Unauthorized = authentication failure/missing; 403 Forbidden = authenticated but not permitted
+- `UseAuthentication()` must be registered BEFORE `UseAuthorization()` in the middleware pipeline
+- JWT payload is base64-encoded and signed, NOT encrypted — anyone can read it, only tampering is detected
+- Common JWT claims: `sub`, `exp`, `iss`, `aud`, `iat` (issued-at)
+- OAuth = delegated authorization protocol; OpenID Connect (OIDC) = authentication layer built on top of OAuth
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Authentication aur authorization me kya fark hai?" — strong answer: "Authentication verify karta hai user kaun hai — credentials check karke ek identity establish karta hai. Authorization decide karta hai wo verified identity kya kar sakti hai — kis resource ko access kar sakti hai, kaunse operations allowed hain. ASP.NET Core me ye do alag middleware stages hain — pehle `UseAuthentication()`, phir `UseAuthorization()` — kyunki authorization decisions ko already-established identity chahiye hoti hai kaam karne ke liye. Ek concrete distinction: agar ek valid, logged-in user ek forbidden action try kare, response 403 Forbidden hona chahiye, na ki 401 — kyunki authentication successful thi, sirf permission missing hai." Follow-up: "JWT me signature kya protect karta hai, aur kya protect NAHI karta?" — answer: signature sirf tampering detect karta hai (payload modify hua ya nahi), payload ko encrypted/hidden nahi karta — koi bhi base64-decode karke content padh sakta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+401 aur 403 ko interchangeably use karna — ye ek precise, commonly-tested distinction hai jo galat implementations me almost universally mishandled hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+JWT payload me sensitive data (passwords, full financial details) daal dena ye assume karke ki "signed hai to safe hai" — signature sirf tampering detect karta hai, content encrypt nahi karta, koi bhi payload decode kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+`app.UseAuthorization()` ko `app.UseAuthentication()` se pehle register kar dena — authorization checks ko identity available hi nahi hogi, sab requests unexpectedly fail/unauthorized ho jaayengi.
+
+</Mistake>
+
+<Mistake>
+
+OAuth ko authentication protocol samajh lena — OAuth core me delegated **authorization** ke liye hai; user identity verify karne ke liye OpenID Connect (OAuth ke upar built) chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Long-lived JWTs issue karna bina refresh-token mechanism ke — agar ek token compromise ho jaaye, wo apni poori validity window tak valid rahega, revoke karne ka koi seedha built-in tarika nahi (stateless design ka trade-off) jab tak explicit revocation-list ya short expiry + refresh-token pattern na ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant AuthN as UseAuthentication()
+    participant AuthZ as UseAuthorization()
+    participant Action as Controller Action
+
+    Client->>AuthN: Request + Bearer JWT
+    AuthN->>AuthN: Verify signature, expiry, issuer, audience
+    alt Token invalid
+        AuthN-->>Client: 401 Unauthorized
+    else Token valid
+        AuthN->>AuthZ: ClaimsPrincipal populated
+        AuthZ->>AuthZ: Check [Authorize] policy/role
+        alt Permission denied
+            AuthZ-->>Client: 403 Forbidden
+        else Permission granted
+            AuthZ->>Action: Invoke action
+            Action-->>Client: 200 OK
+        end
+    end
+`}
+  caption="Authentication establishes identity first; authorization then decides what that identity may do — a failure at each stage maps to a different, precise status code."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Authentication = who are you; Authorization = what can you do
+- `UseAuthentication()` must run before `UseAuthorization()` in the pipeline
+- 401 = authentication failed/missing; 403 = authenticated but not permitted
+- JWT = header.payload.signature — signed (tamper-evident), NOT encrypted (payload is readable)
+- JWT is self-contained/stateless — no server-side session lookup needed to validate
+- Cookie auth = stateful, browser-oriented; JWT = stateless, API/mobile/SPA-friendly
+- OAuth = delegated authorization ("let this app act on my behalf"); OpenID Connect = authentication layer on top of OAuth
+- Never put sensitive data in a JWT payload — it's readable by anyone who has the token
+
+</QuickRevision>

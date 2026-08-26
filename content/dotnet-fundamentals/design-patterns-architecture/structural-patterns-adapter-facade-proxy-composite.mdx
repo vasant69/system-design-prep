@@ -1,0 +1,261 @@
+---
+slug: "structural-patterns-adapter-facade-proxy-composite"
+title: "Structural Patterns — Adapter, Facade, Proxy, Composite"
+section: "dotnet-fundamentals"
+module: "design-patterns-architecture"
+order: 1
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["dotnet-design-patterns-factory-strategy-singleton-decorator"]
+tags: ["dotnet", "csharp", "design-patterns", "adapter", "facade", "proxy", "composite"]
+englishDefinition: "Structural design patterns describe how classes and objects are composed to form larger, flexible structures without changing their internals: Adapter converts one interface into another the client expects, Facade hides a complex subsystem behind a single simple entry point, Proxy controls access to an object by standing in for it, and Composite lets clients treat individual objects and groups of objects uniformly through a shared interface."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Razorpay", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Structural design patterns describe how classes and objects are composed to form larger, flexible structures without changing their internals: Adapter converts one interface into another the client expects, Facade hides a complex subsystem behind a single simple entry point, Proxy controls access to an object by standing in for it, and Composite lets clients treat individual objects and groups of objects uniformly through a shared interface.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`oops-dotnet` ke `solid-patterns` module me Factory/Strategy/Singleton/Decorator/Options/Mediator already cover ho chuke hain — wo saare **creational** ya **behavioural** patterns hain (kuch exceptions ke saath, Decorator structural hai). Ye topic un 4 **structural** patterns pe focus karta hai jo daily .NET work me constantly dikhte hain lekin explicitly kabhi naam nahi liye jaate: Adapter, Facade, Proxy, Composite.
+
+### Adapter — do incompatible interfaces ke beech pul
+
+Adapter tab use hota hai jab tumhare paas ek existing class/library hai jiska interface tumhare code ke expected interface se match nahi karta — aur tum us existing code ko modify nahi kar sakte (third-party SDK, legacy code). Adapter ek wrapper class banata hai jo tumhare expected interface ko implement karta hai, aur internally purane interface ko call karta hai.
+
+```csharp
+// Apna app ka expected interface
+public interface IPaymentGateway
+{
+    Task<bool> ChargeAsync(decimal amount, string currency);
+}
+
+// Third-party SDK ka incompatible interface — modify nahi kar sakte
+public class LegacyPaymentSdk
+{
+    public LegacyResult ProcessPayment(int amountInPaise, string currencyCode) { /* ... */ return null!; }
+}
+
+// Adapter — legacy SDK ko IPaymentGateway shape me convert karta hai
+public class LegacyPaymentAdapter : IPaymentGateway
+{
+    private readonly LegacyPaymentSdk _sdk;
+    public LegacyPaymentAdapter(LegacyPaymentSdk sdk) => _sdk = sdk;
+
+    public Task<bool> ChargeAsync(decimal amount, string currency)
+    {
+        var result = _sdk.ProcessPayment((int)(amount * 100), currency);
+        return Task.FromResult(result?.Success ?? false);
+    }
+}
+```
+
+Ab `IPaymentGateway` ko consume karne wala baaki app code ko pata hi nahi chalta ki underlying implementation ek purani, differently-shaped SDK hai — Adapter ne translation layer bana diya.
+
+### Facade — complex subsystem ke aage ek simple door
+
+Facade tab use hota hai jab ek operation ko complete karne ke liye multiple subsystems (services, repositories, external calls) coordinate karne padte hain, aur ye complexity client se hide karni hai. Facade ek single, simple entry-point method deta hai jo internally saara orchestration khud karta hai.
+
+```csharp
+public class OrderCheckoutFacade
+{
+    private readonly IInventoryService _inventory;
+    private readonly IPaymentGateway _payment;
+    private readonly IShippingService _shipping;
+    private readonly INotificationService _notifications;
+
+    public OrderCheckoutFacade(IInventoryService inventory, IPaymentGateway payment,
+        IShippingService shipping, INotificationService notifications)
+    {
+        _inventory = inventory; _payment = payment;
+        _shipping = shipping; _notifications = notifications;
+    }
+
+    public async Task<bool> PlaceOrderAsync(Order order)
+    {
+        if (!await _inventory.ReserveAsync(order.Items)) return false;
+        if (!await _payment.ChargeAsync(order.Total, "INR")) { await _inventory.ReleaseAsync(order.Items); return false; }
+        await _shipping.ScheduleAsync(order);
+        await _notifications.SendOrderConfirmationAsync(order);
+        return true;
+    }
+}
+```
+
+Controller ab sirf `PlaceOrderAsync` call karta hai — chaar subsystems ka coordination Facade ke andar chhup gaya. Ye MediatR command handlers ka bhi ek common role hai — ek handler often ek Facade ki tarah kaam karta hai.
+
+### Proxy — access control ya lazy behavior ke liye stand-in
+
+Proxy same interface implement karta hai jo real object implement karta hai, lekin actual call ko forward karne se pehle (ya baad me) extra kaam karta hai — logging, caching, lazy-loading, authorization check. Client ko farak nahi padta ki wo real object se baat kar raha hai ya proxy se, kyunki interface same hai.
+
+```csharp
+public interface IReportService
+{
+    Task<Report> GenerateAsync(int reportId);
+}
+
+// Real, expensive implementation
+public class ReportService : IReportService
+{
+    public async Task<Report> GenerateAsync(int reportId) { /* heavy DB + computation */ return new Report(); }
+}
+
+// Caching Proxy — same interface, extra behavior
+public class CachingReportServiceProxy : IReportService
+{
+    private readonly IReportService _inner;
+    private readonly IMemoryCache _cache;
+
+    public CachingReportServiceProxy(IReportService inner, IMemoryCache cache)
+    {
+        _inner = inner; _cache = cache;
+    }
+
+    public Task<Report> GenerateAsync(int reportId) =>
+        _cache.GetOrCreateAsync($"report:{reportId}", entry =>
+        {
+            entry.SlidingExpiration = TimeSpan.FromMinutes(5);
+            return _inner.GenerateAsync(reportId);
+        });
+}
+```
+
+Ye pattern DI container me `IReportService` ko `CachingReportServiceProxy` se resolve karke wire kiya ja sakta hai — Decorator pattern (already `oops-dotnet` me cover hua) aur Proxy syntactically bahut similar dikhte hain; difference **intent** ka hai — Decorator naya behavior *add* karta hai (jaise logging), Proxy access ko *control* karta hai (caching, lazy-init, authorization gate).
+
+### Composite — tree structures ko uniformly treat karna
+
+Composite kam common hai typical Web API work me, lekin interview me naam-check hota hai. Idea: individual objects aur unke groups (trees) ko same interface ke through treat karna, taaki client ko farak na pade ki wo ek single item ke saath deal kar raha hai ya ek poora sub-tree.
+
+```csharp
+public interface IMenuComponent
+{
+    decimal GetPrice();
+}
+
+public class MenuItem : IMenuComponent
+{
+    public decimal Price { get; init; }
+    public decimal GetPrice() => Price;
+}
+
+public class MenuCategory : IMenuComponent
+{
+    private readonly List<IMenuComponent> _items = new();
+    public void Add(IMenuComponent item) => _items.Add(item);
+    public decimal GetPrice() => _items.Sum(i => i.GetPrice()); // recursively sums leaves and sub-categories
+}
+```
+
+Yahan `MenuCategory` khud bhi `IMenuComponent` hai aur andar aur `IMenuComponent`s (items ya nested categories) hold kar sakta hai — client `GetPrice()` call karta hai bina ye jaane ki wo ek single item pe hai ya poore tree pe. File-system folders/files, org-chart hierarchies, UI component trees — sab classic Composite use cases hain.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Adapter existing/third-party code ko bina modify kiye reuse allow karta hai", "Facade client-facing complexity kaafi kam karta hai — ek call, poora orchestration hidden", "Proxy cross-cutting behavior (caching, logging, auth) ko core logic se cleanly separate karta hai"]}
+  cons={["Adapter ek extra indirection layer add karta hai — debugging me ek extra hop", "Facade agar bahut zyada grow kare to khud ek God Object ban sakta hai", "Proxy aur Decorator ka intent overlap confusing ho sakta hai team ke liye agar clearly documented na ho"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka `HttpClient` wrapping pattern (jaisa `IHttpClientFactory`-created typed clients me hota hai) effectively Facade + Adapter dono ka mix hai — typed client (jaise `GitHubApiClient`) ek simple, domain-specific interface expose karta hai, jabki internally raw `HttpClient` calls, header setup, aur JSON serialization ko coordinate karta hai. Consumer ko `HttpClient` ki raw complexity kabhi dikhti hi nahi.
+
+</RealWorld>
+
+<RealWorld company="A BFSI Core Banking Team">
+
+Ek Indian bank ka backend team ek naye UPI settlement vendor ko integrate kar raha tha jiska SDK completely different response shape deta tha compared to unke existing `ISettlementProvider` interface se. Poora settlement-processing code rewrite karne ke bajaye, unhone ek `UpiVendorAdapter` likha jo naya SDK wrap karta tha aur `ISettlementProvider` expose karta tha — baaki poore codebase me ek line bhi change nahi karni padi, sirf DI registration switch hui.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 4 structural patterns yahan cover hue: Adapter, Facade, Proxy, Composite (Decorator already `oops-dotnet` me cover hai)
+- Adapter aur Decorator dono "wrap an object" karte hain — Adapter interface *change* karta hai, Decorator interface *same rakh kar* behavior add karta hai
+- Proxy aur Decorator syntactically near-identical hote hain — intent se differentiate hote hain (access control vs behavior addition)
+- Composite recursion-based hai — `GetPrice()` jaisi call automatically poore tree me propagate hoti hai bina explicit loop likhe
+- Facade koi naya behavior nahi add karta — sirf existing subsystems ko orchestrate karta hai ek simpler API ke peeche
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Adapter aur Decorator me kya fark hai?" — strong answer: "Dono ek object ko wrap karte hain, lekin intent alag hai. Adapter ek incompatible interface ko client ke expected interface me convert karta hai — jaise ek legacy SDK ko apne app ke interface ke shape me la ke fit karna. Decorator interface ko same rakhta hai aur usi interface ke instance ko extra behavior ke saath wrap karta hai — jaise logging ya caching add karna bina interface change kiye." Follow-up almost certain: "Proxy Decorator se kaise alag hai agar dono same interface use karte hain?" — answer: "Intent — Decorator naya *behavior add* karta hai, Proxy *access control ya lazy-loading* provide karta hai. Implementation-wise dono near-identical dikh sakte hain, ye ek genuinely subjective classification hai jo mostly naming/documentation se clear hoti hai."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Adapter aur Decorator ko same samajhna sirf isliye kyunki dono wrapping karte hain — interview me intent explain karna zaroori hai, sirf code-shape nahi.
+
+</Mistake>
+
+<Mistake>
+
+Facade ko itna grow karne dena ki wo khud ek God Object ban jaaye jo poore application ka logic apne andar samet le — Facade sirf orchestration/coordination karna chahiye, business logic nahi.
+
+</Mistake>
+
+<Mistake>
+
+Composite ko force-fit karna non-hierarchical data pe — agar data genuinely tree-shaped nahi hai (jaise flat list of orders), Composite unnecessary complexity add karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Proxy pattern ko sirf "security" se jodna — caching proxy, lazy-loading proxy, aur logging proxy bhi equally valid Proxy variants hain, sirf access-control wale nahi.
+
+</Mistake>
+
+<Mistake>
+
+Adapter likhte waqt underlying legacy behavior ki edge cases (jaise exception types, null handling) ko translate karna bhool jaana — adapter sirf method signature translate nahi karta, error semantics bhi consistent rakhni chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Client["Client code"] -->|expects IPaymentGateway| Adapter["LegacyPaymentAdapter"]
+    Adapter -->|translates calls| Legacy["LegacyPaymentSdk (incompatible interface)"]
+
+    Client2["Controller"] -->|one simple call| Facade["OrderCheckoutFacade"]
+    Facade --> Inv["InventoryService"]
+    Facade --> Pay["PaymentGateway"]
+    Facade --> Ship["ShippingService"]
+
+    Client3["Consumer"] -->|same IReportService interface| Proxy["CachingReportServiceProxy"]
+    Proxy -->|cache miss only| Real["ReportService (real, expensive)"]
+`}
+  caption="Adapter translates an incompatible interface, Facade hides multi-subsystem orchestration behind one call, Proxy stands in for the real object behind the same interface."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Adapter — converts an incompatible interface into the one the client already expects, without touching the original code
+- Facade — one simple entry point hiding coordination across multiple subsystems
+- Proxy — same interface as the real object, controls access (caching, lazy-load, auth) before/after forwarding the call
+- Composite — tree structures treated uniformly via a shared interface, leaf and branch both implement it, calls recurse naturally
+- Adapter vs Decorator: interface *changes* (Adapter) vs interface *stays same*, behavior *added* (Decorator)
+- Proxy vs Decorator: near-identical shape, differ by intent — access control vs behavior addition
+- These are structural patterns — they organize existing objects into larger structures, they don't create objects (Factory) or define algorithms (Strategy)
+
+</QuickRevision>

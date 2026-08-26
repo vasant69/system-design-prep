@@ -1,0 +1,193 @@
+---
+slug: "unsafe-code-pointers-pinvoke"
+title: "Unsafe Code, Pointers, and P/Invoke"
+section: "dotnet-fundamentals"
+module: "dotnet-runtime-architecture"
+order: 13
+difficulty: "advanced"
+readingTime: 11
+prerequisites: ["weakreference-span-memory-stackalloc"]
+tags: ["dotnet", "unsafe", "pointers", "pinvoke", "interop", "fixed", "stackalloc"]
+englishDefinition: "C#'s unsafe blocks allow raw pointer arithmetic and direct memory access, opting out of the CLR's normal memory safety guarantees for narrow performance-critical or interop scenarios. P/Invoke (Platform Invoke) is the separate mechanism for calling functions in native, unmanaged libraries (C/C++ DLLs) from managed C# code — the practical reason most developers ever touch unsafe/pointer concepts at all."
+interviewFrequency: "low"
+companies: ["Microsoft", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+C#'s `unsafe` blocks allow raw pointer arithmetic and direct memory access, opting out of the CLR's normal memory safety guarantees for narrow performance-critical or interop scenarios. P/Invoke (Platform Invoke) is the separate mechanism for calling functions in native, unmanaged libraries (C/C++ DLLs) from managed C# code — the practical reason most developers ever touch unsafe/pointer concepts at all.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic rare hai day-to-day Web API/CRUD work me, lekin interview me "kya C# me pointers hote hain?" ya "native library kaise call karoge?" jaise questions genuinely poochhe jaate hain — aur ek clear, honest answer ("rare, but yaha exist karta hai, aur yaha genuinely kaam aata hai") kaafi impressive hota hai vague answer ke comparison me.
+
+### `unsafe` — CLR ki memory safety se explicitly opt-out
+
+C# by default **memory-safe** hai — CLR guarantee karta hai ki tum kabhi arbitrary memory address access nahi kar sakte, array bounds check hote hain, GC objects ko safely move kar sakta hai (kyunki koi raw pointer usse directly point nahi kar raha). `unsafe` keyword is guarantee ko ek scoped block ke andar explicitly off kar deta hai:
+
+```csharp
+unsafe
+{
+    int x = 10;
+    int* ptr = &x;        // Address-of operator, raw pointer
+    *ptr = 20;             // Dereference, direct memory write
+    Console.WriteLine(x);  // 20
+}
+```
+
+Isko compile karne ke liye `.csproj` me `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>` explicitly set karna padta hai — ye deliberate friction hai, taaki koi accidentally unsafe code na likh de.
+
+### `fixed` — GC ko object move karne se rokna
+
+Managed objects (jaise arrays) GC ke compaction phase ke dauraan memory me **move** ho sakte hain — agar unsafe code ne unki koi raw pointer li hui hai, aur GC beech me object move kar de, wo pointer **dangling** ho jaayega (galat memory point karega). `fixed` statement is object ko temporarily **pin** kar deta hai — GC us block ke andar usse move nahi karega.
+
+```csharp
+int[] numbers = { 1, 2, 3, 4, 5 };
+unsafe
+{
+    fixed (int* ptr = numbers)
+    {
+        for (int i = 0; i < numbers.Length; i++)
+        {
+            Console.WriteLine(*(ptr + i)); // Pointer arithmetic, safe kyunki pinned hai
+        }
+    }
+}
+```
+
+`fixed` block khatam hote hi object phir se GC ke liye "moveable" ban jaata hai — pinning ko lambe time tak hold karna GC ki compaction efficiency ko hurt karta hai (heap fragmentation), isliye scope jaanbujh kar chhota rakha jaata hai.
+
+### `stackalloc` — stack pe temporary buffer
+
+`stackalloc` heap allocation ke bajaye **stack** pe memory allocate karta hai — method return hote hi automatically free ho jaata hai, GC ka involvement zero. Chhoti, short-lived buffers ke liye useful (jaise ek parsing routine ka temporary scratch space):
+
+```csharp
+Span<int> buffer = stackalloc int[100]; // Modern C# — Span<T> ke saath safe wrapper
+```
+
+Modern C# me `stackalloc` ko `Span<T>` ke saath use karna common hai — ye `unsafe` context ke bina bhi kaam karta hai (Span internally bounds-checked hai), isliye `stackalloc` akela `unsafe` nahi maanga jaata jab `Span<T>` ke through use ho.
+
+### P/Invoke — native code ko call karna, ye asli practical use case hai
+
+**P/Invoke (Platform Invoke)** ek alag, lekin related mechanism hai — ye managed C# code ko native (unmanaged) `.dll`/`.so` libraries ke functions call karne deta hai, jaise Windows API ya ek existing C/C++ library.
+
+```csharp
+using System.Runtime.InteropServices;
+
+public static class NativeMethods
+{
+    [DllImport("user32.dll")]
+    public static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+}
+
+// Usage:
+NativeMethods.MessageBox(IntPtr.Zero, "Hello from native call", "Demo", 0);
+```
+
+`[DllImport]` attribute batata hai ye method actually kis native `.dll` me define hai. CLR runtime pe ye native function ko locate aur call karta hai, managed aur unmanaged type representations ke beech **marshaling** karta hai (jaise C# `string` ko C-style `char*` me convert karna).
+
+**Ye kab genuinely use hota hai:** jab ek existing native library (jaise ek legacy C++ image-processing library, ek hardware SDK jo sirf native `.dll` deता hai) ko .NET se use karna ho, aur koi managed alternative available na ho. Ye rewrite se bachaata hai — pura native library ko C# me phir se likhne ke bajaye, sirf zaroori functions ko P/Invoke se call kiya jaata hai.
+
+### Trade-offs — genuinely rare, genuinely risky
+
+`unsafe` code memory-safety guarantees off kar deta hai — buffer overruns, dangling pointers, crashes (ya worse, security vulnerabilities) sab possible ho jaate hain jo normally CLR prevent karta hai. P/Invoke marshaling errors (galat type mapping) crash ya undefined behavior de sakte hain. Dono genuinely **narrow, specialized** tools hain — 99% Web API/business-logic code inhe kabhi touch nahi karta, lekin interop/performance-critical scenarios (game engines, high-frequency trading systems, hardware drivers wrapper) me ye essential hain.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`unsafe` code aur P/Invoke dono ek genuine trust boundary hain — CLR ki normal safety guarantees (bounds checking, memory safety, type safety) yaha partially ya poori tarah off ho jaate hain. Inhe use karna ek deliberate, documented decision honi chahiye, casual choice nahi — aur `.csproj` me `AllowUnsafeBlocks` explicitly enable karna is friction ka hi ek intentional signal hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET runtime ka apna internal implementation (jaise `System.String`, collection internals, aur especially `Span<T>`/`Memory<T>` ka underlying mechanism) heavily `unsafe` code use karta hai performance-critical paths me — lekin ye poori tarah encapsulated hai safe, public APIs ke peeche. Ye pattern khud batata hai best practice: `unsafe` ko chhote, well-tested, encapsulated internal implementation details tak limit karo, business logic me expose mat karo.
+
+</RealWorld>
+
+<RealWorld company="An Indian Manufacturing/IoT Company">
+
+Ek company jo factory floor sensors se data collect karti thi, unke paas ek existing, battle-tested C++ SDK tha sensor hardware ke liye jo vendor ne diya tha (koi .NET wrapper available nahi tha). Poora SDK rewrite karna impractical tha, isliye team ne P/Invoke ke through zaroori functions (`ReadSensorData`, `InitializeDevice`) ko C# se call kiya, ek thin managed wrapper class ke andar sab P/Invoke calls encapsulate karke — baaki application ka code sirf clean, managed C# API dekhta tha, P/Invoke complexity ek jagah isolated thi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `unsafe` code requires explicit `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>` in `.csproj` — deliberate opt-in friction
+- `fixed` pins an object against GC compaction only for the scope of the block — long pinning hurts GC efficiency (heap fragmentation)
+- `stackalloc` memory is freed automatically when the method returns — zero GC involvement
+- Modern `stackalloc` + `Span<T>` combination doesn't require an `unsafe` block at all
+- `[DllImport]` is the core P/Invoke attribute connecting a managed method signature to a native library export
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Kya C# me pointers use ho sakte hain?" — strong answer: "Haan, `unsafe` blocks ke andar — raw pointer declare/dereference/arithmetic sab possible hai, lekin ye CLR ki normal memory-safety guarantees ko explicitly off karta hai, isliye ye narrow, performance-critical ya interop scenarios tak limited rehta hai, day-to-day business logic me nahi." Almost-certain follow-up: "Native C/C++ library kaise call karoge .NET se?" — P/Invoke, `[DllImport]` attribute ke through, jo managed method signature ko native `.dll` export se map karta hai, aur CLR marshaling handle karta hai types convert karne ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`unsafe` ko "hamesha bad practice" ya "kabhi use nahi karna chahiye" bol dena — genuinely narrow, well-justified scenarios (interop, extreme perf-critical hot paths) me ye valid tool hai, jab tak encapsulated aur well-tested ho.
+
+</Mistake>
+
+<Mistake>
+
+`fixed` block ko unnecessarily lambe scope tak extend karna — long pinning GC compaction efficiency ko hurt karta hai, heap fragmentation badhata hai.
+
+</Mistake>
+
+<Mistake>
+
+`stackalloc` ko heap allocation jaisा treat karna, use ke baad "free" karne ki koshish karna — ye stack pe hai, method return hote hi automatically gone ho jaata hai, manual cleanup ki zaroorat nahi (aur galat hoga).
+
+</Mistake>
+
+<Mistake>
+
+P/Invoke marshaling ko implicit/automatic maan lena har type ke liye — complex types (structs, strings with specific encoding) ke liye `[MarshalAs]` jaise explicit hints zaroori ho sakte hain, warna galat data native side pe pahunch sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Need raw memory access or native interop?"] --> B{"Which scenario?"}
+    B -->|Direct pointer manipulation, perf-critical| C["unsafe block + fixed (pin against GC) + pointer arithmetic"]
+    B -->|Short-lived local buffer, no GC involvement needed| D["stackalloc (often via Span&lt;T&gt;, no unsafe needed)"]
+    B -->|Call an existing native C/C++ library| E["P/Invoke: [DllImport] + extern method signature"]
+    E --> F["CLR marshals managed <-> native types, invokes native function"]
+`}
+  caption="Three related but distinct tools — unsafe/pointers for raw memory, stackalloc for stack buffers, P/Invoke for calling native libraries."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `unsafe` blocks opt out of CLR memory safety for raw pointer use — require `AllowUnsafeBlocks` in `.csproj`
+- `fixed` pins a managed object so GC won't move it during the block, preventing dangling pointers
+- Long-lived `fixed` pinning hurts GC compaction efficiency — keep the scope tight
+- `stackalloc` allocates on the stack, auto-freed on method return, zero GC involvement — modern usage often pairs it with `Span<T>` without needing `unsafe`
+- P/Invoke (`[DllImport]`) calls functions in native/unmanaged libraries from managed C# — the realistic reason most devs ever touch this area
+- CLR handles marshaling between managed and native types, but complex types may need explicit `[MarshalAs]` hints
+- Both `unsafe` and P/Invoke are narrow, specialized tools — encapsulate them tightly rather than spreading them through business logic
+
+</QuickRevision>

@@ -1,0 +1,218 @@
+---
+slug: "task-whenall-whenany"
+title: "Task.WhenAll and Task.WhenAny"
+section: "dotnet-fundamentals"
+module: "async-threading-parallel"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["task-and-tpl-fundamentals"]
+tags: ["dotnet", "csharp", "task", "whenall", "whenany", "aggregateexception", "concurrency"]
+englishDefinition: "Task.WhenAll runs multiple tasks concurrently and completes only when every one of them has finished, aggregating all failures into an AggregateException; Task.WhenAny completes as soon as the first of the given tasks finishes, regardless of whether that task succeeded or failed, leaving the rest still running."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Amazon", "Infosys"]
+---
+
+<SimpleDefinition>
+
+`Task.WhenAll` runs multiple tasks concurrently and completes only when every one of them has finished, aggregating all failures into an `AggregateException`; `Task.WhenAny` completes as soon as the first of the given tasks finishes, regardless of whether that task succeeded or failed, leaving the rest still running.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek baar tumhe multiple independent async operations run karni hain — jaise teen alag APIs se data fetch karna, ek hi user request ke liye. Sequentially `await` karna (`await task1; await task2; await task3;`) kaam to karega, lekin **unnecessarily slow** hoga — har task poore poore, ek ke baad ek, khatam hone ka wait karega, jabki wo teeno independently, concurrently chal sakte the.
+
+### Sequential vs Concurrent — sabse pehla distinction
+
+```csharp
+// SEQUENTIAL — slow, agar teeno tasks independent hain
+var result1 = await FetchUserAsync();     // 200ms wait
+var result2 = await FetchOrdersAsync();   // 200ms wait
+var result3 = await FetchReviewsAsync();  // 200ms wait
+// Total: ~600ms
+
+// CONCURRENT — fast, teeno ek saath start hote hain
+var task1 = FetchUserAsync();     // shuru ho gaya, await nahi kiya abhi
+var task2 = FetchOrdersAsync();   // ye bhi shuru ho gaya
+var task3 = FetchReviewsAsync();  // ye bhi shuru ho gaya
+await Task.WhenAll(task1, task2, task3); // sab ka wait ek saath
+// Total: ~200ms (sabse slow wale jitna, na ki sabka sum)
+```
+
+Key insight: Task **start hone** aur **await hone** do alag steps hain. Jab tum `FetchUserAsync()` call karte ho (bina `await` ke), wo method turant execution shuru kar deta hai — `await` sirf uske **result ka wait karta hai**. Isliye teeno methods ko pehle call karke (start karke), phir sabko ek saath `Task.WhenAll` se await karne se, wo concurrently chalte hain.
+
+### `Task.WhenAll` — sab complete hone ka wait, exceptions aggregate hoti hain
+
+```csharp
+Task<int> t1 = Task.Run(() => throw new InvalidOperationException("t1 failed"));
+Task<int> t2 = Task.Run(() => throw new ArgumentException("t2 failed"));
+Task<int> t3 = Task.Run(() => 42);
+
+try
+{
+    await Task.WhenAll(t1, t2, t3);
+}
+catch (Exception ex)
+{
+    // await Task.WhenAll(...) sirf PEHLI exception ko re-throw karta hai (yahan InvalidOperationException)
+    Console.WriteLine(ex.GetType().Name); // InvalidOperationException
+}
+
+// LEKIN saari exceptions capture hoti hain — access karne ke liye:
+Task allTasks = Task.WhenAll(t1, t2, t3);
+try { await allTasks; }
+catch
+{
+    // allTasks.Exception ek AggregateException hai jisme DONO exceptions hain
+    foreach (var ex in allTasks.Exception.InnerExceptions)
+        Console.WriteLine(ex.Message); // "t1 failed" AND "t2 failed"
+}
+```
+
+Ye ek genuinely subtle interview point hai: `await Task.WhenAll(...)` **sirf pehli exception ko** re-throw karta hai (readability ke liye), lekin underlying `Task` object ka `.Exception` property (jo `AggregateException` type ka hai) **saari** exceptions store karta hai — `InnerExceptions` collection me. Agar tumhe saari failures dekhni hain, `Task` object ko directly reference karke uska `.Exception.Flatten().InnerExceptions` check karo, sirf `try/catch` ke `ex` par depend mat karo.
+
+`Task.WhenAll` **tab tak complete nahi hota jab tak SAARE tasks complete na ho jaayein** — chahe wo success ho ya fail. Ek fail hone se baaki cancel nahi hote, wo apna kaam continue karte hain, `WhenAll` bas unka bhi wait karta hai.
+
+### `Task.WhenAny` — pehla jo bhi complete ho, uska result
+
+```csharp
+Task<string> fastApi = CallFastMirrorAsync();
+Task<string> slowApi = CallSlowMirrorAsync();
+
+Task<string> firstDone = await Task.WhenAny(fastApi, slowApi);
+string result = await firstDone; // firstDone khud ek completed Task hai, uska result nikaalo
+
+Console.WriteLine(result); // jo bhi pehle complete hua uska result
+```
+
+`Task.WhenAny` **jaise hi pehla task complete hota hai** (success YA failure — dono cases me), turant return kar deta hai — return value khud **wahi completed Task** hai, jise phir tum await karke result ya exception nikaal sakte ho. **Baaki tasks cancel NAHI hote** — wo background me chalte rehte hain (agar tumhe unhe cancel karna hai, explicitly `CancellationToken` use karna padega, agla topic).
+
+**Important nuance**: agar `Task.WhenAny` ka jo task pehle complete hua wo FAILED tha (exception ke saath), `Task.WhenAny` khud exception throw NAHI karta — wo bas us faulted Task ko return karta hai. Exception tabhi throw hoga jab tum us returned Task ko `await` karoge.
+
+### Common use cases
+
+- **`WhenAll`**: multiple independent data sources ka data ek saath fetch karna (dashboard load karna), ya multiple independent validations parallel me run karna.
+- **`WhenAny`**: timeout pattern (`Task.WhenAny(actualTask, Task.Delay(5000))` — jo pehle complete ho), ya redundant/mirror APIs me sabse fast response lena.
+
+```csharp
+// Timeout pattern — classic WhenAny use case
+Task<string> dataTask = FetchDataAsync();
+Task timeoutTask = Task.Delay(TimeSpan.FromSeconds(5));
+
+Task completedFirst = await Task.WhenAny(dataTask, timeoutTask);
+if (completedFirst == timeoutTask)
+    throw new TimeoutException("Fetch took too long");
+
+string data = await dataTask; // safe, hum jaante hain dataTask complete ho chuka hai
+```
+
+</Hinglish>
+
+<Callout type="warning">
+
+`await Task.WhenAll(...)` sirf pehli exception throw karta hai apne try/catch me — agar multiple tasks fail hue, baaki exceptions silently "lost" nahi hoti, lekin unhe dekhne ke liye `Task` object ka `.Exception` property (an `AggregateException`) explicitly check karna padega. Ye ek common interview trap hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core dashboards jo multiple microservices se data aggregate karte hain (jaise ek e-commerce order-detail page jo Orders, Inventory, aur Shipping services se parallel data leta hai) `Task.WhenAll` ka classic use case hain — sequential calls se page load time 3x tak slow ho sakta hai agar services independent hain aur parallel call kiye ja sakte hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Logistics Platform">
+
+Ek team ne delivery-status API se data fetch karte waqt `Task.WhenAny(fetchTask, Task.Delay(3000))` pattern use kiya — agar external delivery-partner API 3 seconds se zyada le raha ho, timeout maan kar fallback (cached last-known-status) dikhaya jaata tha, bina user ko indefinitely wait karwaye. Ye pattern bina `CancellationToken` ki full complexity ke ek simple, effective timeout de deta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `Task.WhenAll` completes only when ALL given tasks finish (success or failure)
+- `Task.WhenAny` completes as soon as the FIRST given task finishes (success or failure) — the rest keep running
+- `await Task.WhenAll(...)` re-throws only the FIRST exception in a try/catch; the full set lives in the Task's `.Exception` (an `AggregateException`) via `.InnerExceptions`
+- Starting tasks without immediately awaiting them (calling the method, storing the returned Task) is what makes them run concurrently
+- `Task.WhenAny` does NOT cancel the tasks that didn't finish first — that needs an explicit `CancellationToken`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`Task.WhenAll` aur `Task.WhenAny` me kya fark hai, especially exception handling ke case me?" ka strong answer: "`Task.WhenAll` tab complete hota hai jab saare given tasks complete ho jaayein, chahe success ho ya fail — agar multiple fail hue, `await Task.WhenAll(...)` sirf pehli exception re-throw karta hai apne catch block me, lekin poori set `AggregateException.InnerExceptions` ke through us Task object par accessible hoti hai. `Task.WhenAny` jaise hi pehla task complete hota hai (success ya failure, dono), turant us completed Task ko return kar deta hai — baaki tasks background me chalte rehte hain, cancel nahi hote automatically." Follow-up jo aksar aata hai: "concurrent execution genuinely tab hoti hai jab kya karo?" — jawab: tasks ko method call karke shuru karo bina turant await kiye, phir sabko `WhenAll`/`WhenAny` se ek saath await karo — sequential `await` har baar previous ke complete hone tak block karega.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Multiple independent async calls ko sequentially `await` karna (`await t1; await t2;`) jab wo concurrently chal sakte the — performance loss, kyunki har call previous ke complete hone tak wait karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki `await Task.WhenAll(...)` ke catch block me poori failure information mil jaati hai — sirf pehli exception milti hai, baaki `.Exception.InnerExceptions` se explicitly access karni padti hain.
+
+</Mistake>
+
+<Mistake>
+
+`Task.WhenAny` ke baad ye maan lena ki baaki tasks automatically cancel ho gaye — nahi hote, wo background me chalte rehte hain, cancellation explicit hona padta hai.
+
+</Mistake>
+
+<Mistake>
+
+`Task.WhenAny` ka result directly use karna bina us returned Task ko phir se `await` kiye — `WhenAny` khud ek `Task<Task<T>>` return karta hai jab generic version use ho, outer Task ka result hi inner Task hota hai, jise result nikaalne ke liye phir se `await` karna padta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant T1 as Task 1 (200ms)
+    participant T2 as Task 2 (150ms)
+    participant T3 as Task 3 (300ms)
+
+    Caller->>T1: Start (no await)
+    Caller->>T2: Start (no await)
+    Caller->>T3: Start (no await)
+    Note over T1,T3: All three running concurrently
+
+    par WhenAll
+        Caller->>Caller: await Task.WhenAll(T1, T2, T3)
+        Note over Caller: Completes at ~300ms (slowest task)
+    and WhenAny
+        Caller->>Caller: await Task.WhenAny(T1, T2, T3)
+        Note over Caller: Completes at ~150ms (fastest task, T2)
+    end
+`}
+  caption="Starting tasks without awaiting immediately lets them run concurrently; WhenAll waits for the slowest, WhenAny returns as soon as the fastest finishes."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Call the async methods first, await them together — that's what makes them run concurrently instead of sequentially
+- `Task.WhenAll` completes only when every task finishes (success or failure)
+- `Task.WhenAny` completes as soon as the first task finishes (success or failure); the rest keep running, uncancelled
+- `await Task.WhenAll(...)` re-throws only the first exception — check `.Exception.InnerExceptions` (an `AggregateException`) for the full set
+- `Task.WhenAny` doesn't throw on a failed first-completer — the exception only surfaces when you `await` the returned Task
+- Classic `WhenAll` use case: parallel independent data fetches for a dashboard
+- Classic `WhenAny` use case: a timeout pattern racing real work against `Task.Delay`
+
+</QuickRevision>

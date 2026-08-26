@@ -1,0 +1,176 @@
+---
+slug: "adonet-fundamentals"
+title: "ADO.NET Fundamentals — Connection, Command, DataReader"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 1
+difficulty: "beginner"
+readingTime: 11
+prerequisites: []
+tags: ["dotnet", "adonet", "sqlconnection", "sqlcommand", "sqldatareader", "data-access"]
+englishDefinition: "ADO.NET is .NET's lowest-level, provider-based data-access API — SqlConnection opens a database connection, SqlCommand executes SQL against it, and SqlDataReader streams the results row by row without loading the whole result set into memory; DataSet/DataTable are the older, disconnected, in-memory alternative. Every higher-level tool in .NET — EF Core, Dapper — is ultimately built on top of this same object model."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+ADO.NET is .NET's lowest-level, provider-based data-access API — `SqlConnection` opens a database connection, `SqlCommand` executes SQL against it, and `SqlDataReader` streams the results row by row without loading the whole result set into memory; `DataSet`/`DataTable` are the older, disconnected, in-memory alternative. Every higher-level tool in .NET — EF Core, Dapper — is ultimately built on top of this same object model.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Aaj kal koi bhi production code seedha ADO.NET nahi likhta — EF Core ya Dapper use karte hain. Lekin interview me ADO.NET fundamentals poochne ka reason simple hai: EF Core aur Dapper, dono internally isi object model ke upar bane hain. Agar tumhe pata hai `SqlConnection`/`SqlCommand`/`SqlDataReader` kaise kaam karte hain, tumhe ye bhi pata chal jaata hai ki ORM "magic" asal me kya kar raha hai neeche.
+
+### Core object model — chaar players
+
+**`SqlConnection`** — database se ek physical connection represent karta hai. Connection string leta hai (server, database, credentials), `Open()`/`Close()` (ya `using` ke through automatic dispose).
+
+**`SqlCommand`** — ek SQL statement (ya stored procedure call) represent karta hai jo ek open connection ke upar execute hota hai. Teen main execution methods: `ExecuteReader()` (rows return karne wale SELECT ke liye), `ExecuteNonQuery()` (INSERT/UPDATE/DELETE, affected-rows count return karta hai), `ExecuteScalar()` (single value, jaise `COUNT(*)`).
+
+**`SqlDataReader`** — `ExecuteReader()` ka result. Ek **forward-only, connected** stream hai — ek baar me sirf ek row memory me hoti hai, `Read()` call karke agli row pe move karte ho. Connection open rehni chahiye jab tak reader use ho raha ho.
+
+```csharp
+using SqlConnection connection = new SqlConnection(connectionString);
+await connection.OpenAsync();
+
+using SqlCommand command = new SqlCommand("SELECT Id, Name, Price FROM Products", connection);
+using SqlDataReader reader = await command.ExecuteReaderAsync();
+
+while (await reader.ReadAsync())
+{
+    int id = reader.GetInt32(0);
+    string name = reader.GetString(1);
+    decimal price = reader.GetDecimal(2);
+    Console.WriteLine($"{id}: {name} - {price}");
+}
+```
+
+Notice — `using` teen jagah, kyunki `SqlConnection`, `SqlCommand`, aur `SqlDataReader` sab `IDisposable` hain. Connection ko dispose na karna ek classic bug hai — connection pool exhaust ho jaata hai load ke under.
+
+### `DataSet`/`DataTable` — older, disconnected model
+
+`DataTable` ek in-memory table hai (rows + columns, purely in-memory representation), `DataSet` multiple `DataTable`s ka container hai (relationships ke saath, ek mini in-memory database jaisa). `SqlDataAdapter` inhe populate karta hai connection se — `Fill(dataSet)` call karo, connection band ho jaata hai, aur data disconnected memory me reh jaata hai, edit ho sakta hai, aur baad me `Update()` se wapas database me sync ho sakta hai.
+
+```csharp
+SqlDataAdapter adapter = new SqlDataAdapter("SELECT * FROM Products", connectionString);
+DataTable table = new DataTable();
+adapter.Fill(table); // connection open-fill-close automatically
+
+foreach (DataRow row in table.Rows)
+{
+    Console.WriteLine(row["Name"]);
+}
+```
+
+Ye pattern aajkal rarely use hota hai naye code me — modern apps `SqlDataReader` + strongly-typed C# objects (ya seedha EF Core/Dapper) prefer karte hain, kyunki `DataTable` weakly-typed hai (`row["Name"]` returns `object`, casting chahiye) aur ORMs zyada ergonomic hain. Legacy WinForms/enterprise codebases me `DataSet`/`DataTable` abhi bhi milte hain — isliye interview me poocha jaata hai, "existing codebase samajhne" ke liye.
+
+### Kab seedha ADO.NET likhte ho aaj bhi
+
+Bahut narrow cases — ek bulk-insert perf-critical path jahan har microsecond matter karta hai, ya ek legacy system jo already ADO.NET pe hai aur migrate karne ka koi business case nahi hai. 95%+ modern .NET code EF Core (productivity) ya Dapper (perf + control) use karta hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+`SqlDataReader` "connected, forward-only, streaming" hai — is teen-word summary ko yaad rakhna interview ke liye kaafi hai. Isi wajah se ye `DataSet`/`DataTable` se zyada memory-efficient hai bade result sets ke liye — poora result set kabhi memory me ek saath nahi hota.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+EF Core aur Dapper, dono internally `DbConnection`/`DbCommand`/`DbDataReader` (ADO.NET ke provider-agnostic base classes, jinse `SqlConnection`/`SqlCommand`/`SqlDataReader` derive hote hain) hi use karte hain query execute karne ke liye. Jab EF Core LINQ ko SQL me translate karta hai, final step wahi hai jo tumne upar manually likha — ek command execute, ek reader se rows padhna, objects me map karna. ORM ka "magic" is boilerplate ko automate karna hai, replace nahi.
+
+</RealWorld>
+
+<RealWorld company="A Legacy Banking System">
+
+Ek typical Indian bank ka 15-saal purana core banking module abhi bhi raw ADO.NET + stored procedures pe chalta hai — migrate karne ka risk (regulatory-critical financial code touch karna) benefit se zyada maana gaya. Naye developers jo sirf EF Core jaante hain, wahan onboard hote waqt struggle karte hain jab tak unhe `SqlDataReader`/`SqlCommand` ka basic model samajh nahi aata — isliye ye fundamentals aaj bhi interview-relevant hain, "sirf legacy hai" ke bawajood.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `SqlDataReader` = forward-only, connected, streams one row at a time — minimal memory footprint for large result sets
+- `DataTable`/`DataSet` = disconnected, entire result loaded into memory upfront — simpler to work with, higher memory cost
+- Three `SqlCommand` execution methods: `ExecuteReader` (rows), `ExecuteNonQuery` (affected-row count), `ExecuteScalar` (single value)
+- `SqlConnection`, `SqlCommand`, `SqlDataReader` are all `IDisposable` — always wrap in `using`
+- Connection pooling (covered next topic) makes repeated open/close cheap — ADO.NET doesn't actually open a fresh TCP connection every time
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"ADO.NET ka core object model samjhao" ka strong answer: "`SqlConnection` database se connection represent karta hai, `SqlCommand` ek SQL statement represent karta hai jo us connection pe execute hota hai, aur `ExecuteReader()` call karne par mujhe ek `SqlDataReader` milta hai jo connected, forward-only tareeke se rows stream karta hai — ek time pe sirf ek row memory me hoti hai. Ye connected model hai, jabki `DataSet`/`DataTable` disconnected model hai — poora data ek baar me memory me load hota hai, connection band ho jaata hai, aur data offline edit ho sakta hai." Follow-up jo aata hai: "EF Core inse kaise related hai?" — jawaab: EF Core internally yahi ADO.NET provider classes use karta hai, bas boilerplate ko automate karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`SqlConnection`/`SqlCommand`/`SqlDataReader` ko `using` ke bina chhod dena — connection dispose nahi hota, connection pool exhaust ho jaata hai load ke under, aur eventually "Timeout expired. The timeout period elapsed prior to obtaining a connection from the pool" jaisa production error aata hai.
+
+</Mistake>
+
+<Mistake>
+
+`SqlDataReader` ko close karne se pehle connection dobara use karne ki koshish karna (jaise ek naya command run karna) — ek connection ek time pe sirf ek active `SqlDataReader` support karta hai (`MultipleActiveResultSets` off hone par), warna exception aata hai.
+
+</Mistake>
+
+<Mistake>
+
+`ExecuteScalar()` use karna jab result multiple rows/columns ho — ye sirf first row ka first column return karta hai, baaki silently discard ho jaata hai, koi warning nahi milti.
+
+</Mistake>
+
+<Mistake>
+
+Sync methods (`ExecuteReader`, `Open`) use karna high-throughput server code me jab async versions (`ExecuteReaderAsync`, `OpenAsync`) available hain — sync I/O calling thread ko block karta hai, jo ASP.NET Core jaise server environment me thread-pool starvation ka risk hai load ke under.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App as Application Code
+    participant Conn as SqlConnection
+    participant Cmd as SqlCommand
+    participant Rdr as SqlDataReader
+    App->>Conn: OpenAsync()
+    App->>Cmd: new SqlCommand(sql, connection)
+    App->>Cmd: ExecuteReaderAsync()
+    Cmd->>Rdr: returns reader
+    loop while ReadAsync() true
+        App->>Rdr: GetInt32/GetString/...
+    end
+    App->>Rdr: Dispose
+    App->>Conn: Dispose (returns to pool)
+`}
+  caption="The connected ADO.NET flow — connection stays open for the entire duration the reader is being consumed, one row at a time."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `SqlConnection` = connection, `SqlCommand` = a SQL statement to run, `SqlDataReader` = connected forward-only streaming result
+- Three execution methods: `ExecuteReader` (rows), `ExecuteNonQuery` (affected-row count), `ExecuteScalar` (single value)
+- `DataSet`/`DataTable` = older, disconnected, in-memory model — mostly seen in legacy codebases now
+- All three core objects are `IDisposable` — always `using`
+- EF Core and Dapper are both built on top of this same ADO.NET object model underneath
+- Prefer async (`OpenAsync`/`ExecuteReaderAsync`) in server code to avoid blocking thread-pool threads
+
+</QuickRevision>

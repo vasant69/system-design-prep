@@ -1,0 +1,188 @@
+---
+slug: "assemblyloadcontext-and-reflection"
+title: "AssemblyLoadContext and Reflection"
+section: "dotnet-fundamentals"
+module: "dotnet-runtime-architecture"
+order: 11
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["il-msil-and-jit"]
+tags: ["dotnet", "reflection", "assemblyloadcontext", "plugins", "dynamic-loading"]
+englishDefinition: "AssemblyLoadContext is .NET Core's replacement for the old .NET Framework AppDomain, providing an isolated boundary for loading assemblies dynamically — most commonly used to build plugin systems that can be loaded and unloaded at runtime without restarting the host process. Reflection is the broader mechanism for inspecting types and members at runtime and invoking them dynamically, which AssemblyLoadContext-loaded assemblies are typically consumed through."
+interviewFrequency: "low"
+companies: ["Microsoft", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+`AssemblyLoadContext` is .NET Core's replacement for the old .NET Framework `AppDomain`, providing an isolated boundary for loading assemblies dynamically — most commonly used to build plugin systems that can be loaded and unloaded at runtime without restarting the host process. Reflection is the broader mechanism for inspecting types and members at runtime and invoking them dynamically, which `AssemblyLoadContext`-loaded assemblies are typically consumed through.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic advanced hai aur day-to-day CRUD work me kam use hota hai, lekin interview me "plugin architecture kaise banaoge" ya "runtime pe naya code kaise load karoge" jaise questions ke liye directly relevant hai — aur ye batata hai ki tumne .NET Core ke architecture ko genuinely samjha hai, sirf syntax nahi.
+
+### AppDomain (.NET Framework) — purana isolation model
+
+.NET Framework me code isolation **`AppDomain`** ke through hota tha — ek process ke andar multiple, isolated "domains" ban sakte the, har ek apna khud ka loaded-assemblies set rakhta tha, aur ek domain unload ho sakta tha bina poore process ko restart kiye. Ye plugin systems, ya ek hi process me multiple untrusted-code-ish scenarios ke liye use hota tha.
+
+**.NET Core me `AppDomain` fundamentally support nahi karta** (partial, mostly-non-functional stub reh gaya hai backward-compat ke liye) — kyunki cross-platform CLR design me AppDomain ka poora isolation model fit nahi baitha. Iski jagah **`AssemblyLoadContext` (ALC)** naya primitive hai.
+
+### AssemblyLoadContext — .NET Core ka naya isolation boundary
+
+`AssemblyLoadContext` ek **lighter-weight** boundary hai (poore separate domain jitna heavy-weight nahi) jo assemblies ko load karta hai apne isolated context me. Har .NET process ek **Default** ALC ke saath start hota hai (jisme main app ki assemblies load hoti hain); tum additional, **custom, collectible** ALCs bana sakte ho plugins load karne ke liye.
+
+```csharp
+public class PluginLoadContext : AssemblyLoadContext
+{
+    private readonly AssemblyDependencyResolver _resolver;
+
+    public PluginLoadContext(string pluginPath) : base(isCollectible: true)
+    {
+        _resolver = new AssemblyDependencyResolver(pluginPath);
+    }
+
+    protected override Assembly? Load(AssemblyName name)
+    {
+        string? path = _resolver.ResolveAssemblyToPath(name);
+        return path != null ? LoadFromAssemblyPath(path) : null;
+    }
+}
+```
+
+`isCollectible: true` set karne se ye ALC **unload** ho sakta hai — matlab plugin ko runtime pe load karo, use karo, phir unload karo (memory free), bina host process ko restart kiye. Ye genuinely useful hai jab hosting app ko plugins hot-reload karne hon (jaise ek IDE, ek extensible tool).
+
+```csharp
+var loadContext = new PluginLoadContext(pluginDllPath);
+var assembly = loadContext.LoadFromAssemblyPath(pluginDllPath);
+// ... plugin use karo reflection se ...
+loadContext.Unload(); // memory eventually GC ho jaata hai
+```
+
+**Isolation ka fayda**: agar do plugins ek hi dependency (jaise `Newtonsoft.Json`) ke alag versions use karte hain, alag ALCs me load karne se conflict avoid ho jaata hai — main app ka Default ALC affect nahi hota.
+
+### Reflection — runtime pe types/members inspect aur invoke karna
+
+**Reflection** ek broader .NET feature hai — `System.Reflection` namespace ke through, tum runtime pe kisi bhi type ki metadata (methods, properties, fields) inspect kar sakte ho, aur unhe dynamically invoke kar sakte ho, bina compile-time pe us type ko directly reference kiye.
+
+```csharp
+Assembly assembly = loadContext.LoadFromAssemblyPath(pluginDllPath);
+Type? pluginType = assembly.GetType("MyPlugin.PluginImplementation");
+object? instance = Activator.CreateInstance(pluginType!);
+
+MethodInfo? method = pluginType!.GetMethod("Execute");
+method!.Invoke(instance, null); // dynamically method call, compile-time pe type known nahi tha
+```
+
+Plugin systems reflection aur `AssemblyLoadContext` ko **saath** use karte hain: ALC assembly ko isolated tareeke se load karta hai, reflection us assembly ke andar ke types ko inspect/instantiate/invoke karta hai — kyunki host app ko compile-time pe plugin ka exact type pata nahi hota (wo plugin authors independently likhte hain, aksar ek shared interface/contract assembly ke against).
+
+### Practical use cases jo interview me poochhe jaate hain
+
+- **Plugin architectures** — ek host app (jaise VS Code-jaisा extensible editor, ek ETL tool) jo runtime pe third-party ya user-authored plugins load kare.
+- **Dependency injection container internals** — kuch DI containers reflection use karte hain constructor parameters discover karne, unresolved types instantiate karne ke liye.
+- **Serialization libraries** — `System.Text.Json`/`Newtonsoft.Json` internally reflection use karte the (ab source generators bhi ek alternative hain, performance ke liye) properties discover karne ke liye jab object serialize/deserialize ho.
+- **ORM/EF Core** — entity properties discover karne, proxies banane me reflection heavily involved hai.
+
+### Trade-offs — reflection "magic" free nahi hai
+
+Reflection powerful hai, lekin genuinely costly bhi — type/method lookup runtime pe hota hai, JIT-optimized direct calls jitna fast nahi hota, aur compile-time type safety poori tarah kho jaati hai (typo ek runtime exception dega, compile error nahi). Hot paths me repeated reflection calls perf problem ban sakte hain — caching (`MethodInfo` ek baar resolve karke reuse karna) ya compiled expression trees/delegates jaise mitigations use kiye jaate hain.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Reflection performance-sensitive code paths me directly, repeatedly use karna ek common perf mistake hai. Agar wahi `MethodInfo`/`PropertyInfo` baar-baar use ho raha hai, ise ek baar resolve karke cache karo, ya `Expression<T>`/compiled delegates ka use karo jo reflection ke overhead ko bypass karte hain repeated calls ke liye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka apna MSBuild task system aur Visual Studio ka extension model dono `AssemblyLoadContext`-jaise isolation primitives use karte hain — Visual Studio extensions ko runtime pe load/unload karna padta hai bina poori IDE restart kiye, aur alag extensions alag dependency versions le kar aa sakte hain jo isolate hone chahiye.
+
+</RealWorld>
+
+<RealWorld company="An Indian ETL/Data-Pipeline Tool">
+
+Ek data-pipeline product ne customers ko custom transformation logic likhne diya as "plugin" `.dll` files — product `AssemblyLoadContext` use karta tha har plugin ko isolated context me load karne ke liye, taaki ek customer ka plugin (jo shayad ek purani `Newtonsoft.Json` version use kar raha ho) doosre customer ke plugin ya core product ke dependencies ke saath conflict na kare. Plugin execute hone ke baad, agar wo periodically reload hona tha (customer ne naya version upload kiya), purana ALC unload karke naya load kiya jaata tha — bina poori pipeline service restart kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `AppDomain` (.NET Framework) → `AssemblyLoadContext` (.NET Core+) — the direct architectural replacement
+- `isCollectible: true` enables unloading a custom ALC — freeing memory without a process restart
+- Reflection-based method calls are meaningfully slower than direct/JIT-optimized calls — cache `MethodInfo` in hot paths
+- `AssemblyDependencyResolver` (added alongside ALC) resolves a plugin's own dependencies correctly, avoiding version clashes with the host
+- Every .NET process starts with one "Default" `AssemblyLoadContext` holding the main app's assemblies
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`AppDomain` .NET Core me kyun nahi hai, aur uski jagah kya hai?" — strong answer: "`AppDomain` .NET Framework ka isolation model tha, jo poore process ke andar multiple isolated domains banata tha, unload karne layak. .NET Core ka cross-platform CLR design isse fit nahi kar saka, isliye `AssemblyLoadContext` naya, lighter-weight replacement hai — collectible ALCs create karke assemblies ko isolated, unload-able context me load kiya ja sakta hai, plugin systems ke liye ye common pattern hai." Follow-up: "Reflection ka isme role kya hai?" — ALC assembly load karta hai, Reflection us assembly ke types ko runtime pe discover/instantiate/invoke karta hai jab compile-time pe exact type pata nahi hota.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`AppDomain` ko .NET Core me bhi fully functional samajhna — ye largely non-functional stub hai, real replacement `AssemblyLoadContext` hai.
+
+</Mistake>
+
+<Mistake>
+
+`isCollectible: true` set kiya, lekin phir bhi ALC unload nahi ho raha — sabse common reason: kahin ek strong reference loaded assembly ke kisi type/instance ko bahar hold kar rahi hai, jo GC ko us ALC ko collect karne se rok raha hai.
+
+</Mistake>
+
+<Mistake>
+
+Reflection ko hot/performance-critical code path me bina caching ke repeatedly use karna — `Type.GetMethod()`/`MethodInfo.Invoke()` har baar call karna meaningful overhead add karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Plugin ke dependencies host app ke dependencies se automatically isolate ho jaayenge, bina `AssemblyDependencyResolver` use kiye — is resolver ke bina, plugin ki apni dependency `.dll` files sahi tareeke se resolve nahi hongi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Host Process"] --> B["Default AssemblyLoadContext (main app)"]
+    A --> C["Custom Collectible AssemblyLoadContext (plugin)"]
+    C --> D["AssemblyDependencyResolver resolves plugin's own dependencies"]
+    C --> E["Assembly.GetType / Activator.CreateInstance / MethodInfo.Invoke (Reflection)"]
+    E --> F["Plugin logic executes"]
+    C -.unload().-> G["ALC + its assemblies eligible for GC"]
+`}
+  caption="A custom AssemblyLoadContext isolates plugin assemblies, and Reflection is how the host interacts with types it never compiled against."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `AppDomain` (.NET Framework isolation model) has no real .NET Core equivalent — mostly non-functional stub now
+- `AssemblyLoadContext` (ALC) is the .NET Core replacement — lighter-weight, per-process, supports collectible (unloadable) contexts
+- `isCollectible: true` + `Unload()` frees a plugin's assemblies without restarting the host process
+- Reflection (`System.Reflection`) inspects types/members at runtime and invokes them dynamically — used to interact with ALC-loaded assemblies
+- `AssemblyDependencyResolver` correctly resolves a plugin's own dependencies, avoiding host/plugin version conflicts
+- Reflection has real runtime cost — cache `MethodInfo`/`PropertyInfo` in hot paths rather than re-resolving repeatedly
+- Common use cases: plugin architectures, DI container internals, serialization, ORMs
+
+</QuickRevision>

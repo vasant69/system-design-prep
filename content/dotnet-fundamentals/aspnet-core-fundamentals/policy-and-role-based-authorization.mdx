@@ -1,0 +1,228 @@
+---
+slug: "policy-and-role-based-authorization"
+title: "Policy-Based, Role-Based, and Resource-Based Authorization"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["authentication-vs-authorization-jwt-oauth"]
+tags: ["dotnet", "aspnetcore", "authorization", "policy", "roles", "claims"]
+englishDefinition: "ASP.NET Core offers three increasingly flexible authorization models — role-based ([Authorize(Roles=\"...\")], checking a static role claim), claims-based (checking any claim's value, not just a role), and policy-based (AddAuthorization with named, composable requirement logic) — with a custom IAuthorizationHandler enabling resource-based authorization that evaluates the specific object being accessed, not just the caller's identity."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Paytm"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core offers three increasingly flexible authorization models — role-based (`[Authorize(Roles="...")]`, checking a static role claim), claims-based (checking any claim's value, not just a role), and policy-based (`AddAuthorization` with named, composable requirement logic) — with a custom `IAuthorizationHandler` enabling resource-based authorization that evaluates the specific object being accessed, not just the caller's identity.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`[Authorize]` attribute akela dekhne me simple lagta hai, lekin ASP.NET Core ke andar authorization ke **teen genuinely different levels** hain — role-based, claims-based, aur policy-based — plus resource-based authorization ek custom handler ke saath. Interview me "sirf `[Authorize(Roles = "Admin")]` kaafi hai kya?" jaisa question is pure hierarchy ko test karta hai.
+
+### Level 1 — Role-based authorization
+
+Sabse simple form — user ke paas ek specific role claim hona chahiye:
+
+```csharp
+[Authorize(Roles = "Admin")]
+[HttpDelete("{id:int}")]
+public IActionResult Delete(int id) => Ok();
+
+[Authorize(Roles = "Admin,Manager")] // OR — ya to Admin ya Manager
+public IActionResult Approve() => Ok();
+```
+
+Comma-separated roles **OR** logic hai (koi bhi ek role match kare, kaafi hai). **AND** logic chahiye ho (dono roles simultaneously) to multiple `[Authorize]` attributes stack karne padte hain — ek subtle syntax detail jo confuse karti hai.
+
+Limitation: role-based authorization **static, coarse-grained** hai — sirf "is this user in role X" check kar sakta hai, resource ki actual state ya complex business rules ke against decide nahi kar sakta.
+
+### Level 2 — Claims-based authorization
+
+Roles khud claims ka ek special case hain (`ClaimTypes.Role`) — claims-based authorization is idea ko generalize karta hai kisi bhi claim ke against check karne ke liye, sirf role tak limited nahi:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("MinimumAge18", policy =>
+        policy.RequireClaim("DateOfBirth")); // presence check
+});
+```
+
+Ye role-based se ek step flexible hai, lekin custom evaluation logic (jaise "date of birth se calculate karo ki 18+ hai ya nahi") abhi bhi expressible nahi hai simple `RequireClaim` se — usके liye policy-based approach chahiye.
+
+### Level 3 — Policy-based authorization
+
+Policy ek **named, reusable requirement** hai jo koi bhi custom logic encapsulate kar sakti hai:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("MinimumAge", policy =>
+        policy.Requirements.Add(new MinimumAgeRequirement(18)));
+
+    options.AddPolicy("CanEditOrder", policy =>
+        policy.RequireRole("Manager")
+              .RequireClaim("Department", "Sales"));
+});
+```
+
+```csharp
+[Authorize(Policy = "MinimumAge")]
+[HttpGet("age-restricted-content")]
+public IActionResult GetContent() => Ok();
+```
+
+Policies **compose** kar sakte hain — role check, claim check, aur custom requirement handler sab ek policy me combine ho sakte hain. Ye role-based se zyada expressive hai kyunki policy name business intent capture karta hai ("MinimumAge") na ki mechanism ("has role X") — controller code readable rehta hai, aur underlying rule change hone par sirf policy definition update karni padti hai, har controller nahi.
+
+### Custom `IAuthorizationHandler` — resource-based authorization
+
+Ab tak sab checks sirf **user ke claims** pe based the — resource ko dekhe bina. Real scenarios me aksar authorization decision **resource ki specific state** pe depend karta hai — jaise "user apni khud ki order edit kar sakta hai, kisi aur ki nahi." Ye role/policy se express nahi ho sakta bina resource ko dekhe — isliye custom `IAuthorizationHandler` chahiye:
+
+```csharp
+public class MinimumAgeRequirement : IAuthorizationRequirement
+{
+    public int MinimumAge { get; }
+    public MinimumAgeRequirement(int minimumAge) => MinimumAge = minimumAge;
+}
+
+public class MinimumAgeHandler : AuthorizationHandler<MinimumAgeRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context, MinimumAgeRequirement requirement)
+    {
+        var dobClaim = context.User.FindFirst("DateOfBirth");
+        if (dobClaim != null &&
+            DateTime.Parse(dobClaim.Value).AddYears(requirement.MinimumAge) <= DateTime.Today)
+        {
+            context.Succeed(requirement);
+        }
+        return Task.CompletedTask;
+    }
+}
+
+// Registration
+builder.Services.AddSingleton<IAuthorizationHandler, MinimumAgeHandler>();
+```
+
+Resource-based authorization is pattern ko ek step aage le jaata hai — handler ko actual resource object bhi pass hota hai (`AuthorizationHandlerContext.Resource`), taaki decision resource ki state (jaise `order.CreatedByUserId == currentUserId`) pe based ho sake. Controller me isse explicitly invoke karna padta hai (declarative attribute se automatic nahi hoti, kyunki resource ko pehle fetch karna padta hai):
+
+```csharp
+[HttpPut("{id:int}")]
+public async Task<IActionResult> Update(int id, UpdateOrderRequest request)
+{
+    var order = await _repository.GetByIdAsync(id);
+    if (order == null) return NotFound();
+
+    var authResult = await _authorizationService.AuthorizeAsync(User, order, "CanEditOrder");
+    if (!authResult.Succeeded) return Forbid(); // 403
+
+    // proceed with update
+    return Ok();
+}
+```
+
+Interview-relevant synthesis: role-based = simplest, coarsest; claims-based = ek generalization; policy-based = composable, named, business-intent-expressing; resource-based (custom handler) = tab chahiye jab decision resource ki actual data pe depend kare, sirf user ki identity pe nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Policy-based authorization business rules ko naam de kar controller code se decouple karta hai", "Resource-based authorization genuinely data-dependent permission decisions (\"apna khud ka resource\") express kar sakta hai jo role-based nahi kar sakta"]}
+  cons={["Policy/handler infrastructure simple role checks ke liye overkill hai — chhoti apps me unnecessary indirection", "Resource-based authorization declarative attribute se automatic nahi hai — explicit AuthorizeAsync call chahiye action ke andar, jo easily forget ho sakta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka authorization system deliberately requirement-based architecture pe design hua hai — role check, claim check, aur custom logic sab internally `IAuthorizationRequirement` + `IAuthorizationHandler` pattern se implement hote hain, chahe developer ko sirf `RequireRole()` jaisa simple-looking API dikhta ho. Ye design ye allow karta hai ki simple cases easy rahen, lekin complex cases (resource-based) same underlying mechanism extend karke handle ho sakein, bina ek alag authorization system invent kiye.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Backend">
+
+Ek typical loan-management API me, `PUT /loans/{id}` endpoint role-based authorization (sirf `LoanOfficer` role) ke saath shuru hua tha. Business rule badla — ab ek loan officer sirf apni assigned branch ke loans edit kar sakta hai, doosri branch ke nahi. Ye pure role-based approach se express nahi ho sakta (role ek static claim hai, branch-assignment resource-specific data hai) — team ne resource-based authorization add kiya: ek custom `IAuthorizationHandler` jo loan record fetch karke uski `BranchId` ko current user ke `AssignedBranchId` claim se compare karta hai, action ke andar explicitly `AuthorizeAsync(User, loan, "SameBranchOnly")` call karke.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `[Authorize(Roles = "A,B")]` — comma means OR (any one role matches)
+- AND logic across roles needs multiple stacked `[Authorize]` attributes
+- Three authorization models: role-based (simplest) -> claims-based (generalized) -> policy-based (composable, named)
+- Resource-based authorization needs an explicit `AuthorizeAsync()` call in the action — it's not automatically triggered by `[Authorize]`
+- `IAuthorizationHandler` implementations are commonly registered as Singleton (stateless evaluation logic)
+- A denied authorization check should return `Forbid()` (403), not `Unauthorized()` (401), when the user was already authenticated
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Role-based aur policy-based authorization me kab kya use karoge?" — strong answer: "Role-based authorization simple, static membership checks ke liye kaafi hai — 'sirf Admin role wale ye endpoint access kar sakte hain.' Policy-based tab chahiye jab logic ek se zyada condition combine kare, ya business intent ko ek reusable naam dena ho — jaise 'MinimumAge' policy jo age calculation encapsulate karti hai, controller ko us calculation ki details jaanne ki zaroorat nahi. Resource-based authorization (custom `IAuthorizationHandler`) tab chahiye jab decision resource ki actual data pe depend kare — jaise 'user sirf apni khud ki order edit kar sakta hai' — ye role/claim se express nahi ho sakta bina resource ko fetch kiye, isliye explicit `AuthorizeAsync()` call action ke andar karni padti hai." Follow-up: "Resource-based authorization declarative `[Authorize]` attribute se kyun automatic nahi ho sakti?" — answer: attribute action invoke hone se pehle evaluate hota hai, jab resource abhi fetch hi nahi hua hota — resource ki state check karne ke liye pehle usko load karna padta hai, isliye ye check action code ke andar, explicitly honi chahiye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`[Authorize(Roles = "Admin,Manager")]` ko AND (dono roles chahiye) samajh lena — ye actually OR hai (koi bhi ek). AND ke liye multiple stacked `[Authorize]` attributes chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Resource-based authorization ko declarative attribute se automatically ho jaana expect karna — actual resource ko pehle fetch karna padta hai, phir explicitly `AuthorizeAsync()` call karni padti hai; ye step bhool jaana ek common security gap create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har chhoti condition ke liye naya role banana (role explosion) instead of policy-based ya claims-based approach use karne ke — roles static identity attributes ke liye hain, complex conditional logic ke liye nahi.
+
+</Mistake>
+
+<Mistake>
+
+Authorization failure pe `Unauthorized()` (401) return karna jab user already authenticated tha — resource-based/policy denial ke liye `Forbid()` (403) sahi response hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Authorization need?"] --> B{"Static role check?"}
+    B -->|Yes| C["Role-based: [Authorize(Roles=...)]"]
+    B -->|No, any claim value| D["Claims-based: RequireClaim"]
+    B -->|No, composed/named business rule| E["Policy-based: AddPolicy + Requirements"]
+    E --> F{"Depends on the specific resource's data?"}
+    F -->|Yes| G["Resource-based: custom IAuthorizationHandler + explicit AuthorizeAsync()"]
+    F -->|No| E
+`}
+  caption="Each authorization model adds expressiveness — role-based is simplest and static, resource-based is the only one that can evaluate the actual object being accessed."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Role-based: `[Authorize(Roles = "A,B")]` — comma is OR, stack attributes for AND
+- Claims-based: check any claim's value, not just role
+- Policy-based: named, composable requirement logic via `AddAuthorization`/`AddPolicy`
+- Resource-based: custom `IAuthorizationHandler`, evaluates the actual resource object, needs explicit `AuthorizeAsync()` call in the action
+- A denied check after successful authentication should return `Forbid()` (403), not `Unauthorized()` (401)
+- Resource-based authorization is NOT automatic from `[Authorize]` — the resource must be fetched first
+- `IAuthorizationHandler` implementations are typically stateless and registered Singleton
+
+</QuickRevision>

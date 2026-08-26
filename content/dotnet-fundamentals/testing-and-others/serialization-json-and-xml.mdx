@@ -1,0 +1,171 @@
+---
+slug: "serialization-json-and-xml"
+title: "Serialization — System.Text.Json vs Newtonsoft.Json, XML"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: []
+tags: ["dotnet", "csharp", "serialization", "json", "xml", "system-text-json"]
+englishDefinition: "System.Text.Json is .NET's built-in, high-performance JSON serializer (default since .NET Core 3.0), designed to avoid the external dependency and allocation overhead of the long-dominant third-party Newtonsoft.Json (Json.NET) library, which teams still reach for when they need its more mature customization surface; XML serialization remains relevant for legacy interop and SOAP-era systems, while binary serialization (BinaryFormatter) is deprecated and actively discouraged for security reasons."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+`System.Text.Json` is .NET's built-in, high-performance JSON serializer (default since .NET Core 3.0), designed to avoid the external dependency and allocation overhead of the long-dominant third-party `Newtonsoft.Json` (Json.NET) library, which teams still reach for when they need its more mature customization surface; XML serialization remains relevant for legacy interop and SOAP-era systems, while binary serialization (`BinaryFormatter`) is deprecated and actively discouraged for security reasons.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Web APIs me serialization roz ka kaam hai — request body JSON se C# object bante hain (deserialization), response C# object se JSON banta hai (serialization). Interview me isse related history aur trade-offs samajhna expected hota hai.
+
+### `System.Text.Json` — .NET ka apna, built-in serializer
+
+.NET Core 3.0 (2019) se `System.Text.Json` (aksar "STJ" bola jaata hai) ASP.NET Core ka **default** JSON serializer hai. Ye Microsoft ne khud banaya, `Span<T>`/`Utf8JsonReader` jaise low-allocation APIs use kar ke — goal tha performance (kam allocations, faster parsing) aur ek external NuGet dependency ki zaroorat khatam karna (pehle Newtonsoft.Json practically har ASP.NET project me manually add karna padta tha).
+
+```csharp
+var json = JsonSerializer.Serialize(order);
+var order = JsonSerializer.Deserialize<Order>(json);
+
+// Options se customize karna
+var options = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    WriteIndented = true
+};
+var json = JsonSerializer.Serialize(order, options);
+```
+
+### `Newtonsoft.Json` (Json.NET) — purana champion, abhi bhi relevant
+
+`System.Text.Json` se pehle, `Newtonsoft.Json` **industry standard** tha — saalon tak har .NET project isse use karta tha, aur iska customization surface genuinely zyada mature hai. Kuch scenarios jahan teams aaj bhi Newtonsoft reach karti hain:
+
+- **Complex custom `JsonConverter` logic** — Newtonsoft ka converter model kaafi flexible hai, kuch advanced scenarios (jaise polymorphic deserialization with `TypeNameHandling`, though ye security-sensitive hai) STJ me achieve karna zyada verbose hai.
+- **`JObject`/`JToken` dynamic parsing** — jab JSON structure compile-time pe pura predictable nahi ho, Newtonsoft ka `JObject.Parse(...)` aur LINQ-to-JSON API kaafi ergonomic hai. STJ me equivalent `JsonDocument`/`JsonNode` hai, jo improve ho chuka hai recent .NET versions me lekin historically kam mature tha.
+- **Legacy codebases** — bahut saare pre-.NET-Core-3.0 codebases already deeply Newtonsoft pe built hain; migrate karne ka cost benefit se zyada ho sakta hai agar koi genuine performance/dependency issue na ho.
+
+```csharp
+// Newtonsoft syntax
+var json = JsonConvert.SerializeObject(order);
+var order = JsonConvert.DeserializeObject<Order>(json);
+```
+
+### Konsa use karein — practical guidance
+
+Naye .NET 8 projects ke liye `System.Text.Json` default hai aur zyada scenarios ke liye sufficient hai — koi extra NuGet dependency nahi, ASP.NET Core ke saath already integrated, better performance. Newtonsoft ka case tab banta hai jab genuinely advanced customization chahiye ho jo STJ me kaafi zyada boilerplate maange, ya existing large codebase already Newtonsoft pe hai.
+
+### XML serialization — briefly, legacy context
+
+`XmlSerializer` (aur `DataContractSerializer`) .NET me lambe samay se hain, aur SOAP-based web services (WCF-era) ka core mechanism the. Aaj REST/JSON APIs dominant hain, isliye XML serialization mostly **legacy system interop** ke liye relevant hai — jaise ek purana enterprise system jo abhi bhi SOAP/XML expect karta hai, ya kuch specific document formats (jaise config files) jo XML use karte hain. Naya greenfield API kaam almost hamesha JSON use karta hai.
+
+```csharp
+var serializer = new XmlSerializer(typeof(Order));
+using var writer = new StreamWriter("order.xml");
+serializer.Serialize(writer, order);
+```
+
+### Binary serialization — deprecated, security risk
+
+`BinaryFormatter` — purana .NET mechanism jo objects ko binary format me serialize karta tha — Microsoft ne ise **officially deprecated aur removed** (.NET 9 se by default disabled/removed) kar diya hai security reasons ki wajah se: ye deserialization ke time arbitrary code execution ka risk create karta tha agar untrusted input deserialize kiya jaaye (a well-known class of vulnerability, "insecure deserialization"). Interview me agar ye topic aaye, key point yahi hai — `BinaryFormatter` avoid karo, iski jagah `System.Text.Json` ya protobuf jaisa safer binary format use karo agar genuinely binary chahiye.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`BinaryFormatter` ko naye code me kabhi use mat karo — ye deprecated hai aur untrusted input deserialize karne par remote code execution ka genuine security risk create karta hai. Microsoft ne isse .NET 9+ me by default remove kar diya hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne `System.Text.Json` banane ka explicit goal rakha tha ki ASP.NET Core requests/second benchmarks (TechEmpower jaisi industry benchmarks) me significantly improve ho — Newtonsoft.Json ka reflection-heavy approach aur higher allocation rate high-throughput scenarios me measurable overhead create karta tha, jo STJ ke low-allocation design se address hua.
+
+</RealWorld>
+
+<RealWorld company="An Indian E-commerce Platform">
+
+Ek team apne naye microservices me `System.Text.Json` use kar rahi thi, lekin ek specific integration (ek third-party logistics partner ka API) polymorphic JSON return karta tha jisme response shape runtime pe decide karna padta tha — us ek specific integration ke liye unhone Newtonsoft ka `JObject`-based dynamic parsing use kiya, baaki poore codebase me STJ hi rakha. Ye pragmatic mixed-approach common hai — sirf jahan genuinely zaroorat ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `System.Text.Json`: default since .NET Core 3.0 (2019), built into the BCL, no external NuGet needed
+- `Newtonsoft.Json`: the pre-2019 industry standard, still widely used for advanced customization and legacy codebases
+- `JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase` — common configuration for JS-friendly API responses
+- `BinaryFormatter`: deprecated, disabled by default from .NET 9 due to insecure-deserialization risk
+- XML serialization (`XmlSerializer`/`DataContractSerializer`): relevant mainly for legacy SOAP/WCF interop today
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`System.Text.Json` aur `Newtonsoft.Json` me kya fark hai, aur kaunsa use karoge?" ka strong answer: "`System.Text.Json` .NET Core 3.0 se built-in default serializer hai — better performance, no external dependency. `Newtonsoft.Json` pehle industry standard tha aur abhi bhi advanced customization scenarios (complex converters, dynamic `JObject` parsing) me zyada mature hai. Naye projects ke liye STJ default choice hai, Newtonsoft tab jab genuinely uska customization surface chahiye ho ya legacy codebase already usme built hai." Follow-up jo aata hai: "`BinaryFormatter` ke baare me kya jaante ho?" — jawaab: deprecated, security risk (insecure deserialization → RCE), avoid karo naye code me.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`System.Text.Json` ko har scenario me Newtonsoft se strictly "better" bol dena — reality me trade-off hai, Newtonsoft ka customization surface abhi bhi kuch advanced use cases me zyada mature hai.
+
+</Mistake>
+
+<Mistake>
+
+`BinaryFormatter` ko sirf "purana" samajhna, security risk ki severity underestimate karna — ye ek genuine, well-documented remote-code-execution vulnerability class hai, sirf outdated nahi.
+
+</Mistake>
+
+<Mistake>
+
+Property naming policy set karna bhool jaana aur assume karna ki JSON output automatically camelCase hoga — `System.Text.Json` by default PascalCase (C# property naming) use karta hai jab tak `PropertyNamingPolicy` explicitly set na kiya jaaye.
+
+</Mistake>
+
+<Mistake>
+
+XML serialization ko poori tarah "dead" samajh lena — legacy enterprise/SOAP interop scenarios me ye aaj bhi genuinely relevant hai, sirf naye greenfield REST APIs me irrelevant hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["C# object"] --> B{"Serialization target"}
+    B -->|Modern default| C["System.Text.Json — built-in, fast"]
+    B -->|Advanced customization / legacy| D["Newtonsoft.Json"]
+    B -->|Legacy SOAP/WCF interop| E["XmlSerializer"]
+    B -->|Avoid: security risk| F["BinaryFormatter (deprecated)"]
+`}
+  caption="System.Text.Json is the modern default; Newtonsoft and XML remain relevant for specific scenarios, while BinaryFormatter should be avoided entirely."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `System.Text.Json` = default since .NET Core 3.0, built-in, high performance, no external dependency
+- `Newtonsoft.Json` = older industry standard, more mature customization (complex converters, dynamic `JObject` parsing)
+- Newtonsoft still chosen for legacy codebases or genuinely advanced customization needs
+- XML serialization (`XmlSerializer`) is relevant mainly for legacy SOAP/WCF interop today
+- `BinaryFormatter` is deprecated and a real security risk (insecure deserialization → RCE) — avoid entirely
+- `JsonSerializerOptions.PropertyNamingPolicy` controls camelCase vs PascalCase output — not automatic
+- Default choice for new .NET 8 projects: `System.Text.Json`, unless a specific advanced need points elsewhere
+
+</QuickRevision>

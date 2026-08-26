@@ -1,0 +1,191 @@
+---
+slug: "logging-ilogger-serilog"
+title: "Logging: ILogger, Log Levels, and Structured Logging with Serilog"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 7
+difficulty: "beginner"
+readingTime: 9
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "logging", "ilogger", "serilog", "structured-logging"]
+englishDefinition: "ASP.NET Core's built-in ILogger<T> abstraction provides leveled, provider-agnostic logging (Trace through Critical) with structured, message-template-based log calls rather than string concatenation, and is commonly paired with Serilog as a third-party replacement for its richer sinks (destinations like files, Seq, Elasticsearch) and enrichers (automatically attaching contextual data to every log event)."
+interviewFrequency: "medium"
+companies: ["Microsoft", "TCS", "Infosys", "Wipro"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core's built-in `ILogger<T>` abstraction provides leveled, provider-agnostic logging (Trace through Critical) with structured, message-template-based log calls rather than string concatenation, and is commonly paired with Serilog as a third-party replacement for its richer sinks (destinations like files, Seq, Elasticsearch) and enrichers (automatically attaching contextual data to every log event).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Logging beginner-friendly lagti hai — `Console.WriteLine` daal do, kaam ho gaya. Lekin production APIs me proper logging genuinely design decision hai, aur interview me "structured logging kya hai, string concatenation se better kyun hai" jaisa question specifically ye check karta hai ki tumne kabhi real production logs debug kiye hain ya nahi.
+
+### `ILogger<T>` — built-in abstraction
+
+ASP.NET Core `ILogger<T>` ko DI ke through inject karne deta hai — `T` (typically current class) automatically log entries me category/source ke roop me attach ho jaata hai:
+
+```csharp
+public class OrderService
+{
+    private readonly ILogger<OrderService> _logger;
+    public OrderService(ILogger<OrderService> logger) => _logger = logger;
+
+    public void CreateOrder(int customerId, decimal amount)
+    {
+        _logger.LogInformation("Order created for customer {CustomerId} with amount {Amount}", customerId, amount);
+    }
+}
+```
+
+### Log levels — kab kaunsa use karna hai
+
+Six levels, severity increasing order me:
+
+- **Trace** — sabse verbose, granular step-by-step detail (production me almost kabhi enabled nahi)
+- **Debug** — development-time diagnostic info, production me typically disabled
+- **Information** — normal application flow ("order created," "user logged in") — general operational visibility
+- **Warning** — kuch unexpected hua lekin application chal rahi hai (jaise a retry happened, a fallback path taken)
+- **Error** — ek operation fail hui (exception caught), lekin application crash nahi hui, request ko gracefully handle kiya gaya
+- **Critical** — application-wide failure, immediate attention chahiye (jaise database completely unreachable, out of memory)
+
+Production me typically `Information` aur upar hi enabled hote hain (configurable per-environment via `appsettings.json`'s `Logging:LogLevel` section) — `Debug`/`Trace` verbosity se logs overwhelming ho jaate aur storage/cost badh jaata.
+
+### Structured logging — message templates, NOT string concatenation
+
+Sabse common mistake: `_logger.LogInformation($"Order created for customer {customerId}")` — string interpolation use karna. Ye **kaam to karta hai**, lekin structured logging ka poora fayda khatam kar deta hai.
+
+```csharp
+// GALAT approach — string interpolation, structured data khoh jaata hai
+_logger.LogInformation($"Order created for customer {customerId} with amount {amount}");
+
+// SAHI approach — message template with named placeholders
+_logger.LogInformation("Order created for customer {CustomerId} with amount {Amount}", customerId, amount);
+```
+
+**Fark kyun matter karta hai:** structured logging me `{CustomerId}` aur `{Amount}` **named placeholders** hain jo log provider ko pata rehte hain as distinct fields — modern log sinks (Seq, Elasticsearch, Application Insights) inhe **queryable properties** ke roop me store karte hain, sirf ek flat string ke roop me nahi. Isse tum baad me query kar sakte ho "sab logs dikhao jahan `CustomerId = 12345`" bina regex/string-matching kiye poore log text pe. String interpolation is structure ko destroy kar deta hai — `customerId` value already string me bake ho chuki hoti hai jab tak logger dekhta hai, ek plain unstructured string milta hai.
+
+### Serilog — common third-party replacement
+
+Built-in `ILogger` ka providers ecosystem limited hai. **Serilog** industry-standard third-party logging library hai jo same `ILogger<T>` abstraction ke through use hoti hai (code change nahi karna padta), lekin bahut zyada **sinks** (log destinations) aur **enrichers** (automatic contextual data) provide karti hai:
+
+```csharp
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .Enrich.FromLogContext()
+    .Enrich.WithMachineName()
+    .WriteTo.Console()
+    .WriteTo.File("logs/app-.log", rollingInterval: RollingInterval.Day)
+    .WriteTo.Seq("http://localhost:5341")
+    .CreateLogger();
+
+builder.Host.UseSerilog();
+```
+
+**Sinks** — log kahan jaayega: Console, File (rolling daily files), Seq (structured-log search UI), Elasticsearch, Application Insights, aur dozens more. Ek hi log call multiple sinks ko simultaneously bhej sakta hai (jaise Console + File + Seq ek saath).
+
+**Enrichers** — automatically extra context attach karna har log event me, bina har log call me manually pass kiye — jaise machine name, request correlation ID, environment name, thread ID. `Enrich.FromLogContext()` request-scoped properties (jaise current request ka trace ID) automatically saare uss request ke andar hone wale logs me attach kar deta hai.
+
+Interview-relevant synthesis: `ILogger<T>` abstraction hi kaafi hai basic logging ke liye; Serilog isi abstraction ke peeche implementation swap karta hai jab richer destinations/enrichment chahiye — application code (`_logger.LogInformation(...)` calls) same rehta hai, sirf configuration badalta hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Structured logging ka real test: agar tumhare production logs kisi tool (Seq, Kibana, Application Insights) me "CustomerId = 12345 wale saare orders dikhao" jaisa query support karte hain bina full-text search ke, tumne structured logging sahi se implement kiya hai. Agar sirf `Ctrl+F` se text search kar rahe ho logs me, string concatenation ka pattern reh gaya hai kahin.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`ILogger<T>` ko Microsoft ne deliberately ek **abstraction** rakha hai (`Microsoft.Extensions.Logging`), koi specific concrete implementation nahi — ye exactly Serilog, NLog, ya koi bhi third-party logging library ko seamlessly plug-in karne deta hai bina application code change kiye. Ye same dependency-inversion philosophy hai jo poore ASP.NET Core me consistent hai — abstractions pe depend karo, concrete implementations configuration se choose karo.
+
+</RealWorld>
+
+<RealWorld company="An Indian SaaS Startup">
+
+Ek typical mid-size SaaS backend production incident debugging me, team ne pehle console-only logging use ki thi — jab ek specific customer ka data corrupt hua, unhe manually server logs me `grep` karna pada, slow aur error-prone. Serilog + Seq migrate karne ke baad, `CustomerId` structured field se query karna seconds ka kaam ho gaya — "iss customer ke saare logs, last 24 hours" ek simple structured query se mil gaye, bina log files manually scan kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Log levels (increasing severity): Trace -> Debug -> Information -> Warning -> Error -> Critical
+- Production typically runs at `Information` level or above — `Debug`/`Trace` are usually dev-only
+- `{PropertyName}` message-template placeholders (not string interpolation) preserve structured, queryable fields
+- Serilog concepts: Sinks = where logs go (Console, File, Seq, Elasticsearch); Enrichers = automatic contextual data on every event
+- `ILogger<T>` is an abstraction in `Microsoft.Extensions.Logging` — Serilog plugs in underneath it without changing application call sites
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Structured logging string concatenation se better kyun hai?" — strong answer: "Message templates jaise `_logger.LogInformation(\"Order {OrderId} created\", orderId)` `{OrderId}` ko ek named, distinct field ke roop me preserve karte hain — modern log sinks (Seq, Elasticsearch) inhe queryable properties ke roop me store karte hain. String interpolation (`$\"Order {orderId} created\"`) use karne se ye structure permanently khoh jaata hai — value already ek flat string me bake ho chuki hoti hai jab logger dekhta hai, isliye baad me `OrderId = 5` jaisa precise query nahi chala sakte, sirf slow, error-prone text search kar sakte hain." Follow-up: "Production me Debug/Trace level logs typically kyun disable rakhe jaate hain?" — answer: verbosity itni high hoti hai ki storage cost badh jaata hai aur genuinely important logs (Warning/Error) noise me dab jaate hain — configurable per-environment rakha jaata hai taaki zaroorat padne pe temporarily enable kiya ja sake without redeploying.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+String interpolation (`$"..."`) ya concatenation use karna log messages ke liye instead of message-template placeholders — structured data ka poora benefit khoh jaata hai, logs sirf flat text ban jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Production me `Debug`/`Trace` level logging enabled chhod dena — excessive verbosity, storage cost, aur important logs important signal ko noise me dabana.
+
+</Mistake>
+
+<Mistake>
+
+Sensitive data (passwords, full card numbers, tokens) ko log statements me directly include kar dena — log files/sinks aksar less-secured hote hain actual database se, ye ek real data-leak vector hai.
+
+</Mistake>
+
+<Mistake>
+
+Exceptions ko log karte waqt sirf `ex.Message` pass karna, poora exception object nahi — `_logger.LogError(ex, "message")` overload use karna chahiye taaki stack trace bhi capture ho, sirf top-level message nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["_logger.LogInformation(\\"Order {OrderId} created\\", id)"] --> B["ILogger&lt;T&gt; abstraction"]
+    B --> C{"Which provider is configured?"}
+    C -->|Built-in| D["Console/Debug providers"]
+    C -->|Serilog| E["Sinks: Console, File, Seq, Elasticsearch"]
+    E --> F["Enrichers add context: MachineName, RequestId, Environment"]
+    F --> G["Structured, queryable log event stored"]
+`}
+  caption="The same ILogger<T> call site works regardless of provider — Serilog plugs in underneath with richer sinks and automatic enrichment, without changing application code."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `ILogger<T>` is DI-injectable, provider-agnostic — `T` becomes the log category
+- Levels (increasing severity): Trace, Debug, Information, Warning, Error, Critical
+- Production usually runs at Information or above
+- Use message templates (`{PropertyName}`) not string interpolation — preserves structured, queryable fields
+- Serilog plugs in underneath `ILogger<T>` — same call sites, richer sinks/enrichers
+- Sinks = destinations (Console, File, Seq, Elasticsearch); Enrichers = automatic contextual data per event
+- Log the exception object itself (`LogError(ex, "...")`), not just `ex.Message`, to preserve the stack trace
+- Never log sensitive data (passwords, tokens, full card numbers)
+
+</QuickRevision>

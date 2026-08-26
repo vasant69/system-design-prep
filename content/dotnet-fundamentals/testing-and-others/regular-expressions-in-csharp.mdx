@@ -1,0 +1,174 @@
+---
+slug: "regular-expressions-in-csharp"
+title: "Regular Expressions in C# — Regex, Compiled, Source-Generated"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 8
+difficulty: "beginner"
+readingTime: 9
+prerequisites: []
+tags: ["dotnet", "csharp", "regex", "generatedregex", "performance"]
+englishDefinition: "The Regex class provides pattern-matching for validation, extraction, and text transformation; RegexOptions.Compiled trades a one-time upfront JIT-compilation cost for faster repeated matches on hot paths, and the [GeneratedRegex] source generator (C# 11/.NET 7) produces the matching logic at compile time instead of using runtime reflection, giving compiled-regex performance with zero startup cost and better trimming/AOT compatibility."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Wipro", "Amazon"]
+---
+
+<SimpleDefinition>
+
+The `Regex` class provides pattern-matching for validation, extraction, and text transformation; `RegexOptions.Compiled` trades a one-time upfront JIT-compilation cost for faster repeated matches on hot paths, and the `[GeneratedRegex]` source generator (C# 11/.NET 7) produces the matching logic at compile time instead of using runtime reflection, giving compiled-regex performance with zero startup cost and better trimming/AOT compatibility.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Regex text validation/extraction ke liye ek universal tool hai — email format check karna, log lines se data extract karna, string replace karna pattern ke basis pe. C# ka `System.Text.RegularExpressions.Regex` class ye sab provide karta hai, aur performance ke liye teen "modes" samajhna interview-relevant hai.
+
+### Basic `Regex` usage
+
+```csharp
+var regex = new Regex(@"^\d{3}-\d{3}-\d{4}$"); // phone number pattern jaisa
+bool isValid = regex.IsMatch("123-456-7890");   // true
+
+Match match = Regex.Match(input, @"(\d+)\s+items");
+if (match.Success)
+{
+    string count = match.Groups[1].Value; // captured group
+}
+
+string result = Regex.Replace(input, @"\s+", " "); // multiple spaces -> single space
+```
+
+Static methods (`Regex.IsMatch(...)`, `Regex.Match(...)`) internally ek cached, interpreted regex instance use karte hain — one-off ya infrequent matches ke liye fine hain.
+
+### `RegexOptions.Compiled` — hot-path performance ke liye
+
+Default me, `Regex` ek **interpreted engine** use karta hai — pattern ko parse karke ek internal representation banata hai jise runtime pe interpret kiya jaata hai, har match call pe. Agar wahi regex pattern **bahut baar** (jaise ek high-throughput loop ya request-per-second heavy validation) use ho raha hai, `RegexOptions.Compiled` pass karke .NET us pattern ko **actual IL me JIT-compile** kar deta hai — ek baar upfront cost lagti hai (compilation slower hai object creation time pe), lekin har subsequent match call significantly faster hota hai interpreted mode se.
+
+```csharp
+var compiledRegex = new Regex(@"^\d{3}-\d{3}-\d{4}$", RegexOptions.Compiled);
+// Pehla match call thoda slow (compilation overhead), baad wale calls fast
+```
+
+**Kab use karein**: agar regex ek hot path pe hai (baar-baar call hota hai, jaise per-request validation) aur `Regex` instance reused ho raha hai (static/cached field ki tarah, na ki har call pe naya banaya ja raha ho). Agar regex kabhi-kabhar use hota hai, `Compiled` ka upfront cost fayde se zyada ho sakta hai.
+
+### `[GeneratedRegex]` (C# 11 / .NET 7) — compile-time generation, zero runtime cost
+
+Naya, modern approach — **source generator** use karta hai jo build time pe hi actual matching C# code generate kar deta hai, koi runtime reflection ya JIT-compilation delay nahi:
+
+```csharp
+public partial class PhoneValidator
+{
+    [GeneratedRegex(@"^\d{3}-\d{3}-\d{4}$")]
+    private static partial Regex PhoneRegex();
+}
+
+bool isValid = PhoneValidator.PhoneRegex().IsMatch("123-456-7890");
+```
+
+Compiler build time pe hi is pattern ke liye optimized matching logic generate kar deta hai — runtime pe `RegexOptions.Compiled` jaisi hi performance milti hai, lekin **bina us upfront JIT-compilation delay ke** jo `Compiled` option pehle match call pe pay karwaata hai. Ye especially valuable hai Native AOT (ahead-of-time compiled) scenarios me, jahan runtime JIT compilation available hi nahi hoti — source-generated regex wahan bhi seamlessly kaam karta hai, jabki `RegexOptions.Compiled` AOT me fallback ho jaata hai interpreted mode pe.
+
+### Teeno options ka comparison
+
+| Mode | Startup cost | Per-match speed | AOT-friendly |
+|---|---|---|---|
+| Default (interpreted) | Sabse kam | Sabse slow | Haan |
+| `RegexOptions.Compiled` | JIT-compile delay first call pe | Fast | Nahi (AOT me fallback) |
+| `[GeneratedRegex]` | Compile-time, zero runtime delay | Fast (compiled jaisa) | Haan |
+
+</Hinglish>
+
+<Callout type="tip">
+
+Practical guidance: naye .NET 7+ code me hot-path regex ke liye `[GeneratedRegex]` prefer karo — ye `Compiled` ka performance deta hai bina uske startup-delay drawback ke, aur Native AOT ke saath bhi seamlessly kaam karta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET 7 me `[GeneratedRegex]` introduce karne ka explicit goal Native AOT compatibility improve karna tha — jaise-jaise .NET AOT deployment (fast startup, small binary) ki taraf push kar raha hai, runtime-JIT-dependent features (jaisa `RegexOptions.Compiled` traditionally tha) ko compile-time alternatives se replace karna zaroori ho gaya.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Log-Processing Pipeline">
+
+Ek team ek high-volume transaction-log processing service chala rahi thi jo per-line ek regex se specific fields extract karta tha — millions of lines per hour. Unhone `Regex.Match` static call use kiya tha (jo internally cache karta hai lekin optimal nahi tha), CPU profiling se pata chala regex matching significant time le raha tha. `[GeneratedRegex]` pe switch karne se processing throughput measurably improve hua, bina kisi runtime configuration change ke.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Default `Regex`: interpreted engine, lowest startup cost, slowest per-match speed
+- `RegexOptions.Compiled`: JIT-compiles the pattern — upfront cost, faster repeated matches
+- `[GeneratedRegex]` (C# 11 / .NET 7): compile-time generated matching code — compiled-level speed, zero runtime startup delay
+- `RegexOptions.Compiled` falls back to interpreted mode under Native AOT (no runtime JIT available)
+- `[GeneratedRegex]` requires a `partial` method on a `partial` class — the source generator fills in the implementation
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`RegexOptions.Compiled` aur `[GeneratedRegex]` me kya fark hai?" ka strong answer: "Dono runtime performance improve karte hain compare to default interpreted regex. `RegexOptions.Compiled` pattern ko runtime pe JIT-compile karta hai — first match call pe upfront delay hoti hai, phir fast. `[GeneratedRegex]` build time pe hi matching code generate kar deta hai — same compiled-level speed milti hai bina us runtime delay ke, aur Native AOT ke saath bhi compatible hai jahan `Compiled` fallback ho jaata hai." Follow-up jo aata hai: "kab `Compiled`/`GeneratedRegex` use karoge, kab default?" — jawaab: hot-path, frequently-reused regex ke liye compiled/generated, one-off ya infrequent matches ke liye default sufficient hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har regex ke liye reflexively `RegexOptions.Compiled` use karna, chahe wo kabhi-kabhar hi call ho — upfront JIT-compilation cost is case me overhead hi hai, koi fayda nahi.
+
+</Mistake>
+
+<Mistake>
+
+Har method call pe naya `Regex` instance banana instead of static/cached field me store karke reuse karna — especially `Compiled` option ke saath, ye compilation cost baar-baar pay karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Native AOT deployment me `RegexOptions.Compiled` se performance benefit expect karna — AOT me runtime JIT available nahi hota, isliye ye silently interpreted mode pe fallback ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Complex nested regex patterns se sab kuch parse karne ki koshish karna (jaise HTML) jab ek proper parser/library genuinely better suited hai — regex text patterns ke liye hai, structured/nested formats ke liye nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Regex need"] --> B{"How often is the pattern used?"}
+    B -->|Rarely| C["Default Regex — interpreted"]
+    B -->|Hot path, frequently reused| D{"Native AOT deployment?"}
+    D -->|No| E["RegexOptions.Compiled"]
+    D -->|Yes| F["[GeneratedRegex] — compile-time, AOT-friendly"]
+`}
+  caption="Choose the regex mode based on how often the pattern runs and whether the app targets Native AOT."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Default `Regex`: interpreted, low startup cost, slower per-match — fine for infrequent use
+- `RegexOptions.Compiled`: JIT-compiles the pattern for faster repeated matches, at an upfront cost
+- `[GeneratedRegex]` (C# 11/.NET 7): compile-time source generation, compiled-level speed with zero runtime startup delay
+- `[GeneratedRegex]` requires a `partial` method on a `partial` class
+- `RegexOptions.Compiled` falls back to interpreted mode under Native AOT; `[GeneratedRegex]` stays AOT-friendly
+- Reuse `Regex` instances (static/cached) rather than recreating them per call, especially with `Compiled`
+- Prefer `[GeneratedRegex]` for new .NET 7+ hot-path code
+
+</QuickRevision>

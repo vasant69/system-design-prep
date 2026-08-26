@@ -1,0 +1,193 @@
+---
+slug: "parameterized-queries-and-stored-procedures"
+title: "Parameterized Queries and Stored Procedures"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["adonet-fundamentals"]
+tags: ["dotnet", "adonet", "sql-injection", "parameterized-queries", "stored-procedures", "security"]
+englishDefinition: "Parameterized queries pass user input as SqlParameter values instead of concatenating it directly into SQL text, which is what actually prevents SQL injection — the database treats the parameter strictly as data, never as executable SQL syntax. Stored procedures are invoked from ADO.NET via CommandType.StoredProcedure, with input and output parameters mapped explicitly on the SqlCommand."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+Parameterized queries pass user input as `SqlParameter` values instead of concatenating it directly into SQL text, which is what actually prevents SQL injection — the database treats the parameter strictly as data, never as executable SQL syntax. Stored procedures are invoked from ADO.NET via `CommandType.StoredProcedure`, with input and output parameters mapped explicitly on the `SqlCommand`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic security-critical hai — interview me sirf syntax nahi, ye samajh test hoti hai ki parameterization **kyun** kaam karta hai, sirf "ye best practice hai" ratta lagana kaafi nahi hai.
+
+### SQL Injection — problem kya hai exactly
+
+Jab user input directly SQL string me concatenate kiya jaata hai, attacker apna khud ka SQL syntax inject kar sakta hai:
+
+```csharp
+// VULNERABLE — kabhi mat likho ye
+string username = userInput; // maan lo: "admin' --"
+string sql = $"SELECT * FROM Users WHERE Username = '{username}'";
+// Final query: SELECT * FROM Users WHERE Username = 'admin' --'
+// -- SQL me comment start karta hai, baaki query (jaise password check) ignore ho jaata hai!
+```
+
+Ek aur classic example — `'; DROP TABLE Users; --` jaisa input, jo agar concatenate ho jaaye, poori table delete kar sakta hai. Ye **string concatenation** ka fundamental flaw hai — database ko pata nahi chal sakta ki string ka kaunsa hissa "developer ka intended SQL" hai aur kaunsa "user ka data hai jo accidentally SQL jaisa dikhta hai."
+
+### Solution — Parameterized Queries
+
+`SqlParameter` use karke, value ko SQL text se **completely separate** bhejte ho:
+
+```csharp
+// SAFE
+string sql = "SELECT * FROM Users WHERE Username = @Username";
+using SqlCommand command = new SqlCommand(sql, connection);
+command.Parameters.AddWithValue("@Username", userInput);
+// Ab "admin' --" literal string data ki tarah treat hoga, SQL syntax ki tarah kabhi nahi
+```
+
+Yahan mechanism important hai: database driver value ko query text ke saath concatenate nahi karta. SQL Server internally query ko **precompile** karta hai placeholder (`@Username`) ke saath, aur phir parameter value ko ek separate data channel se bhejta hai. Isliye value ka content — chahe usme quotes, semicolons, `--` kuch bhi ho — kabhi SQL syntax ki tarah interpret nahi hota, hamesha sirf ek literal value hota hai. Ye guess-based sanitization (jaise manually quotes escape karna) se **fundamentally zyada robust** hai, kyunki attack surface hi khatam ho jaata hai, patch nahi kiya jaata.
+
+```csharp
+command.Parameters.Add("@Username", SqlDbType.NVarChar, 50).Value = userInput; // strongly-typed alternative
+```
+
+`AddWithValue` convenient hai lekin type ko implicitly infer karta hai (jo kabhi-kabhi wrong SQL type choose kar leta hai, perf issue create kar sakta hai) — production code me explicit `SqlDbType` specify karna zyada predictable hai.
+
+### Stored Procedures — ADO.NET se call karna
+
+Stored procedure call karne ke liye `CommandType.StoredProcedure` set karna hota hai, phir parameters add karte ho — same `SqlParameter` mechanism, isliye ye bhi automatically SQL-injection-safe hai.
+
+```csharp
+using SqlCommand command = new SqlCommand("GetCustomerOrders", connection)
+{
+    CommandType = CommandType.StoredProcedure
+};
+command.Parameters.Add("@CustomerId", SqlDbType.Int).Value = customerId;
+
+// Output parameter example
+SqlParameter totalParam = new SqlParameter("@TotalOrders", SqlDbType.Int)
+{
+    Direction = ParameterDirection.Output
+};
+command.Parameters.Add(totalParam);
+
+using SqlDataReader reader = await command.ExecuteReaderAsync();
+// ... process rows ...
+reader.Close(); // output parameter tabhi populate hota hai jab reader close ho chuka ho
+int totalOrders = (int)totalParam.Value;
+```
+
+`ParameterDirection` enum: `Input` (default), `Output`, `InputOutput`, `ReturnValue` — stored procedure ke `RETURN` statement ka value capture karne ke liye.
+
+### Stored procedures kab genuinely useful hain
+
+Complex, multi-step database logic (jaise ek batch reconciliation job) jo database ke andar hi efficient hai (network round-trips kam), pre-existing DBA-managed logic jo application layer se independently version ho, ya fine-grained execute permissions (application ko sirf specific proc execute karne diya jaaye, direct table access nahi). Trade-off: business logic database me split ho jaata hai, jo version control/testing/code-review ko application-code se alag workflow me daal deta hai — modern teams often application-layer logic (EF Core/Dapper + parameterized SQL) prefer karte hain simplicity ke liye, jab tak koi genuine reason na ho stored procs ke liye.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Stored procedures automatically SQL injection se safe hain" — sirf tab tak sahi hai jab tak stored procedure ke ANDAR bhi parameters properly use ho rahe hon aur koi dynamic SQL (`EXEC`, `sp_executesql` with concatenated strings) na ho. Ek stored procedure jo apne andar string concatenation karke dynamic SQL banata hai, utna hi vulnerable hai jitna application-level concatenation.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ki official ADO.NET aur EF Core documentation dono explicitly parameterized queries ko mandatory best practice ki tarah describe karte hain — EF Core internally **hamesha** LINQ queries ko parameterized SQL me translate karta hai automatically, developer ko manually kuch karne ki zaroorat nahi. Ye ek bada reason hai ki EF Core/Dapper jaise tools raw string concatenation se safer maane jaate hain by default.
+
+</RealWorld>
+
+<RealWorld company="A Real Production Incident">
+
+2017 me Equifax (ek US credit-reporting company) ka bada data breach ek unrelated framework vulnerability se hua tha, lekin SQL injection aaj bhi OWASP Top 10 me consistently top vulnerabilities me shaamil rehta hai — bahut saare real-world breaches (chhote aur bade dono) aaj bhi galat-tareeke-se-banaye-gaye dynamic SQL se hote hain. Indian enterprise codebases me legacy ADO.NET code review karte waqt, `string.Format`/concatenation-based SQL dhoondhna aur unhe parameterize karna ek common, high-priority security remediation task hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- SQL Injection consistently OWASP Top 10 web-application-vulnerability list me shaamil rehta hai
+- Parameterized queries fundamentally attack surface eliminate karte hain — sanitization/escaping ki tarah "patch" nahi hain, root cause fix hain
+- `ParameterDirection`: `Input` (default), `Output`, `InputOutput`, `ReturnValue` — chaar values
+- `AddWithValue` implicit type inference karta hai — production code me explicit `SqlDbType` specify karna recommended hai predictability ke liye
+- EF Core aur Dapper dono hamesha parameterized SQL generate karte hain automatically — manual raw ADO.NET me ye discipline developer ki responsibility hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Parameterized queries SQL injection kaise prevent karte hain?" ka strong answer: "String concatenation me, user input SQL text ka hi part ban jaata hai, isliye attacker apna khud ka SQL syntax inject kar sakta hai. Parameterized queries me, value ko `SqlParameter` ke through ek separate data channel se bheja jaata hai — database driver query ko placeholder ke saath precompile karta hai, aur parameter value ko strictly data ki tarah treat karta hai, kabhi SQL syntax ki tarah interpret nahi karta. Isliye attack surface hi eliminate ho jaata hai, ye escaping/sanitization jaisa guesswork-based patch nahi hai." Follow-up: "kya stored procedures automatically safe hain?" — jawaab: sirf tab jab unke andar bhi dynamic SQL string-concatenation-based na ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+User input ko directly SQL string me `$"..."` ya `string.Format`/concatenation se daal dena — ye SQL injection ka direct, classic vulnerability hai, chahe input "harmless" lage.
+
+</Mistake>
+
+<Mistake>
+
+Ye maan lena ki input ko manually escape karna (quotes ko double karna, etc.) parameterization jitna hi safe hai — manual escaping error-prone aur incomplete hota hai; parameterization fundamentally different, robust mechanism hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki stored procedure use karna automatically SQL-injection-proof banata hai, bina check kiye ki procedure ke andar dynamic SQL properly parameterized hai ya nahi.
+
+</Mistake>
+
+<Mistake>
+
+Output parameter ko `SqlDataReader` close karne se pehle read karne ki koshish karna — output parameters sirf reader close hone ke baad hi properly populate hote hain, warna stale/default value milta hai.
+
+</Mistake>
+
+<Mistake>
+
+Hamesha `AddWithValue` use karna bina soche — implicit type inference kabhi-kabhi galat SQL type choose kar leta hai (jaise string ko `NVARCHAR(MAX)` maan lena chhoti column ke liye), jo query plan caching/performance ko affect kar sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["User input: admin' --"] --> B{"How is it added to the query?"}
+    B -->|"String concatenation"| C["Becomes part of SQL syntax"]
+    C --> D["Attacker can alter query logic — SQL Injection"]
+    B -->|"SqlParameter (@Username)"| E["Sent as data on a separate channel"]
+    E --> F["Database treats it strictly as a literal value"]
+    F --> G["Injection attempt is neutralized"]
+`}
+  caption="The core mechanism: parameterization separates SQL syntax from data at the protocol level, not by pattern-matching or escaping dangerous characters."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- SQL injection happens when user input becomes part of the SQL syntax via string concatenation
+- Parameterized queries (`SqlParameter`) send values on a separate data channel — the database never interprets them as SQL syntax
+- This is a structural fix, not pattern-matching/escaping — attack surface is eliminated, not patched
+- Stored procedures are called via `CommandType.StoredProcedure`; `ParameterDirection` covers Input/Output/InputOutput/ReturnValue
+- Output parameters are only reliably readable after the `SqlDataReader` is closed
+- Stored procedures are NOT automatically injection-safe if they build dynamic SQL internally via string concatenation
+- EF Core and Dapper both parameterize automatically — this discipline is manual and developer-owned only in raw ADO.NET
+
+</QuickRevision>

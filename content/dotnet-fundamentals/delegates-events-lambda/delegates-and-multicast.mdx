@@ -1,0 +1,189 @@
+---
+slug: "delegates-and-multicast"
+title: "Delegates and Multicast Delegates"
+section: "dotnet-fundamentals"
+module: "delegates-events-lambda"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["delegates-func-action-events"]
+tags: ["dotnet", "csharp", "delegates", "multicast", "function-pointers"]
+englishDefinition: "A delegate is a type-safe, object-oriented reference to one or more methods with a matching signature — declared with the delegate keyword, it can be invoked like a method, reassigned at runtime, and combined with other delegates of the same type using += and -= to form a multicast delegate that invokes every subscribed method in order."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A delegate is a type-safe, object-oriented reference to one or more methods with a matching signature — declared with the `delegate` keyword, it can be invoked like a method, reassigned at runtime, and combined with other delegates of the same type using `+=` and `-=` to form a multicast delegate that invokes every subscribed method in order.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Delegate ko sabse simple tarike se samjho: ye ek **type-safe function pointer** hai. C/C++ me function pointer hota hai jo bina type-safety ke kisi bhi function ka address hold kar leta hai — C# me delegate wahi kaam karta hai, lekin compile-time type checking ke saath (signature match karna zaroori hai) aur object-oriented (delegate khud ek class hai, `System.MulticastDelegate` se derive hoti hai).
+
+### Custom delegate declare karna
+
+```csharp
+// Delegate type declaration — ek "method signature ka contract"
+public delegate int MathOperation(int a, int b);
+
+public class Calculator
+{
+    public static int Add(int a, int b) => a + b;
+    public static int Multiply(int a, int b) => a * b;
+}
+
+// Usage
+MathOperation op = Calculator.Add;
+int result = op(5, 3); // 8 — delegate ko method ki tarah invoke kiya
+
+op = Calculator.Multiply;
+int result2 = op(5, 3); // 15 — same delegate variable, alag method assign kar diya
+```
+
+Yahan `MathOperation` ek naya type hai jo compiler generate karta hai — internally ye `MulticastDelegate` se inherit karti hai. `op` variable kisi bhi method ko reference kar sakta hai jiska signature `int(int, int)` match kare — chahe wo static ho ya instance method.
+
+### Delegate kyun useful hai — "method ko variable ki tarah treat karo"
+
+Normal code me method call hardcoded hota hai — `Calculator.Add(5, 3)` seedha `Add` ko call karta hai, koi flexibility nahi. Delegate se method ek **first-class value** ban jaata hai — variable me store ho sakta hai, parameter ki tarah pass ho sakta hai, return ho sakta hai. Ye pattern LINQ, event handling, aur callback-based APIs — sabki foundation hai.
+
+### Multicast delegates — ek delegate, multiple methods
+
+Ye delegate ka sabse distinctive feature hai. `+=` operator se ek delegate variable me multiple methods "subscribe" ho sakte hain — invoke karne par sab sequentially call hote hain:
+
+```csharp
+public delegate void Notify(string message);
+
+public class Logger
+{
+    public static void LogToConsole(string msg) => Console.WriteLine($"Console: {msg}");
+    public static void LogToFile(string msg) => Console.WriteLine($"File: {msg}");
+}
+
+Notify notify = Logger.LogToConsole;
+notify += Logger.LogToFile;   // ab dono subscribe hain
+
+notify("System started");
+// Output:
+// Console: System started
+// File: System started
+
+notify -= Logger.LogToConsole; // ek ko remove kar diya
+notify("Only file now");
+// Output:
+// File: Only file now
+```
+
+Internally, ek multicast delegate ek **invocation list** maintain karta hai — `+=` list me method add karta hai (naya delegate object banta hai, kyunki delegates immutable hain, `Delegate.Combine` ke through), `-=` list se method remove karta hai (`Delegate.Remove`). Invoke karne par list ke sab methods **order me, sequentially** call hote hain.
+
+### Return value ka gotcha — sirf last method ka result milta hai
+
+Agar delegate `void` nahi, kuch return karta hai, aur multicast (multiple methods subscribed) hai, to caller ko sirf **last invoked method ka return value** milta hai — beech ke sab methods ke return values silently discard ho jaate hain. Ye exact wahi gotcha hai jo `Func<>` ke saath bhi hota hai (jaisa `oops-dotnet`'s delegates topic detail me cover karta hai) — kyunki `Func<>` bhi ultimately ek delegate hi hai. Practical rule: multicast delegates ko `void`-returning kaam (notifications, logging, events) ke liye use karo; agar return value chahiye, single-subscriber delegate use karo ya invocation list manually iterate karo (`GetInvocationList()`).
+
+</Hinglish>
+
+<Callout type="trap">
+
+Multicast delegate jo kuch return karta hai — sirf last subscribed method ka result milta hai, beech ke methods ka return value silently lost ho jaata hai. Agar sabke return values chahiye, `GetInvocationList()` se manually har delegate ko invoke karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka `event` keyword (aage ek dedicated topic me cover) internally ek multicast delegate hi hai — jab tum `MouseClick += handler` likhte ho ek WinForms button pe, tum literally ek multicast delegate ki invocation list me method add kar rahe ho. Microsoft ne poore .NET event model ko isi delegate mechanism ke upar design kiya — koi separate "event system" nahi hai, delegates hi foundation hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Notification Service">
+
+Ek payment-processing service me, transaction complete hone par teen alag kaam hone chahiye the — audit log likhna, customer ko SMS bhejna, aur analytics event fire karna. Team ne ek `Action<Transaction>` multicast delegate use kiya, teeno methods ko `+=` se subscribe kiya. Bug tab aaya jab SMS-sending method exception throw karne laga — multicast delegate me agar koi ek subscriber exception throw kare, **poori invocation list ruk jaati hai**, baaki subscribers (jaise analytics) kabhi call hi nahi hote. Fix: `GetInvocationList()` se manually iterate karke har method ko try-catch me wrap kiya, taaki ek failure baaki ko block na kare.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Har delegate type internally `System.MulticastDelegate` (jo `System.Delegate` se derive hoti hai) se inherit karta hai
+- `+=` = `Delegate.Combine()`, `-=` = `Delegate.Remove()` — dono naya delegate object return karte hain (delegates immutable hain)
+- Multicast delegate ki invocation list `GetInvocationList()` se explicitly access ki ja sakti hai — ek `Delegate[]` return hota hai
+- Return-value-wale multicast delegate me sirf LAST subscriber ka return value caller ko milta hai
+- Ek subscriber exception throw kare to invocation list ke baaki methods call NAHI hote (execution ruk jaata hai)
+- Static aur instance dono methods ek hi delegate type ke saath compatible hain, jab tak signature match kare
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Delegate kya hota hai, aur multicast delegate kaise kaam karta hai?" ka strong answer: "Delegate ek type-safe reference hai kisi method ke liye — `System.MulticastDelegate` se derive hota hai, ek matching-signature method ko variable ki tarah store/pass/invoke karne deta hai. `+=` se multiple methods ek delegate variable me subscribe ho sakte hain — invoke karne par sab sequentially, order me call hote hain. Agar delegate kuch return karta hai, sirf last subscriber ka result milta hai — baaki discard ho jaate hain. Aur agar koi ek subscriber exception throw kare, poori invocation list wahin ruk jaati hai, baaki subscribers call nahi hote." Follow-up jo aksar aata hai: "to phir multiple return values chahiye ho to kya karoge?" — answer: `GetInvocationList()` se manually har delegate ko individually invoke karo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye assume karna ki multicast delegate se return value "sabse recent" ya "sabse important" method ka milta hai — actually ye sirf invocation list ka LAST subscriber hota hai, jo `+=` order pe depend karta hai, kisi logic pe nahi.
+
+</Mistake>
+
+<Mistake>
+
+Multicast delegate me exception-handling ka plan na banana — ek subscriber ka exception poori chain ko rok deta hai, baaki subscribers kabhi call nahi hote. Production notification/event code me ye silent failures ka common source hai.
+
+</Mistake>
+
+<Mistake>
+
+`-=` se ek method remove karne ki koshish karna jo signature-wise match karta hai lekin exact same delegate instance nahi hai (jaise ek naya lambda expression jo pehle wale jaisa dikhta hai) — `-=` reference-equality-based hai, isse method silently remove nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Delegate ko sirf "callback ke liye ek class" samajhna — ye bhoolna ki delegates ek genuine type hain, jo compile-time type-safety enforce karte hain, unlike raw function pointers.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant Delegate as Notify (multicast)
+    participant M1 as LogToConsole
+    participant M2 as LogToFile
+    Caller->>Delegate: notify += LogToConsole
+    Caller->>Delegate: notify += LogToFile
+    Caller->>Delegate: notify("message")
+    Delegate->>M1: invoke
+    M1-->>Delegate: done
+    Delegate->>M2: invoke
+    M2-->>Delegate: done
+    Delegate-->>Caller: return (last subscriber's value, if any)
+`}
+  caption="A multicast delegate holds an ordered invocation list — each subscribed method runs in order, but only the last one's return value survives."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Delegate = type-safe method reference, derives from `System.MulticastDelegate`
+- `+=`/`-=` = `Delegate.Combine`/`Delegate.Remove` — build/edit an invocation list
+- Multicast delegate invokes all subscribers in order; only the LAST subscriber's return value is kept
+- One subscriber throwing an exception stops the rest of the invocation list from running
+- `GetInvocationList()` lets you manually iterate every subscriber (needed when you care about all return values or want per-subscriber error isolation)
+- Static and instance methods can both be assigned, as long as the signature matches
+- `event`, `Func<>`, `Action<>` — all built on this same delegate mechanism
+
+</QuickRevision>

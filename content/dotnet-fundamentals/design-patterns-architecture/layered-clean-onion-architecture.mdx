@@ -1,0 +1,226 @@
+---
+slug: "layered-clean-onion-architecture"
+title: "Layered, Clean, and Onion Architecture"
+section: "dotnet-fundamentals"
+module: "design-patterns-architecture"
+order: 3
+difficulty: "advanced"
+readingTime: 18
+prerequisites: ["dependency-inversion-vs-injection", "repository-unit-of-work-efcore"]
+tags: ["dotnet", "csharp", "architecture", "clean-architecture", "onion-architecture", "layered-architecture"]
+englishDefinition: "Layered architecture organizes an application into horizontal layers (Presentation, Business, Data) where each layer depends only on the one below it; Clean and Onion Architecture invert that dependency direction around a dependency-inversion principle — the domain model sits at the center with zero outward dependencies, and every outer ring (application logic, infrastructure, presentation) depends inward toward the domain, never the reverse."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Accenture", "Razorpay"]
+---
+
+<SimpleDefinition>
+
+Layered architecture organizes an application into horizontal layers (Presentation, Business, Data) where each layer depends only on the one below it; Clean and Onion Architecture invert that dependency direction around a dependency-inversion principle — the domain model sits at the center with zero outward dependencies, and every outer ring (application logic, infrastructure, presentation) depends inward toward the domain, never the reverse.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Interview me "apne project ki architecture explain karo" ek almost-guaranteed question hai, aur zyaadatar candidates sirf "MVC use kiya" bol ke ruk jaate hain — jo architecture ka answer hi nahi hai, MVC ek presentation-layer pattern hai. Ye topic teen genuinely different architectural approaches cover karta hai: classic Layered, aur dependency-inversion-centric Clean/Onion — kab kaunsa fit karta hai, iska honest answer bhi.
+
+### Layered Architecture — sabse classic, sabse default approach
+
+Layered (ya "N-tier") architecture application ko horizontal layers me todta hai, har layer sirf apne **neeche wali** layer pe depend karta hai:
+
+```
+Presentation Layer   (Controllers, Views/API responses)
+        |
+Business Layer       (Services, business rules, validation)
+        |
+Data Access Layer    (Repositories, DbContext, SQL)
+        |
+Database
+```
+
+Ek typical ASP.NET Core Web API me: `Controller` → `IOrderService` (business layer) → `IOrderRepository` (data layer) → `DbContext`. Har layer sirf immediately-neeche-wali layer ko call karta hai — Controller directly `DbContext` nahi chhu sakta, wo pehle `IOrderService` se guzarna padega. Ye separation of concerns ka simplest, sabse widely-understood form hai, aur zyaadatar mid-size .NET projects isi shape me start hote hain — genuinely reasonable default.
+
+**Problem jo Layered architecture me chhupi rehti hai:** Business Layer, Data Layer pe **directly** depend karta hai (`IOrderService` `IOrderRepository`/`DbContext` types reference karta hai). Iska matlab business logic ki testability aur reusability data-access technology se coupled ho jaati hai — agar EF Core se Dapper switch karna ho, ya business rules ko kisi doosre context me reuse karna ho (jaise ek background job me), dependency direction wrong-way hoti hai: business logic *depends on* infrastructure, jab ki ideally ye ulta hona chahiye.
+
+### Clean Architecture aur Onion Architecture — dependency ko andar ki taraf invert karna
+
+Clean Architecture (Robert C. Martin) aur Onion Architecture (Jeffrey Palermo) — dono conceptually almost identical hain, sirf naming/visual-diagram me thoda farak hai. Core idea: **dependencies hamesha andar ki taraf point karte hain**, kabhi bahar ki taraf nahi. Domain model bilkul center me hota hai, aur usko **kisi bhi outer layer ka pata hi nahi hota** — na EF Core ka, na ASP.NET Core ka, na kisi external library ka.
+
+```
+        +-------------------------------------+
+        |  Infrastructure / Presentation       |  (outermost — EF Core, Controllers, external APIs)
+        |  +---------------------------------+  |
+        |  |  Application (Use Cases)         |  |
+        |  |  +-----------------------------+  |  |
+        |  |  |  Domain (Entities, Rules)    |  |  |
+        |  |  |  ZERO outward dependencies   |  |  |
+        |  |  +-----------------------------+  |  |
+        |  +---------------------------------+  |
+        +-------------------------------------+
+```
+
+- **Domain (center)**: Entities, value objects, core business rules. Ye layer sirf plain C# hai — koi `Microsoft.EntityFrameworkCore` reference nahi, koi `Microsoft.AspNetCore` reference nahi. Isse test karna trivially easy hai — kisi framework ki zaroorat nahi.
+- **Application**: Use cases/business workflows (jaise `CreateOrderUseCase`), lekin infrastructure ko sirf **interfaces** ke through jaanta hai (`IOrderRepository`, `IEmailSender`) — actual implementation kahin nahi dikhti.
+- **Infrastructure**: Actual implementations — `EfCoreOrderRepository : IOrderRepository`, `SendGridEmailSender : IEmailSender`. Ye layer Domain aur Application dono ko reference karta hai, ulta nahi.
+- **Presentation**: Controllers, API endpoints — ye bhi ek outer ring hai, Application layer ko call karta hai.
+
+**Mechanism jo isse kaam karwaata hai: Dependency Inversion Principle.** `IOrderRepository` interface **Application layer me define hota hai** (jahan use hota hai), lekin **implement Infrastructure layer me hota hai** (jahan EF Core hai). Ye SOLID ka Dependency Inversion Principle hai — high-level modules low-level modules pe depend nahi karte, dono ek abstraction pe depend karte hain, aur abstraction high-level side me define hoti hai. Iska deep coverage `oops-dotnet`'s `dependency-inversion-vs-injection` topic me already hai — yahan hum sirf ye dekhte hain ki ye principle poori application ki folder-structure/project-structure ko kaise shape karta hai.
+
+### Real folder-structure sketch — ek chhoti ASP.NET Core project ke liye
+
+**Layered approach (single project, folder-based separation):**
+
+```
+MyApp/
+  Controllers/
+  Services/            (business layer)
+  Repositories/         (data layer)
+  Models/
+  Data/AppDbContext.cs
+```
+
+**Clean/Onion approach (multi-project, dependency-direction enforced by the compiler):**
+
+```
+MyApp.Domain/            (no project references — pure C#)
+  Entities/
+  ValueObjects/
+
+MyApp.Application/        (references only Domain)
+  UseCases/
+  Interfaces/             (IOrderRepository, IEmailSender defined here)
+
+MyApp.Infrastructure/     (references Application + Domain)
+  Persistence/EfCoreOrderRepository.cs
+  Email/SendGridEmailSender.cs
+
+MyApp.Api/                 (references Application + Infrastructure, wires DI)
+  Controllers/
+  Program.cs
+```
+
+Ye multi-project split ek **compile-time enforced guarantee** deta hai — `MyApp.Domain` project literally `MyApp.Infrastructure` ko reference hi nahi kar sakta (koi project reference hi nahi hai), isliye "domain accidentally EF Core pe depend kar gaya" jaisi galti compile hi nahi hogi. Layered approach me ye discipline sirf convention se maintain hoti hai — koi compiler enforcement nahi, ek naya developer easily `Controller` se seedha `DbContext` inject kar sakta hai aur koi build error nahi aayega.
+
+### Ek common confusion — EF Core entities vs Domain entities
+
+Clean/Onion Architecture setup karte waqt jo sabse zyada confuse karta hai wo ye hai: agar Domain layer ko EF Core ka pata hi nahi hona chahiye, to `Order` entity (jo EF Core map karta hai database table se) kahan rahegi? Answer: `Order` class khud Domain layer me rehti hai, sirf plain C# class ki tarah — EF Core-specific attributes (`[Key]`, `[Column]`) us par lagane ki bajaye, mapping configuration **Infrastructure layer ke andar Fluent API se** ki jaati hai (`OnModelCreating` me, ya separate `IEntityTypeConfiguration<Order>` classes ke through, jo Infrastructure project me rehti hain). Isse `Order` class khud EF Core se completely unaware rehti hai, sirf Infrastructure layer ko pata hota hai ki use kaise database table se map karna hai. Ye pattern — data-annotations ki jagah Fluent API, aur configuration ko entity se separate rakhna — poore Clean Architecture ke isolation-goal ka ek direct, practical consequence hai.
+
+### Migration path — ek existing Layered project ko Clean Architecture me move karna
+
+Ye kabhi bhi "big bang rewrite" nahi hona chahiye. Practical approach incremental hota hai: (1) Pehle ek naya `MyApp.Domain` project banao, aur existing entities (jo abhi `Models/` folder me flat pade hain) ko wahan move karo, unse EF Core-specific attributes hatakar. (2) Ek `MyApp.Application` project banao, existing `Services/` ki business logic ko wahan move karo, aur unke data-access dependencies ko interfaces (`IOrderRepository`) me convert karo. (3) Existing `Repositories/` ko `MyApp.Infrastructure` me move karo, naye interfaces implement karte hue. (4) Sabse aakhir me DI registration update karo taaki `MyApp.Api` sahi implementations wire kare. Har step independently testable hai, aur team feature-delivery ko pause kiye bina gradually migrate kar sakti hai — exactly waisa hi jaisa `oops-dotnet`'s NRT migration example (project-wide ek saath enable karna impossible tha, file-by-file migrate kiya gaya) me dekha tha.
+
+### Practical trade-off — kab worth hai, kab overkill
+
+Clean/Onion Architecture ka structure genuinely valuable hai jab: application ka business logic complex/long-lived hai, multiple teams parallel kaam kar rahe hain, infrastructure swap hone ki real possibility hai (jaise ek naya payment provider, ya EF Core se kuch aur), ya unit-testability business-critical hai (jaise BFSI domain jahan rules bahut precise hone chahiye).
+
+Ye overkill hai jab: project chhota/short-lived hai (ek internal admin tool, ek prototype), team small hai aur velocity zyada important hai structure se, ya application mostly CRUD hai bina real business-rule complexity ke — is case me multi-project split sirf extra indirection, extra files, aur extra cognitive load add karta hai bina proportional benefit ke. Ek genuinely honest interview answer isi honesty ko dikhata hai: "Clean Architecture har project ke liye sahi nahi hai — ye ek trade-off hai structure/testability ke against development speed/simplicity ke."
+
+Ek practical middle ground bhi hai jo bahut teams actually use karti hain: ek **single project ke andar hi folder-level separation** rakhna jo Clean Architecture ke dependency rules follow kare (jaise `Domain/`, `Application/`, `Infrastructure/` folders ek hi `.csproj` ke andar), bina multi-project split ke compile-time enforcement liye. Ye compiler se guarantee nahi deta (koi bhi folder kisi bhi doosre folder ko reference kar sakta hai, kyunki sab ek hi project me hain), lekin team-convention se discipline maintain karta hai bina multi-project ka setup-overhead liye — chhoti-medium teams ke liye ek genuinely reasonable "both worlds" compromise, jise later multi-project split me convert karna bhi easy rehta hai agar zaroorat pade.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Domain logic completely framework-agnostic — koi EF Core/ASP.NET Core dependency, trivially unit-testable", "Infrastructure swap karna (naya DB provider, naya payment gateway) sirf ek naya Infrastructure implementation likhna hai, Application/Domain untouched", "Compile-time enforced boundaries (multi-project setup) — galat-direction dependency literally build hi nahi hoga"]}
+  cons={["Zyada projects, zyada files, zyada indirection — chhote projects ke liye disproportionate overhead", "Naye team members ko structure samajhne me time lagta hai — 4 projects ke beech navigate karna ek single-project Layered app se zyada friction wala hai", "Simple CRUD-heavy apps me business-rule complexity itni nahi hoti ki dependency-inversion ka real payoff mile"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ka own `eShopOnContainers` reference sample application (ek learning-focused microservices e-commerce app) Clean Architecture ke principles follow karta hai — har microservice apne andar Domain/Application/Infrastructure separation maintain karta hai, taaki business rules infrastructure choices (jo microservice-se-microservice alag ho sakti hain) se independent rahein.
+
+</RealWorld>
+
+<RealWorld company="A BFSI Loan-Origination Platform">
+
+Ek Indian NBFC ka loan-origination system Onion Architecture me banaya gaya tha kyunki credit-scoring business rules regulatory reasons se extremely precise aur auditable hone chahiye the. Domain layer (loan eligibility rules, interest calculation) ko koi bhi database ya external credit-bureau API ka pata nahi tha — sirf interfaces. Jab unhe ek naya credit-bureau integration add karna pada (regulatory requirement se), sirf ek naya Infrastructure implementation likha gaya — core lending rules ka ek bhi test case break nahi hua, kyunki wo layer pehle se hi infrastructure se completely isolated tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 architectural approaches yahan: Layered (horizontal, top-to-bottom dependency), Clean aur Onion (concentric rings, dependency inward — conceptually almost identical, naming/diagram-style farak)
+- Layered architecture: Business Layer directly Data Layer pe depend karta hai — wrong-direction coupling
+- Clean/Onion: Domain layer ki dependency count = 0 project references — pure C#, framework-agnostic
+- Dependency Inversion Principle hi wo mechanism hai jo Clean/Onion ko possible banata hai — interface consumer-side (Application) define hoti hai, implementation Infrastructure side
+- Multi-project split = compile-time enforced boundary; single-project Layered = convention-only enforcement, koi compiler guarantee nahi
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Layered architecture aur Clean/Onion Architecture me fundamental difference kya hai?" ka strong answer: "Layered architecture me dependency top-se-bottom flow karta hai — Presentation Business pe depend karta hai, Business Data Access pe depend karta hai, seedhi line me. Clean/Onion Architecture me dependency hamesha **andar ki taraf** flow karta hai — Domain center me hota hai aur usse koi outward dependency nahi hoti, outer layers (Infrastructure, Presentation) Domain ki taraf depend karte hain, ulta nahi. Ye Dependency Inversion Principle ka application-wide use hai — interfaces consumer-side define hoti hain, implementation infrastructure side." Almost-certain follow-up: "to phir Layered use hi kyun karein agar Clean better hai?" — honest answer: "Better nahi, differently-suited hai. Chhote/simple projects ke liye Layered ka simplicity genuinely better trade-off hai — Clean Architecture ka structural overhead sirf tab pay off karta hai jab business logic genuinely complex ho aur long-term maintainability/testability priority ho."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Humne MVC use kiya" ko architecture ka jawab samajhna — MVC ek presentation-layer pattern hai, poori application architecture nahi. Interviewer Layered/Clean/Onion jaisa ek broader answer expect karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Clean Architecture ko har project ke liye "correct" ya "best practice" bol dena bina context ke — ye ek trade-off hai, universal upgrade nahi. Chhoti projects me ye genuinely overkill ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Layered architecture me business layer se directly `DbContext` inject kar lena "convenience" ke liye — ye layering ka poora purpose defeat karta hai, chahe compiler ise allow kare bhi.
+
+</Mistake>
+
+<Mistake>
+
+Clean/Onion Architecture setup karte waqt interface ko galat layer me define kar dena (jaise `IOrderRepository` ko Infrastructure project me define karna) — interface hamesha consumer-side (Application/Domain) me hona chahiye, ye Dependency Inversion ka core mechanism hai.
+
+</Mistake>
+
+<Mistake>
+
+Clean aur Onion Architecture ko do completely alag cheezein samajhna — dono conceptually almost identical hain (dependency-inversion-centric, concentric layers), interview me over-differentiate karne ki zaroorat nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Layered["Layered Architecture — top-to-bottom dependency"]
+        P1["Presentation"] --> B1["Business Layer"]
+        B1 --> D1["Data Access Layer"]
+        D1 --> DB1[("Database")]
+    end
+
+    subgraph Onion["Clean / Onion Architecture — inward dependency"]
+        Pres["Presentation"] --> App["Application (Use Cases, Interfaces)"]
+        Infra["Infrastructure (EF Core, external APIs)"] --> App
+        App --> Dom["Domain (Entities, Rules) — zero outward deps"]
+    end
+`}
+  caption="Layered architecture flows dependencies straight down through layers; Clean/Onion Architecture points every outer ring inward toward a dependency-free Domain core."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Layered architecture — horizontal layers, dependency flows top-to-bottom (Presentation to Business to Data), the classic mid-size-project default
+- Clean/Onion Architecture — concentric rings, dependency flows inward, Domain at the center with zero outward dependencies
+- Clean and Onion are conceptually near-identical — both are dependency-inversion-centric, differ mainly in diagram/naming style
+- The enabling mechanism: Dependency Inversion Principle — interfaces defined on the consumer (Application) side, implemented on the infrastructure side
+- Multi-project split gives a compile-time enforced boundary; single-project Layered relies on convention only
+- Clean/Onion pays off for complex, long-lived, test-critical business logic; it's overkill for small, short-lived, CRUD-heavy projects
+- "We used MVC" is not an architecture answer — MVC is a presentation-layer pattern, not the whole application's structure
+
+</QuickRevision>

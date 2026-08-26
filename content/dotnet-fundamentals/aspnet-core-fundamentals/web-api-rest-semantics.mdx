@@ -1,0 +1,199 @@
+---
+slug: "web-api-rest-semantics"
+title: "Web API REST Semantics: Verbs, Status Codes, Versioning"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "rest", "http", "webapi"]
+englishDefinition: "REST semantics for a Web API mean using HTTP verbs according to their defined meaning and idempotency guarantees (GET/PUT/DELETE idempotent, POST not), returning the status code that precisely matches the outcome (200/201/204/202 for success variants, 400/404/409/422 for client-error variants), and handling API evolution and format negotiation deliberately through versioning and the Accept header rather than ad hoc breaking changes."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+REST semantics for a Web API mean using HTTP verbs according to their defined meaning and idempotency guarantees (GET/PUT/DELETE idempotent, POST not), returning the status code that precisely matches the outcome (200/201/204/202 for success variants, 400/404/409/422 for client-error variants), and handling API evolution and format negotiation deliberately through versioning and the Accept header rather than ad hoc breaking changes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+REST APIs likhna easy lagta hai — controller banao, verb attribute lagao, JSON return karo. Lekin interview me "REST semantics sahi se follow karte ho?" jab poocha jaata hai, actual test ye hoti hai ki tumhe **idempotency**, **exact status code selection**, aur **versioning/content negotiation** ki precise understanding hai ya nahi — sirf "GET data leta hai, POST create karta hai" kaafi nahi hai.
+
+### HTTP verbs aur idempotency — precise definition
+
+**Idempotent** ka matlab hai: same request ko ek baar bhejo ya N baar, server ki final state same rehti hai (response same ho, zaroori nahi — lekin resulting state same honi chahiye).
+
+- **GET** — idempotent. Data read karta hai, koi state change nahi karta. Baar-baar call karne se kuch nahi badalta.
+- **PUT** — idempotent by design. `PUT /orders/5` ek poora resource **replace** karta hai given representation se. Ek hi PUT request 5 baar bhejo, resource final state same rahega — dusri baar bhejne se koi additional side-effect nahi hona chahiye.
+- **DELETE** — idempotent. Pehli call resource delete karti hai (200/204), dusri call same resource pe (already deleted) 404 de sakti hai — lekin server state "resource exists" se "resource doesn't exist" ek hi jagah settle hoti hai, repeat calls koi naya side-effect create nahi karte.
+- **POST** — **NOT idempotent**. `POST /orders` typically ek naya resource **create** karta hai. Same POST request 5 baar bhejo, 5 alag orders ban sakte hain (agar idempotency-key jaisa explicit mechanism na ho). Yehi wajah hai ki browsers "form resubmit" warning dikhate hain — POST repeat karna genuinely naya effect create kar sakta hai.
+- **PATCH** — technically not guaranteed idempotent (partial update, depends on implementation) — practically most APIs isse idempotent-ish treat karte hain agar update deterministic ho, lekin ye PUT jaisi hard guarantee nahi hai spec-wise.
+
+**Concrete example jo interview me diya jaata hai:** ek network timeout ke baad client retry karta hai. Agar original request `PUT` thi, retry safe hai — end state same rahega. Agar original request `POST` thi (bina idempotency key), retry duplicate resource bana sakta hai — ye distributed systems me real production bug ka classic source hai.
+
+### Status codes — exact meaning, exact use case
+
+Beginner-level candidates sirf 200/400/500 use karte hain. Precise usage:
+
+**Success family:**
+- `200 OK` — generic success, GET/PUT/PATCH ke response ke saath, jab body return ho raha ho
+- `201 Created` — POST ke baad naya resource successfully bana, response me `Location` header (naye resource ka URL) hona chahiye
+- `204 No Content` — success, lekin return karne ke liye body nahi (jaise DELETE ke baad, ya PUT jab response body ki zaroorat nahi)
+- `202 Accepted` — request accept ho gayi lekin processing **asynchronous** hai, abhi complete nahi hui (jaise ek background job queue hui)
+
+**Client-error family:**
+- `400 Bad Request` — request malformed hai ya validation fail hui (missing required field, wrong type)
+- `404 Not Found` — requested resource exist nahi karta
+- `409 Conflict` — request valid hai lekin current resource state se conflict karti hai (jaise duplicate unique key create karne ki koshish, ya optimistic concurrency version mismatch)
+- `422 Unprocessable Entity` — request syntactically valid hai (well-formed JSON) lekin semantically invalid (business rule violation, jaise negative quantity)
+
+```csharp
+[HttpPost]
+public IActionResult Create([FromBody] CreateOrderRequest request)
+{
+    if (request.Quantity <= 0)
+        return UnprocessableEntity("Quantity must be positive."); // 422
+
+    var order = _service.Create(request);
+    return CreatedAtAction(nameof(GetById), new { id = order.Id }, order); // 201 + Location header
+}
+
+[HttpDelete("{id:int}")]
+public IActionResult Delete(int id)
+{
+    var deleted = _service.Delete(id);
+    if (!deleted) return NotFound(); // 404
+    return NoContent(); // 204
+}
+```
+
+Interview me exact distinction poocha jaata hai: **400 vs 422** — 400 syntax/structural problem hai (JSON malformed, required field missing), 422 semantic/business-rule problem hai (data well-formed but violates a rule). **404 vs 409** — 404 resource exist hi nahi karta, 409 resource exist karta hai lekin request uski current state se clash karti hai.
+
+### API versioning — kyun aur kaise
+
+Ek production API ka contract time ke saath evolve karta hai — naye fields add hote hain (usually safe, backward-compatible), lekin breaking changes (field rename, remove, response shape change) existing consumers ko todh sakte hain. Versioning explicit strategy deti hai in changes ko manage karne ke liye:
+
+- **URL segment versioning** — `/api/v1/orders`, `/api/v2/orders` — sabse explicit, discoverable, most common in practice
+- **Query string versioning** — `/api/orders?api-version=1.0`
+- **Header-based versioning** — custom header jaise `X-Api-Version: 1.0`, ya `Accept` header me media-type versioning
+
+URL segment approach sabse common hai kyunki wo cache-friendly hai (different URL = different cache entry) aur explicitly visible hai bina headers inspect kiye.
+
+### Content negotiation — `Accept` header
+
+Client `Accept` header se batata hai wo kaunse format me response chahta hai (`application/json`, `application/xml`). ASP.NET Core default `application/json` return karta hai, lekin content negotiation middleware `Accept` header dekh kar registered formatters me se sahi wala choose kar sakta hai agar multiple configured hon. Real-world Web APIs me ye largely JSON-only hoti hain aaj kal, lekin mechanism samajhna interview-relevant hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"POST hamesha idempotent nahi hota" ka matlab ye nahi ki POST **kabhi** safely retry nahi ho sakta — production systems `Idempotency-Key` header (client-generated unique ID request ke saath) jaisa explicit mechanism use karte hain taaki duplicate POST retries detect ho sakein aur safely ignore ho sakein. Ye HTTP spec ka built-in guarantee nahi hai, application-level convention hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+AWS APIs (jaise S3, EC2) heavily idempotency-key pattern use karte hain critical create/mutate operations ke liye — client ek unique request token bhejta hai, aur agar network failure ke baad retry ho, server duplicate operation perform nahi karta, original response hi wapas deta hai. Ye distributed-systems-scale par POST ki non-idempotency ko safely handle karne ka standard industry pattern hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Payments Gateway API">
+
+Payment initiation endpoints (`POST /payments`) me duplicate-charge risk genuinely serious hota hai — agar client timeout ho aur retry kare, bina idempotency protection ke customer se do baar charge ho sakta hai. Typical Indian fintech backend `Idempotency-Key` header mandatory karti hai payment-creating endpoints pe, aur server-side ek short-lived cache me key store karke duplicate requests ko original response return kar deta hai bina dobara charge kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Idempotent verbs: GET, PUT, DELETE, HEAD, OPTIONS — repeat-safe by definition
+- Non-idempotent verb: POST — each call can create a new side-effect
+- `201 Created` should include a `Location` header pointing at the new resource
+- `204 No Content` — success with no response body
+- `202 Accepted` — request accepted, processing happens asynchronously
+- 400 = malformed/structural request error; 422 = well-formed but semantically invalid
+- 404 = resource doesn't exist; 409 = resource exists but conflicts with request state
+- URL-segment versioning (`/api/v1/...`) is the most common real-world versioning strategy
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"400 aur 422 me kya fark hai, aur 404 aur 409 me?" — strong answer: "400 Bad Request tab use hota hai jab request khud structurally invalid ho — malformed JSON, missing required field, wrong data type. 422 Unprocessable Entity tab use hota hai jab request syntactically bilkul valid ho, JSON well-formed ho, lekin data business rule violate kare — jaise negative quantity, ya invalid date range. Similarly, 404 Not Found tab hai jab requested resource exist hi nahi karta, jabki 409 Conflict tab hai jab resource exist karta hai lekin current state request se clash kar rahi hai — jaise same unique email se dusra account banane ki koshish, ya optimistic concurrency version mismatch." Follow-up: "POST idempotent kyun nahi hota by default, aur production me isse kaise handle karte ho?" — answer: har POST call typically naya resource create karta hai, isliye repeat call duplicate bana sakta hai; production me `Idempotency-Key` header pattern use hota hai isse safely retry-able banane ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har success response ke liye `200 OK` use karna, chahe resource create hua ho (`201`) ya body na ho (`204`) — status code granularity API consumers ke liye genuinely useful information hai, generic 200 use karna information discard karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`GET` requests me state-changing side effects karna (jaise ek analytics counter increment karna GET call pe) — ye idempotency contract todhta hai, caching/prefetching/retry logic ke saath silently break ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+400 aur 422 ko interchangeably use karna — ye distinction ("structurally invalid" vs "semantically invalid") bahut APIs me ignore ho jaati hai, lekin ek precise REST API design me matter karti hai aur interview me explicitly poocha jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+`POST` ko "idempotent nahi hai isliye retry hi mat karo" samajh lena — sahi approach hai explicit idempotency-key mechanism use karna jab retry-safety genuinely zaroori ho (jaise payments), na ki retry avoid karna.
+
+</Mistake>
+
+<Mistake>
+
+Breaking changes ko bina versioning ke deploy kar dena, ye assume karke ki "consumers adjust kar lenge" — production consumers (mobile apps already installed, third-party integrations) turant update nahi ho sakte, versioning strategy in migrations ko graceful banati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Incoming Request"] --> B{"Verb?"}
+    B -->|GET| C["Idempotent — read only"]
+    B -->|PUT| D["Idempotent — full replace"]
+    B -->|DELETE| E["Idempotent — remove"]
+    B -->|POST| F["NOT idempotent — creates new resource each call"]
+    F --> G{"Retry-safety needed?"}
+    G -->|Yes| H["Use Idempotency-Key header"]
+    G -->|No| I["Plain POST, duplicate risk accepted"]
+`}
+  caption="POST is the one common verb without a built-in idempotency guarantee — production systems that need retry-safety on POST add an explicit Idempotency-Key mechanism."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Idempotent: GET, PUT, DELETE — repeat-safe. NOT idempotent: POST — each call can create a new side-effect
+- 201 Created (with Location header) for successful POST-created resources
+- 204 No Content for success with no body (typical DELETE response)
+- 202 Accepted for async-processing acceptance
+- 400 = structurally malformed request; 422 = well-formed but semantically/business-rule invalid
+- 404 = resource doesn't exist; 409 = resource exists but conflicts with request state
+- URL-segment versioning (`/api/v1/...`) is the most common real-world strategy
+- `Idempotency-Key` header is the standard pattern for making POST safely retry-able
+
+</QuickRevision>

@@ -1,0 +1,198 @@
+---
+slug: "mutex-semaphore-interlocked"
+title: "Mutex, Semaphore, and Interlocked"
+section: "dotnet-fundamentals"
+module: "async-threading-parallel"
+order: 11
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["race-conditions-and-thread-safety"]
+tags: ["dotnet", "csharp", "multithreading", "mutex", "semaphore", "interlocked"]
+englishDefinition: "Mutex, Semaphore/SemaphoreSlim, and Interlocked are three synchronization primitives beyond lock, each for a different shape of problem — Mutex works across process boundaries (unlike lock, which only synchronizes threads within one process), Semaphore/SemaphoreSlim caps how many threads can enter a section concurrently (not just one, like lock), and Interlocked performs a single atomic operation like increment or compare-and-swap without taking a lock at all."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Accenture"]
+---
+
+<SimpleDefinition>
+
+`Mutex`, `Semaphore`/`SemaphoreSlim`, and `Interlocked` are three synchronization primitives beyond `lock`, each for a different shape of problem — `Mutex` works across process boundaries (unlike `lock`, which only synchronizes threads within one process), `Semaphore`/`SemaphoreSlim` caps how many threads can enter a section concurrently (not just one, like `lock`), and `Interlocked` performs a single atomic operation like increment or compare-and-swap without taking a lock at all.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`lock` most common tool hai, lekin teen specific scenarios hain jahan alag primitives chahiye — cross-process locking, limited-concurrency (not just 1), aur single-operation atomicity bina full lock overhead ke.
+
+### `Mutex` — cross-process locking
+
+`lock` sirf **ek process ke andar** ke threads ko synchronize karta hai — do alag processes ke beech koi coordination nahi deta. `Mutex` (mutual exclusion) OS-level construct hai jo **multiple processes** ke beech bhi mutual exclusion de sakta hai, agar usko ek named instance ke roop me banaya jaaye.
+
+```csharp
+// "Sirf ek instance is app ka chal sakta hai" — classic Mutex use case
+using var mutex = new Mutex(initiallyOwned: true, name: "Global\\MyAppSingleInstance", out bool createdNew);
+
+if (!createdNew)
+{
+    Console.WriteLine("App already running in another process!");
+    return;
+}
+
+// Normal app logic — sirf ek process yahan tak pahunchega
+RunApplication();
+```
+
+`name` parameter Mutex ko OS-level, sab processes ke liye visible bana deta hai — agar do alag process instances same-named `Mutex` banane ki koshish karein, dusra instance `createdNew = false` payega. **Ye `lock` se genuinely alag hai** — `lock` ka scope ek hi process ke andar limited hai, kabhi bhi cross-process coordination nahi de sakta.
+
+### `Semaphore`/`SemaphoreSlim` — limited concurrency
+
+`lock` "ek time pe sirf ek thread" enforce karta hai. Kabhi-kabhi zaroorat hoti hai "ek time pe max N threads" ki — jaise "ek external API ko ek saath max 5 concurrent calls hi bhejo, rate-limit se bachne ke liye."
+
+```csharp
+private static readonly SemaphoreSlim _semaphore = new(initialCount: 5, maxCount: 5);
+
+public async Task CallExternalApiAsync(string url)
+{
+    await _semaphore.WaitAsync(); // ek slot le lo (5 available hain)
+    try
+    {
+        await _httpClient.GetAsync(url);
+    }
+    finally
+    {
+        _semaphore.Release(); // slot wapas kar do
+    }
+}
+```
+
+`SemaphoreSlim` ek **counter** maintain karta hai — `WaitAsync()` counter decrement karta hai (agar 0 ho jaaye to next thread wait karta hai jab tak koi `Release()` na kare), `Release()` increment karta hai. `SemaphoreSlim` (in-process, lightweight, `async`-friendly `WaitAsync()` deta hai) aur `Semaphore` (cross-process capable, jaisa `Mutex`, lekin heavier) — day-to-day .NET code me almost hamesha `SemaphoreSlim` hi use hota hai jab tak cross-process coordination genuinely na chahiye ho.
+
+### `Interlocked` — lock-free atomic operations
+
+Sirf ek simple operation (increment, decrement, add, compare-and-swap) atomically karna ho, to `lock` lena **overkill** hai — `lock` ka apna overhead hota hai (thread suspend/resume, kernel-level context switch potential). `Interlocked` class CPU-level atomic instructions use karke, bina kisi lock ke, ye single operations guarantee-safely karta hai:
+
+```csharp
+private int _count = 0;
+
+public void Increment()
+{
+    Interlocked.Increment(ref _count); // atomic, no lock needed
+}
+
+public int CompareAndUpdate(int expected, int newValue)
+{
+    return Interlocked.CompareExchange(ref _count, newValue, expected);
+    // "agar _count abhi bhi `expected` hai, use `newValue` se replace karo, aur purani value return karo"
+}
+```
+
+`Interlocked.Increment`/`Decrement`/`Add`/`Exchange`/`CompareExchange` — sab hardware-level atomic CPU instructions pe based hain (jaise x86 ka `LOCK` prefix instruction), koi OS-level lock/kernel-transition nahi. Isliye ye `lock` se significantly faster hai simple single-variable operations ke liye — lekin sirf **ek** operation ke liye kaam karta hai, agar tumhe multiple related fields ko ek saath atomically update karna ho, `lock` hi chahiye.
+
+### Teeno ka decision summary
+
+| Primitive | Scope | Kab use karo |
+|---|---|---|
+| `lock`/`Monitor` | Ek process, multiple threads | General-purpose critical section, multiple statements ko atomically group karna |
+| `Mutex` | Multiple processes | Cross-process mutual exclusion (e.g. single-instance app) |
+| `SemaphoreSlim` | Ek process, N concurrent threads | Limited concurrency (e.g. max N concurrent API calls) |
+| `Interlocked` | Ek process, single operation | Simple atomic increment/compare-exchange, no lock overhead |
+
+</Hinglish>
+
+<Callout type="tip">
+
+Agar tumhara concurrency problem sirf ek simple counter increment/decrement hai, `Interlocked` reach for karo `lock` se pehle — significantly cheaper, aur code bhi simpler ho jaata hai (ek line, koi try/finally nahi chahiye).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ke apne runtime internals (jaise `ConcurrentDictionary`, reference counting mechanisms) `Interlocked` operations ka heavy use karte hain apne hot paths me — kyunki lock-free atomic operations, full `lock`/`Monitor` ke muqable, high-throughput scenarios me significantly better perform karte hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Batch-Processing System">
+
+Ek nightly batch job me, ek team ne ek third-party credit-bureau API ko call karna tha lakhon records ke liye — API provider ka rate limit tha "max 10 concurrent connections." Bina throttling ke, sab records ek saath fire karne se provider connections reject kar raha tha. Fix: `SemaphoreSlim(10, 10)` use karke concurrency ko exactly 10 tak cap kiya — baaki requests automatically queue ho jaate the jab tak ek slot free na ho, bina kisi manual queue-management code likhe.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `lock` — process-scoped, unlimited-statement critical section, "1 thread at a time"
+- `Mutex` — OS-level, cross-process capable, named instances shared across processes
+- `SemaphoreSlim` — in-process, lightweight, "N threads at a time," has `WaitAsync()` for async-friendly waiting
+- `Semaphore` (non-Slim) — cross-process capable version, heavier, rarely needed in typical app code
+- `Interlocked` — hardware-level atomic CPU instructions, no OS lock/kernel transition, fastest option for single-variable atomicity
+- `Interlocked.CompareExchange` — the classic compare-and-swap (CAS) primitive underlying most lock-free algorithms
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`Mutex`, `Semaphore`, aur `lock` me kya fark hai?" ka strong answer: "`lock` ek process ke andar threads ko synchronize karta hai, ek time pe sirf ek thread critical section me — sabse common tool. `Mutex` bhi mutual exclusion deta hai, lekin OS-level hone ki wajah se cross-process bhi kaam kar sakta hai, jaise ek single-instance app enforce karna. `Semaphore`/`SemaphoreSlim` ek counter-based primitive hai jo ek time pe N threads ko allow karta hai, sirf 1 nahi — limited-concurrency scenarios ke liye, jaise ek external API ko max 5 concurrent calls tak throttle karna. Aur `Interlocked` ek chhota, alag category hai — sirf single atomic operations (increment, compare-exchange) ke liye, bina kisi lock overhead ke, CPU-level atomic instructions use karke." Follow-up ke liye ready raho: "in me se sabse fast kaunsa hai simple counter ke liye?" — `Interlocked`, kyunki koi kernel-level lock nahi lagta.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Cross-process coordination ki zaroorat na hone ke bawajood `Mutex` use karna jab plain `lock` kaafi tha — unnecessary overhead, aur `Mutex` ko explicitly `Dispose()`/`ReleaseMutex()` karna bhoolna common bug hai.
+
+</Mistake>
+
+<Mistake>
+
+`SemaphoreSlim.Release()` ko `finally` block ke bahar rakhna — agar exception aaye critical section me, semaphore slot kabhi release nahi hoga, baaki threads permanently block ho sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+`Interlocked` ko multi-field ya multi-statement operations ke liye use karne ki koshish karna — `Interlocked` sirf single, specific operations (increment, add, compare-exchange) atomic banata hai, do alag fields ko ek saath atomically update nahi kar sakta.
+
+</Mistake>
+
+<Mistake>
+
+`Semaphore` (heavier, cross-process capable) ko default choice bana lena jab actual zaroorat sirf in-process `SemaphoreSlim` ki thi — unnecessary overhead.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Concurrency problem"] --> B{"Cross-process needed?"}
+    B -->|Yes| C["Mutex"]
+    B -->|No| D{"How many threads at once?"}
+    D -->|Exactly 1| E{"Single simple operation?"}
+    D -->|N greater than 1| F["SemaphoreSlim"]
+    E -->|Yes, e.g. increment| G["Interlocked"]
+    E -->|No, multiple statements| H["lock / Monitor"]
+`}
+  caption="Choosing the right primitive: process scope, then concurrency count, then operation complexity."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `Mutex` = cross-process mutual exclusion (unlike `lock`, which is process-local only)
+- `SemaphoreSlim` = allows N concurrent threads, not just 1 — the tool for throttling/rate-limiting
+- `Interlocked` = single atomic operation, no lock overhead, fastest option for a simple counter
+- `SemaphoreSlim.WaitAsync()` is the async-friendly wait — prefer it over blocking `Wait()` in async code
+- Always release a `Semaphore`/`Mutex` in a `finally` block — a missed release blocks everyone else permanently
+- `Interlocked.CompareExchange` is the compare-and-swap primitive many lock-free patterns are built on
+- Pick the narrowest tool that fits: `Interlocked` for one op, `lock` for a multi-statement section, `SemaphoreSlim` for capped concurrency, `Mutex` only for cross-process
+
+</QuickRevision>

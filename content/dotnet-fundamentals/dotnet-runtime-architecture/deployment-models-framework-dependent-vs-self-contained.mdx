@@ -1,0 +1,173 @@
+---
+slug: "deployment-models-framework-dependent-vs-self-contained"
+title: "Deployment Models: Framework-Dependent vs Self-Contained"
+section: "dotnet-fundamentals"
+module: "dotnet-runtime-architecture"
+order: 9
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["dotnet-standard-sdk-vs-runtime"]
+tags: ["dotnet", "deployment", "self-contained", "framework-dependent", "publish"]
+englishDefinition: "Framework-dependent deployment ships only the app's own code, relying on the target machine already having the matching .NET Runtime installed — small, fast to publish, but requires runtime pre-provisioning. Self-contained deployment bundles the entire .NET runtime alongside the app, so it runs on a machine with no .NET installed at all — larger output, but zero runtime-version dependency on the target."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Framework-dependent deployment ships only the app's own code, relying on the target machine already having the matching .NET Runtime installed — small, fast to publish, but requires runtime pre-provisioning. Self-contained deployment bundles the entire .NET runtime alongside the app, so it runs on a machine with no .NET installed at all — larger output, but zero runtime-version dependency on the target.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Jab bhi `dotnet publish` chalate ho, ek fundamental decision leni padti hai: target machine pe .NET already installed hoga, ya nahi? Ye decision deployment size, startup, aur ops complexity teeno affect karta hai.
+
+### Framework-Dependent Deployment (FDD) — default, hala
+
+`dotnet publish` default se **Framework-Dependent Deployment** produce karta hai. Isme sirf tumhare app ki apni `.dll` files aur dependencies (NuGet packages) publish output me hoti hain — .NET Runtime khud shamil nahi hota. Target machine pe pehle se matching (ya compatible) .NET Runtime install hona **zaroori** hai.
+
+```bash
+dotnet publish -c Release
+# Output: MyApp.dll, MyApp.deps.json, MyApp.runtimeconfig.json + NuGet dependencies
+# .NET Runtime shamil NAHI hai — target machine pe already hona chahiye
+```
+
+Execute karne ke liye: `dotnet MyApp.dll` (target machine pe `dotnet` CLI/Runtime already installed hona chahiye).
+
+**Fayde:** Chhota output size, fast publish, aur multiple apps ek hi machine pe same Runtime **share** kar sakte hain (disk aur memory dono me efficient — shared runtime binaries).
+
+**Nuksan:** Deployment target pe compatible Runtime install hona ek prerequisite hai, aur agar wo missing ya wrong version hai, app start hi nahi hoga.
+
+### Self-Contained Deployment (SCD) — apna Runtime saath le jaao
+
+**Self-contained deployment** poora .NET Runtime hi output ke saath bundle kar deta hai — target machine pe .NET install hone ki koi zaroorat nahi. Ye ek specific OS/architecture (RID — Runtime Identifier) ke liye publish hota hai, kyunki Runtime binaries platform-specific hote hain.
+
+```bash
+dotnet publish -c Release --self-contained true -r linux-x64
+# Output: MyApp (native executable) + poora .NET Runtime bundled + dependencies
+# Target machine pe .NET install hone ki zaroorat NAHI
+```
+
+**Fayde:** Target machine pe .NET install hone ki koi dependency nahi — genuinely "isolated" deployment. Container images me ye useful hai jab base image minimal rakhni ho aur .NET-specific base image use nahi karna ho. Version pinning bhi guaranteed hai — app apne exact Runtime version ke saath chalega, kisi doosri app ke Runtime upgrade se affected nahi hoga.
+
+**Nuksan:** Output size significantly bada hota hai (poora Runtime, ~70-100MB extra). Security patches ke liye poori app ko re-publish/re-deploy karna padta hai jab Runtime me koi vulnerability fix aaye — Framework-dependent me sirf machine-level Runtime update kar dete, sab apps automatically benefit karte.
+
+### Ek variant: Single-File Deployment
+
+Dono models (FDD aur SCD) ke saath combine ho sakta hai **single-file publish** — saari dependencies ek single executable me pack ho jaati hain (`PublishSingleFile=true`), deployment aur distribution simplify karta hai. Self-contained + single-file combo sabse common tareeka hai ek genuinely standalone executable banane ka jo bina kisi installation ke chal jaaye.
+
+```bash
+dotnet publish -r win-x64 --self-contained true -p:PublishSingleFile=true
+```
+
+### Practical decision: kab kaunsa?
+
+- **Framework-Dependent**: Aksar cases me default choice, especially jab tum control karte ho target infra (jaise apna production servers, containers already .NET base image use kar rahe hain), aur multiple apps same machine pe deploy ho rahe hain — Runtime sharing se disk/memory save hota hai, aur central security patching easier hai.
+- **Self-Contained**: Jab target environment control me nahi hai (jaise customer ke machine pe ship karna, jahan .NET install honi guarantee nahi), ya version isolation critical hai (multiple apps alag Runtime versions pe depend karti hain aur conflict avoid karna hai), ya minimal container image banani hai bina .NET base image ke.
+
+Interview me ye classic "trade-off" question hai — bilkul waisा hi jaise `struct` vs `class` ya `List` vs `Dictionary`. Answer sirf definitions nahi, real decision criteria hona chahiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Framework-Dependent: chhota output, fast publish, multiple apps share one Runtime install (disk/memory efficient), central security patching",
+    "Self-Contained: zero Runtime dependency on target machine, guaranteed version isolation per app",
+  ]}
+  cons={[
+    "Framework-Dependent: target machine pe matching Runtime pehle se install honi chahiye — a real deployment prerequisite",
+    "Self-Contained: bada output size (poora Runtime bundled), Runtime security patches ke liye poori app re-deploy karni padti hai",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ke apne documented guidance me container scenarios ke liye typically **Framework-Dependent** deployment recommend kiya jaata hai jab official `mcr.microsoft.com/dotnet/aspnet` base images use ho rahi hon — kyunki Runtime already base image me hai, app image ko usse duplicate karne ki zaroorat nahi, aur base image updates se saari containers ko security patches automatically milte hain bina app-level re-publish ke.
+
+</RealWorld>
+
+<RealWorld company="An Indian Desktop Utility Vendor">
+
+Ek company jo customers ke on-premise Windows machines pe ek utility tool distribute karti thi, unhe support tickets aati thin "`.NET Runtime not found`" errors ki, kyunki customers ke IT teams inconsistently .NET install rakhte the. Fix: Framework-Dependent se **Self-Contained, single-file** deployment me switch kiya — customer ko sirf ek `.exe` chahiye tha, koi prerequisite install nahi. Trade-off yaad rakha gaya: file size ~3x badi ho gayi, lekin support ticket volume drastically kam ho gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Self-contained deployment typically adds ~70-100MB for the bundled Runtime, per target platform
+- Self-contained is per-RID (Runtime Identifier) — `win-x64`, `linux-x64`, `osx-arm64` each need a separate publish
+- `PublishSingleFile=true` can combine with either model to produce one standalone executable
+- Framework-dependent default is what plain `dotnet publish` produces without extra flags
+- ReadyToRun (R2R) can further combine with self-contained for faster cold-start, at the cost of even larger output
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Framework-Dependent aur Self-Contained deployment me kaise choose karoge?" — strong answer: "Depends on target environment control par. Agar main apna infrastructure control karta hoon (jaise container base images ya production servers jahan Runtime centrally managed hai), Framework-Dependent better hai — chhota, Runtime shared, aur security patches centrally ho jaate hain. Agar target environment unpredictable hai — jaise customer machines, ya multiple apps ko strictly alag Runtime versions chahiye — Self-Contained better hai, kyunki wo zero external dependency guarantee karta hai." Almost-certain follow-up: "Self-contained ka bada disadvantage?" — security patches ke liye poori app re-publish karni padti hai, Runtime-level patch se cover nahi hoti.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Self-contained deployment ko "better" ya "safer" default samajh lena bina trade-off consider kiye — bada output size aur manual security-patch responsibility genuine costs hain.
+
+</Mistake>
+
+<Mistake>
+
+Framework-dependent deployment production me use karna bina confirm kiye ki target machine pe matching Runtime version genuinely installed hai — app deploy time pe fail nahi hota, run time pe fail hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Self-contained publish karte waqt Runtime Identifier (RID) specify na karna ya galat RID choose karna — self-contained output platform-specific hota hai, ek `linux-x64` self-contained build Windows pe nahi chalega.
+
+</Mistake>
+
+<Mistake>
+
+Single-file publish ko "sab kuch ek file me, koi extra file hi nahi hoga" samajh lena — kuch native dependencies (jaise certain OS-level libraries) ab bhi extract ho sakti hain runtime pe temporarily, ye 100% guarantee nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["dotnet publish"] --> B{"Target machine has matching .NET Runtime?"}
+    B -->|Yes, controlled infra| C["Framework-Dependent"]
+    B -->|No / unpredictable / needs isolation| D["Self-Contained"]
+    C --> C1["Small output, shares Runtime, central patching"]
+    D --> D1["Larger output (Runtime bundled), zero external dependency"]
+    D --> D2{"Need one file?"}
+    D2 -->|Yes| D3["+ PublishSingleFile=true"]
+`}
+  caption="The core deployment decision hinges on whether you control the target machine's .NET installation."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Framework-Dependent (default `dotnet publish`): only app code + dependencies, needs matching Runtime on target
+- Self-Contained (`--self-contained true -r <RID>`): bundles the entire Runtime, target needs nothing pre-installed
+- FDD = small, fast, shared Runtime, central patching; SCD = large, isolated, per-app patching
+- Self-contained output is platform-specific — must publish separately per Runtime Identifier (RID)
+- `PublishSingleFile=true` bundles everything into one executable, combinable with either model
+- Choose based on whether you control the target machine's .NET installation
+
+</QuickRevision>

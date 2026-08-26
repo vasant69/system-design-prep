@@ -1,0 +1,220 @@
+---
+slug: "lambda-expressions-and-closures"
+title: "Lambda Expressions and Closures"
+section: "dotnet-fundamentals"
+module: "delegates-events-lambda"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["func-action-predicate"]
+tags: ["dotnet", "csharp", "lambda", "closures", "anonymous-methods"]
+englishDefinition: "A lambda expression is a concise, inline syntax for writing an anonymous function that can be assigned to a delegate type; a closure is the mechanism by which a lambda captures variables from its enclosing scope by reference, not by value snapshot — meaning the lambda always sees the variable's current value at invocation time, which is the source of the classic loop-variable-capture bug."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A lambda expression is a concise, inline syntax for writing an anonymous function that can be assigned to a delegate type; a closure is the mechanism by which a lambda captures variables from its enclosing scope by reference, not by value snapshot — meaning the lambda always sees the variable's current value at invocation time, which is the source of the classic loop-variable-capture bug.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Lambda expressions C# me function likhne ka sabse concise tareeka hain — lekin inka syntax kahan se aaya, aur "closure" ka matlab kya hai, ye deeply samajhna zaroori hai kyunki isi topic ka gotcha (loop-variable capture) interview me bahut poocha jaata hai.
+
+### Syntax evolution — anonymous methods se lambdas tak
+
+C# 1.0 me delegate ko sirf ek named method assign kiya ja sakta tha. **C# 2.0** ne **anonymous methods** introduce kiye — `delegate` keyword ke saath inline method likhne ki suvidha, bina ek naya named method banaye:
+
+```csharp
+// C# 2.0 — anonymous method
+Func<int, int, int> add = delegate (int a, int b)
+{
+    return a + b;
+};
+```
+
+**C# 3.0** ne isko aur concise bana diya — **lambda expressions**:
+
+```csharp
+// C# 3.0 — lambda expression, wahi kaam, kam syntax
+Func<int, int, int> add = (a, b) => a + b;
+
+// Expression lambda (single expression, implicit return)
+Func<int, int> square = x => x * x;
+
+// Statement lambda (multiple statements, explicit block + return)
+Func<int, int> factorial = n =>
+{
+    int result = 1;
+    for (int i = 1; i <= n; i++) result *= i;
+    return result;
+};
+```
+
+`=>` (lambda operator/"goes to") ke left me parameters, right me body. Single parameter ho to parentheses optional hain (`x => x * x`), zero ya multiple parameters ho to parentheses required (`() => ...`, `(a, b) => ...`).
+
+Anonymous methods aaj bhi valid syntax hain, lekin practically **almost kabhi use nahi hote** — lambda syntax strictly zyada concise hai aur wahi kaam karta hai. Interview me "anonymous method aur lambda me fark?" poocha ja sakta hai — answer: anonymous methods `delegate` keyword-based hain (C# 2.0), zyada verbose; lambdas `=>` syntax use karte hain (C# 3.0), concise, aur additionally Expression Trees me bhi convert ho sakte hain (jo anonymous methods nahi kar sakte).
+
+### Closure — asli concept jo interview test karta hai
+
+Ek lambda apne surrounding scope ke variables ko **capture** kar sakta hai — inhe **free variables** kehte hain (jo lambda ke apne parameters nahi hain, bahar se aaye hain):
+
+```csharp
+int multiplier = 3;
+Func<int, int> multiply = x => x * multiplier; // 'multiplier' captured
+Console.WriteLine(multiply(5)); // 15
+
+multiplier = 10; // outer variable change kiya
+Console.WriteLine(multiply(5)); // 50 — NAYI value use hui!
+```
+
+**Ye critical hai: closure variable ko REFERENCE se capture karta hai, VALUE ka snapshot nahi leta.** `multiply` lambda `multiplier` variable ko khud capture karta hai (compiler internally ek hidden class banata hai jisme `multiplier` field hota hai), na ki capture-time ki value (`3`) ko. Isliye `multiplier` change karne ke baad `multiply(5)` naya result deta hai.
+
+### Classic gotcha — loop variable capture
+
+Ye interview ka sabse common closure-related trap hai:
+
+```csharp
+// C# 5.0 SE PEHLE (for loops me still applicable) — trap:
+var actions = new List<Action>();
+for (int i = 0; i < 3; i++)
+{
+    actions.Add(() => Console.WriteLine(i));
+}
+foreach (var action in actions) action();
+// for loop me: "3 3 3" — sab lambdas SAME 'i' variable share karte hain,
+// loop khatam hone tak i = 3 ho chuka hota hai
+```
+
+**`foreach` loops me C# 5.0 (2012) se ye fix ho gaya** — har iteration ka apna, alag loop variable hota hai:
+
+```csharp
+var actions = new List<Action>();
+foreach (int i in new[] { 0, 1, 2 })
+{
+    actions.Add(() => Console.WriteLine(i));
+}
+foreach (var action in actions) action();
+// foreach me (C# 5+): "0 1 2" — har iteration ka apna scoped 'i' hai
+```
+
+**Lekin plain `for` loop me ye behavior AAJ BHI same hai** — `for` loop ka counter variable ek hi variable hai poore loop ke duration me, har iteration me reused hota hai, isliye lambda usi shared variable ko capture karta hai. Fix: loop ke andar ek local copy banao:
+
+```csharp
+for (int i = 0; i < 3; i++)
+{
+    int localCopy = i; // naya variable, har iteration me alag
+    actions.Add(() => Console.WriteLine(localCopy));
+}
+// ab "0 1 2" milega
+```
+
+Ye distinction — `foreach` C# 5+ me per-iteration variable deta hai, `for` nahi — ek genuinely subtle, high-value interview fact hai jo bahut candidates miss karte hain.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`for` loop ke counter variable ko directly ek lambda me capture karna — sab lambdas ek hi shared variable dekhte hain, loop khatam hone ke baad final value. `foreach` loops me C# 5.0 se ye fix ho gaya (per-iteration variable), lekin `for` loop me aaj bhi manual local-copy fix zaroori hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+C# 5.0 (2012) me Microsoft ne `foreach` loop variable ke capture semantics ko **breaking-change ke roop me** fix kiya — pehle `foreach` bhi `for` jaisa hi behave karta tha (ek shared variable), lekin itne bugs report hue ki team ne decide kiya ye compiler-level fix karna worth hai, chahe ye technically ek behavior change ho. `for` loop ko intentionally same nahi rakha gaya kyunki `for` loop variable semantically differently declared hota hai (loop ke bahar bhi scope me reh sakta hai depending on syntax), so fixing it consistently was more complex — developers ko manual local-copy pattern seekhna pada `for` loops ke liye.
+
+</RealWorld>
+
+<RealWorld company="An Indian Logistics Dashboard">
+
+Ek dashboard me delivery-status buttons dynamically generate ho rahe the ek `for` loop se, har button ka `OnClick` ek lambda tha jo us button ke corresponding `orderId` ko use karta tha. Sab buttons click karne par SAME (last) `orderId` show karte the — classic loop-capture bug. Fix ek single line tha — loop ke andar `int capturedOrderId = orderId;` add karke lambda me `capturedOrderId` use karna. Bug production me hafton tak unnoticed raha kyunki testing me usually last button hi click hoti thi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Anonymous methods: C# 2.0 (2005). Lambda expressions: C# 3.0 (2007) — 2 saal ka gap
+- `foreach` per-iteration variable capture fix: C# 5.0 (2012) — breaking change, purpose se
+- `for` loop variable capture: AAJ BHI shared-variable behavior (never changed)
+- Lambda expressions Expression Trees me convert ho sakte hain (`Expression<Func<T, bool>>`), anonymous methods NAHI ho sakte
+- Closures compiler-generated "display classes" ke through implement hote hain — captured variables in classes ke fields ban jaate hain
+- `=>` operator: single parameter → parentheses optional, zero/multiple → parentheses required
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Closure kya hota hai, aur ye 'capture by reference' ka matlab kya hai?" ka strong answer: "Closure ek lambda ka apne surrounding scope ke variables ko access karne ka mechanism hai — compiler internally ek hidden class generate karta hai jisme captured variables fields ban jaate hain. Ye capture VALUE ka snapshot nahi hai, VARIABLE ka reference hai — matlab lambda hamesha variable ki CURRENT value dekhta hai invoke hone ke waqt, capture hone ke waqt ki value nahi. Isi wajah se `for` loop me lambda capture karte waqt classic bug aata hai — sab lambdas ek hi shared loop-counter variable dekhte hain, loop end hone tak final value ho chuki hoti hai. `foreach` me C# 5.0 se ye fix hai (per-iteration variable), `for` me nahi — fix manually ek local copy variable banakar karna padta hai." Follow-up jo aata hai: "to `foreach` aur `for` ka behavior alag kyun hai?" — answer: C# 5.0 ne specifically `foreach` ke liye ye breaking change kiya kyunki bugs common the, `for` loop variable ka scope/semantics different hai isliye wahi nahi extend hua.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Closure ko "value ka snapshot" samajhna — actually ye variable ka REFERENCE capture karta hai. Outer variable change hone par, closure ke andar bhi naya value dikhta hai jab lambda invoke ho.
+
+</Mistake>
+
+<Mistake>
+
+`for` loop me directly counter variable capture karna bina local copy banaye — sab lambdas final value share karenge, expected per-iteration values nahi.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki `foreach` aur `for` dono me capture behavior same hai — `foreach` C# 5.0 se per-iteration variable deta hai, `for` nahi. Interview me isko confuse karna common hai.
+
+</Mistake>
+
+<Mistake>
+
+Anonymous methods aur lambda expressions ko exactly same samajhna har regard me — lambdas Expression Trees me convert ho sakte hain, anonymous methods nahi. Practically lambdas hamesha preferred hain.
+
+</Mistake>
+
+<Mistake>
+
+Bahut saare variables ko unnecessarily capture karna lambda me jab wo zaroori nahi ho — har capture ek hidden class allocation ka reason ban sakta hai, tight loops me perf-sensitive code me isko consciously avoid karna chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["for loop: int i counter"] --> B["Same 'i' variable reused every iteration"]
+    B --> C["Lambda captures REFERENCE to 'i'"]
+    C --> D["All lambdas see i's FINAL value after loop ends"]
+    E["foreach loop (C# 5+)"] --> F["New scoped variable EACH iteration"]
+    F --> G["Lambda captures reference to THAT iteration's variable"]
+    G --> H["Each lambda correctly sees its own iteration's value"]
+`}
+  caption="The same closure-by-reference mechanism produces different observable behavior in for vs foreach because of when the captured variable is (re)declared."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Lambda expressions (C# 3.0) are the concise successor to anonymous methods (C# 2.0) — `(params) => body`
+- A closure captures variables by REFERENCE, not by value — the lambda always sees the current value at invocation time
+- Classic bug: capturing a `for` loop counter directly — all lambdas end up sharing the loop's final value
+- `foreach` fixed this in C# 5.0 (2012) — each iteration gets its own scoped variable; `for` was NOT changed
+- Fix for `for` loops: copy the counter into a local variable inside the loop body before capturing it in the lambda
+- Lambdas (unlike anonymous methods) can compile to Expression Trees — needed for `IQueryable`/EF Core
+- Single-parameter lambdas can drop parentheses (`x => ...`); zero or multi-parameter lambdas require them
+
+</QuickRevision>

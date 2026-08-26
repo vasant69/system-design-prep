@@ -1,0 +1,199 @@
+---
+slug: "race-conditions-and-thread-safety"
+title: "Race Conditions and Thread Safety"
+section: "dotnet-fundamentals"
+module: "async-threading-parallel"
+order: 10
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["task-and-tpl-fundamentals"]
+tags: ["dotnet", "csharp", "multithreading", "race-condition", "thread-safety", "lock"]
+englishDefinition: "A race condition happens when multiple threads read and write shared mutable state without synchronization, so the final result depends on unpredictable thread-scheduling timing — the classic example is a lost update, where two threads both read the same value, both compute an increment, and one thread's write silently overwrites the other's; lock/Monitor around the critical section, or avoiding shared mutable state altogether, are the standard fixes."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+A race condition happens when multiple threads read and write shared mutable state without synchronization, so the final result depends on unpredictable thread-scheduling timing — the classic example is a lost update, where two threads both read the same value, both compute an increment, and one thread's write silently overwrites the other's; `lock`/`Monitor` around the critical section, or avoiding shared mutable state altogether, are the standard fixes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Race condition — concrete "lost update" example
+
+```csharp
+public class Counter
+{
+    private int _count = 0;
+
+    public void Increment()
+    {
+        _count++; // ye ek single statement lagta hai, lekin actually 3 steps hai
+    }
+
+    public int Count => _count;
+}
+
+// 1000 threads, har ek 1 baar Increment() call karta hai
+var counter = new Counter();
+Parallel.For(0, 1000, _ => counter.Increment());
+Console.WriteLine(counter.Count); // Expected: 1000. Actual: unpredictable, often less
+```
+
+`_count++` ek atomic operation nahi hai — CPU level pe ye teen steps me hota hai: (1) `_count` **read** karo memory se, (2) value ko **increment** karo (register me), (3) naya value memory me **write** karo wapas. Agar do threads simultaneously ye teen steps interleave kar dein:
+
+```
+Thread A: read _count (value = 5)
+Thread B: read _count (value = 5)     <- dono ne SAME purani value padhi
+Thread A: increment to 6
+Thread B: increment to 6
+Thread A: write _count = 6
+Thread B: write _count = 6            <- Thread A ka update LOST ho gaya
+```
+
+Dono threads ne `5` padha, dono ne `6` likha — result `6` hona chahiye tha `7` (do increments), lekin ek update **silently lost** ho gaya. Isko **lost update** kehte hain, aur ye race condition ka sabse classic example hai. Bug bhi non-deterministic hai — kabhi reproduce hota hai, kabhi nahi, timing pe depend karta hai, jisse debug karna especially painful hota hai.
+
+### Fix #1 — `lock` (Monitor ka syntactic sugar)
+
+```csharp
+public class Counter
+{
+    private int _count = 0;
+    private readonly object _lockObj = new();
+
+    public void Increment()
+    {
+        lock (_lockObj)
+        {
+            _count++; // ab critical section hai, ek time pe sirf ek thread andar
+        }
+    }
+}
+```
+
+`lock` statement `System.Threading.Monitor.Enter`/`Monitor.Exit` ka syntactic sugar hai (try/finally ke saath, taaki exception aane par bhi lock release ho). Ek time pe sirf ek thread `lock` block ke andar ja sakta hai — baaki threads wait karte hain jab tak pehla thread block se bahar na aa jaaye. Ye "critical section" (shared mutable state ko access karne wala code) ko atomically execute hone deta hai.
+
+### Fix #2 — Immutable objects aur thread-safe collections
+
+Race conditions sirf **mutable shared state** ke saath hoti hain. Agar state immutable hai (koi bhi thread usko modify hi nahi kar sakta banne ke baad), koi race condition ho hi nahi sakti — thread-safety "by construction" mil jaati hai, koi lock ki zaroorat nahi. Isi tarah, `ConcurrentDictionary`, `ConcurrentQueue` jaise collections internally apna khud ka fine-grained synchronization implement karte hain, taaki manual `lock` na lagana pade.
+
+```csharp
+// Immutable — koi race condition possible hi nahi
+public record OrderSnapshot(int Id, decimal Total);
+
+// Thread-safe collection — internal synchronization already handled
+var counts = new ConcurrentDictionary<string, int>();
+counts.AddOrUpdate("orders", 1, (key, oldValue) => oldValue + 1);
+```
+
+</Hinglish>
+
+<Callout type="warning">
+
+`lock` bahut zyada scope pe lagana (jaise poori method ko lock karna jab sirf ek chhoti shared-state update ko lock karna zaroori tha) throughput ko badly hurt karta hai — sirf critical section ko, jitna chhota ho sake utna, lock karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ka `System.Collections.Concurrent` namespace (`ConcurrentDictionary`, `ConcurrentQueue`, `ConcurrentBag`) explicitly is problem ko solve karne ke liye design kiya gaya — internally fine-grained locking ya lock-free (CAS-based) techniques use karke, taaki developers har jagah manual `lock` na likhein aur accidentally race conditions introduce na karein.
+
+</RealWorld>
+
+<RealWorld company="An Indian Ticket-Booking Platform">
+
+Ek concert-ticket booking system me, "available seats" counter ko bina `lock` ke directly decrement kiya ja raha tha jab multiple concurrent booking requests aa rahe the. Load testing me pata chala ki high-concurrency traffic (jaise ek popular event ke launch ke waqt) me actual sold seats aur counter ka number mismatch ho raha tha — kabhi negative bhi ho jaata tha. Root cause exactly ye lost-update race condition thi. Fix: seat-decrement operation ko `lock` ke andar wrap kiya (aur eventually database-level optimistic concurrency check bhi add kiya as a second layer of defense).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `_count++` compiles into 3 separate CPU-level steps: read, increment, write — none of them atomic together
+- `lock` = `Monitor.Enter`/`Monitor.Exit` syntactic sugar, with an implicit `try/finally` for safe release
+- `System.Collections.Concurrent` namespace — thread-safe collections without manual locking
+- Race conditions are non-deterministic — the same code can pass 999 test runs and fail on the 1000th under different thread-scheduling timing
+- Immutable objects are race-condition-free by construction — no synchronization needed if nothing can mutate
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Race condition ka ek concrete example do aur fix batao" ke liye strong answer: "Ek shared counter jise multiple threads increment kar rahe hain bina synchronization ke — `_count++` atomic nahi hai (read-increment-write, 3 steps), isliye do threads same purani value padh sakte hain aur ek ka update silently lost ho jaata hai (lost update). Fix: `lock` statement se critical section (jahan shared state modify hoti hai) ko protect karna, taaki ek time pe sirf ek thread andar jaaye. Alternative: immutable objects use karna (koi mutation hi nahi to koi race nahi) ya `ConcurrentDictionary` jaisi built-in thread-safe collections jo internal synchronization already handle karti hain." Follow-up ke liye ready raho: "lock ke performance implications kya hain?" — contention ke waqt threads wait karte hain, isliye critical section ko chhota rakhna zaroori hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`_count++` jaisi single-line statements ko atomic samajhna — ye multiple CPU steps me compile hoti hain, race condition ke liye bilkul vulnerable hain.
+
+</Mistake>
+
+<Mistake>
+
+Poori method ko `lock` karna jab sirf ek chhota portion genuinely shared state touch karta hai — unnecessarily throughput kam karta hai, contention badhata hai.
+
+</Mistake>
+
+<Mistake>
+
+Race condition bugs ko "flaky test" samajh kar ignore karna — non-deterministic failure aksar ek genuine race condition ka signal hota hai, random test flakiness nahi.
+
+</Mistake>
+
+<Mistake>
+
+`lock` object ke roop me kisi publicly-accessible ya string-literal object ka use karna — koi bahar ka code bhi accidentally usi object pe lock le sakta hai, jisse unexpected contention ya deadlock ban sakta hai. Ek dedicated `private readonly object` best practice hai.
+
+</Mistake>
+
+<Mistake>
+
+Har shared-state scenario me `lock` hi reach karna, jabki kai cases me immutable data ya `Interlocked`/concurrent collections zyada efficient aur simpler solution hote hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant A as Thread A
+    participant Mem as Shared _count (starts at 5)
+    participant B as Thread B
+
+    A->>Mem: read _count = 5
+    B->>Mem: read _count = 5
+    A->>A: increment to 6
+    B->>B: increment to 6
+    A->>Mem: write _count = 6
+    B->>Mem: write _count = 6 (overwrites A's update)
+    Note over Mem: Expected 7 after two increments, got 6 — one update LOST
+`}
+  caption="Two threads interleave read-increment-write on the same variable — one thread's update silently disappears without any error."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Race condition = multiple threads accessing shared mutable state without synchronization, outcome depends on timing
+- `x++` is NOT atomic — it's read, increment, write, and threads can interleave between those steps
+- Lost update = the classic race condition pattern, one thread's write silently overwrites another's
+- `lock` (sugar for `Monitor.Enter`/`Exit`) makes a critical section run one-thread-at-a-time
+- Keep the locked section as small as possible — over-locking hurts throughput
+- Immutable objects can't race by construction; `System.Collections.Concurrent` types handle synchronization internally
+- Race condition bugs are non-deterministic — intermittent test failures are a real signal, not always flakiness
+
+</QuickRevision>

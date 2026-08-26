@@ -1,0 +1,169 @@
+---
+slug: "change-tracking-and-asnotracking"
+title: "EF Core Change Tracking States, and AsNoTracking"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 7
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["efcore-dbcontext-dbset-fundamentals"]
+tags: ["dotnet", "efcore", "change-tracking", "asnotracking", "entitystate", "performance"]
+englishDefinition: "EF Core's change tracker assigns every entity it loads or is given one of five explicit states — Added, Unchanged, Modified, Deleted, or Detached — and SaveChanges() inspects these states to decide exactly which SQL to generate for each entity. AsNoTracking() skips this bookkeeping entirely for read-only queries, returning entities in the Detached state, which is both a performance optimization and a correctness statement: this data will never be saved back."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+EF Core's change tracker assigns every entity it loads or is given one of five explicit states — `Added`, `Unchanged`, `Modified`, `Deleted`, or `Detached` — and `SaveChanges()` inspects these states to decide exactly which SQL to generate for each entity. `AsNoTracking()` skips this bookkeeping entirely for read-only queries, returning entities in the `Detached` state, which is both a performance optimization and a correctness statement: this data will never be saved back.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Change tracking EF Core ka sabse fundamental "magic" hai — `SaveChanges()` ek call me sahi INSERT/UPDATE/DELETE kaise generate kar leta hai, bina tumne explicitly bataye "ye row insert karo, ye update karo"? Jawaab: har tracked entity ke saath ek **state** associated hoti hai, aur `SaveChanges()` sirf us state ko read karta hai.
+
+### Paanch states — `EntityState` enum
+
+**`Added`** — entity naya hai, database me abhi exist nahi karta. `context.Products.Add(newProduct)` call karne par ye state milti hai. `SaveChanges()` isse INSERT karega.
+
+**`Unchanged`** — entity database se load hui hai, aur koi property modify nahi hui hai since load. Query se aayi normal entity default is state me hoti hai.
+
+**`Modified`** — entity load hui thi, aur uske baad ek ya zyada properties change hui hain. Change tracker automatically detect karta hai property assignment se — `product.Price = 99.99m;` likhne ke baad, state khud-ba-khud `Unchanged` se `Modified` ho jaati hai. `SaveChanges()` isse UPDATE karega, sirf changed columns ke liye.
+
+**`Deleted`** — `context.Products.Remove(product)` call karne par entity ye state leta hai. `SaveChanges()` isse DELETE karega.
+
+**`Detached`** — entity change tracker ke control me bilkul nahi hai. Naye create kiye gaye objects jo `Add()` se nahi guzre hain, ya `AsNoTracking()` se aaye entities, is state me hote hain — `SaveChanges()` inhe completely ignore karta hai, kyunki tracker ko unke baare me pata hi nahi.
+
+```csharp
+var product = await context.Products.FindAsync(1); // state: Unchanged
+product.Price = 149.99m;                            // state automatically: Modified
+await context.SaveChangesAsync();                   // generates: UPDATE Products SET Price = 149.99 WHERE Id = 1
+// state ab wapas: Unchanged
+```
+
+Notice — sirf `Price` column update hui, poori row nahi — kyunki change tracker exactly track karta hai **kaunsi specific properties** modify hui hain, sirf "entity modified hai" ye nahi.
+
+### `AsNoTracking()` — jab tumhe tracking chahiye hi nahi
+
+Read-only queries (jaise ek list display karna, ek report generate karna) me, change tracker ka poora overhead **wasted** hai — tum kabhi `SaveChanges()` call hi nahi karoge is data ke liye.
+
+```csharp
+var products = await context.Products
+    .AsNoTracking()
+    .Where(p => p.CategoryId == categoryId)
+    .ToListAsync();
+// Entities Detached state me aate hain — change tracker inhe monitor hi nahi karta
+```
+
+Fayda dono directions me hai:
+
+1. **Performance** — change tracker ko har property ka original snapshot store nahi karna padta comparison ke liye (change detection ke liye EF Core normally original values ka snapshot rakhta hai), CPU aur memory dono save hote hain — bade result sets ke liye ye significant hai.
+2. **Correctness/Intent signal** — `AsNoTracking()` explicitly bolta hai "ye data sirf read hoga, kabhi save nahi hoga" — agar koi galti se is entity ko modify karke `SaveChanges()` call kare, kuch nahi hoga (Detached entity ko update nahi karta) — ye galti se accidental persistence se protect karta hai.
+
+Trade-off: agar tumhe genuinely entity ko modify karke wapas save karna hai, `AsNoTracking()` galat choice hai — us case me normal tracked query use karo.
+
+### Kab default (tracked) rakhna hai, kab `AsNoTracking()`
+
+Rule of thumb: agar query ka result **modify karke `SaveChanges()` se persist** hoga, tracked rehne do (default). Agar query **sirf display/read/export** ke liye hai (GET endpoints jo sirf data return karte hain, reports, dropdown lists), `AsNoTracking()` lagao. Bade ASP.NET Core APIs me, zyada tar GET endpoints genuinely read-only hote hain — isliye `AsNoTracking()` ek high-value, low-risk default optimization hai jo often miss ki jaati hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Practical heuristic jo interview me impress karta hai: "Agar main is data ko kabhi `SaveChanges()` ke through wapas save nahi karunga, main `AsNoTracking()` lagata hoon — ye dono performance improve karta hai aur intent ko explicit banata hai."
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+EF Core ki official performance guidance explicitly recommend karti hai `AsNoTracking()` ko default consider karna read-only scenarios ke liye, especially high-throughput API endpoints me — Microsoft ke benchmarks dikhate hain ki bade result sets ke liye tracking overhead measurable hai, aur ye ek "free" optimization hai jab data genuinely kabhi modify/save nahi hota.
+
+</RealWorld>
+
+<RealWorld company="A High-Traffic Product Catalog API">
+
+Ek typical Indian e-commerce backend ke product-listing endpoint (`GET /api/products`) me, ek performance review ne dikhaya ki har request lakhon tracked entities generate kar rahi thi (change tracker overhead) jabki endpoint sirf JSON serialize karke return kar raha tha — koi save operation kabhi hoti hi nahi thi. `AsNoTracking()` add karne se is specific endpoint ka response time aur memory footprint dono measurably improve hue, bina koi functional behavior change kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Five `EntityState` values: `Added`, `Unchanged`, `Modified`, `Deleted`, `Detached`
+- `SaveChanges()` generates SQL per-entity based purely on its tracked state — not a blind "save everything" operation
+- Change tracking stores an original-value snapshot per tracked property for comparison — this is exactly what `AsNoTracking()` skips
+- `AsNoTracking()` returns entities already in the `Detached` state
+- Read-heavy endpoints (GET-only, reports, listings) are the highest-value places to apply `AsNoTracking()`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"EF Core `SaveChanges()` ko kaise pata chalta hai kaunsi entity insert/update/delete karni hai?" ka strong answer: "Har tracked entity ke saath EF Core ek `EntityState` associate karta hai — `Added`, `Unchanged`, `Modified`, `Deleted`, ya `Detached`. Jab main `Add()` call karta hoon, state `Added` ho jaati hai; jab main ek loaded entity ki property change karta hoon, state automatically `Modified` ho jaati hai; `Remove()` call karne par `Deleted`. `SaveChanges()` sirf in states ko inspect karta hai aur har entity ke liye appropriate SQL generate karta hai — sirf changed properties ke liye UPDATE, poori entity ke liye nahi." Follow-up jo har jagah poocha jaata hai: "`AsNoTracking()` ka purpose kya hai?" — jawaab: read-only queries ke liye tracking overhead skip karta hai, `Detached` entities return karta hai, performance aur correctness dono improve karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Read-only GET endpoints me `AsNoTracking()` lagana bhool jaana — har list/report query unnecessary change-tracking overhead pay karti hai jab data kabhi save hi nahi hona.
+
+</Mistake>
+
+<Mistake>
+
+`AsNoTracking()` se aayi entity ko modify karke `SaveChangesAsync()` call karna, ye assume karke ki changes save ho jaayenge — `Detached` entities ke changes silently ignore ho jaate hain, koi exception bhi nahi aata, jo debugging ko confusing bana deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye nahi samajhna ki `Modified` state automatically detect hoti hai property assignment se (change tracker snapshot comparison karta hai) — kabhi-kabhi developers manually `context.Entry(entity).State = EntityState.Modified;` set karte hain bina zaroorat ke, jo poori entity ko update kar deta hai (saari columns), sirf changed ones ko nahi.
+
+</Mistake>
+
+<Mistake>
+
+Bahut saari entities ko ek hi long-lived `DbContext` me track karte rehna bina disposal/`AsNoTracking()` discipline ke — change tracker samay ke saath bloat ho jaata hai, memory aur `SaveChanges()` performance dono degrade hoti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+stateDiagram-v2
+    [*] --> Detached: new object() / AsNoTracking()
+    Detached --> Added: context.Add()
+    [*] --> Unchanged: loaded from database (tracked query)
+    Unchanged --> Modified: property changed
+    Unchanged --> Deleted: context.Remove()
+    Modified --> Deleted: context.Remove()
+    Added --> Unchanged: SaveChanges() completes
+    Modified --> Unchanged: SaveChanges() completes
+    Deleted --> Detached: SaveChanges() completes
+`}
+  caption="SaveChanges() reads each entity's current EntityState to decide exactly which SQL statement (if any) to generate for it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Five `EntityState` values: `Added`, `Unchanged`, `Modified`, `Deleted`, `Detached`
+- `SaveChanges()` generates SQL per-entity purely from its tracked state — INSERT for Added, UPDATE for Modified (only changed columns), DELETE for Deleted
+- `Modified` state is detected automatically via property-assignment comparison against an original-value snapshot
+- `AsNoTracking()` returns `Detached` entities — no snapshot bookkeeping, better performance for read-only queries
+- Modifying a `Detached` (no-tracking) entity and calling `SaveChanges()` silently does nothing — no exception
+- Default heuristic: read-only data → `AsNoTracking()`; data you'll modify and save → default tracked query
+
+</QuickRevision>

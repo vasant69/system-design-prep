@@ -1,0 +1,191 @@
+---
+slug: "cors-fundamentals"
+title: "CORS Fundamentals"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "cors", "security", "browser"]
+englishDefinition: "CORS (Cross-Origin Resource Sharing) is a browser-enforced security mechanism, not a server-enforced one, that relaxes the same-origin policy by letting a server explicitly declare which other origins are allowed to read its responses via response headers, with the browser sending a preflight OPTIONS request ahead of certain cross-origin calls to check permission before the real request is made."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Zomato"]
+---
+
+<SimpleDefinition>
+
+CORS (Cross-Origin Resource Sharing) is a browser-enforced security mechanism, not a server-enforced one, that relaxes the same-origin policy by letting a server explicitly declare which other origins are allowed to read its responses via response headers, with the browser sending a preflight OPTIONS request ahead of certain cross-origin calls to check permission before the real request is made.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+CORS interview me almost universally galat samjha jaata hai — "CORS server ko protect karta hai" ye sabse common misconception hai. Actual truth iska ulta hai, aur ye ek precise, commonly-tested distinction hai.
+
+### CORS kiske liye hai — browser-enforced, server-enforced NAHI
+
+**Same-origin policy** ek browser ka built-in security rule hai — ek webpage (origin A se load hui) sirf apne khud ke origin (protocol + domain + port) se hi freely data fetch/read kar sakti hai JavaScript se. Agar `https://app.com` pe chal rahi JavaScript `https://api.other.com` se data fetch karne ki koshish kare, browser by default is response ko JavaScript code se **read** karne se rok deta hai — chahe request khud successfully server tak pahunch jaaye aur server response bhi bhej de.
+
+**Sabse critical point jo interview me galat samjha jaata hai:** CORS ka poora mechanism **browser ke andar** enforce hota hai, server ke andar nahi. Server hamesha request process karta hai aur response bhejta hai — CORS sirf ye control karta hai ki **browser us response ko JavaScript code ko dikhayega ya nahi**. Isliye Postman, curl, ya server-to-server calls me CORS kabhi bhi issue nahi karta — wahan koi browser hi nahi hai jo enforce kare. CORS purely ek **browser-JavaScript-context** ka phenomenon hai.
+
+```csharp
+// Server side — bina CORS config ke, response bhej diya jaata hai
+[HttpGet]
+public IActionResult GetData() => Ok(new { message = "data" });
+// Browser ye response receive kar leta hai, lekin agar origin allowed nahi hai,
+// browser JavaScript (fetch/XHR) ko is response ko READ karne se rok deta hai
+```
+
+### CORS ko server-side enable karna
+
+Server ko explicitly batana padta hai kaunse origins allowed hain — ye response headers ke through communicate hota hai:
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowSpecificOrigin", policy =>
+    {
+        policy.WithOrigins("https://app.mycompany.com")
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
+
+var app = builder.Build();
+app.UseCors("AllowSpecificOrigin"); // Middleware order: before UseAuthorization, after UseRouting
+```
+
+Response me `Access-Control-Allow-Origin: https://app.mycompany.com` header add hota hai. Browser response receive karte waqt is header ko check karta hai — agar current page ka origin match karta hai (ya header `*` hai, sab allow), browser JavaScript ko response read karne deta hai; warna console me CORS error dikhata hai aur response ko JS code se block kar deta hai.
+
+**`AllowAnyOrigin()` (`*`) vs `WithOrigins("...")` vs `AllowCredentials()`:** `*` (wildcard) sabse permissive hai — koi bhi origin allowed — lekin `AllowCredentials()` (cookies/auth headers cross-origin bhejne ke liye) ke saath `*` combine **nahi** ho sakta, spec-level restriction hai security ke liye. Credentials chahiye ho to specific origin(s) explicitly list karni padti hain.
+
+### Preflight — `OPTIONS` request kab aur kyun
+
+Kuch cross-origin requests browser **direct** bhej deta hai ("simple requests" — GET/HEAD/POST with standard headers aur content-types jaise `text/plain`, `application/x-www-form-urlencoded`). Lekin agar request "non-simple" hai — jaise `Content-Type: application/json`, custom headers (`Authorization`), ya `PUT`/`DELETE` verb — browser pehle ek **preflight** `OPTIONS` request bhejta hai actual request se pehle, ye check karne ke liye ki server is exact combination (origin + method + headers) ko allow karta hai ya nahi.
+
+```
+OPTIONS /api/orders HTTP/1.1
+Origin: https://app.mycompany.com
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: Content-Type, Authorization
+```
+
+Server agar OPTIONS request ko allow karta hai (matching CORS policy ke through), tabhi browser actual `POST` request bhejta hai. Ye ek extra round-trip add karta hai, lekin sirf JavaScript cross-origin calls ke liye — normal server-to-server calls me ye kabhi involve nahi hota.
+
+**Interview-relevant subtlety:** preflight sirf tab trigger hota hai jab request "non-simple" ho. Zyaadatar real Web API calls (JSON body, Authorization header) preflight trigger karte hain — isliye almost har real-world API integration me preflight actually chalta hai, chahe developer isse directly kabhi na dekhe (browser automatically handle karta hai).
+
+</Hinglish>
+
+<Callout type="trap">
+
+"CORS server ko attacks se protect karta hai" — ye galat hai. CORS ek **browser-enforced, client-side** mechanism hai jo decide karta hai ki JavaScript kaunse cross-origin responses **read** kar sakta hai. Ye server ko kisi bhi request se protect nahi karta — malicious actor curl/Postman/server-code se seedha request bhej sakta hai, CORS wahan irrelevant hai. Actual server-side protection (authentication, authorization, rate limiting) alag mechanisms se aati hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core ka CORS middleware deliberately named policies (`AddPolicy("name", ...)`) support karta hai instead of ek global config — ye multiple frontend origins (jaise ek admin dashboard aur ek public-facing app, alag domains pe) ko different, precisely-scoped CORS rules dene deta hai same API se, bina sabko unnecessarily permissive `AllowAnyOrigin()` dene ke.
+
+</RealWorld>
+
+<RealWorld company="An Indian Food-Delivery Platform">
+
+Ek typical food-delivery backend me, customer-facing web app (`app.example.com`) aur restaurant-partner dashboard (`partners.example.com`) dono same backend API hit karte hain, alag origins se. CORS policy dono origins ko explicitly `WithOrigins()` me list karti hai — koi teesra, unknown origin agar isi API ko browser se call kare (jaise ek malicious site jo user ke saved cookies ka use karke silently API calls karne ki koshish kare), browser us response ko us malicious page ki JavaScript ko dikhayega hi nahi, chahe server ne response bhej diya ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- CORS is enforced by the BROWSER, not the server — server always processes and responds; only JS-side reading is blocked
+- `Access-Control-Allow-Origin` — the key response header that permits cross-origin reading
+- `AllowAnyOrigin()` (`*`) cannot be combined with `AllowCredentials()` — a spec-level restriction
+- Preflight `OPTIONS` request fires for "non-simple" requests — custom headers, `application/json` content-type, or verbs beyond GET/HEAD/POST
+- `app.UseCors()` must be placed after `UseRouting()` and before `UseAuthorization()` in the middleware pipeline
+- Tools like curl/Postman/server-to-server calls never trigger CORS — there's no browser enforcing it
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"CORS kya hai, aur ye server ko protect karta hai ya client ko?" — strong answer: "CORS ek browser-enforced security mechanism hai — server ko bilkul protect nahi karta. Server hamesha request process karta hai aur response bhejta hai; CORS sirf decide karta hai ki browser us response ko cross-origin JavaScript code ko read karne dega ya nahi. Server response headers (Access-Control-Allow-Origin) se batata hai kaunse origins allowed hain, aur browser in headers ko check karke JS ko allow/block karta hai. Isliye Postman ya curl se same request bhejne pe CORS kabhi issue nahi karta — wahan koi browser hi nahi hai jo enforce kare." Follow-up: "Preflight OPTIONS request kab trigger hoti hai?" — answer: jab request 'non-simple' ho — custom headers (jaise Authorization), application/json content-type, ya PUT/DELETE jaise verbs — browser pehle OPTIONS se check karta hai ki server is combination ko allow karega, phir actual request bhejta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+CORS ko server-side protection samajh lena — actual security (auth, rate limiting, input validation) alag mechanisms se aati hai; CORS sirf browser-JS-read-access control karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Production me `AllowAnyOrigin()` (`*`) use karna "quick fix" ke liye bina soche ki ye har origin ko access de raha hai — development me convenient lagta hai, production me security posture ko weaken karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`AllowAnyOrigin()` aur `AllowCredentials()` ko ek saath use karne ki koshish karna — ye spec-level restriction hai, runtime error/exception dega; specific origins list karni padti hain credentials chahiye ho to.
+
+</Mistake>
+
+<Mistake>
+
+`app.UseCors()` ko galat middleware position pe rakh dena (jaise `UseAuthorization()` ke baad) — CORS headers response me sahi se apply nahi hongi, ya authorization checks CORS se pehle chal kar unrelated errors denge.
+
+</Mistake>
+
+<Mistake>
+
+CORS error ko server-side bug samajh kar server code me debug karne ki koshish karna — CORS error browser console me dikhta hai aur ye almost hamesha missing/galat `AddCors`/`UseCors` configuration ka signal hai, business logic ka nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Browser
+    participant API as Web API Server
+
+    Note over Browser: JS on https://app.com wants<br/>to POST JSON to https://api.other.com
+
+    Browser->>API: Preflight OPTIONS request
+    API-->>Browser: Access-Control-Allow-Origin: https://app.com
+    alt Origin allowed
+        Browser->>API: Actual POST request
+        API-->>Browser: 200 OK + data
+        Note over Browser: JS is allowed to read the response
+    else Origin not allowed
+        Note over Browser: Browser blocks JS from reading<br/>the response (CORS error in console)
+    end
+`}
+  caption="The server always processes the request — CORS only governs whether the browser lets the calling JavaScript actually read the response."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- CORS is browser-enforced, NOT server-enforced — server always processes and responds
+- `Access-Control-Allow-Origin` response header is what permits cross-origin JS reads
+- Postman/curl/server-to-server calls are never affected by CORS — no browser involved
+- `AllowAnyOrigin()` (`*`) cannot combine with `AllowCredentials()`
+- Preflight `OPTIONS` fires for non-simple requests (custom headers, JSON content-type, PUT/DELETE)
+- `UseCors()` goes after `UseRouting()`, before `UseAuthorization()`
+- A CORS error in the console means missing/misconfigured server-side CORS policy, not a client bug to "work around" by disabling browser security
+
+</QuickRevision>

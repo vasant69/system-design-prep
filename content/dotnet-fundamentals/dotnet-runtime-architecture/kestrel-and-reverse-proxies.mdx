@@ -1,0 +1,170 @@
+---
+slug: "kestrel-and-reverse-proxies"
+title: "Kestrel and Reverse Proxies"
+section: "dotnet-fundamentals"
+module: "dotnet-runtime-architecture"
+order: 10
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "kestrel", "aspnet-core", "reverse-proxy", "nginx", "iis"]
+englishDefinition: "Kestrel is ASP.NET Core's own lightweight, cross-platform web server, embedded directly into every ASP.NET Core app — fast, but deliberately minimal. Production deployments typically front it with a reverse proxy (IIS, Nginx, or a cloud load balancer) that handles TLS termination, request buffering, and hosting multiple apps on one machine — responsibilities Kestrel intentionally leaves to that outer layer."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+Kestrel is ASP.NET Core's own lightweight, cross-platform web server, embedded directly into every ASP.NET Core app — fast, but deliberately minimal. Production deployments typically front it with a reverse proxy (IIS, Nginx, or a cloud load balancer) that handles TLS termination, request buffering, and hosting multiple apps on one machine — responsibilities Kestrel intentionally leaves to that outer layer.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Kestrel kya hai, aur production me isko directly internet-facing kyun nahi rakhte" — ye ek genuinely practical, bahut common interview question hai jo actual production architecture samajhne ki maang karta hai, sirf definitions nahi.
+
+### Kestrel — ASP.NET Core ka apna, built-in web server
+
+Har ASP.NET Core app ke andar ek web server **embedded** hota hai — ye **Kestrel** hai. Purane ASP.NET (.NET Framework era) me app ko IIS ke andar hi host hona padta tha, IIS hi request handle karta tha end-to-end. .NET Core ke saath Microsoft ne ek naya, **cross-platform, self-hosted** server design kiya jo Windows, Linux, macOS — sab pe same tareeke se chal sake, kisi bhi external web-server dependency ke bina.
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.MapGet("/", () => "Hello");
+app.Run(); // Kestrel yahan start hota hai, requests directly handle karta hai
+```
+
+Kestrel genuinely fast hai — libuv-based (purane versions) ya Socket-based (modern) low-level networking pe built, minimal overhead ke saath high-throughput ke liye optimized. Benchmarks (TechEmpower jaisي) me ASP.NET Core/Kestrel consistently top-tier performers me aata hai.
+
+### Phir bhi Kestrel ko directly internet-facing kyun nahi rakhte?
+
+Ye interview ka asli point hai. Kestrel **deliberately minimal** hai — ye ek **application server** hai, ek full **edge/production web server** nahi. Microsoft ki apni guidance historically ye rahi hai: Kestrel ko ek **reverse proxy** ke peeche rakho (IIS on Windows, Nginx/Apache on Linux, ya cloud-native jaise Azure App Service/AWS ALB) jo ye zimmedariyan uthata hai jo Kestrel jaanbujh kar handle nahi karta:
+
+1. **TLS Termination** — HTTPS handshake, certificate management centrally reverse proxy pe handle hota hai, taaki app khud certificate rotation jaisi complexity na sambhale (though Kestrel HTTPS support kar sakta hai directly bhi, production me typically proxy pe offload kiya jaata hai).
+2. **Request buffering aur slow-client protection** — Kestrel ek slow, malicious ya buggy client se aane wali request ko fully buffer kiye bina directly app tak forward kar sakta hai; ek hardened reverse proxy is layer pe zyada battle-tested defenses deta hai (slowloris-type attacks se protection).
+3. **Multiple apps, ek machine** — ek physical/virtual machine pe multiple ASP.NET Core apps ko alag-alag ports pe chalane ke baad, reverse proxy ek hi public port (80/443) se sabko route karta hai based on hostname/path — Kestrel khud isके liye designed nahi hai.
+4. **Load balancing** — multiple app instances ke beech traffic distribute karna reverse proxy/load balancer ka kaam hai.
+5. **Static file serving at scale, caching, compression** — reverse proxies ye zyada efficiently kar sakte hain kuch scenarios me, offloading app process se.
+
+```
+Internet → [Nginx/IIS/Load Balancer: TLS termination, routing] → Kestrel (app process)
+```
+
+### Ye setup ka naam — "reverse proxy" pattern
+
+Isi arrangement ko **reverse proxy** kehte hain — client ko lagta hai wo ek hi server se baat kar raha hai (Nginx/IIS), lekin actual request internally ek doosre server (Kestrel/app process) ko forward hoti hai. (Contrast: ek "forward proxy" client-side hota hai, client ke behalf pe requests karta hai — reverse proxy server-side hota hai.)
+
+.NET ka apna `ForwardedHeadersMiddleware` isi setup me zaroori hai — jab request reverse proxy se hokar aati hai, original client IP/scheme (`X-Forwarded-For`, `X-Forwarded-Proto` headers me) preserve karna padta hai, warna app ko lagega har request proxy machine se hi aa rahi hai.
+
+```csharp
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
+```
+
+### Modern nuance — Kestrel ne kaafi improve kiya hai
+
+Fair hona zaroori hai: modern Kestrel (.NET 6+) directly internet-facing scenarios ko kaafi better handle karta hai (better HTTP/2, HTTP/3 support, hardened defaults). Kuch cloud-native deployments (jaise Kubernetes ingress ke peeche) me Kestrel directly bhi expose ho jaata hai, kyunki ingress controller khud reverse-proxy-jaisा kaam kar raha hota hai upar se. Lekin **traditional, widely-taught guidance** abhi bhi reverse-proxy-fronted setup hai, aur interview me ye hi expected answer hai jab tak specifically "modern Kubernetes context" na poocha jaaye.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Quick way to remember the split: Kestrel = fast app-request-handling engine. Reverse proxy = the hardened, battle-tested edge layer (TLS, slow-client defense, routing, load balancing) that Kestrel deliberately doesn't try to reinvent.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ke apne ASP.NET Core hosting docs explicitly recommend karte hain ki production deployments Kestrel ko ek reverse proxy ke peeche rakhein, aur `Microsoft.AspNetCore.HttpOverrides` package/`ForwardedHeadersMiddleware` use karein original client information preserve karne ke liye — ye guidance khud Azure App Service ke internal architecture me bhi follow hoti hai, jahan Kestrel apps internally ek managed reverse-proxy layer ke peeche chalti hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian E-commerce Backend">
+
+Ek team ne Kestrel ko directly port 443 pe expose kar diya bina Nginx ke, "extra hop kyun chahiye" soch kar. Kuch hafton baad ek slow-client-based DoS-jaisा issue observe hua — kuch malformed/slow requests ne app process ko resources hold karte hue slow kar diya. Fix: Nginx ko reverse proxy ke roop me add kiya gaya jo TLS terminate karta, request buffering/timeout defenses laga kar sirf clean, complete requests Kestrel tak forward karta — issue resolve ho gaya, aur team ne seekha ki "extra hop" ka trade-off genuinely worth-it hai edge hardening ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Kestrel consistently ranks near the top of TechEmpower web framework benchmarks for raw throughput
+- Common reverse proxies in production: IIS (Windows), Nginx/Apache (Linux), cloud load balancers (Azure App Service, AWS ALB)
+- `ForwardedHeadersMiddleware` restores original client IP/scheme lost behind a proxy hop
+- Kestrel supports HTTP/1.1, HTTP/2, and HTTP/3 (modern .NET versions)
+- Kubernetes-based deployments often expose Kestrel behind an ingress controller instead of a traditional Nginx/IIS layer
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Kestrel ko directly production me internet-facing kyun nahi rakhte?" — strong answer: "Kestrel ek fast, lightweight application server hai, lekin deliberately minimal — TLS termination, slow-client protection, multi-app routing, load balancing jaisi edge-layer responsibilities ke liye designed nahi hai. Isliye production me isको ek reverse proxy (IIS/Nginx/cloud load balancer) ke peeche rakha jaata hai, jo ye battle-tested defenses provide karta hai aur ek hi public port se multiple apps route kar sakta hai." Follow-up almost always: "Reverse proxy se request aane par app original client IP kaise pata karega?" — `ForwardedHeadersMiddleware` aur `X-Forwarded-For`/`X-Forwarded-Proto` headers.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Kestrel ko "bas ek dev-only server" samajhna — ye actually production-grade, genuinely fast application server hai, sirf edge-layer responsibilities intentionally handle nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+Reverse proxy setup me `ForwardedHeadersMiddleware` configure na karna — isse app ko har request proxy machine se aati hui lagegi, client IP-based logging/rate-limiting/geo-blocking sab galat data pe kaam karenge.
+
+</Mistake>
+
+<Mistake>
+
+"Extra hop se latency badhegi" bolke reverse proxy skip kar dena bina security/operational trade-off consider kiye — TLS termination, slow-client protection jaise fayde generally us chhoti extra latency se zyada worth hote hain.
+
+</Mistake>
+
+<Mistake>
+
+IIS ko sirf ".NET Framework wala purana web server" samajhna — modern ASP.NET Core deployments me IIS abhi bhi ek valid reverse proxy option hai Windows-based hosting ke liye, ye Kestrel ko internally forward karta hai (IIS ASP.NET Core Module ke through).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant Proxy as Reverse Proxy (Nginx/IIS/LB)
+    participant Kestrel as Kestrel (ASP.NET Core app)
+
+    Client->>Proxy: HTTPS request
+    Proxy->>Proxy: TLS termination, slow-client defense
+    Proxy->>Kestrel: HTTP request + X-Forwarded-For/Proto headers
+    Kestrel->>Kestrel: ForwardedHeadersMiddleware restores original client info
+    Kestrel-->>Proxy: Response
+    Proxy-->>Client: Response
+`}
+  caption="The reverse proxy absorbs edge-layer concerns (TLS, slow clients, multi-app routing) so Kestrel can stay focused and fast."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Kestrel = ASP.NET Core's own embedded, cross-platform, fast web server — present in every ASP.NET Core app
+- Deliberately minimal — doesn't handle TLS termination hardening, slow-client defense, multi-app routing, or load balancing as robustly as a dedicated edge layer
+- Production convention: front Kestrel with a reverse proxy — IIS (Windows), Nginx/Apache (Linux), or a cloud load balancer
+- Reverse proxy pattern: client talks to the proxy, proxy forwards to Kestrel internally
+- `ForwardedHeadersMiddleware` + `X-Forwarded-For`/`X-Forwarded-Proto` restore true client IP/scheme lost behind the proxy hop
+- Modern Kestrel (.NET 6+) is more internet-facing-capable, and Kubernetes ingress setups sometimes expose it more directly — but the textbook/interview answer is still "front it with a reverse proxy"
+
+</QuickRevision>

@@ -1,0 +1,182 @@
+---
+slug: "iasyncenumerable-and-await-foreach"
+title: "IAsyncEnumerable<T> and await foreach"
+section: "dotnet-fundamentals"
+module: "async-threading-parallel"
+order: 8
+difficulty: "advanced"
+readingTime: 11
+prerequisites: ["async-await-mechanics", "ienumerator-and-yield-return"]
+tags: ["dotnet", "csharp", "async", "streaming", "iasyncenumerable"]
+englishDefinition: "IAsyncEnumerable<T> (C# 8) is the async counterpart of IEnumerable<T> — it lets a sequence be produced and consumed one item at a time asynchronously, using await foreach, so a caller can start processing early results while later ones are still being fetched, instead of waiting for an entire collection to materialize first."
+interviewFrequency: "medium"
+companies: ["Microsoft", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+`IAsyncEnumerable<T>` (C# 8) is the async counterpart of `IEnumerable<T>` — it lets a sequence be produced and consumed one item at a time asynchronously, using `await foreach`, so a caller can start processing early results while later ones are still being fetched, instead of waiting for an entire collection to materialize first.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Regular `IEnumerable<T>` aur `yield return` se ek **synchronous** lazy sequence banti hai — har `MoveNext()` call turant return karta hai, kyunki underlying source (memory, ek already-loaded array) turant available hota hai. Lekin agar sequence ka har item genuinely **async** source se aa raha ho — jaise ek paginated API call, ek database cursor, ek streaming file read — to synchronous `yield return` kaafi nahi hai, kyunki `MoveNext()` khud await-able hona chahiye.
+
+### `IAsyncEnumerable<T>` — async streaming (C# 8)
+
+```csharp
+public async IAsyncEnumerable<Order> GetOrdersStreamAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    int page = 1;
+    while (true)
+    {
+        var response = await _httpClient.GetFromJsonAsync<PagedResult<Order>>(
+            $"/api/orders?page={page}", ct);
+
+        if (response is null || response.Items.Count == 0)
+            yield break; // sequence khatam
+
+        foreach (var order in response.Items)
+            yield return order;
+
+        page++;
+    }
+}
+```
+
+Ye method ek `async` method hai jo `IAsyncEnumerable<Order>` return karta hai, aur `yield return`/`yield break` use karta hai — compiler in dono cheezon (async + yield) ko combine karke ek async state machine generate karta hai jo lazily, ek item at a time, aur har fetch ke beech genuinely `await` kar sakta hai.
+
+### Consuming — `await foreach`
+
+```csharp
+await foreach (var order in GetOrdersStreamAsync(cancellationToken))
+{
+    ProcessOrder(order); // har order milte hi turant process ho jaata hai
+}
+```
+
+`await foreach` (C# 8) normal `foreach` ka async version hai — har iteration internally `await MoveNextAsync()` call karta hai. **Sabse bada fayda:** caller ko **poori list ka wait nahi karna padta** — pehla page aate hi pehla order process ho sakta hai, jabki agla page background me fetch ho raha ho. Compare karo ye approach ko `Task<List<Order>> GetAllOrdersAsync()` se, jahan caller ko **sab kuch materialize hone tak** wait karna padta — memory me poori list bhi banti, aur processing shuru hone me delay bhi hota.
+
+### Concrete comparison — streaming vs materializing
+
+```csharp
+// Materializing — sab kuch memory me load hone ke baad hi processing shuru
+List<Order> allOrders = await GetAllOrdersAsync(); // 100k orders? poore load honge pehle
+foreach (var order in allOrders)
+    ProcessOrder(order);
+
+// Streaming — processing turant shuru, memory me kabhi poora set nahi hota
+await foreach (var order in GetOrdersStreamAsync())
+    ProcessOrder(order);
+```
+
+Streaming approach especially valuable hai jab: (1) total result set bada ho aur poora memory me ek saath rakhna wasteful ho, (2) caller early results pe turant kaam shuru kar sakta ho (e.g. UI ko progressively populate karna), (3) caller beech me hi ruk sakta ho (e.g. pehli 10 matching entries mil gayi, baaki fetch karne ki zaroorat hi nahi — `await foreach` ke andar `break` lagana baaki pages fetch hi nahi karega).
+
+### `[EnumeratorCancellation]` attribute ka role
+
+`CancellationToken` parameter ko async-iterator method me `[EnumeratorCancellation]` attribute se mark karna padta hai — ye compiler ko batata hai ki jo token `GetAsyncEnumerator(CancellationToken)` ke through pass ho (jab consumer `await foreach` ke saath `.WithCancellation(ct)` use kare), wo is parameter me flow ho. Bina is attribute ke, method-level token aur `WithCancellation`-provided token properly wire nahi hote.
+
+</Hinglish>
+
+<Callout type="tip">
+
+`IAsyncEnumerable<T>` real-world me sabse zyada REST API pagination wrappers, database cursor-based reads, aur log/event streaming me dikhta hai — kahin bhi jahan "poora result set ek saath chahiye hi nahi, ek-ek karke process karna better hai" wahan is pattern ko consider karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`Microsoft.EntityFrameworkCore` `IQueryable<T>` par `.AsAsyncEnumerable()` extension method deta hai — isse EF Core query results ko `await foreach` se stream kiya ja sakta hai, bina poore result set ko pehle ek `List<T>` me materialize kiye. Bade result sets ke liye ye memory footprint significantly kam karta hai, especially jab caller results ko ek-ek karke process/write kar raha ho (jaise ek report file me stream karte hue).
+
+</RealWorld>
+
+<RealWorld company="An Indian Logistics Platform">
+
+Ek shipment-tracking API me, ek endpoint lakhon tracking events return karta tha jo pehle poore `List<TrackingEvent>` me materialize hote the, jisse large shipments ke liye response latency aur memory spike dono high the. Team ne is endpoint ko `IAsyncEnumerable<TrackingEvent>` return karne wale method me refactor kiya, ASP.NET Core ne isse automatically ek streaming JSON response (`System.Text.Json` ka native `IAsyncEnumerable` support) me convert kar diya — client ko pehla event milna shuru ho gaya jabki baaki abhi database se aa rahe the, aur server-side memory usage drastically kam ho gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `IAsyncEnumerable<T>` — C# 8.0 / .NET Core 3.0 (2019) me introduce hua
+- `await foreach` internally `await MoveNextAsync()` call karta hai har iteration pe
+- ASP.NET Core (`System.Text.Json`) `IAsyncEnumerable<T>` ko controller se seedha return karne par automatically streaming JSON response generate kar sakta hai
+- `[EnumeratorCancellation]` attribute — cancellation token ko async-iterator method ke andar properly wire karne ke liye required
+- Streaming approach memory footprint ko O(page-size) rakhta hai bade result sets ke liye, materializing approach ka footprint O(total-size) hota hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`IAsyncEnumerable<T>` normal `Task<List<T>>` se kaise better hai?" ka strong answer: "`Task<List<T>>` poora result set materialize hone tak wait karta hai, phir ek saath return karta hai — memory me poora set rakhna padta hai aur processing shuru hone me delay hota hai. `IAsyncEnumerable<T>` ke saath `await foreach` use karke, caller items ko ek-ek karke, aate hi process kar sakta hai — memory footprint kam, aur agar caller beech me hi ruk jaaye (early break), baaki data fetch hi nahi hota. Ye especially large result sets, pagination-heavy APIs, ya event-stream jaisi cheezon ke liye useful hai." Follow-up ke liye ready raho: "kaise implement karoge?" — `async IAsyncEnumerable<T>` method with `yield return` inside, aur `[EnumeratorCancellation]` agar cancellation support chahiye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`IAsyncEnumerable<T>` return karne wale method ke andar `CancellationToken` parameter ko `[EnumeratorCancellation]` attribute se mark na karna — consumer ka `.WithCancellation(ct)` token properly propagate nahi hoga.
+
+</Mistake>
+
+<Mistake>
+
+`IAsyncEnumerable<T>` ko turant `.ToListAsync()`/materialize karke consume karna — jab poora point hi streaming ka benefit lena tha, ye pattern us benefit ko poora defeat kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+`await foreach` ko regular `foreach` samajhna aur ye bhool jaana ki har iteration genuinely async hai — synchronous-blocking assumptions (jaise "loop turant sequentially chalega bina kisi delay ke") galat ho sakti hain.
+
+</Mistake>
+
+<Mistake>
+
+Har chhote, already-in-memory collection ke liye `IAsyncEnumerable<T>` use karna — agar data already available hai (koi genuine async fetch nahi ho raha), plain `IEnumerable<T>` kaafi hai, extra complexity ki zaroorat nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant Stream as IAsyncEnumerable Source
+
+    Caller->>Stream: await foreach starts
+    Stream->>Stream: fetch page 1 (async)
+    Stream-->>Caller: yield item 1, 2, 3...
+    Caller->>Caller: process item 1 immediately
+    Stream->>Stream: fetch page 2 (async, while caller processes)
+    Stream-->>Caller: yield item 4, 5, 6...
+    Note over Caller,Stream: Processing overlaps with fetching — no full materialization
+`}
+  caption="await foreach pulls items as they become available instead of waiting for the whole sequence to materialize."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `IAsyncEnumerable<T>` = async version of `IEnumerable<T>`, C# 8.0 / .NET Core 3.0
+- `await foreach` consumes it — internally calls `await MoveNextAsync()` per item
+- Combine `async` method + `yield return`/`yield break` to produce one — compiler generates an async iterator state machine
+- Big win: processing can start before the whole sequence is fetched, and an early `break` skips fetching the rest
+- Use `[EnumeratorCancellation]` on the `CancellationToken` parameter for cancellation to wire correctly
+- Best for paginated APIs, DB cursors, event/log streaming — not for small, already-in-memory collections
+- EF Core's `.AsAsyncEnumerable()` and ASP.NET Core's native `IAsyncEnumerable<T>` JSON streaming are the two most common real-world touch points
+
+</QuickRevision>

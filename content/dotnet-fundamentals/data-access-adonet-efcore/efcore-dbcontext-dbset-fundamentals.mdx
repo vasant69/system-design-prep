@@ -1,0 +1,181 @@
+---
+slug: "efcore-dbcontext-dbset-fundamentals"
+title: "EF Core Fundamentals — DbContext, DbSet, and Why an ORM Exists"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["adonet-fundamentals", "repository-unit-of-work-efcore"]
+tags: ["dotnet", "efcore", "dbcontext", "dbset", "orm", "data-access"]
+englishDefinition: "Entity Framework Core is .NET's official ORM (Object-Relational Mapper) — DbContext represents a session with the database and coordinates querying/saving as a unit of work, while each DbSet<T> represents a queryable, trackable collection mapped to a table. EF Core exists to eliminate the manual mapping boilerplate ADO.NET requires (reading columns by index, constructing objects by hand) at the cost of some runtime overhead and less granular SQL control."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+Entity Framework Core is .NET's official ORM (Object-Relational Mapper) — `DbContext` represents a session with the database and coordinates querying/saving as a unit of work, while each `DbSet<T>` represents a queryable, trackable collection mapped to a table. EF Core exists to eliminate the manual mapping boilerplate ADO.NET requires (reading columns by index, constructing objects by hand) at the cost of some runtime overhead and less granular SQL control.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye module ka pehla EF Core topic hai, isliye pehle ye clear karte hain — **EF Core ka problem statement kya hai**, phir `DbContext`/`DbSet<T>` ka concise recap. Deeper DbContext-as-Unit-of-Work discussion pehle se `repository-unit-of-work-efcore` topic me cover ho chuki hai (prerequisite), yahan focus fresh framing pe hai: "ORM kis problem ko solve karta hai vs raw ADO.NET."
+
+### Raw ADO.NET ka boilerplate problem — jo EF Core solve karta hai
+
+Pichhle topics me humne dekha `SqlDataReader` se manually rows padhna:
+
+```csharp
+// Raw ADO.NET — manual mapping
+while (await reader.ReadAsync())
+{
+    var product = new Product
+    {
+        Id = reader.GetInt32(0),
+        Name = reader.GetString(1),
+        Price = reader.GetDecimal(2)
+    };
+    products.Add(product);
+}
+```
+
+Har entity, har query ke liye ye mapping code hath se likhna padta hai — column index/name se value nikaalna, object construct karna, type-cast karna. Bade applications me (50+ entities, sainkdon queries), ye boilerplate genuinely significant maintenance burden ban jaata hai — aur agar koi column type ya order badal jaaye, silent bugs ka risk hai.
+
+**EF Core ye poora mapping automate karta hai.** Tum ek `Product` class define karte ho, EF Core ko batate ho `DbSet<Product> Products` chahiye, aur EF Core khud SQL generate karta hai, execute karta hai, results ko objects me map karta hai — LINQ ke through:
+
+```csharp
+var products = await context.Products
+    .Where(p => p.Price > 100)
+    .ToListAsync(); // EF Core generates + executes the SQL, maps rows to Product objects automatically
+```
+
+### `DbContext` — database session ka entry point
+
+`DbContext` ek class hai jo tumhari database se ek "session" represent karta hai — connection management, query translation, aur **change tracking** (kaun se objects modify hue hain, taaki `SaveChanges()` unhe sync kar sake) coordinate karta hai.
+
+```csharp
+public class AppDbContext : DbContext
+{
+    public DbSet<Product> Products { get; set; }
+    public DbSet<Order> Orders { get; set; }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options) =>
+        options.UseSqlServer(connectionString);
+}
+```
+
+ASP.NET Core apps me, `DbContext` typically DI ke through register hota hai (`services.AddDbContext<AppDbContext>(...)`) scoped lifetime ke saath — har HTTP request apna khud ka fresh `DbContext` instance leta hai.
+
+### `DbSet<T>` — ek table ka queryable, trackable window
+
+Har `DbSet<T>` property ek database table (ya view) represent karta hai. Ye `IQueryable<T>` implement karta hai, isliye LINQ methods (`Where`, `Select`, `OrderBy`) directly usable hain, aur EF Core inhe SQL me translate karta hai (`IQueryable` ka expression-tree mechanism — is section ke `linq-fundamentals` module me detail me hai). `DbSet<T>` ye bhi allow karta hai `Add`/`Remove`/`Update` — jo entity ki state ko change-tracker me register karta hai.
+
+```csharp
+context.Products.Add(new Product { Name = "New Widget", Price = 49.99m }); // marked as Added
+await context.SaveChangesAsync(); // generates + executes an INSERT
+```
+
+### Trade-off — kya khoya, kya paaya
+
+EF Core productivity aur maintainability deta hai (kam boilerplate, strongly-typed queries, automatic change tracking, migrations). Cost: kuch runtime overhead (query translation, change tracking bookkeeping) aur kabhi-kabhi generated SQL utna fine-tuned nahi hota jitna hand-written SQL ho sakta hai extremely perf-critical paths ke liye. Ye exact trade-off aage `dapper-vs-efcore-vs-adonet` topic me formally frame hota hai.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Ek-line mental model: "`DbContext` = database session + unit of work; `DbSet<T>` = ek table ka queryable, trackable window." Baaki sab (LINQ translation, change tracking, migrations) isi do-concept foundation ke upar bana hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+EF Core Microsoft ka official, actively-maintained ORM hai — .NET 8 tak, ye har naye ASP.NET Core Web API template ka default data-access recommendation hai jab tak developer explicitly Dapper ya raw ADO.NET choose na kare. Microsoft ki own guidance: "start with EF Core for productivity, profile aur optimize specific hot paths agar zaroorat pade" — EF Core ek reasonable default hai, sirf edge cases me alternative chahiye.
+
+</RealWorld>
+
+<RealWorld company="A Retail Inventory System">
+
+Ek typical Indian retail-inventory backend me, ek naye developer ne EF Core ke bina raw ADO.NET se ek naya `Supplier` entity ke liye CRUD likha — 4 methods (`GetById`, `GetAll`, `Add`, `Update`) me se har ek me manual column-mapping code duplicate hua. Team lead ne review me flag kiya: EF Core already yahi kaam automatically karta, `DbSet<Supplier>` add karke. Migration ke baad, wahi CRUD 4 lines ka ho gaya, aur naye fields add karna sirf class property add karna + migration generate karna ban gaya, manual mapping code touch kiye bina.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- EF Core = Microsoft's official, first-party ORM for .NET — default recommendation in most Web API templates
+- `DbContext` scoped lifetime is the ASP.NET Core default — one fresh instance per HTTP request
+- `DbSet<T>` implements `IQueryable<T>` — full LINQ support, translated to SQL at query-execution time (not immediately, see `deferred-vs-immediate-execution` in LINQ module)
+- Manual ADO.NET mapping code roughly scales linearly with entity count and query count — EF Core eliminates nearly all of it
+- EF Core adds runtime overhead (translation + change tracking) vs raw ADO.NET/Dapper — measurable but often acceptable for the productivity gain
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"EF Core kya problem solve karta hai jo raw ADO.NET nahi karta?" ka strong answer: "Raw ADO.NET me har query ke liye manually SQL likhna padta hai, aur `SqlDataReader` se columns padhkar objects manually construct karne padte hain — ye boilerplate hai jo entity/query count ke saath linearly badhta hai. EF Core is poore mapping process ko automate karta hai — main ek `DbSet<Product>` define karta hoon, LINQ likhta hoon, aur EF Core khud SQL generate, execute, aur rows ko objects me map karta hai. `DbContext` ye poora session coordinate karta hai — connection, query translation, aur change tracking, taaki `SaveChanges()` ek call me sab pending changes sync kar sake." Follow-up: "iska cost kya hai?" — jawaab: runtime overhead (translation + tracking bookkeeping), aur extremely perf-critical paths me hand-tuned SQL zyada control deta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`DbContext` ko application-lifetime singleton bana dena "performance ke liye" — `DbContext` thread-safe nahi hai aur short-lived (scoped, per-request) hona chahiye; ek shared instance concurrent requests me change-tracker corruption/race conditions cause karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki EF Core "magic" hai jo kuch bhi kar sakta hai bina cost ke — har LINQ query ek real SQL query me translate hoti hai, aur poorly-written LINQ genuinely inefficient SQL generate kar sakta hai (agla topic isi pe hai — N+1 problem).
+
+</Mistake>
+
+<Mistake>
+
+Ek hi `DbContext` instance ko multiple unrelated operations ke beech share karna without disposing — change tracker time ke saath bloated ho jaata hai (bahut saari tracked entities), jo memory aur `SaveChanges()` performance dono ko affect karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`DbSet<T>` ko sirf ek "table wrapper" samajhna aur ignore karna ki ye actually `IQueryable<T>` hai jiske upar LINQ operations ko carefully likhna zaroori hai (kya query database me translate hoti hai vs client-side memory me execute hoti hai — ye distinction agle module ke topics me deeply cover hoti hai).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Your C# code: context.Products.Where(...)"] --> B["DbSet&lt;Product&gt; — IQueryable"]
+    B --> C["EF Core translates LINQ expression tree to SQL"]
+    C --> D["DbContext executes SQL via ADO.NET underneath"]
+    D --> E["Rows mapped back to Product objects automatically"]
+    E --> F["DbContext's change tracker now tracks these instances"]
+    F --> G["Modify + SaveChangesAsync() -> generates UPDATE/INSERT/DELETE"]
+`}
+  caption="DbContext coordinates the full round trip — LINQ to SQL translation, ADO.NET execution underneath, object mapping, and change tracking — that raw ADO.NET requires writing by hand."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- EF Core = official .NET ORM; eliminates manual column-to-object mapping boilerplate that raw ADO.NET requires
+- `DbContext` = a database session + unit of work — connection, query translation, and change tracking coordination
+- `DbSet<T>` = a queryable (`IQueryable<T>`), trackable window over one table
+- LINQ on a `DbSet<T>` gets translated into SQL by EF Core — not executed in memory (deep dive in the LINQ module)
+- `DbContext` must be short-lived (scoped, per-request) — never a shared singleton
+- Trade-off vs raw ADO.NET/Dapper: productivity and less boilerplate, at the cost of some runtime overhead and less granular SQL control
+- See `repository-unit-of-work-efcore` (oops-dotnet) for the deeper DbContext-as-Unit-of-Work / DbSet-as-Repository discussion
+
+</QuickRevision>

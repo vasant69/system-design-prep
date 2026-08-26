@@ -1,0 +1,194 @@
+---
+slug: "callbacks-and-passing-methods-as-parameters"
+title: "Callbacks and Passing Methods as Parameters"
+section: "dotnet-fundamentals"
+module: "delegates-events-lambda"
+order: 5
+difficulty: "beginner"
+readingTime: 10
+prerequisites: ["func-action-predicate"]
+tags: ["dotnet", "csharp", "callbacks", "delegates", "higher-order-functions"]
+englishDefinition: "A callback is a method passed as a parameter to another method — via a delegate type, Func, or Action — so the receiving method can invoke it at the right moment, typically to signal completion, report progress, or let the caller customize a step of the receiving method's logic; unlike an event, a callback is a direct, one-off, one-to-one relationship set up by the caller, not a broadcast to unknown subscribers."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A callback is a method passed as a parameter to another method — via a delegate type, `Func`, or `Action` — so the receiving method can invoke it at the right moment, typically to signal completion, report progress, or let the caller customize a step of the receiving method's logic; unlike an event, a callback is a direct, one-off, one-to-one relationship set up by the caller, not a broadcast to unknown subscribers.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne dekha delegates, `Func`/`Action`, lambdas, aur events — ye sab module ka last piece "callback" pattern hai, jo actually inhi sabka ek practical, everyday application hai. Callback koi naya language feature nahi hai — ye ek **design pattern** hai jo delegates/`Func`/`Action` use karke implement hota hai.
+
+### Callback ka core idea — "method ko parameter ki tarah pass karo"
+
+```csharp
+public static void ProcessOrder(Order order, Action<Order> onSuccess, Action<string> onError)
+{
+    try
+    {
+        // ... order processing logic ...
+        onSuccess(order); // process complete hone par callback invoke
+    }
+    catch (Exception ex)
+    {
+        onError(ex.Message); // failure hone par different callback invoke
+    }
+}
+
+// Caller side:
+ProcessOrder(
+    order,
+    onSuccess: o => Console.WriteLine($"Order {o.Id} processed successfully"),
+    onError: msg => Console.WriteLine($"Failed: {msg}")
+);
+```
+
+`ProcessOrder` khud ko nahi pata order processing "success" ya "error" hone par exactly kya karna hai — caller ne wo decide kiya, aur ek method (yahan lambda) `Action<>` ke through pass kiya. Ye **inversion of control** ka ek simple form hai — receiving method control flow define karta hai (kab callback call karna hai), lekin uss point pe kya hona chahiye, wo caller decide karta hai.
+
+### Practical example — retry helper
+
+Ek genuinely useful, real-world callback pattern — ek retry helper jo koi bhi operation retry kar sake, generic tarike se:
+
+```csharp
+public static void RetryOperation(Action operation, int maxAttempts = 3)
+{
+    for (int attempt = 1; attempt <= maxAttempts; attempt++)
+    {
+        try
+        {
+            operation(); // caller ka diya hua method call karo
+            return; // success — retry loop se bahar
+        }
+        catch (Exception ex) when (attempt < maxAttempts)
+        {
+            Console.WriteLine($"Attempt {attempt} failed: {ex.Message}. Retrying...");
+        }
+    }
+}
+
+// Usage:
+RetryOperation(() => CallExternalApi(), maxAttempts: 5);
+RetryOperation(() => SaveToDatabase(record));
+```
+
+`RetryOperation` khud ko koi idea nahi hai "external API call karna hai" ya "database me save karna hai" — ye sirf ek generic "kisi bhi `Action` ko N baar retry karo" logic hai. Ye reusability hi callback pattern ka poora point hai — same retry logic kisi bhi operation ke saath use ho sakta hai jo `Action` shape ka ho.
+
+### Delegate type se callback pass karna — teen tarike
+
+```csharp
+// 1. Custom delegate type
+public delegate void ProgressCallback(int percentComplete);
+public static void DownloadFile(string url, ProgressCallback onProgress) { /* ... */ }
+
+// 2. Built-in Action/Func (most common in modern code)
+public static void DownloadFile(string url, Action<int> onProgress) { /* ... */ }
+
+// 3. Method group — named method directly pass karna, lambda ki zaroorat nahi
+void ReportProgress(int percent) => Console.WriteLine($"{percent}% done");
+DownloadFile("http://example.com/file", ReportProgress); // method group syntax
+```
+
+Teeno approach functionally same result dete hain — custom delegate zyada self-documenting hai, `Action<>`/`Func<>` zyada concise hai (module ke topic 2 me discuss kiya). "Method group" syntax (`DownloadFile("...", ReportProgress)`, bina `()` ya lambda ke) bhi valid hai — compiler automatically named method ko matching delegate type me convert kar deta hai.
+
+### Callback vs Event — final, practical distinction
+
+Ye distinction pichhle topic me establish hua, yahan practically reinforce karte hain: `ProcessOrder(order, onSuccess, onError)` ek callback hai kyunki caller EXPLICITLY, directly ye methods pass kar raha hai ek specific call ke liye — one-off, one-to-one. Agar iske bajaye `OrderService` ek `event OrderProcessed` expose karta, aur kahin bhi, kabhi bhi, koi bhi (multiple, unrelated parts of code) subscribe kar sakte, wo event hota — decoupled, broadcast, many-to-many potential. Simple rule: agar tumhe pata hai exactly kaun "response" chahta hai aur wo caller khud hai, callback kaafi hai; agar system ke multiple, independent parts ko react karna hai bina ek doosre ko jaane, event better fit hai.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET ke async APIs se pehle (jaise old-style `BeginInvoke`/`EndInvoke` Asynchronous Programming Model, .NET 1.1 se), callbacks hi asynchronous completion signal karne ka standard tareeka the — `AsyncCallback` delegate pass karo jo operation complete hone par invoke ho. Modern `async`/`await` ne is pattern ko bahut simplify kar diya, lekin core idea same hai — "jab kaam khatam ho, mujhe batao," bas ab compiler-generated state machine ye kaam karta hai callback ki jagah.
+
+</RealWorld>
+
+<RealWorld company="An Indian SaaS Billing System">
+
+Ek billing system me, invoice-generation ek lambi-chalne-wali batch operation thi jisme progress track karna zaroori tha (dashboard pe live percentage dikhana). Team ne `GenerateInvoices(List<Customer> customers, Action<int> onProgress)` design kiya — har customer process hone par `onProgress(percentComplete)` call hota. UI layer ne is callback ko SignalR se connect kiya, taaki dashboard live update ho. Business logic (`GenerateInvoices`) ko UI/SignalR ke baare me kuch nahi pata tha — sirf ek generic `Action<int>` callback invoke kar raha tha, jo caller ne define kiya ki iska matlab kya hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Callback pattern koi separate language feature nahi hai — ye delegates/`Func`/`Action` ka ek usage pattern hai
+- 3 tarike callback pass karne ke: custom delegate type, built-in `Func`/`Action`, ya method group syntax
+- .NET 1.1 ka Asynchronous Programming Model (APM — `BeginInvoke`/`EndInvoke`) callback-based tha; `async`/`await` (C# 5.0, 2012) ne isse largely replace kiya
+- Method group conversion — koi bhi matching-signature named method directly delegate parameter me pass ho sakta hai, bina explicit lambda wrap kiye
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Callback kya hota hai C# me, aur ye event se kaise alag hai?" ka strong answer: "Callback ek method hai jo parameter ki tarah pass kiya jaata hai — delegate, `Func`, ya `Action` ke through — taaki receiving method usse sahi time pe invoke kar sake, jaise completion signal karna ya progress report karna. Ye koi naya language construct nahi hai, delegates ka hi ek usage pattern hai. Event se fark: callback direct, one-off, one-to-one hota hai — caller explicitly ek specific method pass karta hai ek specific call ke liye. Event broadcast, one-to-many hota hai — publisher ko pata nahi hota kaun subscribe kiya hai, multiple decoupled parts independently react kar sakte hain." Follow-up: "ek concrete real-world callback example do" — retry helper (`RetryOperation(Action operation)`) ya progress-reporting (`DownloadFile(url, Action<int> onProgress)`) accha, practical answer hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Callback aur event ko synonymous samajhna — callback direct/one-off hai (caller explicitly ek method pass karta hai), event broadcast hai (publisher ko pata nahi kitne/kaun subscribers hain).
+
+</Mistake>
+
+<Mistake>
+
+Callback ko `null` check kiye bina invoke karna jab callback parameter optional ho (jaise `Action<int>? onProgress = null`) — null-conditional (`onProgress?.Invoke(percent)`) use karna zaroori hai agar caller callback pass na kare.
+
+</Mistake>
+
+<Mistake>
+
+Method group syntax ko lambda se fundamentally alag samajhna — `DownloadFile(url, ReportProgress)` aur `DownloadFile(url, p => ReportProgress(p))` functionally equivalent hain, compiler dono ko same tarike se handle karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Callback-heavy design me deeply nested callbacks likhna ("callback hell") jab `async`/`await` ya proper method composition zyada readable hota — callback pattern powerful hai lekin overuse karne se code readability suffer karti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Caller
+    participant RetryOperation
+    participant ExternalApi as operation() (passed-in callback)
+    Caller->>RetryOperation: RetryOperation(() => CallExternalApi(), 3)
+    RetryOperation->>ExternalApi: operation() — attempt 1
+    ExternalApi-->>RetryOperation: throws exception
+    RetryOperation->>ExternalApi: operation() — attempt 2
+    ExternalApi-->>RetryOperation: success
+    RetryOperation-->>Caller: return
+`}
+  caption="RetryOperation has no idea what operation actually does — it just knows how to call the callback it was handed, up to N times, on failure."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A callback is a method passed as a parameter (via a delegate type, `Func`, or `Action`) so it can be invoked later by the receiving method
+- Callback is not a separate language feature — it's a usage pattern built entirely on delegates
+- Direct, one-off, one-to-one (callback) vs broadcast, one-to-many, decoupled (event) — the key distinction from the previous topic
+- Three ways to pass one: custom delegate type, `Func`/`Action`, or a method group (a named method passed directly, no lambda needed)
+- Classic real-world shapes: completion callbacks (`onSuccess`/`onError`), progress callbacks (`Action<int> onProgress`), retry helpers (`Action operation`)
+- Guard optional callback parameters with `?.Invoke()` to avoid a null-reference call
+- `async`/`await` largely replaced manual completion-callback plumbing, but the underlying "pass a method to be called later" idea is the same
+
+</QuickRevision>
