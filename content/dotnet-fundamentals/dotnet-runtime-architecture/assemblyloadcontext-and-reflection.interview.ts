@@ -19,7 +19,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "advanced",
     shortAnswer: "Kahin ek strong reference us ALC me loaded kisi type/instance ko host code se bahar hold kar raha hai, jo GC ko us ALC ko collect karne se rok raha hai.",
     detailedAnswer:
-      "`Unload()` sirf ALC ko unloading ke liye eligible marta hai — actual collection tab hota hai jab koi bhi strong reference us ALC ke andar loaded kisi type, instance, ya delegate ko host code (Default ALC ya kisi doosre living context) se hold nahi kar raha. Agar host ne plugin ka koi object reference kahin store kar rakha hai (jaise ek static field, ek cached delegate, ya event subscription jo unsubscribe nahi hui), ALC unload nahi hoga — ye bilkul waisा hi hai jaise ek event-handler-leak object ko GC-rooted rakhta hai.",
+      "`Unload()` sirf ALC ko unloading ke liye eligible marta hai — actual collection tab hota hai jab koi bhi strong reference us ALC ke andar loaded kisi type, instance, ya delegate ko host code (Default ALC ya kisi doosre living context) se hold nahi kar raha. Agar host ne plugin ka koi object reference kahin store kar rakha hai (jaise ek static field, ek cached delegate, ya event subscription jo unsubscribe nahi hui), ALC unload nahi hoga — ye bilkul waisa hi hai jaise ek event-handler-leak object ko GC-rooted rakhta hai.",
     redFlag: "'Unload() call kar diya, memory turant free ho jaani chahiye' — ye galat expectation hai, GC lazy hai aur external references check karni padti hain.",
   },
   {
@@ -38,12 +38,12 @@ const questions: InterviewQuestion[] = [
     difficulty: "advanced",
     shortAnswer: "Ek shared interface/contract assembly define karo, custom collectible `AssemblyLoadContext` se plugin `.dll` load karo, `AssemblyDependencyResolver` se uske dependencies resolve karo, phir Reflection se instantiate/invoke karo (ya interface ke through cast karo).",
     detailedAnswer:
-      "(1) Ek shared 'contract' assembly banao jisme ek interface ho (jaise `IPlugin` with `Execute()` method) — host aur plugin authors dono isके against build karte hain. (2) Host ek custom `AssemblyLoadContext` (isCollectible: true) banata hai per-plugin, `AssemblyDependencyResolver` ke saath plugin ki apni dependencies sahi resolve karne ke liye. (3) `loadContext.LoadFromAssemblyPath(pluginPath)` se assembly load karo. (4) `Assembly.GetTypes()` se `IPlugin` implement karne wale types dhoondo, `Activator.CreateInstance()` se instantiate karo, phir seedha interface ke through call karo (pure reflection `Invoke()` se better — interface cast ho jaaye to type-safe call milta hai). Plugin remove/reload karna ho to `loadContext.Unload()`.",
+      "(1) Ek shared 'contract' assembly banao jisme ek interface ho (jaise `IPlugin` with `Execute()` method) — host aur plugin authors dono iske against build karte hain. (2) Host ek custom `AssemblyLoadContext` (isCollectible: true) banata hai per-plugin, `AssemblyDependencyResolver` ke saath plugin ki apni dependencies sahi resolve karne ke liye. (3) `loadContext.LoadFromAssemblyPath(pluginPath)` se assembly load karo. (4) `Assembly.GetTypes()` se `IPlugin` implement karne wale types dhoondo, `Activator.CreateInstance()` se instantiate karo, phir seedha interface ke through call karo (pure reflection `Invoke()` se better — interface cast ho jaaye to type-safe call milta hai). Plugin remove/reload karna ho to `loadContext.Unload()`.",
     followUp: "Interface ke through call karna pure MethodInfo.Invoke() se better kyun hai?",
   },
   {
     id: "assemblyloadcontext-reflection-tr-5",
-    question: "Do plugins, alag versions ki `Newtonsoft.Json` use karte hain, ek hi host process me load ho rahe hain. `AssemblyLoadContext` isमे kaise madad karta hai?",
+    question: "Do plugins, alag versions ki `Newtonsoft.Json` use karte hain, ek hi host process me load ho rahe hain. `AssemblyLoadContext` isme kaise madad karta hai?",
     type: "scenario",
     difficulty: "advanced",
     shortAnswer: "Har plugin ko apne alag ALC me load karke, unki dependencies isolate ho jaati hain — ek version doosre se conflict nahi karta.",
@@ -57,7 +57,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "advanced",
     shortAnswer: "Plugin ki apni `.deps.json` metadata padh kar uski dependencies ko sahi tareeke se resolve karta hai, host app se independently.",
     detailedAnswer:
-      "Jab ek plugin `.dll` apni khud ki dependency `.dll` files ke saath ship hoti hai (usi folder me), `AssemblyDependencyResolver` us plugin ke `.deps.json` (jo publish ke time generate hoti hai) padh kar batata hai kaunsi dependency `.dll` kaha se load karni hai. Bina isके, custom `Load()` override me manually path resolution likhna padta, jo error-prone hai. Ye ALC ke saath tightly paired API hai plugin scenarios ke liye specifically design kiya gaya.",
+      "Jab ek plugin `.dll` apni khud ki dependency `.dll` files ke saath ship hoti hai (usi folder me), `AssemblyDependencyResolver` us plugin ke `.deps.json` (jo publish ke time generate hoti hai) padh kar batata hai kaunsi dependency `.dll` kaha se load karni hai. Bina iske, custom `Load()` override me manually path resolution likhna padta, jo error-prone hai. Ye ALC ke saath tightly paired API hai plugin scenarios ke liye specifically design kiya gaya.",
   },
   {
     id: "assemblyloadcontext-reflection-tr-7",
@@ -67,7 +67,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer: "Overly broad — one-time/infrequent reflection (jaise startup pe type discovery) fine hai; problem tab hai jab hot, frequently-called paths me bina caching ke use ho.",
     detailedAnswer:
       "Reflection genuinely ek overhead carry karta hai direct calls ke comparison me, lekin 'hamesha avoid karo' overly simplistic advice hai. Startup-time operations (jaise DI container ka assembly scanning, ek baar ke type discovery) me reflection ka cost negligible hai poore app lifecycle ke against. Real problem tab hai jab reflection **repeatedly, hot path me, without caching** use ho — jaise ek request handler jo har request pe fresh `Type.GetMethod()` call kare. Sahi mitigation caching (resolve once, reuse) ya compiled delegates/expression trees hai, blanket avoidance nahi.",
-    redFlag: "'Reflection kabhi use hi nahi karni chahiye' jaisा absolute statement — nuanced cost/benefit samajh ka abhaav dikhata hai.",
+    redFlag: "'Reflection kabhi use hi nahi karni chahiye' jaisa absolute statement — nuanced cost/benefit samajh ka abhaav dikhata hai.",
   },
   {
     id: "assemblyloadcontext-reflection-tr-8",

@@ -26,7 +26,7 @@ const quiz: QuizQuestion[] = [
     ],
     correctIndex: 1,
     explanation:
-      "Ye rule specific resource (is particular order) ki data (CreatedByUserId) pe depend karta hai, na ki sirf user ki static identity pe. Role-based (Option A) ya claims-based (Option C) approaches user ke claims tak limited hain, resource ki state dekh nahi sakte. Resource-based authorization specifically isके liye design hui hai — handler ko actual resource object diya jaata hai comparison ke liye.",
+      "Ye rule specific resource (is particular order) ki data (CreatedByUserId) pe depend karta hai, na ki sirf user ki static identity pe. Role-based (Option A) ya claims-based (Option C) approaches user ke claims tak limited hain, resource ki state dekh nahi sakte. Resource-based authorization specifically iske liye design hui hai — handler ko actual resource object diya jaata hai comparison ke liye.",
     difficulty: "hard",
   },
   {

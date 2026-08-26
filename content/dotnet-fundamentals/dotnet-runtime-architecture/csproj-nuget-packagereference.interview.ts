@@ -28,7 +28,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "beginner",
     shortAnswer: "NuGet .NET ka package ecosystem hai; `PackageReference` .csproj ke andar dependencies declare karne ka modern tareeka hai.",
     detailedAnswer:
-      "NuGet npm/Maven jaisा .NET ka official package manager hai — public feed (`nuget.org`) ya private company feeds se libraries consume ki jaati hain. `PackageReference` `.csproj` ke ItemGroup ke andar likha jaata hai (`<PackageReference Include=\"X\" Version=\"Y\" />`) aur `dotnet restore` in entries ko padh kar transitive dependencies resolve karta hai global NuGet cache se.",
+      "NuGet npm/Maven jaisa .NET ka official package manager hai — public feed (`nuget.org`) ya private company feeds se libraries consume ki jaati hain. `PackageReference` `.csproj` ke ItemGroup ke andar likha jaata hai (`<PackageReference Include=\"X\" Version=\"Y\" />`) aur `dotnet restore` in entries ko padh kar transitive dependencies resolve karta hai global NuGet cache se.",
   },
   {
     id: "csproj-nuget-packagereference-tr-4",
@@ -66,7 +66,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "advanced",
     shortAnswer: "Exact resolved package versions lock karti hai reproducible restores ke liye — CI/CD pipelines me particularly useful.",
     detailedAnswer:
-      "`RestorePackagesWithLockFile` set karne par `packages.lock.json` generate hoti hai, jo exact resolved version har transitive dependency ka lock kar deti hai. Bina isके, agar koi transitive dependency ne ek chhota patch release nikala, agla restore silently thoda different version resolve kar sakta hai — 'works locally, breaks in CI' jaisi cheezein. Lock file ise prevent karti hai, aur ise commit karna best practice hai reproducible builds ke liye, especially CI environments me.",
+      "`RestorePackagesWithLockFile` set karne par `packages.lock.json` generate hoti hai, jo exact resolved version har transitive dependency ka lock kar deti hai. Bina iske, agar koi transitive dependency ne ek chhota patch release nikala, agla restore silently thoda different version resolve kar sakta hai — 'works locally, breaks in CI' jaisi cheezein. Lock file ise prevent karti hai, aur ise commit karna best practice hai reproducible builds ke liye, especially CI environments me.",
   },
   {
     id: "csproj-nuget-packagereference-tr-8",

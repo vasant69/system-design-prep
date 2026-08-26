@@ -75,7 +75,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "intermediate",
     shortAnswer: "\"OrderCreated\" print hoga — `GetCustomAttribute<T>()` attribute instance return karta hai jiski `Action` property constructor se set hui thi.",
     detailedAnswer:
-      "`GetCustomAttribute<AuditLogAttribute>()` reflection se method ki metadata me `AuditLogAttribute` dhoondta hai. Agar laga hai, ye attribute ka ek instance return karta hai (jo CLR ne compile-time constructor arguments se banaya), aur `attr.Action` `\"OrderCreated\"` hoga — kyunki attribute constructor me exactly wahi value pass ki gayi thi. Agar attribute nahi lagा hota, method `null` return karta, aur `??` operator se `\"none\"` print hota.",
+      "`GetCustomAttribute<AuditLogAttribute>()` reflection se method ki metadata me `AuditLogAttribute` dhoondta hai. Agar laga hai, ye attribute ka ek instance return karta hai (jo CLR ne compile-time constructor arguments se banaya), aur `attr.Action` `\"OrderCreated\"` hoga — kyunki attribute constructor me exactly wahi value pass ki gayi thi. Agar attribute nahi laga hota, method `null` return karta, aur `??` operator se `\"none\"` print hota.",
   },
 ];
 

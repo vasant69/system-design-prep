@@ -64,7 +64,7 @@ const questions: InterviewQuestion[] = [
     question: "Kubernetes environment me Kestrel deployment thoda alag kaise ho sakta hai traditional Nginx/IIS setup se?",
     type: "scenario",
     difficulty: "advanced",
-    shortAnswer: "Ingress controller khud reverse-proxy-jaisi responsibilities uthata hai, isliye kabhi Kestrel directly ussके peeche expose hota hai bina alag Nginx layer ke.",
+    shortAnswer: "Ingress controller khud reverse-proxy-jaisi responsibilities uthata hai, isliye kabhi Kestrel directly uske peeche expose hota hai bina alag Nginx layer ke.",
     detailedAnswer:
       "Kubernetes me ek Ingress Controller (jaise NGINX Ingress, Traefik) already TLS termination, routing, load balancing jaisi edge responsibilities handle karta hai cluster-level pe. Isliye kuch deployments me app pod ke andar Kestrel directly is Ingress ke peeche expose ho jaata hai, bina ek separate in-app Nginx layer ke — kyunki wo zimmedariyan already cluster infrastructure level pe cover ho rahi hoti hain. Ye principle wahi hai (edge-layer concerns Kestrel se bahar rakho), implementation jagah badal jaati hai.",
   },
@@ -75,7 +75,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "intermediate",
     shortAnswer: "Galat framing — Kestrel genuinely production-grade aur fast hai; reverse proxy iski kami nahi, balki architectural separation of concerns hai.",
     detailedAnswer:
-      "Ye ek common misconception hai. Kestrel ek weak ya 'toy' server nahi hai — ye benchmarks me consistently top-tier throughput deta hai aur production workloads ke liye bilkul designed hai. Reverse proxy iski kisi 'kami' ko cover nahi karta, balki ek deliberate architectural separation hai — Kestrel app-request handling me focus karta hai, edge/network-layer hardening dedicated component ko di jaati hai. Ye microservices/layered-architecture ke 'single responsibility' principle jaisा hi ek pattern hai, weakness nahi.",
+      "Ye ek common misconception hai. Kestrel ek weak ya 'toy' server nahi hai — ye benchmarks me consistently top-tier throughput deta hai aur production workloads ke liye bilkul designed hai. Reverse proxy iski kisi 'kami' ko cover nahi karta, balki ek deliberate architectural separation hai — Kestrel app-request handling me focus karta hai, edge/network-layer hardening dedicated component ko di jaati hai. Ye microservices/layered-architecture ke 'single responsibility' principle jaisa hi ek pattern hai, weakness nahi.",
     redFlag: "'Kestrel weak hai isliye proxy chahiye' bolna — actual reasoning (separation of concerns, specialized hardening) miss karta hai.",
   },
   {
@@ -85,7 +85,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "intermediate",
     shortAnswer: "Middleware pipeline me `X-Forwarded-For`/`X-Forwarded-Proto` headers ko process karke original client IP aur scheme restore karta hai — reverse proxy ke peeche deployment me zaroori hai.",
     detailedAnswer:
-      "Ye `ForwardedHeadersMiddleware` add karta hai jo incoming request ke `X-Forwarded-For` aur `X-Forwarded-Proto` headers ko padh kar `HttpContext.Connection.RemoteIpAddress` aur `HttpContext.Request.Scheme` ko update kar deta hai, taaki app ko lagne wala 'client info' proxy ka nahi, actual original client ka ho. Ye tab zaroori hai jab app kisi reverse proxy ke peeche deploy ho — bina isके, IP-based logic aur logging galat hoगी.",
+      "Ye `ForwardedHeadersMiddleware` add karta hai jo incoming request ke `X-Forwarded-For` aur `X-Forwarded-Proto` headers ko padh kar `HttpContext.Connection.RemoteIpAddress` aur `HttpContext.Request.Scheme` ko update kar deta hai, taaki app ko lagne wala 'client info' proxy ka nahi, actual original client ka ho. Ye tab zaroori hai jab app kisi reverse proxy ke peeche deploy ho — bina iske, IP-based logic aur logging galat hogi.",
   },
 ];
 

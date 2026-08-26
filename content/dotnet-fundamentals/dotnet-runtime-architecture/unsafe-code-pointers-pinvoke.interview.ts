@@ -9,7 +9,7 @@ const questions: InterviewQuestion[] = [
     askedAt: ["Microsoft"],
     shortAnswer: "Haan, `unsafe` blocks ke andar raw pointers declare/dereference/arithmetic possible hai — narrow, performance-critical ya interop scenarios ke liye.",
     detailedAnswer:
-      "C# `unsafe` keyword ek scoped block ko allow karta hai jaha raw pointers (`int* ptr`) declare, dereference, aur arithmetic ki ja sakती hai — bilkul C/C++ jaisa. Ye CLR ki normal memory-safety guarantees (bounds checking, type safety, GC-safe references) explicitly off kar deta hai. Isliye ye day-to-day business logic me use nahi hota — sirf genuinely performance-critical hot paths (jaise low-level parsing/serialization) ya native interop scenarios me use hota hai, aur `.csproj` me `AllowUnsafeBlocks` explicitly enable karna padta hai.",
+      "C# `unsafe` keyword ek scoped block ko allow karta hai jaha raw pointers (`int* ptr`) declare, dereference, aur arithmetic ki ja sakti hai — bilkul C/C++ jaisa. Ye CLR ki normal memory-safety guarantees (bounds checking, type safety, GC-safe references) explicitly off kar deta hai. Isliye ye day-to-day business logic me use nahi hota — sirf genuinely performance-critical hot paths (jaise low-level parsing/serialization) ya native interop scenarios me use hota hai, aur `.csproj` me `AllowUnsafeBlocks` explicitly enable karna padta hai.",
     followUp: "`fixed` statement iske saath kyun zaroori hota hai?",
   },
   {
@@ -19,7 +19,7 @@ const questions: InterviewQuestion[] = [
     difficulty: "advanced",
     shortAnswer: "GC managed objects ko compaction ke dauraan move kar sakta hai — `fixed` object ko temporarily pin karta hai taaki raw pointer dangling na ho jaaye.",
     detailedAnswer:
-      "GC ke generational/compacting collector managed heap objects ko move kar sakte hain (jaise Gen 0 se Gen 1 promotion ke dauraan compaction). Agar unsafe code ne kisi array ka direct memory address (pointer) le rakha hai aur GC beech me us array ko move kar de, wo pointer ab galat memory location point karega — undefined behavior/crash. `fixed (int* ptr = array) { ... }` GC ko us object ko block ke duration ke liye move karne se rokta hai (pin karta hai), taaki pointer valid reहe.",
+      "GC ke generational/compacting collector managed heap objects ko move kar sakte hain (jaise Gen 0 se Gen 1 promotion ke dauraan compaction). Agar unsafe code ne kisi array ka direct memory address (pointer) le rakha hai aur GC beech me us array ko move kar de, wo pointer ab galat memory location point karega — undefined behavior/crash. `fixed (int* ptr = array) { ... }` GC ko us object ko block ke duration ke liye move karne se rokta hai (pin karta hai), taaki pointer valid rahe.",
   },
   {
     id: "unsafe-code-pointers-pinvoke-tr-3",
@@ -42,7 +42,7 @@ const questions: InterviewQuestion[] = [
   },
   {
     id: "unsafe-code-pointers-pinvoke-tr-5",
-    question: "P/Invoke kya hai, aur `[DllImport]` attribute isमे kya role play karta hai?",
+    question: "P/Invoke kya hai, aur `[DllImport]` attribute isme kya role play karta hai?",
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer: "P/Invoke managed C# ko native library functions call karne deta hai; `[DllImport]` batata hai method actually kis native `.dll` me define hai.",
