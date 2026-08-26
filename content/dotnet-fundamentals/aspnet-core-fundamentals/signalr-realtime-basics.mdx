@@ -1,0 +1,212 @@
+---
+slug: "signalr-realtime-basics"
+title: "SignalR Real-Time Communication Basics"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 11
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "signalr", "websockets", "realtime"]
+englishDefinition: "SignalR is ASP.NET Core's real-time communication library that abstracts over WebSockets with automatic fallback to Server-Sent Events or long polling when WebSockets aren't available, organizing server-to-client push communication around Hubs — server-side classes clients connect to and invoke methods on, with the server able to push to individual clients, groups, or all connected clients at will."
+interviewFrequency: "medium"
+companies: ["Microsoft", "TCS", "Infosys", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+SignalR is ASP.NET Core's real-time communication library that abstracts over WebSockets with automatic fallback to Server-Sent Events or long polling when WebSockets aren't available, organizing server-to-client push communication around Hubs — server-side classes clients connect to and invoke methods on, with the server able to push to individual clients, groups, or all connected clients at will.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Traditional HTTP request-response model ek fundamental limitation rakhta hai — server sirf **client ke request ka response de sakta hai**, khud se kabhi client ko unprompted data **push** nahi kar sakta. Live notifications, chat, live dashboards jaise features is model se naturally fit nahi hote — client ko baar-baar poll karna padta ("kuch naya hai kya?") jo inefficient hai. SignalR is problem ko solve karta hai.
+
+### SignalR kya hai — WebSockets ka abstraction, automatic fallback ke saath
+
+SignalR **WebSockets** (ek persistent, bidirectional connection browser aur server ke beech) ke upar build hota hai, lekin isse directly use nahi karna padta — SignalR khud transport choose karta hai:
+
+1. **WebSockets** — best case, true bidirectional, low-latency persistent connection
+2. **Server-Sent Events (SSE)** — agar WebSockets available na ho, server-to-client streaming ka fallback (unidirectional)
+3. **Long Polling** — sabse basic fallback — client repeatedly request bhejta hai, server response ko tab tak hold karta hai jab tak koi naya data na ho ya timeout na ho jaaye
+
+Ye **automatic negotiation** SignalR ka genuine value hai — developer ko manually decide nahi karna padta kaunsa transport use hoga; SignalR client aur server ke beech best-available option automatically negotiate kar leta hai (proxy/firewall restrictions, browser support sab consider karke).
+
+### Hub — server-side entry point
+
+**Hub** ek server-side class hai jise clients connect karte hain aur jiske methods clients invoke kar sakte hain, aur jisse server clients ko methods invoke kar sakta hai:
+
+```csharp
+public class NotificationHub : Hub
+{
+    public async Task SendNotification(string message)
+    {
+        // Ek client se aayi request, sab connected clients ko broadcast
+        await Clients.All.SendAsync("ReceiveNotification", message);
+    }
+
+    public override async Task OnConnectedAsync()
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, "AllUsers");
+        await base.OnConnectedAsync();
+    }
+}
+
+// Registration
+builder.Services.AddSignalR();
+app.MapHub<NotificationHub>("/hubs/notifications");
+```
+
+Client-side (JavaScript example, conceptually):
+
+```javascript
+const connection = new signalR.HubConnectionBuilder()
+    .withUrl("/hubs/notifications")
+    .build();
+
+connection.on("ReceiveNotification", (message) => {
+    console.log("Received:", message);
+});
+
+await connection.start();
+await connection.invoke("SendNotification", "Hello everyone!");
+```
+
+**`Clients` object ka flexibility jo interview me poocha jaata hai:**
+
+- `Clients.All` — connected sab clients ko push
+- `Clients.Caller` — sirf jisne request bheji usi client ko wapas push
+- `Clients.Group("groupName")` — ek specific named group ke sab clients ko (jaise ek specific chat room)
+- `Clients.User(userId)` — ek specific authenticated user ko (agar multiple connections ho ek user ki — jaise multiple tabs — sab tak pahunchega)
+- `Clients.Client(connectionId)` — ek exact single connection ko
+
+**Server-initiated push — genuinely powerful part:** server khud kabhi bhi, bina kisi client request ke, ek connected client ko push kar sakta hai — jaise ek background service jo ek naya order aane pe turant connected dashboard clients ko notify kare, bina client ne kuch request kiye:
+
+```csharp
+public class OrderService
+{
+    private readonly IHubContext<NotificationHub> _hubContext;
+    public OrderService(IHubContext<NotificationHub> hubContext) => _hubContext = hubContext;
+
+    public async Task NotifyNewOrder(Order order)
+    {
+        await _hubContext.Clients.Group("Dashboard").SendAsync("NewOrder", order);
+    }
+}
+```
+
+`IHubContext<THub>` ka use non-Hub classes (jaise ek regular service ya `BackgroundService`) se Hub ke connected clients ko push karne ke liye hota hai — ye Hub class ke bahar se bhi SignalR functionality access karna possible banata hai.
+
+### SignalR kab right choice hai vs polling vs Server-Sent Events
+
+**Plain polling** (client periodically GET request bheje "kuch naya hai kya?") simplest hai lekin inefficient — unnecessary requests jab kuch naya na ho, aur latency (naya data next poll tak dikhega hi nahi).
+
+**Server-Sent Events (SSE)** unidirectional (sirf server-to-client) hai — agar client ko server ko bhi kuch bhejna ho, alag mechanism chahiye. Simpler protocol hai SignalR se, native browser support (`EventSource`).
+
+**SignalR** genuinely bidirectional, low-latency, aur automatic-fallback deta hai — best fit jab: (a) true real-time chahiye (chat, live collaboration, live dashboards), (b) bidirectional communication chahiye, (c) client base heterogeneous ho (kuch WebSockets support karein, kuch nahi — automatic fallback handle kar deta hai). Simple "occasionally check for updates" use case ke liye plain polling ya SSE often simpler aur sufficient hote hain — SignalR har real-time-ish requirement ke liye automatically best choice nahi hai, complexity trade-off consider karna chahiye.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview me concrete use case example poocha jaana common hai: "SignalR kab use karoge?" ka strong answer ek live notification feed hai — jaise ek order-management dashboard jahan naya order aate hi, bina page refresh kiye, turant dashboard pe dikh jaaye, kyunki server ne active connection ke through push kar diya jaise hi order create hua.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+SignalR ka design deliberately transport-agnostic hai — Microsoft ne isse is tarah architect kiya ki application code (Hub methods, client-side `.on()`/`.invoke()` calls) same rahe chahe underlying transport WebSockets ho, SSE ho, ya long polling — developer ko manually transport-detection ya fallback logic kabhi likhni nahi padti, jo real-world diverse network/proxy/browser environments me genuinely valuable hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Food-Delivery App">
+
+Ek typical food-delivery app me "order tracking" screen SignalR (ya conceptually similar real-time tech) use karta hai — jaise hi delivery partner ki location update hoti hai backend me, us specific order ke liye subscribed clients (customer ka app, jo ek specific SignalR group me hai us order ke liye) ko turant push mil jaata hai, bina customer app ko har 2 second me location poll karne ke. Isse battery aur network usage dono kam hota hai polling ke comparison me, aur latency bhi kam hoti hai — location update honi ke turant baad UI update ho jaata hai, next-poll-interval ka wait nahi karna padta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Transport fallback order: WebSockets -> Server-Sent Events -> Long Polling
+- `Clients.All`, `Clients.Caller`, `Clients.Group(name)`, `Clients.User(userId)`, `Clients.Client(connectionId)` — targeting granularity options
+- `IHubContext<THub>` lets non-Hub classes (services, background workers) push to Hub clients
+- SignalR is bidirectional; Server-Sent Events is unidirectional (server-to-client only)
+- `OnConnectedAsync`/`OnDisconnectedAsync` are Hub lifecycle hooks for connection tracking
+- WebSockets provide the lowest-latency, truly persistent bidirectional connection among the fallback chain
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"SignalR kya hai, aur ye plain polling se better kyun hai real-time use cases ke liye?" — strong answer: "SignalR ek real-time communication library hai jo WebSockets ke upar build hoti hai (automatic fallback ke saath SSE/long-polling agar WebSockets available na ho). Ye server ko genuinely push-capability deta hai — server khud, bina kisi client request ke, connected clients ko data bhej sakta hai (Clients.All, Clients.Group, etc. ke through). Plain polling me client ko baar-baar 'kuch naya hai kya' poochna padta hai — har poll ek unnecessary request hai jab kuch naya na ho, aur naya data sirf next-poll-interval pe dikhega, turant nahi. SignalR is inefficiency aur latency dono ko eliminate karta hai — genuinely event-driven push, na ki client-driven pull." Follow-up: "Ek regular service class (Hub nahi) se SignalR clients ko push kaise karoge?" — answer: `IHubContext<THub>` inject karke, jo Hub ke bahar se bhi us Hub ke connected clients ko target karna possible banata hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har "live-ish" feature ke liye SignalR reach for karna bina simpler alternatives (plain polling, Server-Sent Events) consider kiye — SignalR ki bidirectional, connection-management complexity genuinely simple use cases ke liye overkill ho sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+`IHubContext<THub>` ko forget karna aur ye assume karna ki sirf Hub class ke andar se hi clients ko push kiya ja sakta hai — background services/regular business-logic classes se bhi `IHubContext` ke through push karna genuinely common, valid pattern hai.
+
+</Mistake>
+
+<Mistake>
+
+Groups ko manage karte waqt `OnDisconnectedAsync` me cleanup karna bhool jaana — agar connection drop ho aur group-membership properly clean na ho (though SignalR internally connection-based groups auto-cleanup karta hai typically), stale state assumptions bugs create kar sakte hain custom tracking logic me.
+
+</Mistake>
+
+<Mistake>
+
+SignalR connections ko authentication/authorization se completely disconnect samajh lena — SignalR Hubs bhi `[Authorize]` attribute support karte hain, aur `Context.User` se authenticated user ki identity access hoti hai, existing ASP.NET Core auth infrastructure ke saath integrate hoti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant Hub as NotificationHub
+    participant Service as OrderService (Background)
+
+    Client->>Hub: connection.start()
+    Hub->>Hub: OnConnectedAsync() -&gt; AddToGroup("Dashboard")
+    Note over Service: New order created (no client request involved)
+    Service->>Hub: IHubContext.Clients.Group("Dashboard").SendAsync(...)
+    Hub-->>Client: Server pushes "NewOrder" event
+    Note over Client: UI updates instantly, no polling needed
+`}
+  caption="SignalR enables genuine server-initiated push — a background process can notify connected clients directly through IHubContext, without waiting for any client request."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- SignalR = real-time library over WebSockets, with automatic SSE/long-polling fallback
+- Hub = server-side class clients connect to and invoke/receive methods on
+- `Clients.All`/`Caller`/`Group(name)`/`User(id)`/`Client(connectionId)` — targeting granularity
+- `IHubContext<THub>` lets non-Hub code (services, background workers) push to clients
+- SignalR is bidirectional; SSE is unidirectional (server-to-client only); polling is client-driven and inefficient
+- Best fit: chat, live dashboards, live notifications — true real-time, possibly bidirectional needs
+- Hubs support `[Authorize]` and integrate with existing ASP.NET Core authentication
+- Don't reach for SignalR by default — simpler polling/SSE can be sufficient for less demanding "occasionally check for updates" cases
+
+</QuickRevision>

@@ -1,0 +1,228 @@
+---
+slug: "httpclient-and-ihttpclientfactory"
+title: "HttpClient and IHttpClientFactory — Avoiding Socket Exhaustion"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 9
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["dependency-injection-ioc-oop-payoff"]
+tags: ["dotnet", "csharp", "httpclient", "ihttpclientfactory", "polly", "sockets"]
+englishDefinition: "Creating a new HttpClient per request and disposing it eventually exhausts available sockets because each disposed HttpClient's underlying TCP connection lingers in a TIME_WAIT state instead of being released immediately; IHttpClientFactory solves this by pooling and reusing the underlying HttpMessageHandler across HttpClient instances, supports basic/named/typed client usage patterns, and integrates with Polly for retry, circuit-breaker, and other resilience policies."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "Flipkart", "Swiggy", "TCS"]
+---
+
+<SimpleDefinition>
+
+Creating a new `HttpClient` per request and disposing it eventually exhausts available sockets because each disposed `HttpClient`'s underlying TCP connection lingers in a `TIME_WAIT` state instead of being released immediately; `IHttpClientFactory` solves this by pooling and reusing the underlying `HttpMessageHandler` across `HttpClient` instances, supports basic/named/typed client usage patterns, and integrates with Polly for retry, circuit-breaker, and other resilience policies.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`HttpClient` ka misuse ek genuinely famous .NET gotcha hai — is topic ka har interview candidate ko exact mechanism samajhna chahiye, kyunki "kya karna hai" (`IHttpClientFactory` use karo) sabko pata hota hai, lekin "**kyun**" bahut logon ko clearly explain nahi aata.
+
+### The classic mistake — `using (var client = new HttpClient())`
+
+`HttpClient` `IDisposable` implement karta hai, isliye ek naive-lagta-sahi pattern hai:
+
+```csharp
+public async Task<string> GetDataAsync(string url)
+{
+    using var client = new HttpClient(); // GALAT PATTERN
+    var response = await client.GetAsync(url);
+    return await response.Content.ReadAsStringAsync();
+}
+```
+
+Ye syntactically bilkul valid hai, aur "resource disposal karna chahiye" ki general guidance follow karta lagta hai — lekin ye ek **production-breaking anti-pattern** hai jab high-frequency call hota hai.
+
+### Socket exhaustion — asal mechanism
+
+Jab `HttpClient` ko `Dispose()` kiya jaata hai, iska underlying TCP socket **turant** release nahi hota — OS level pe, socket ek `TIME_WAIT` state me chala jaata hai (typically ~4 minutes tak, TCP protocol design ki wajah se, taaki delayed packets properly handle ho sakein). Agar ek application **har request pe** naya `HttpClient` bana ke dispose kare, aur request rate high ho, **naye sockets banne ki speed available sockets release hone ki speed se zyada ho jaati hai** — system eventually available ports/sockets khatam kar deta hai, aur naye outbound connections banana fail hone lagta hai (`SocketException`), jabki server abhi bhi "up" dikhta hai.
+
+Ye bug especially insidious hai kyunki **low-traffic testing me kabhi dikhta hi nahi** — sirf production load ke under, kuch der baad (jab TIME_WAIT sockets accumulate ho jaate hain) manifest hota hai.
+
+### `IHttpClientFactory` — solution
+
+.NET Core 2.1 se `IHttpClientFactory` introduce hua specifically is problem ko solve karne ke liye. Iska core insight: `HttpClient` object khud lightweight hai, lekin uska underlying `HttpMessageHandler` (jo actual connection pooling manage karta hai) **expensive aur pool-worthy** hai. `IHttpClientFactory` handlers ko internally pool karta hai aur unhe reuse karta hai multiple `HttpClient` instances ke beech — is se socket exhaustion avoid hota hai bina developer ko manually connection lifecycle manage karne ki zaroorat ke.
+
+```csharp
+// Program.cs
+builder.Services.AddHttpClient();
+
+// Usage
+public class WeatherService
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    public WeatherService(IHttpClientFactory httpClientFactory)
+    {
+        _httpClientFactory = httpClientFactory;
+    }
+
+    public async Task<string> GetWeatherAsync()
+    {
+        var client = _httpClientFactory.CreateClient();
+        var response = await client.GetAsync("https://api.weather.com/data");
+        return await response.Content.ReadAsStringAsync();
+    }
+}
+```
+
+### Teen usage patterns
+
+**1. Basic** — upar dikhaya gaya, `CreateClient()` bina naam ke, ek default-configured client deta hai.
+
+**2. Named clients** — jab alag-alag external services ke liye alag base addresses/headers chahiye:
+
+```csharp
+builder.Services.AddHttpClient("WeatherApi", client =>
+{
+    client.BaseAddress = new Uri("https://api.weather.com/");
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
+
+var client = _httpClientFactory.CreateClient("WeatherApi");
+```
+
+**3. Typed clients** — sabse clean pattern, ek dedicated class jo `HttpClient` ko wrap karti hai, DI se directly inject hoti hai:
+
+```csharp
+public class WeatherApiClient
+{
+    private readonly HttpClient _httpClient;
+
+    public WeatherApiClient(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+
+    public async Task<WeatherData> GetWeatherAsync()
+        => await _httpClient.GetFromJsonAsync<WeatherData>("data");
+}
+
+// Registration
+builder.Services.AddHttpClient<WeatherApiClient>(client =>
+{
+    client.BaseAddress = new Uri("https://api.weather.com/");
+});
+
+// Usage — directly inject WeatherApiClient, HttpClient wiring hidden
+public class HomeController(WeatherApiClient weatherApiClient) { ... }
+```
+
+Typed clients ko generally prefer kiya jaata hai bade codebases me — external API interaction logic ek dedicated class me encapsulate ho jaata hai, aur consumers ko `IHttpClientFactory` ka existence bhi pata nahi hona padta.
+
+### Polly integration — resilience policies
+
+`Microsoft.Extensions.Http.Polly` package `IHttpClientFactory` registration ke saath directly Polly policies (retry, circuit breaker, timeout) attach karne deta hai:
+
+```csharp
+builder.Services.AddHttpClient<WeatherApiClient>(...)
+    .AddPolicyHandler(Policy<HttpResponseMessage>
+        .Handle<HttpRequestException>()
+        .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt))));
+```
+
+Ye transient failures (network blips, temporary 503s) ko automatically retry karta hai exponential backoff ke saath, bina manual retry-loop code likhe har jagah.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`using (var client = new HttpClient())` pattern kabhi bhi frequently-called code me use mat karo — ye socket exhaustion ka classic .NET production bug hai. `HttpClient` khud ko dispose karna generally galat hai; `IHttpClientFactory` se manage karwao.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne khud is problem ko itna significant maana ki `IHttpClientFactory` ko .NET Core 2.1 (2018) me ek dedicated feature ki tarah ship kiya, aur ASP.NET Core documentation explicitly `new HttpClient()` per-request pattern ko "don't do this" example ki tarah highlight karta hai — ye kitna common aur damaging real-world mistake tha, iska direct evidence hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Food-Delivery Platform">
+
+Ek team ka order-tracking service ek third-party maps API ko call karta tha `using (var client = new HttpClient())` pattern se, per-request. Low-traffic staging environment me kabhi issue nahi dikha. Production launch ke baad, peak lunch-hour traffic ke dauraan service intermittently `SocketException: An attempt was made to access a socket in a way forbidden by its access permissions` fail hone laga — root cause socket exhaustion tha. Fix: `IHttpClientFactory` (typed client pattern) pe migrate karna, jisne issue permanently resolve kiya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Disposed `HttpClient`'s underlying TCP socket lingers in `TIME_WAIT` for roughly 4 minutes (OS/TCP-stack dependent) before fully releasing
+- `IHttpClientFactory` — introduced in .NET Core 2.1 (2018), specifically to solve socket exhaustion
+- Three usage patterns: basic (`CreateClient()`), named (`CreateClient("name")`), typed (dedicated wrapper class, DI-injected)
+- Typed clients are generally preferred for larger codebases — cleanest encapsulation
+- `Microsoft.Extensions.Http.Polly` — adds retry/circuit-breaker/timeout policies directly to the DI registration
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`new HttpClient()` per request kyun problematic hai?" ka strong answer: "Jab `HttpClient` dispose hota hai, uska underlying TCP socket turant release nahi hota — OS level pe `TIME_WAIT` state me lagbhag 4 minute rehta hai. High-frequency calls me, naye sockets banne ki rate release hone ki rate se zyada ho jaati hai, aur system available sockets exhaust kar deta hai — production me intermittent `SocketException` aana shuru hota hai, jo low-traffic testing me kabhi dikhta hi nahi. `IHttpClientFactory` isse solve karta hai underlying `HttpMessageHandler` ko pool aur reuse karke." Follow-up jo aata hai: "typed client aur named client me kya difference hai?" — jawaab: typed client ek dedicated class me API interaction encapsulate karta hai (cleanest, most common pattern), named client string-key se identify hota hai jab multiple external services ko differentiate karna ho without dedicated classes.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`using (var client = new HttpClient())` pattern frequently-called code me use karna — socket exhaustion ka classic source, jo sirf production load ke under manifest hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Ulta extreme — ek hi static `HttpClient` instance forever reuse karna bina `IHttpClientFactory` ke — ye socket exhaustion to avoid kar deta hai, lekin DNS changes ko respect nahi karta (connection pooled rehta hai purane resolved IP pe, agar target server ka DNS record change ho jaaye).
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki `IHttpClientFactory.CreateClient()` se mila `HttpClient` manually `Dispose()` karna chahiye — factory-managed clients ko dispose karne ki zaroorat nahi, factory internally handler lifecycle manage karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har external API call ke liye retry logic manually likhna instead of Polly integration use karke — duplicate, inconsistent retry implementations across codebase.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["new HttpClient() per request"] --> B["Dispose after use"]
+    B --> C["Socket lingers in TIME_WAIT (~4 min)"]
+    C --> D["High traffic: sockets exhaust faster than they release"]
+    D --> E["SocketException in production"]
+    F["IHttpClientFactory"] --> G["Pools and reuses HttpMessageHandler"]
+    G --> H["No socket exhaustion, DNS changes respected"]
+`}
+  caption="Per-request HttpClient disposal leads to socket exhaustion under load; IHttpClientFactory solves it by pooling the underlying handler."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `using (var client = new HttpClient())` per request causes socket exhaustion under load — sockets linger in `TIME_WAIT` after disposal
+- `IHttpClientFactory` (.NET Core 2.1+) pools and reuses the underlying `HttpMessageHandler` to solve this
+- Three patterns: basic (`CreateClient()`), named (`CreateClient("name")`), typed (dedicated DI-injected wrapper class — generally preferred)
+- Factory-managed `HttpClient` instances don't need manual disposal
+- A single forever-reused static `HttpClient` avoids socket exhaustion but ignores DNS changes — not the right fix either
+- `Microsoft.Extensions.Http.Polly` adds retry/circuit-breaker/timeout policies directly to DI registration
+- This bug is insidious precisely because low-traffic testing rarely surfaces it — only production load does
+
+</QuickRevision>

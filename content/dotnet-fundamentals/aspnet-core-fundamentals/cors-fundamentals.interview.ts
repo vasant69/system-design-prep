@@ -68,6 +68,15 @@ const questions: InterviewQuestion[] = [
     detailedAnswer:
       "ASP.NET Core multiple named CORS policies support karta hai — ek policy dono known, trusted origins (jaise https://app.example.com aur https://admin.example.com) ko WithOrigins() se explicitly list kar sakti hai, agar sabko same access level chahiye. Agar admin dashboard ko extra-sensitive endpoints chahiye jo public app ko nahi milne chahiye, alag policies define ki ja sakti hain aur different controllers/endpoints pe [EnableCors(\"policyName\")] se apply ki ja sakti hain. AllowAnyOrigin() avoid karna chahiye kyunki wo har unknown origin ko bhi implicitly trust kar leta hai.",
   },
+  {
+    id: "cors-tr-8",
+    question: "Simple request aur non-simple (preflight-triggering) request me exact difference kya hai?",
+    type: "conceptual",
+    difficulty: "intermediate",
+    shortAnswer: "Simple requests standard content-types/methods use karti hain (GET/HEAD/POST with text/plain, form-urlencoded, or multipart) bina custom headers ke; kuch bhi iske bahar (JSON body, Authorization header, PUT/DELETE) non-simple hai aur preflight trigger karta hai.",
+    detailedAnswer:
+      "Fetch/CORS spec explicitly 'simple request' ko define karta hai: method GET/HEAD/POST ho, sirf whitelisted headers use ho rahe hon (jaise Accept, Content-Type sirf teen specific values ke saath — text/plain, application/x-www-form-urlencoded, multipart/form-data), aur koi custom header na ho. Bahut se real Web API calls (application/json content-type, Authorization bearer token) is criteria ko satisfy nahi karte, isliye non-simple ban jaate hain aur browser automatically ek preflight OPTIONS request bhejta hai pehle.",
+  },
 ];
 
 export default questions;

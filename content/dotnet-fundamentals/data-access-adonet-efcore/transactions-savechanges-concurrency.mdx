@@ -1,0 +1,194 @@
+---
+slug: "transactions-savechanges-concurrency"
+title: "Transactions, SaveChanges, and Optimistic Concurrency"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 10
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["change-tracking-and-asnotracking"]
+tags: ["dotnet", "efcore", "transactions", "concurrency", "rowversion", "dbupdateconcurrencyexception"]
+englishDefinition: "SaveChanges() wraps all tracked changes into a single atomic database transaction by default; optimistic concurrency control detects when two users have modified the same row between read and write by comparing a version marker (a [Timestamp]/RowVersion column) at update time, throwing DbUpdateConcurrencyException if it has changed underneath — without ever taking a database lock while the data is being edited."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart"]
+---
+
+<SimpleDefinition>
+
+`SaveChanges()` wraps all tracked changes into a single atomic database transaction by default; optimistic concurrency control detects when two users have modified the same row between read and write by comparing a version marker (a `[Timestamp]`/`RowVersion` column) at update time, throwing `DbUpdateConcurrencyException` if it has changed underneath — without ever taking a database lock while the data is being edited.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic do genuinely different, lekin related, cheezein cover karta hai: `SaveChanges()` ka transactional behavior, aur optimistic concurrency — jo interview me exact coding-question ki tarah poocha jaata hai, sirf definition nahi.
+
+### `SaveChanges()` — automatically ek transaction
+
+Jab tumne multiple entities modify ki hon (ek naya `Order` add kiya, uske `OrderItem`s add kiye, ek `Product` ka stock update kiya), `SaveChanges()` call karne par EF Core **automatically** in sab operations ko ek single database transaction me wrap karta hai — sab ya to succeed hote hain, ya sab fail (koi partial state database me nahi bachta).
+
+```csharp
+context.Orders.Add(newOrder);
+context.OrderItems.Add(newItem);
+product.Stock -= quantity; // Modified state
+await context.SaveChangesAsync(); // sab EK transaction me — atomic
+```
+
+Agar tumhe explicit control chahiye multiple `SaveChanges()` calls ko ek transaction me combine karne ke liye, `context.Database.BeginTransactionAsync()` use karte ho manually.
+
+### Optimistic Concurrency — problem kya hai
+
+Do users simultaneously ek hi `Product` record edit kar rahe hain — User A stock 100 se 90 update kar raha hai, User B (thodi der baad, same original data padhkar) stock 100 se 95 update kar raha hai. Bina concurrency control ke, "last write wins" hota hai — jo bhi baad me save kare, uski value final rehti hai, doosre user ka change silently overwrite ho jaata hai (**lost update problem**).
+
+### Solution — `[Timestamp]`/`RowVersion` column
+
+Ek special column jo automatically har UPDATE pe database khud change kar deta hai — EF Core is value ko WHERE clause me include karta hai:
+
+```csharp
+public class Product
+{
+    public int Id { get; set; }
+    public int Stock { get; set; }
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = null!; // SQL Server: rowversion/timestamp type
+}
+```
+
+Generated UPDATE roughly aisa dikhta hai:
+
+```sql
+UPDATE Products SET Stock = 90, RowVersion = @newRowVersion
+WHERE Id = 1 AND RowVersion = @originalRowVersionThatWasReadEarlier
+```
+
+Agar dusra user pehle se already update kar chuka hai (RowVersion badal chuka hai), ye WHERE clause **koi row match nahi karega** — 0 rows affected. EF Core ise detect karta hai aur `DbUpdateConcurrencyException` throw karta hai.
+
+```csharp
+try
+{
+    await context.SaveChangesAsync();
+}
+catch (DbUpdateConcurrencyException ex)
+{
+    var entry = ex.Entries.Single();
+    var databaseValues = await entry.GetDatabaseValuesAsync(); // current actual DB state
+
+    if (databaseValues == null)
+    {
+        // row delete ho chuki hai kisi aur se
+    }
+    else
+    {
+        var databaseProduct = (Product)databaseValues.ToObject();
+        // Conflict resolution strategy choose karo:
+        // 1. Client wins: entry.OriginalValues.SetValues(databaseValues); dobara try
+        // 2. Database wins: entry.CurrentValues.SetValues(databaseValues); user ko notify
+        // 3. Merge: field-by-field manually decide karo
+    }
+}
+```
+
+### "Optimistic" kyun kehte hain — koi lock nahi liya jaata
+
+Ye approach **optimistic** hai kyunki hum assume karte hain conflict rarely hoga — koi lock nahi liya jaata jab data edit ho raha hota hai (jo pessimistic locking karta, throughput ko significantly reduce karta). Conflict sirf **save time** pe detect hota hai, proactively nahi prevent kiya jaata. Ye high-read, low-write-contention scenarios (typical web apps) ke liye ideal hai — pessimistic locking (row-level database locks) sirf tab justified hai jab conflicts genuinely frequent hon aur "fail fast, retry" acceptable na ho.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Optimistic concurrency conflicts ko prevent karta hai" — galat framing. Ye conflicts ko **detect** karta hai save time pe, prevent nahi karta edit time pe. Prevention pessimistic locking ka kaam hai (jo bahut zyada costly hai throughput ke liye). Interview me ye distinction clearly bolna zaroori hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+SQL Server ka `rowversion` (purana naam `timestamp`) data type is exact use case ke liye design kiya gaya hai — ye ek automatically-incrementing binary value hai jo har row-level change pe database engine khud update karta hai, application code se independent. EF Core ka `[Timestamp]` attribute directly is SQL Server feature ko target karta hai, isliye optimistic concurrency EF Core me almost zero extra application logic ke saath implement ho jaata hai.
+
+</RealWorld>
+
+<RealWorld company="A Ticket Booking System">
+
+Ek typical Indian event-ticketing platform me, do users simultaneously last available ticket book karne ki koshish kar sakte hain. `RowVersion`-based optimistic concurrency yahan critical hai — jab dono users "book" click karte hain almost simultaneously, sirf ek save successfully complete hota hai; doosre ko `DbUpdateConcurrencyException` milta hai, aur application use "sorry, ye ticket already book ho chuka hai, current availability refresh ki gayi hai" jaisa graceful message deta hai — silent double-booking (jo bina concurrency control ke ho sakta tha) avoid ho jaata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `SaveChanges()` automatically wraps all pending tracked changes in a single atomic transaction by default
+- `[Timestamp]`/`RowVersion` — SQL Server auto-updates this on every row modification, independent of application code
+- Optimistic concurrency = zero database locks held during editing — detection happens only at `SaveChanges()` time
+- `DbUpdateConcurrencyException.Entries` gives access to the conflicting entity for resolution logic
+- Three standard resolution strategies: client-wins, database-wins, merge
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Optimistic concurrency EF Core me kaise implement karoge, aur ye pessimistic locking se kaise alag hai?" ka strong answer: "Main entity me ek `[Timestamp]` (`RowVersion`) column add karta hoon. Jab `SaveChanges()` UPDATE generate karta hai, wo `WHERE` clause me original `RowVersion` bhi include karta hai — agar koi doosra user beech me row update kar chuka hai, `RowVersion` badal chuka hoga, WHERE clause 0 rows match karega, aur EF Core `DbUpdateConcurrencyException` throw karega. Ye 'optimistic' hai kyunki edit ke dauraan koi lock nahi liya jaata — hum assume karte hain conflict rare hoga, aur sirf save-time pe detect karte hain, pessimistic locking ki tarah proactively prevent nahi karte." Almost-guaranteed follow-up: "conflict aane par kya karoge?" — jawaab: `ex.Entries` se conflicting entity access karo, current DB values fetch karo, aur client-wins/database-wins/merge me se ek strategy apply karo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`DbUpdateConcurrencyException` ko catch hi na karna — bina handling ke, ye exception user ko ek generic 500 error ki tarah dikhta hai, jab ki actual issue "kisi aur ne meanwhile ye record update kar diya" hai — graceful handling (refresh + retry option) much better UX deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Optimistic concurrency ko "conflict prevention" samajhna — ye conflict detection hai, save-time pe, prevention nahi, edit-time pe. Agar genuine prevention chahiye, pessimistic locking chahiye hoga, jo alag trade-offs laata hai.
+
+</Mistake>
+
+<Mistake>
+
+`RowVersion` column ko manually application code se update karne ki koshish karna — ye database-managed hona chahiye (auto-increment on change); manually set karna concurrency mechanism ko break kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Multiple unrelated `SaveChanges()` calls ko assume karna ki wo ek hi atomic transaction hain — har individual `SaveChanges()` call apna khud transaction hai; agar multiple calls ko ek atomic unit banana hai, explicit `BeginTransactionAsync()` chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant A as User A
+    participant DB as Database
+    participant B as User B
+    A->>DB: Read Product (Stock=100, RowVersion=v1)
+    B->>DB: Read Product (Stock=100, RowVersion=v1)
+    A->>DB: UPDATE ... WHERE Id=1 AND RowVersion=v1 (success, RowVersion becomes v2)
+    B->>DB: UPDATE ... WHERE Id=1 AND RowVersion=v1 (0 rows matched — v1 is stale!)
+    DB-->>B: DbUpdateConcurrencyException
+`}
+  caption="No locks are held between read and write — the conflict is only detected the moment the second UPDATE's WHERE clause fails to match, because the RowVersion has already moved on."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `SaveChanges()` wraps all pending tracked changes in a single atomic transaction automatically
+- Optimistic concurrency: a `[Timestamp]`/`RowVersion` column included in the UPDATE's WHERE clause
+- If the row changed underneath (RowVersion mismatch), 0 rows match → `DbUpdateConcurrencyException`
+- "Optimistic" = no locks held during editing, conflict only detected at save time — different from pessimistic locking
+- Resolution strategies on conflict: client-wins, database-wins, merge — via `ex.Entries` and `GetDatabaseValuesAsync()`
+- `RowVersion` is database-managed — never set it manually from application code
+
+</QuickRevision>

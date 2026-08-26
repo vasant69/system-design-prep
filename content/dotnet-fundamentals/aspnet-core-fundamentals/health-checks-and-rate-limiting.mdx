@@ -1,0 +1,200 @@
+---
+slug: "health-checks-and-rate-limiting"
+title: "Health Checks and Rate Limiting Middleware"
+section: "dotnet-fundamentals"
+module: "aspnet-core-fundamentals"
+order: 10
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "healthchecks", "ratelimiting", "kubernetes"]
+englishDefinition: "ASP.NET Core's built-in health checks middleware exposes liveness and readiness probe endpoints that orchestrators like Kubernetes use to decide whether to restart a container or route traffic to it, while the built-in rate limiting middleware (.NET 7+) throttles incoming requests using one of several algorithms — fixed window, sliding window, token bucket, or a concurrency limiter — each with a different trade-off between burst tolerance and smoothness."
+interviewFrequency: "medium"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core's built-in health checks middleware exposes liveness and readiness probe endpoints that orchestrators like Kubernetes use to decide whether to restart a container or route traffic to it, while the built-in rate limiting middleware (.NET 7+) throttles incoming requests using one of several algorithms — fixed window, sliding window, token bucket, or a concurrency limiter — each with a different trade-off between burst tolerance and smoothness.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Health checks aur rate limiting dono production-operations-focused features hain — beginner projects me kabhi nahi dikhte, lekin kisi bhi real containerized/cloud deployment me almost mandatory hain. Interview me inka "kyun zaroori hai" samajhna, sirf syntax se zyada important hai.
+
+### Health Checks — liveness vs readiness
+
+Container orchestrators (Kubernetes sabse common) ko periodically pata karna hota hai ki ek running container **healthy** hai ya nahi. ASP.NET Core built-in health checks middleware ye do subtly different questions answer karta hai:
+
+**Liveness probe — "kya app process zinda hai?"** Agar liveness fail ho, orchestrator container ko **restart** kar deta hai — assumption ye hai ki process kisi deadlock/unrecoverable state me phans gaya hai jahan sirf restart hi fix hai.
+
+**Readiness probe — "kya app abhi traffic serve karne ke liye ready hai?"** Agar readiness fail ho (jaise database connection abhi establish nahi hui startup ke turant baad, ya ek downstream dependency temporarily down hai), orchestrator container ko **restart nahi** karta — bas load balancer se temporarily traffic route karna band kar deta hai, jab tak readiness phir se pass na ho. Ye distinction critical hai: agar database temporarily slow ho, tumhe container ko restart nahi karna — restart se problem solve nahi hoga aur unnecessary churn create hoga; sirf traffic temporarily rok dena chahiye.
+
+```csharp
+builder.Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy())
+    .AddDbContextCheck<AppDbContext>("database")
+    .AddCheck<RedisHealthCheck>("redis");
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = check => check.Name == "self" // Sirf process-alive check, dependencies nahi
+});
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = _ => true // Sab checks — database, redis, sab dependencies
+});
+```
+
+`Predicate` ye control karta hai kaunse registered checks kis endpoint me include hote hain — liveness typically minimal (sirf "process responding hai"), readiness typically comprehensive (saari downstream dependencies verify karta hai).
+
+**Common mistake:** liveness probe me database check include kar dena — agar database temporarily slow/unreachable ho (jo transient ho sakta hai), Kubernetes liveness fail dekh kar container **restart** kar dega, jabki restart se database ki problem solve nahi hogi — sirf ek healthy, running app ko unnecessarily kill kar diya, jo actual issue (database) ko fix karne me koi help nahi karta, ulta cascading restarts create kar sakta hai.
+
+### Rate Limiting — .NET 7+ built-in middleware
+
+`Microsoft.AspNetCore.RateLimiting` teen-se-zyada algorithms provide karta hai, har ek alag trade-off ke saath:
+
+**Fixed Window** — ek fixed time window (jaise 1 minute) me max N requests allow. Simple, lekin window-boundary pe burst problem hai — agar window end hone se just pehle N requests aayen, aur window start hote hi turant N aur, effectively 2N requests bahut kam time me ho sakti hain.
+
+```csharp
+options.AddFixedWindowLimiter("fixed", opt =>
+{
+    opt.PermitLimit = 100;
+    opt.Window = TimeSpan.FromMinutes(1);
+});
+```
+
+**Sliding Window** — fixed window ka refinement, window ko sub-segments me divide karta hai aur smoothly slide karta hai — boundary burst problem kam karta hai, thoda zyada memory/compute overhead ke saath.
+
+**Token Bucket** — ek "bucket" tokens ka jo ek fixed rate se refill hoti hai; har request ek token consume karti hai. Bucket khaali ho to requests reject/queue hoti hain. Ye short bursts ko naturally accommodate karta hai (agar bucket full hai) jabki sustained overuse ko still control karta hai.
+
+```csharp
+options.AddTokenBucketLimiter("token", opt =>
+{
+    opt.TokenLimit = 100;
+    opt.TokensPerPeriod = 20;
+    opt.ReplenishmentPeriod = TimeSpan.FromSeconds(10);
+});
+```
+
+**Concurrency Limiter** — time-window-based nahi, ye **simultaneously in-flight requests** ki count limit karta hai. Useful jab underlying resource (jaise ek external API jo sirf N concurrent connections accept karta hai) genuinely concurrency-limited ho, na ki request-rate-limited.
+
+```csharp
+options.AddConcurrencyLimiter("concurrency", opt =>
+{
+    opt.PermitLimit = 10; // Max 10 requests processing simultaneously
+});
+```
+
+**Interview-relevant synthesis:** Fixed window = simplest, boundary-burst issue. Sliding window = smoother, thoda zyada overhead. Token bucket = burst-tolerant by design, still rate-controlled over time — often the most "production-realistic" choice for public APIs. Concurrency limiter = different dimension entirely (simultaneous requests, not requests-per-time).
+
+```csharp
+app.UseRateLimiter();
+
+app.MapGet("/api/data", () => Results.Ok())
+   .RequireRateLimiting("fixed");
+```
+
+Rate-limited requests jo reject hoti hain typically `429 Too Many Requests` status code return karte hain, often `Retry-After` header ke saath.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Liveness probe me database/downstream-dependency checks include karna ek genuine production anti-pattern hai — ye transient dependency issues ko app-level failures samajh kar unnecessary container restarts trigger karta hai. Liveness = "is this process fundamentally stuck/dead" (minimal check). Readiness = "can this instance currently serve traffic well" (comprehensive check, dependencies included).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+AWS ECS aur EKS (Kubernetes) dono explicitly liveness aur readiness (ya AWS ke apne terms me "health check" vs "target group health") ko alag concepts treat karte hain apne orchestration logic me — ek unhealthy readiness sirf load-balancer routing se temporarily remove karta hai instance ko, jabki liveness failure poori container replacement trigger kar sakti hai. Ye distinction AWS aur Kubernetes dono ecosystems me consistently design hui hai kyunki ye ek genuinely different operational response demand karti hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian Public API Platform">
+
+Ek typical public-facing weather/location API jo free-tier consumers ko serve karti hai, token-bucket rate limiting use karti hai — normal usage patterns me occasional bursts (jaise ek user ek saath 5 quick lookups kare) naturally accommodate ho jaate hain bucket se, jabki sustained abuse (koi script continuously hammering kare) eventually bucket khaali kar deta hai aur 429 responses milne lagte hain. Fixed-window approach se ye same team ne early on boundary-burst issue face kiya tha — abusive clients ne discover kar liya tha ki window-reset ke exact moment pe double-burst kar ke effectively double rate achieve kar sakte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Liveness probe: minimal check, failure -> container restart
+- Readiness probe: comprehensive check (includes dependencies), failure -> traffic routing paused, no restart
+- Rate limiting algorithms: Fixed Window, Sliding Window, Token Bucket, Concurrency Limiter
+- Rate-limited rejected requests typically return `429 Too Many Requests`
+- `Retry-After` header commonly accompanies a 429 response
+- Fixed window has a known boundary-burst weakness; sliding window and token bucket smooth this out
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Liveness aur readiness probes me kya fark hai, aur inhe alag rakhna kyun zaroori hai?" — strong answer: "Liveness ye check karta hai ki app process fundamentally alive/responsive hai — fail hone par orchestrator container ko restart karta hai, assuming ki process kisi unrecoverable state me stuck hai. Readiness ye check karta hai ki instance abhi traffic serve karne ke liye genuinely ready hai — dependencies (database, downstream services) samet — fail hone par orchestrator sirf load balancer se traffic route karna rok deta hai, container restart nahi karta. In dono ko separate rakhna zaroori hai kyunki agar database temporarily slow ho aur wo liveness me bhi included ho, ek fundamentally healthy app process ko unnecessarily restart kiya jaayega — jo actual problem (database) ko solve nahi karega, ulta cascading disruption create karega." Follow-up: "Token bucket rate limiting fixed window se kaise better hai burst scenarios me?" — answer: token bucket naturally short bursts accommodate karta hai (jab tak bucket me tokens available hain), jabki fixed window ke window-boundary pe ek predictable exploit hota hai jahan clients double-burst kar sakte hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Liveness probe me downstream dependency checks (database, external APIs) include kar dena — transient dependency issues unnecessary container restarts trigger karte hain jo actual problem solve nahi karte.
+
+</Mistake>
+
+<Mistake>
+
+Rate limiting ko security mechanism samajh lena authentication/authorization ka substitute — rate limiting sirf traffic-volume control karta hai, ye kisi ko authorized nahi banata; dono independent, complementary concerns hain.
+
+</Mistake>
+
+<Mistake>
+
+Fixed window rate limiting use karna high-precision fairness chahiye waale scenarios me bina uske boundary-burst weakness consider kiye — window-reset ke exact moment pe effective rate double ho sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+Health check endpoints ko authentication ke peeche lock kar dena — orchestrators (Kubernetes) typically bina authentication ke in endpoints ko hit karte hain; agar auth required ho, health checks consistently fail dikhenge.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Kubernetes probes"] --> B{"Liveness check"}
+    A --> C{"Readiness check"}
+    B -->|Fail| D["Restart container"]
+    B -->|Pass| E["Process considered alive"]
+    C -->|Fail| F["Remove from load balancer rotation, no restart"]
+    C -->|Pass| G["Route traffic to this instance"]
+`}
+  caption="Liveness and readiness answer different questions and trigger different orchestrator responses — conflating them causes unnecessary restarts for transient, non-fatal issues."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Liveness = "is the process alive" — failure triggers a restart
+- Readiness = "can this instance serve traffic now" — failure pauses routing, no restart
+- Never put dependency checks (DB, downstream APIs) in the liveness probe
+- Rate limiting algorithms: Fixed Window (simple, boundary-burst issue), Sliding Window (smoother), Token Bucket (burst-tolerant, sustained control), Concurrency Limiter (simultaneous in-flight requests, not time-based)
+- Rejected rate-limited requests return `429 Too Many Requests`, often with `Retry-After`
+- Rate limiting is a traffic-volume control, not an authentication/authorization substitute
+- Health check endpoints are typically unauthenticated so orchestrators can reach them
+
+</QuickRevision>

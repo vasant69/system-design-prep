@@ -68,6 +68,15 @@ const questions: InterviewQuestion[] = [
     detailedAnswer:
       "AuthorizationPolicyBuilder fluent API allow karta hai multiple requirements ek policy me add karne ke — jaise policy.RequireRole(\"Manager\").RequireClaim(\"Department\", \"Sales\").Requirements.Add(new CustomRequirement()). Jab policy evaluate hoti hai, saare requirements ko satisfy hona chahiye (AND logic) — agar koi bhi ek fail ho, poori policy fail ho jaati hai. Ye policy-based approach ki flexibility dikhata hai — role, claim, aur custom logic ek hi named policy ke andar combine ho sakte hain.",
   },
+  {
+    id: "policy-authz-tr-8",
+    question: "Policy-based authorization me ek policy ka naam (jaise \"MinimumAge\") controller code me hardcoded role/claim checks ki jagah use karne ka maintainability benefit kya hai?",
+    type: "conceptual",
+    difficulty: "intermediate",
+    shortAnswer: "Business rule ka actual implementation ek jagah (policy definition) centralize hota hai — controller sirf policy naam reference karta hai, underlying logic change hone par controllers touch nahi karne padte.",
+    detailedAnswer:
+      "Agar 'minimum age 18' jaisa rule directly har relevant controller me hardcoded ho (jaise manually DateOfBirth claim parse karke compare karna), aur ye rule kabhi badle (jaise minimum age 21 ho jaaye kisi specific content ke liye, ya calculation logic change ho), har jagah manually update karna padega — error-prone aur inconsistency ka risk. Policy-based approach me ye logic ek hi jagah (AddPolicy definition ya custom IAuthorizationHandler) maintain hoti hai; controllers sirf [Authorize(Policy = \"MinimumAge\")] se reference karte hain. Rule change hone par sirf policy definition update karni hoti hai, sab consuming controllers automatically naya behavior pick up kar lete hain.",
+  },
 ];
 
 export default questions;

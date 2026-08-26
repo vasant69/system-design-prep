@@ -68,6 +68,16 @@ const questions: InterviewQuestion[] = [
     detailedAnswer:
       "`ILogger<T>` DI container ko batata hai ki jab OrderService is dependency ko request kare, ek logger instance milna chahiye jiska category name automatically 'Namespace.OrderService' set ho — bina developer ko manually category string pass kiye. Ye har log entry me source class ki traceability deta hai, aur log filtering configuration (jaise appsettings.json me specific namespace ke liye different log level set karna) is category ke basis pe possible hoti hai.",
   },
+  {
+    id: "logging-tr-8",
+    question: "Kya ye statement sahi hai: 'LogInformation, LogWarning, LogError sab exactly same kaam karte hain, sirf naam alag hai, isliye koi bhi use kar sakte hain'?",
+    type: "trap",
+    difficulty: "intermediate",
+    shortAnswer: "Galat — har method apne corresponding LogLevel ke saath entry likhta hai, jo filtering/alerting configuration ko directly affect karta hai (jaise Production me sirf Warning+ enabled ho to LogInformation calls silently discard ho jaate hain).",
+    detailedAnswer:
+      "Har LogX() method internally ek specific LogLevel ke saath call hota hai (LogInformation -> Information, LogWarning -> Warning, LogError -> Error). Configuration (appsettings.json ka Logging:LogLevel section) decide karta hai minimum kaunsa level actually capture/output hota hai — agar minimum level Warning set hai, saare LogInformation calls silently no-op ho jaate hain (koi output nahi, koi error bhi nahi). Isliye galat level choose karna (jaise ek genuinely important error ko LogInformation se log karna) production me is entry ko completely invisible bana sakta hai agar Information level disabled ho — level selection sirf naming convention nahi, functional impact rakhta hai.",
+    redFlag: "Log levels ko arbitrary/interchangeable samajhna — ye production monitoring/alerting me genuine gaps create kar sakta hai.",
+  },
 ];
 
 export default questions;

@@ -1,0 +1,164 @@
+---
+slug: "dapper-vs-efcore-vs-adonet"
+title: "Dapper vs EF Core vs Raw ADO.NET — Choosing a Data-Access Strategy"
+section: "dotnet-fundamentals"
+module: "data-access-adonet-efcore"
+order: 11
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["efcore-dbcontext-dbset-fundamentals", "adonet-fundamentals"]
+tags: ["dotnet", "dapper", "efcore", "adonet", "orm", "decision-framework"]
+englishDefinition: "Raw ADO.NET gives maximum control at the cost of maximum boilerplate; EF Core is a full ORM trading some performance and SQL control for productivity, change tracking, and migrations; Dapper is a micro-ORM sitting between them — you write the SQL yourself, but Dapper eliminates the manual row-to-object mapping boilerplate, giving near-ADO.NET performance with far less code than raw ADO.NET and far more control than EF Core."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Amazon", "Flipkart", "Swiggy"]
+---
+
+<SimpleDefinition>
+
+Raw ADO.NET gives maximum control at the cost of maximum boilerplate; EF Core is a full ORM trading some performance and SQL control for productivity, change tracking, and migrations; Dapper is a micro-ORM sitting between them — you write the SQL yourself, but Dapper eliminates the manual row-to-object mapping boilerplate, giving near-ADO.NET performance with far less code than raw ADO.NET and far more control than EF Core.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye module ka synthesis/capstone topic hai — poore module me humne teeno layers dekhi hain (ADO.NET fundamentals, EF Core deep-dive); ab unhe ek explicit decision framework me laate hain, jo exactly interview me poocha jaata hai: "tum apne project ke liye kya choose karoge, aur kyun?"
+
+### Teeno approach — ek line summary har ek ki
+
+**Raw ADO.NET** — `SqlConnection`/`SqlCommand`/`SqlDataReader`, manual SQL, manual row-to-object mapping. Maximum control, maximum boilerplate.
+
+**EF Core** — full ORM, LINQ-based querying, automatic SQL generation, automatic change tracking, migrations. Maximum productivity, kuch control aur perf trade-off.
+
+**Dapper** — "micro-ORM." Tum khud SQL likhte ho (jaise ADO.NET me), lekin Dapper automatically rows ko objects me map kar deta hai — mapping boilerplate gone, SQL control retained.
+
+```csharp
+// Dapper — SQL manual, mapping automatic
+using var connection = new SqlConnection(connectionString);
+var products = await connection.QueryAsync<Product>(
+    "SELECT Id, Name, Price FROM Products WHERE CategoryId = @CategoryId",
+    new { CategoryId = categoryId }
+);
+// koi manual reader.GetInt32(0) waghera nahi — Dapper column names ko property names se automatically match kar deta hai
+```
+
+Compare karo raw ADO.NET se (jaisa `adonet-fundamentals` topic me dekha) — same query, lekin Dapper me manual `while (reader.Read())` loop, manual `GetInt32`/`GetString` calls, sab gayab. Aur compare karo EF Core se — Dapper me SQL string manually likha gaya hai, LINQ-to-SQL translation nahi hai; developer ko exactly pata hai kaunsi SQL run ho rahi hai.
+
+### Performance spectrum
+
+```
+Raw ADO.NET  >  Dapper  >  EF Core       (raw speed, roughly)
+Raw ADO.NET  <  Dapper  <  EF Core       (boilerplate/code volume)
+Raw ADO.NET  <  Dapper  <  EF Core       (productivity/features)
+```
+
+Dapper, raw ADO.NET ke bahut close hai performance me (Dapper internally ADO.NET use karta hai, sirf mapping layer add karta hai — ye overhead minimal hai). EF Core generally sabse slow hai raw query-per-query basis pe (LINQ translation + change tracking overhead), lekin practically bahut applications ke liye ye difference negligible hota hai unless tum genuinely high-throughput, latency-critical paths pe ho.
+
+### Decision framework — teen dimensions pe socho
+
+**1. Team productivity vs raw performance:** Agar team velocity, maintainability, aur "kam code likhna" priority hai (typical CRUD-heavy business applications), EF Core best fit hai. Agar tumhe genuinely maximum control aur predictable performance chahiye specific hot paths pe, Dapper better hai.
+
+**2. Query complexity:** EF Core LINQ complex queries ko genuinely readable, type-safe rakhta hai — bade joins, filters, projections. Dapper me complex SQL manually likhna aur maintain karna padta hai, jo bahut complex queries ke liye zyada error-prone ho sakta hai (no compile-time check on the SQL string itself).
+
+**3. Schema evolution:** EF Core Migrations built-in hai — schema versioning code ke saath integrate hoti hai. Dapper/raw ADO.NET me schema management separately handle karna padta hai (manual SQL scripts, ya ek alag migration tool).
+
+### Practical, real-world pattern — hybrid approach
+
+Bade production systems me pure "sirf EF Core" ya "sirf Dapper" rarely dikhta hai. Common, mature pattern: **EF Core default hai** (CRUD operations, standard business logic, migrations), aur **Dapper specific hot paths ke liye reach kiya jaata hai** — jaise ek complex reporting query jo bahut bade joins/aggregations karti hai aur jahan EF Core-generated SQL suboptimal hoti, ya ek extremely high-throughput read endpoint jahan har millisecond matter karta hai. Dono libraries ek hi `DbContext.Database.GetDbConnection()` (existing ADO.NET connection reuse karke) ke through easily coexist kar sakti hain same codebase me.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview-winning framing: "Main EF Core ko default choose karta hoon productivity ke liye, aur Dapper ko specific, profiled hot paths ke liye reach karta hoon jahan measurement se pata chale ki EF Core ka overhead genuinely matter kar raha hai — main premature optimization nahi karta, sirf jahan zaroorat ho wahan." Ye engineering maturity dikhata hai, sirf "Dapper faster hai isliye hamesha use karo" se kahin better answer hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ki khud ki guidance aur EF Core team ke public statements consistently ye framing rakhte hain: EF Core ek reasonable, productive default hai zyadatar applications ke liye, aur Dapper ek legitimate, well-regarded alternative hai jab raw performance/control genuinely critical ho. Dono tools active, first-class-supported open-source projects hain .NET ecosystem me — ye "EF Core replace karega Dapper ko" jaisa competition nahi hai, ye complementary tools hain.
+
+</RealWorld>
+
+<RealWorld company="A High-Volume Food Delivery Platform">
+
+Ek typical Indian food-delivery backend me, order-placement flow (CRUD-heavy, complex business rules, transactional) EF Core use karta hai — productivity aur change-tracking ka fayda yahan genuine hai. Lekin restaurant-search/recommendation endpoint, jo bahut heavy aggregation queries chalata hai lakhon rows pe peak-hour traffic me, Dapper se raw, hand-tuned SQL use karta hai — profiling ne dikhaya tha ki EF Core-generated SQL yahan measurably slower thi, aur is specific endpoint ki latency directly user-facing experience (app open karke restaurants dikhna) ko impact karti thi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Dapper performance raw ADO.NET ke very close hai — mapping-only overhead, koi query translation/change-tracking layer nahi
+- EF Core generally sabse zyada overhead deta hai raw per-query basis pe, LINQ translation + change tracking ki wajah se — lekin most CRUD apps ke liye ye difference practically negligible hai
+- Boilerplate/code-volume spectrum: raw ADO.NET (most) > Dapper > EF Core (least)
+- EF Core has built-in schema Migrations; Dapper/raw ADO.NET need a separate schema-management approach
+- Hybrid pattern (EF Core default + Dapper for specific hot paths) is common in mature, real-world production codebases
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Dapper, EF Core, aur raw ADO.NET me choose kaise karoge?" ka strong, senior-level answer: "Main EF Core ko default rakhta hoon zyadatar CRUD-heavy business logic ke liye — productivity, LINQ ki type-safety, aur built-in migrations ka fayda genuinely bada hai. Dapper ko specific, profiled hot paths ke liye use karta hoon — jahan measurement se pata chale ki EF Core ka overhead (query translation, change tracking) genuinely matter kar raha hai ek high-throughput ya complex-aggregation query ke liye, aur main SQL pe explicit control chahta hoon bina poori raw-ADO.NET boilerplate ke. Raw ADO.NET aaj rarely likhta hoon — sirf extreme edge cases ya legacy integration ke liye, kyunki Dapper wahi control deta hai kaafi kam boilerplate ke saath." Ye answer decision-framework thinking dikhata hai, sirf teen tools define karne se kahin zyada strong signal hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Dapper hamesha faster hai isliye hamesha use karo" jaisa blanket statement — performance sirf ek dimension hai; team productivity, maintainability, aur schema-management needs bhi equally real considerations hain, aur most applications ke liye EF Core ka overhead practically irrelevant hai.
+
+</Mistake>
+
+<Mistake>
+
+Premature optimization — bina profile kiye hi assume kar lena ki EF Core "slow" hai aur poora codebase Dapper me migrate karna, jab actual bottleneck kahin aur ho (network, database indexing, business logic) ya bilkul exist hi na kare meaningful scale pe.
+
+</Mistake>
+
+<Mistake>
+
+Dapper use karte waqt SQL injection ka khayal na rakhna — Dapper automatic parameterization deta hai jab tum `@param` syntax + anonymous object use karte ho, lekin agar developer manually string-concatenate kare (jo Dapper technically allow karta hai), wahi SQL injection risk wapas aa jaata hai jo `parameterized-queries-and-stored-procedures` topic me cover hua.
+
+</Mistake>
+
+<Mistake>
+
+Ek hybrid EF Core + Dapper approach me, dono libraries ko independent, unrelated database connections use karne dena instead of ek hi underlying connection/transaction share karna jab operations genuinely related hon — isse atomicity guarantees toot sakti hain agar dono ek hi logical operation ka part hon.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Raw ADO.NET\nMax control, max boilerplate"] --> B["Dapper\nManual SQL + automatic object mapping\nNear-ADO.NET performance"]
+    B --> C["EF Core\nLINQ + automatic SQL + change tracking + migrations\nMax productivity"]
+    D["Decision: team velocity + query complexity + schema-evolution needs"] -.-> A
+    D -.-> B
+    D -.-> C
+`}
+  caption="A spectrum, not a hierarchy — the right default is EF Core for most business logic, with Dapper reached for specific, profiled hot paths."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Raw ADO.NET: max control, max boilerplate — manual SQL, manual row-to-object mapping
+- Dapper (micro-ORM): manual SQL, automatic object mapping — near-ADO.NET performance, far less code
+- EF Core (full ORM): LINQ, automatic SQL, change tracking, migrations — max productivity, some perf/control trade-off
+- Decision dimensions: team productivity needs, query complexity, schema-evolution requirements
+- Common real-world pattern: EF Core as default, Dapper reached for specific profiled hot paths — not an either/or choice
+- Both can coexist in the same codebase, sharing the same underlying ADO.NET connection when needed
+- Never optimize toward Dapper without profiling first — EF Core's overhead is often practically irrelevant
+
+</QuickRevision>

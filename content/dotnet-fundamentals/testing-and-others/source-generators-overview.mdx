@@ -1,0 +1,161 @@
+---
+slug: "source-generators-overview"
+title: "Source Generators — Compile-Time Code Generation"
+section: "dotnet-fundamentals"
+module: "testing-and-others"
+order: 10
+difficulty: "advanced"
+readingTime: 10
+prerequisites: ["regular-expressions-in-csharp"]
+tags: ["dotnet", "csharp", "source-generators", "reflection", "performance"]
+englishDefinition: "Source generators (C# 9+) are compiler plugins that run at build time, inspecting your code and emitting additional C# source files before compilation completes — used to eliminate runtime reflection for performance-sensitive scenarios like JSON serialization or regex matching, producing faster, trimming-friendly, and Native-AOT-compatible code without requiring application authors to write their own generator."
+interviewFrequency: "medium"
+companies: ["Microsoft", "Amazon", "TCS"]
+---
+
+<SimpleDefinition>
+
+Source generators (C# 9+) are compiler plugins that run at build time, inspecting your code and emitting additional C# source files before compilation completes — used to eliminate runtime reflection for performance-sensitive scenarios like JSON serialization or regex matching, producing faster, trimming-friendly, and Native-AOT-compatible code without requiring application authors to write their own generator.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Source generators samajhne ke liye pehle ye samajhna zaroori hai ki ye **kaunsi problem** solve karte hain — traditionally .NET me runtime reflection ek bahut common tool tha "generic," "data-driven" code likhne ke liye, lekin reflection ka apna genuine performance aur compatibility cost hai.
+
+### Reflection ka trade-off — flexible, lekin slow aur AOT-unfriendly
+
+Reflection (`typeof(T).GetProperties()`, `Activator.CreateInstance(...)`) runtime pe types ko inspect/manipulate karne deta hai bina compile-time pe unke exact shape jaane. Ye bahut powerful hai — JSON serializers, ORMs, DI containers, sab historically reflection heavily use karte the. Lekin do genuine costs hain: **(1) performance** — reflection calls direct method calls se significantly slower hain (metadata lookup, boxing, type-checking overhead runtime pe), aur **(2) Native AOT/trimming incompatibility** — jab app ko ahead-of-time compile kiya jaata hai (fast startup ke liye) ya trimming apply hoti hai (unused code remove karke binary size kam karna), compiler ko pata nahi hota ki reflection runtime pe **kaunsa specific type/member** access karega — isliye wo us code ko safely trim/optimize nahi kar sakta, aur reflection-heavy code AOT scenarios me galat tarike se fail ho sakta hai (missing metadata).
+
+### Source generators — solution: reflection ko compile-time pe move karo
+
+Source generator ek compiler plugin hai jo **build ke dauraan** chalta hai — tumhara existing code inspect karta hai, aur naya, additional C# source generate kar deta hai jo compilation me shamil ho jaata hai, jaise wo hand-written code ho. Fundamentally, jo kaam pehle runtime reflection karta tha ("is type ke fields kya hain, unhe kaise serialize karoon"), ab **compile time pe hi resolve ho jaata hai** — runtime pe koi reflection call nahi, sirf direct, statically-known method calls.
+
+### Concrete example 1 — `[GeneratedRegex]`
+
+`regular-expressions-in-csharp` topic me already dekha — `[GeneratedRegex(@"pattern")]` attribute ek `partial` method pe lagane se, compiler build time pe hi us specific regex pattern ke liye optimized matching C# code generate kar deta hai. Runtime pe koi pattern-parsing ya reflection-based dispatch nahi hota — bas directly-callable, pre-generated matching logic.
+
+```csharp
+public partial class Validator
+{
+    [GeneratedRegex(@"^\d{3}-\d{3}-\d{4}$")]
+    private static partial Regex PhoneRegex();
+}
+```
+
+### Concrete example 2 — `System.Text.Json`'s source-generated serialization
+
+`System.Text.Json` (System.Text.Json.Serialization.JsonSerializerContext) ek source generator provide karta hai jo, given ek type, serialization/deserialization logic ko **compile time pe generate** kar deta hai, reflection-based property-enumeration ke bajaye:
+
+```csharp
+[JsonSerializable(typeof(Order))]
+public partial class OrderJsonContext : JsonSerializerContext { }
+
+// Usage — reflection-free serialization
+var json = JsonSerializer.Serialize(order, OrderJsonContext.Default.Order);
+```
+
+Ye approach specifically Native AOT scenarios me critical hai — trimmer ko exact pata hota hai `Order` type ka konsa property serialize hoga (kyunki generated code me explicitly likha hai), isliye wo safely optimize kar sakta hai bina galti se zaroori members hataye.
+
+### "Code as data" — conceptually kya ho raha hai
+
+Ek source generator, high-level pe, tumhare code ke syntax tree (Roslyn API ke through) ko read karta hai — jaise attributes dhoondhna (`[GeneratedRegex]`, `[JsonSerializable]`), classes/methods ka shape dekhna — aur is information se **naya valid C# source text** produce karta hai, jo compiler phir normally compile karta hai. Iska matlab hai poora process compile-time pe hota hai, deployment-time pe koi extra step nahi, aur end result normal, debuggable, statically-analyzable C# code hai (tum literal generated `.g.cs` files IDE me dekh sakte ho).
+
+Application developers ko generally **apna khud ka source generator likhne ki zaroorat nahi** — .NET/library authors (Microsoft, third-party NuGet packages) generators provide karte hain, aur end developer sirf attributes use karta hai (`[GeneratedRegex]`, `[JsonSerializable]`) jaise upar dikhaya.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interview me is topic ka core insight capture karne ke liye: "source generators reflection ko runtime se compile-time me move karte hain" — ye ek line jo poori value proposition (performance + AOT/trimming compatibility) explain kar deti hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne `System.Text.Json` source generator ko explicitly Native AOT ki taraf .NET ke push ke saath align kiya — .NET 7/8 me Microsoft ka goal tha ki ASP.NET Core minimal APIs Native AOT me publish ho sakein (fast cold-start, container-friendly), aur JSON serialization ka reflection-dependency is goal ka ek major blocker tha jab tak source-generated serialization context available nahi hua.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Backend (AOT Migration)">
+
+Ek team apne payment-processing microservice ko Native AOT me migrate kar rahi thi (container cold-start time drastically kam karne ke liye, jo serverless-jaisi scaling ke liye zaroori tha). Migration ke dauraan, unka reflection-based JSON serialization AOT build me runtime errors de raha tha (missing metadata for trimmed types). Fix: `JsonSerializerContext`-based source-generated serialization pe switch karna — isse AOT build correctly kaam karne laga, aur bonus me serialization performance bhi improve hui.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Source generators: introduced C# 9 / .NET 5 era, run as compiler plugins during build
+- `[GeneratedRegex]` (C# 11/.NET 7) and `System.Text.Json`'s `JsonSerializerContext` are the two most common real-world examples
+- Generated code is real, inspectable C# — visible as `.g.cs` files in the IDE's generated-files view
+- Core trade-off solved: eliminates runtime reflection cost + enables Native AOT/trimming compatibility
+- Application developers typically consume generators via attributes; writing a custom generator is a separate, advanced skill
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Source generators kya hain aur ye kaunsi problem solve karte hain?" ka strong answer: "Source generators compiler plugins hain jo build time pe chalte hain, code inspect karke additional C# source generate karte hain. Inka main use-case runtime reflection ko eliminate karna hai performance-sensitive scenarios me — jaise `[GeneratedRegex]` regex matching code build-time pe generate karta hai, ya `System.Text.Json`'s `JsonSerializerContext` serialization logic reflection ke bajaye compile-time pe generate karta hai. Iska double benefit hai: better runtime performance, aur Native AOT/trimming compatibility, kyunki compiler ko exact pata hota hai kaunsa code chalega." Follow-up jo aata hai: "kya humein khud source generator likhna padta hai?" — jawaab: generally nahi, .NET/library authors generators provide karte hain, application developers sirf unke attributes use karte hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Source generators aur runtime code generation (jaise `System.Reflection.Emit` ya dynamic proxies) ko confuse karna — source generators purely **compile-time** hain, runtime pe koi extra generation step nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki source generators use karne ke liye khud ek generator likhna padega — practically, most developers sirf existing generators (jaise `[GeneratedRegex]`, `[JsonSerializable]`) ko attributes ke through consume karte hain.
+
+</Mistake>
+
+<Mistake>
+
+Reflection-heavy code ko Native AOT me deploy karne ki koshish karna bina source-generated alternatives consider kiye — trimming/AOT me reflection silently missing-metadata errors de sakta hai runtime pe.
+
+</Mistake>
+
+<Mistake>
+
+Generated code ko "magic, non-debuggable" samajhna — reality me ye real, readable C# hai jo IDE me inspect kiya ja sakta hai, normal debugging tools use karke step through bhi kiya ja sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["Your code + attributes"] --> B["Source Generator (compile-time plugin)"]
+    B --> C["Generated C# source (.g.cs)"]
+    C --> D["Compiled into final assembly"]
+    D --> E["Runtime: no reflection needed, direct calls"]
+`}
+  caption="A source generator inspects code at build time and emits additional real C# source, moving work that reflection would have done at runtime into the compile step instead."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Source generators are compiler plugins that run at build time and emit additional real C# source files
+- Core value: move work that reflection would do at runtime into compile-time instead
+- Benefits: better performance (no reflection overhead) and Native AOT/trimming compatibility
+- `[GeneratedRegex]` and `System.Text.Json`'s `JsonSerializerContext` are the two most common real-world examples
+- Generated code is inspectable, debuggable C# — not hidden runtime magic
+- Application developers typically consume generators via attributes, not write their own
+- Reflection-heavy code is a common blocker for Native AOT migration — source-generated alternatives solve it
+
+</QuickRevision>
