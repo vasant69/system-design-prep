@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { getMermaid } from "@/lib/mermaid-client";
 
 /**
  * A shrunk, non-interactive preview of a topic's diagram for the section
@@ -37,8 +38,7 @@ export function DiagramThumbnail({ chart }: { chart: string }) {
     let cancelled = false;
 
     (async () => {
-      const { default: mermaid } = await import("mermaid");
-      mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+      const mermaid = await getMermaid();
       try {
         const { svg } = await mermaid.render(`thumb-${rawId}`, chart);
         if (!cancelled && containerRef.current) {

@@ -5,6 +5,7 @@
 // output in an overflow-x-auto container so large diagrams stay readable —
 // scrollable rather than squashed — on phone screens.
 import { useEffect, useId, useRef, useState } from "react";
+import { getMermaid } from "@/lib/mermaid-client";
 
 export function Diagram({ chart, caption }: { chart: string; caption?: string }) {
   const rawId = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -15,13 +16,7 @@ export function Diagram({ chart, caption }: { chart: string; caption?: string })
     let cancelled = false;
 
     (async () => {
-      const { default: mermaid } = await import("mermaid");
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "strict",
-        fontFamily: "var(--font-sans), system-ui, sans-serif",
-      });
+      const mermaid = await getMermaid();
       try {
         const { svg } = await mermaid.render(`diagram-${rawId}`, chart.trim());
         if (!cancelled && containerRef.current) {
