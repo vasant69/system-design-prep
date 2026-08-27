@@ -1,0 +1,209 @@
+---
+slug: "triggers-and-views"
+title: "Triggers and Views"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 11
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["stored-procedures-and-functions"]
+tags: ["sql", "triggers", "views", "database-design"]
+englishDefinition: "A trigger is a stored procedure that runs automatically in response to an INSERT, UPDATE, or DELETE event on a table, before or after the event occurs. A view is a saved SELECT query that behaves like a virtual table, while a materialized view stores the query result physically and needs periodic refresh."
+interviewFrequency: "high"
+companies: ["Oracle", "Amazon", "Infosys"]
+---
+
+<SimpleDefinition>
+
+A trigger is a stored procedure that runs automatically in response to an INSERT, UPDATE, or DELETE event on a table, before or after the event occurs. A view is a saved SELECT query that behaves like a virtual table, while a materialized view stores the query result physically and needs periodic refresh.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Triggers aur views dono hi database ke andar "logic" define karne ke tareeke hain, lekin bilkul alag purpose ke liye. Trigger event-driven hai — kuch hota hai (row insert/update/delete) to automatically kuch aur execute hota hai. View sirf ek saved query hai jo baar-baar likhne se bachati hai.
+
+### Triggers: BEFORE aur AFTER
+
+Trigger define karte waqt do decisions lene padte hain — timing (`BEFORE` ya `AFTER`) aur event (`INSERT`, `UPDATE`, `DELETE`):
+
+```sql
+CREATE TRIGGER trg_orders_audit
+AFTER INSERT ON orders
+FOR EACH ROW
+BEGIN
+    INSERT INTO orders_audit_log (order_id, action, changed_at, changed_by)
+    VALUES (NEW.order_id, 'INSERT', NOW(), CURRENT_USER());
+END;
+```
+
+- `BEFORE` trigger row insert/update hone se pehle chalta hai — isko use karte hain jab tumhe data ko validate ya modify karna ho actual write se pehle (jaise ek `discount_percent` column ko clamp karna 0-100 ke beech, ya `updated_at` timestamp automatically set karna).
+- `AFTER` trigger row commit hone ke baad chalta hai — isko use karte hain side-effects ke liye jo original write ko affect nahi karte, jaise audit logging, denormalized counter update karna, ya kisi doosri table mein notification row daalna.
+
+Audit logging ek bahut common real use case hai: ek e-commerce system mein har baar jab `orders` table mein row update hoti hai (status change, address change), tum chahte ho ki purana aur naya value dono record ho, without changing application code har jagah. Trigger yeh automatically kar deta hai:
+
+```sql
+CREATE TRIGGER trg_orders_update_audit
+AFTER UPDATE ON orders
+FOR EACH ROW
+BEGIN
+    INSERT INTO orders_audit_log (order_id, old_status, new_status, changed_at)
+    VALUES (OLD.order_id, OLD.status, NEW.status, NOW());
+END;
+```
+
+### Trigger chains ka danger
+
+Yahan asli problem shuru hoti hai. Agar trigger A khud kisi aur table B ko modify karta hai, aur table B pe bhi ek trigger hai jo table C ko touch karta hai — yeh ek **hidden chain** ban jaati hai jo application code mein kahin nazar nahi aati. Developer sirf ek simple `INSERT INTO orders` likhta hai, lekin background mein 3-4 tables silently update ho rahi hoti hain.
+
+Yeh debugging ko nightmare bana deta hai:
+
+- Application logs mein sirf ek `INSERT` dikhega, lekin database mein 5 tables affect hui hongi.
+- Performance issue debug karte waqt, ek simple-looking insert query slow lag sakti hai — asli reason trigger chain hai jo pata nahi chalta bina database schema deeply padhe.
+- Circular trigger chains (A trigger karta hai B, B trigger karta hai A wapas) infinite loop ya stack depth error bhi de sakte hain kuch databases mein.
+
+Isliye production systems mein triggers ka use bahut disciplined hona chahiye — sirf tab jab logic **truly cross-cutting** ho (audit, simple denormalization) aur team ko explicitly documented ho ki kaunse triggers exist karte hain.
+
+### Views: simplification vs hiding complexity
+
+View ek saved query hai jo table ki tarah query ki ja sakti hai:
+
+```sql
+CREATE VIEW active_customer_orders AS
+SELECT o.order_id, o.total_amount, c.customer_name, c.email
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+WHERE o.status != 'cancelled' AND c.is_active = TRUE;
+```
+
+Ab application code sirf `SELECT * FROM active_customer_orders WHERE order_id = 123` likh sakta hai, bina har jagah wahi JOIN aur WHERE clause dobara likhe. Yeh genuinely helpful hai jab:
+
+- Ek complex join baar-baar repeat ho raha ho multiple queries mein.
+- Kisi role ko sirf ek restricted, filtered slice of data dikhana ho (view ek security abstraction bhi ban sakta hai — sensitive columns exclude karke).
+- Reporting layer ko underlying schema changes se isolate karna ho.
+
+Lekin views kabhi-kabhi complexity ko **hide** kar dete hain instead of simplify karne ke. Agar ek view khud doosre view pe based hai, jo teesre view pe based hai (nested views), to query optimizer ke liye bhi samajhna mushkil ho jaata hai ki asli execution plan kya hoga — aur developer ke liye to aur zyada, kyunki woh dekh nahi pata ki `SELECT * FROM report_view` ke peeche 4 joins aur 2 subqueries chhupe hain. Performance debugging mein yeh bahut confusing ho jaata hai jab tum EXPLAIN plan dekhte ho aur usme nested view ki wajah se anticipated se zyada complex plan aata hai.
+
+### Materialized views
+
+Regular view har baar underlying query re-run karta hai. **Materialized view** result ko physically store karta hai disk pe, jaise ek real table — isliye read bahut fast hoti hai, lekin data stale ho sakta hai jab tak refresh na ho:
+
+```sql
+CREATE MATERIALIZED VIEW daily_sales_summary AS
+SELECT DATE(order_date) AS sale_date, SUM(total_amount) AS revenue
+FROM orders
+GROUP BY DATE(order_date);
+
+REFRESH MATERIALIZED VIEW daily_sales_summary;
+```
+
+Yeh dashboard/reporting use cases ke liye perfect hai jahan thoda stale data (jaise 1 hour purana) acceptable hai, lekin fast aggregation chahiye — recompute karna har page load pe expensive hoga.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Triggers automate cross-cutting logic (audit, validation) without touching every call site", "Views simplify repeated complex queries and can act as a security/abstraction layer", "Materialized views give fast reads for expensive aggregations"]}
+  cons={["Trigger chains create hidden, undocumented side effects that are hard to debug", "Nested views can obscure the real execution plan and hurt performance", "Materialized views serve stale data until explicitly refreshed"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+A large e-commerce catalog team used a materialized view to precompute best-seller rankings per category, refreshed every 15 minutes, instead of running an expensive aggregation query on every product page load. This dropped page-load query time from seconds to milliseconds, at the cost of rankings being up to 15 minutes stale — an acceptable trade-off the product team explicitly signed off on.
+
+</RealWorld>
+
+<RealWorld company="Infosys">
+
+A banking-adjacent client project had a chain of three triggers across `accounts`, `transactions`, and `notifications` tables that had accumulated over years without documentation. A routine bulk-update script that should have taken minutes ran for hours because it was silently triggering thousands of cascading writes. The fix was to document every trigger explicitly and move the notification logic out of the trigger chain into an application-level event queue.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>A well-indexed materialized view refresh on a few million rows typically completes in seconds to low minutes, versus re-computing the same aggregate on every request</li>
+<li>Trigger overhead per row is usually small (microseconds), but a chain of 3-4 triggers can multiply a single-row write into dozens of downstream writes</li>
+<li>Nested views more than 2-3 levels deep are a common threshold where query plans start becoming hard for humans to reason about</li>
+<li>Audit-log triggers commonly double or triple the write volume on a hot table (original row plus one or more audit rows)</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewers often ask "how would you implement audit logging" or "why would you use a trigger versus doing this in application code." A strong answer distinguishes between logic that must be guaranteed regardless of which application or script writes to the table (a good fit for a trigger, since it cannot be bypassed) versus logic that is really business workflow (better in application code, where it is visible, testable, and debuggable). For views, the strong answer explains the difference between a view (always fresh, no extra storage, can be slow for complex queries) and a materialized view (fast reads, extra storage, staleness trade-off), and gives a concrete example of when staleness is acceptable.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Using triggers for business logic that really belongs in the application layer, making the system's actual behavior invisible to anyone reading the application code.
+
+</Mistake>
+
+<Mistake>
+
+Building deep trigger chains without documentation, so a single insert silently cascades into writes across several unrelated tables.
+
+</Mistake>
+
+<Mistake>
+
+Nesting views several layers deep, which makes both the query plan and the actual data lineage hard to reason about.
+
+</Mistake>
+
+<Mistake>
+
+Treating a materialized view like it is always fresh, and forgetting to schedule or trigger its refresh — leading to stale dashboards nobody notices for days.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that a `BEFORE` trigger can modify the row being written (via `NEW`), while an `AFTER` trigger cannot undo the write it is reacting to — using the wrong timing for the intended effect.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["INSERT/UPDATE/DELETE on orders"] --> B{Trigger timing}
+    B -- BEFORE --> C["Validate or modify row before write"]
+    B -- AFTER --> D["Write committed"]
+    D --> E["AFTER trigger fires: audit log insert"]
+    E --> F{Another trigger on audit table?}
+    F -- Yes --> G["Chain continues: hidden cascading writes"]
+    F -- No --> H["Chain ends"]
+`}
+  caption="BEFORE triggers can alter the row before it is written; AFTER triggers react to a committed write and can silently chain into other tables."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Trigger = automatic procedure fired on INSERT/UPDATE/DELETE, timed BEFORE or AFTER the event</li>
+<li>BEFORE triggers can modify the row via NEW; AFTER triggers react to a committed write</li>
+<li>Audit logging is a classic good use case for AFTER triggers</li>
+<li>Trigger chains (trigger writes to a table that has its own trigger) create hidden, hard-to-debug side effects</li>
+<li>View = saved SELECT query, always fresh, no extra storage, can simplify repeated joins</li>
+<li>Materialized view = physically stored result, fast reads, needs explicit or scheduled refresh, can serve stale data</li>
+<li>Nested views (view built on view) obscure the real execution plan — keep nesting shallow</li>
+<li>Prefer application code for real business workflow logic; reserve triggers for logic that must be unbypassable</li>
+</ul>
+
+</QuickRevision>

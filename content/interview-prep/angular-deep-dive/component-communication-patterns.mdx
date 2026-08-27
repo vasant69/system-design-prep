@@ -1,0 +1,230 @@
+---
+slug: "component-communication-patterns"
+title: "Component Communication Patterns"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 6
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["angular-services-and-dependency-injection"]
+tags: ["angular", "frontend", "component-communication", "ViewChild", "ContentChild"]
+englishDefinition: "Angular components communicate through several distinct patterns depending on their relationship in the tree — parent-to-child via Input, child-to-parent via Output, direct parent access to a child instance via ViewChild, content projection with ng-content and ContentChild, and a shared injected service for components with no direct ancestor-descendant relationship."
+interviewFrequency: "very-high"
+companies: ["Google", "Amazon", "Microsoft", "TCS"]
+---
+
+<SimpleDefinition>
+
+Angular components communicate through several distinct patterns depending on their relationship in the tree — parent-to-child via Input, child-to-parent via Output, direct parent access to a child instance via ViewChild, content projection with ng-content and ContentChild, and a shared injected service for components with no direct ancestor-descendant relationship.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne binding, directives, aur DI dekha. Ye sab milke component communication ke building blocks bante hain. Is topic me hum har pattern ko uske sahi use-case ke saath dekhenge — interview me "components ke beech data kaise pass karoge" ka jawab sirf `@Input`/`@Output` tak limited nahi hona chahiye.
+
+### @Input/@Output — parent-child ka standard pattern
+
+```typescript
+@Component({ selector: "app-rating-widget" })
+export class RatingWidgetComponent {
+  @Input() maxStars = 5;
+  @Input() currentRating = 0;
+  @Output() ratingChanged = new EventEmitter<number>();
+
+  selectStar(star: number) {
+    this.currentRating = star;
+    this.ratingChanged.emit(star);
+  }
+}
+```
+
+```html
+<app-rating-widget
+  [maxStars]="5"
+  [currentRating]="product.rating"
+  (ratingChanged)="onRatingChanged($event)"
+>
+</app-rating-widget>
+```
+
+`@Input` ke saath ek setter bhi use kar sakte ho jab value aane pe koi extra logic chalani ho (jaise validation, transformation):
+
+```typescript
+private _maxStars = 5;
+@Input()
+set maxStars(value: number) {
+  this._maxStars = value > 0 ? value : 5;
+}
+get maxStars(): number {
+  return this._maxStars;
+}
+```
+
+`@Output` hamesha `EventEmitter` ka instance hota hai — `.emit(value)` call karne pe parent ka bound handler `$event` ke saath trigger hota hai. Ye pattern strictly ek level ke parent-child ke liye hai; grandparent ko directly kuch nahi milta bina intermediate component ke through relay kiye.
+
+### ViewChild/ViewChildren — parent se child instance tak direct access
+
+Kabhi kabhi sirf data pass karna kaafi nahi hota — parent ko child component ka **method call** karna ho ya uski **property directly padhni** ho. `@ViewChild` ye access deta hai:
+
+```typescript
+@Component({
+  template: `<app-video-player #player [src]="videoUrl"></app-video-player>`,
+})
+export class VideoPageComponent implements AfterViewInit {
+  @ViewChild("player") playerRef!: VideoPlayerComponent;
+
+  ngAfterViewInit() {
+    console.log(this.playerRef.duration);
+  }
+
+  playVideo() {
+    this.playerRef.play();
+  }
+}
+```
+
+Important gotcha: `@ViewChild` reference `ngAfterViewInit` lifecycle hook se **pehle available nahi hoti** — `ngOnInit` me ye `undefined` hoga, kyunki view tab tak fully initialize nahi hui hoti. `@ViewChildren` same cheez deta hai multiple matching elements ke liye, ek `QueryList` ke roop me jo dynamically update hoti hai jab elements add/remove hote hain.
+
+### ContentChild aur content projection — `<ng-content>`
+
+Content projection ek reusable "wrapper" component banane deta hai jiska andar ka content parent decide karta hai — jaise ek generic `Card` component:
+
+```typescript
+@Component({
+  selector: "app-card",
+  template: `
+    <div class="card">
+      <div class="card-header"><ng-content select="[card-title]"></ng-content></div>
+      <div class="card-body"><ng-content></ng-content></div>
+    </div>
+  `,
+})
+export class CardComponent {}
+```
+
+```html
+<app-card>
+  <h3 card-title>Order #4521</h3>
+  <p>Delivered on 12 August.</p>
+</app-card>
+```
+
+`<ng-content>` (bina select) sab projected content ko catch karta hai; `<ng-content select="...">` sirf matching elements ko us specific slot me daalta hai — CSS selector jaisa syntax, class, attribute, ya tag name se match kar sakta hai. `@ContentChild` isi projected content ke andar se ek specific element/component ka reference nikaalta hai (jaise `ViewChild`, lekin projected content ke liye):
+
+```typescript
+@ContentChild(TitleDirective) title!: TitleDirective;
+```
+
+`@ViewChild` aur `@ContentChild` ka farak yaad rakhna important hai: `ViewChild` component ke **apne template** ke andar ke elements dhoondta hai, `ContentChild` **parent se projected** content ke andar dhoondta hai. Interview me ye confusion common hai.
+
+### Unrelated components — shared service pattern
+
+Jab do components ka koi direct parent-child relationship nahi hota (jaise ek header ka notification icon aur ek unrelated deep-nested settings component), `@Input`/`@Output` chain se pass karna (**"prop drilling"**) impractical ho jaata hai. Standard solution: ek shared, injected service jo `Subject`/`BehaviorSubject` expose kare:
+
+```typescript
+@Injectable({ providedIn: "root" })
+export class NotificationService {
+  private countSource = new BehaviorSubject<number>(0);
+  count$ = this.countSource.asObservable();
+
+  setCount(count: number) {
+    this.countSource.next(count);
+  }
+}
+```
+
+Dono unrelated components isi service ko inject karte hain — ek `setCount()` call karta hai, doosra `count$` subscribe karta hai. Kyunki service `providedIn: 'root'` hai, dono ko wahi singleton milta hai, aur RxJS Observable automatically dono ko sync rakhta hai bina kisi manual wiring ke.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`@ViewChild` ko `ngOnInit` me access karne ki koshish karna ek bahut common bug hai — view us point tak fully render nahi hui hoti. Hamesha `ngAfterViewInit` use karo view-child access ke liye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Google">
+
+Ek media-heavy internal tool (jaisa Google ka internal video-review dashboard) me parent page `@ViewChild` se child `VideoPlayerComponent` ka direct reference rakhta hai taaki toolbar ke buttons (play, pause, seek) player ko directly control kar sakein — `@Input`/`@Output` se ye har chhoti action ke liye clumsy ho jaata. Isi app me ek unrelated "recently viewed" widget aur main content area dono ek shared `RecentlyViewedService` (root-provided, BehaviorSubject-based) ke through sync rehte hain, kyunki inka koi parent-child relationship nahi hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `@ViewChild` references become available starting from the `ngAfterViewInit` lifecycle hook — accessing earlier (e.g. `ngOnInit`) returns `undefined`
+- `@ViewChildren`/`@ContentChildren` return a `QueryList`, which emits a `changes` Observable whenever the matched elements update
+- `<ng-content select="...">` supports CSS-selector-style matching: tag name, class, or attribute selector
+- A shared service pattern scales to any number of unrelated components — no additional wiring cost per new subscriber
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How do two sibling components (no parent-child relationship) communicate in Angular" is a favorite scenario question — the expected answer is a shared, injected service exposing a Subject/BehaviorSubject, not prop drilling through a common ancestor. "Difference between ViewChild and ContentChild" is asked precisely to check whether the candidate understands Angular's view-vs-content distinction — ViewChild targets the component's own template, ContentChild targets externally projected content. A practical debugging question — "@ViewChild reference is undefined in ngOnInit, why" — tests real hands-on experience with Angular's lifecycle ordering, since this is one of the most commonly hit beginner bugs.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`@ViewChild` ko `ngOnInit` me access karna instead of `ngAfterViewInit` — view us lifecycle stage tak fully initialize nahi hui hoti, isliye reference `undefined` milta hai aur runtime error aata hai.
+
+</Mistake>
+
+<Mistake>
+
+Unrelated, deeply nested components ke beech data pass karne ke liye `@Input`/`@Output` ki lambi chain (prop drilling) banana — har intermediate component ko unrelated data relay karna padta hai jiska use hi nahi hota, jo maintenance ko fragile bana deta hai.
+
+</Mistake>
+
+<Mistake>
+
+`@ViewChild` aur `@ContentChild` ko interchangeable samajhna — `ViewChild` component ke apne template ke elements dhoondta hai, `ContentChild` parent se projected content ke andar. Galat ek use karne pe reference hamesha `undefined` milta hai.
+
+</Mistake>
+
+<Mistake>
+
+Shared-service pattern me plain field/variable use karna instead of `Subject`/`BehaviorSubject` — subscribers ko change ka pata hi nahi chalta jab tak koi explicit notification mechanism na ho, jisse UI stale data dikhata reh jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    P[ParentComponent] -->|"@Input"| C1[ChildComponent]
+    C1 -->|"@Output EventEmitter"| P
+    P -->|"@ViewChild direct reference"| C1
+    Content["Projected content from Parent"] -.->|"ng-content"| C2[WrapperComponent]
+    C2 -->|"@ContentChild"| Content
+    S["Shared Service (BehaviorSubject)"] -.injected into.-> C3[Unrelated Component A]
+    S -.injected into.-> C4[Unrelated Component B]
+`}
+  caption="Direct parent-child communication uses Input/Output or ViewChild; content projection uses ng-content with ContentChild reading the projected elements; unrelated components sync through a shared injected service."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `@Input` = parent to child data; `@Output` (via `EventEmitter`) = child to parent events
+- `@ViewChild`/`@ViewChildren` give a parent direct access to a child's instance/methods — available only from `ngAfterViewInit` onward
+- `<ng-content>` projects parent-provided markup into a component's template; `select="..."` targets specific projected content into named slots
+- `@ContentChild`/`@ContentChildren` read references from projected content — different from `ViewChild`, which reads the component's own template
+- Unrelated components (no direct ancestor-descendant link) communicate via a shared, injected service exposing a `Subject`/`BehaviorSubject`
+- Avoid prop-drilling `@Input`/`@Output` chains through unrelated intermediate components — use a shared service instead
+- `QueryList` (from `ViewChildren`/`ContentChildren`) updates reactively as matched elements change
+
+</QuickRevision>

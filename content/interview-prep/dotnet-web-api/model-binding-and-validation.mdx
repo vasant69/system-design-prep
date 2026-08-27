@@ -1,0 +1,232 @@
+---
+slug: "model-binding-and-validation"
+title: "Model Binding and Validation: FromBody, DataAnnotations, ModelState"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 3
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["routing-and-controllers"]
+tags: ["dotnet", "aspnetcore", "webapi", "modelbinding", "validation"]
+englishDefinition: "Model binding is the ASP.NET Core process that populates action method parameters from parts of an HTTP request (route values, query string, request body, form data, headers) using source attributes such as FromRoute, FromQuery, and FromBody, and DataAnnotations validation attributes on the bound model automatically populate ModelState, which the ApiController attribute checks to return an automatic 400 response before the action method body ever executes."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Infosys", "TCS", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+Model binding is the ASP.NET Core process that populates action method parameters from parts of an HTTP request (route values, query string, request body, form data, headers) using source attributes such as FromRoute, FromQuery, and FromBody, and DataAnnotations validation attributes on the bound model automatically populate ModelState, which the ApiController attribute checks to return an automatic 400 response before the action method body ever executes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Jab request aati hai, action method ko parameters chahiye hote hain — kahan se aayenge ye values? Route se, query string se, request body se, form se? Ye decide karna hi **model binding** ka kaam hai. ASP.NET Core smart inference karta hai, lekin explicit attributes use karna clearer aur predictable hota hai — especially interview me ye expect kiya jaata hai ki tumhe pata ho har source kab use karna hai.
+
+### Binding source attributes
+
+```csharp
+[HttpGet("{id:int}")]
+public IActionResult GetById(
+    [FromRoute] int id) // URL segment se -- api/orders/42
+{ ... }
+
+[HttpGet]
+public IActionResult Search(
+    [FromQuery] string? status,       // ?status=pending
+    [FromQuery] int page = 1)         // ?page=2
+{ ... }
+
+[HttpPost]
+public IActionResult Create(
+    [FromBody] CreateOrderRequest request) // JSON request body se poora object deserialize
+{ ... }
+
+[HttpPost("upload")]
+public IActionResult Upload(
+    [FromForm] IFormFile file) // multipart/form-data se
+{ ... }
+
+[HttpGet("secure")]
+public IActionResult Secure(
+    [FromHeader(Name = "X-Api-Key")] string apiKey) // custom header se
+{ ... }
+```
+
+**Default inference rules** (jab attribute explicitly na diya jaaye): simple types (int, string, bool, Guid) route me match karein to route se, warna query string se; complex types (classes) request body se — ye `[ApiController]` attribute ki wajah se hota hai, jo complex-type-in-body inference enable karta hai. Isliye `CreateOrderRequest request` parameter pe `[FromBody]` explicit likhna technically optional hai (agar `[ApiController]` present hai), lekin **explicit likhna better practice hai** — code padhne wale ko turant pata chal jaata hai binding source, guesswork nahi karna padta.
+
+### DataAnnotations validation
+
+Model class pe validation attributes lagao:
+
+```csharp
+public class CreateOrderRequest
+{
+    [Required(ErrorMessage = "Customer name is required")]
+    [StringLength(100, MinimumLength = 2)]
+    public string CustomerName { get; set; } = string.Empty;
+
+    [Range(1, 1000)]
+    public int Quantity { get; set; }
+
+    [EmailAddress]
+    public string? ContactEmail { get; set; }
+
+    [RegularExpression(@"^[A-Z]{2}\d{4}$", ErrorMessage = "Invalid product code format")]
+    public string ProductCode { get; set; } = string.Empty;
+}
+```
+
+Model binding ke turant baad, ASP.NET Core automatically har property pe validation attributes evaluate karta hai aur **ModelState** dictionary populate karta hai (`ModelState["CustomerName"]` jaise entries me errors). Ye **action method body run hone se pehle** hota hai — validation binding pipeline ka hi part hai, tumhara code separately nahi likhta ise trigger karne ke liye.
+
+### ModelState.IsValid aur automatic 400
+
+Purane .NET (aur .NET Core early versions) me har action ke andar manually likhna padta tha:
+
+```csharp
+if (!ModelState.IsValid)
+    return BadRequest(ModelState);
+```
+
+**`[ApiController]` attribute is boilerplate ko khatam kar deta hai.** Jab controller pe `[ApiController]` laga ho, agar model binding ke baad `ModelState.IsValid == false` ho, to ASP.NET Core **automatically 400 Bad Request return kar deta hai** with a `ValidationProblemDetails` body (RFC 7807 format) — action method body **kabhi call hi nahi hota**. Ye interview me common trap question hai: "agar `[ApiController]` laga ho aur tum manually `ModelState.IsValid` check karo to kya double-check ho raha hai?" — jawab: haan, technically redundant hai, lekin defensive/explicit rehna galat nahi hai; kuch teams isse explicitly rakhti hain readability ke liye, kuch remove kar deti hain kyunki `[ApiController]` guarantee deta hai.
+
+```csharp
+[HttpPost]
+public IActionResult Create([FromBody] CreateOrderRequest request)
+{
+    // Agar [ApiController] laga hai aur request invalid thi, ye line kabhi reach hi nahi hogi --
+    // 400 already automatically return ho chuka hoga
+    var order = _service.Create(request);
+    return CreatedAtAction(nameof(GetById), new { id = order.Id }, order);
+}
+```
+
+### Custom validation attributes
+
+Jab built-in DataAnnotations (Required, Range, StringLength, RegularExpression, EmailAddress) kaafi na ho, custom attribute likhte hain `ValidationAttribute` extend karke:
+
+```csharp
+public class FutureDateAttribute : ValidationAttribute
+{
+    protected override ValidationResult? IsValid(object? value, ValidationContext context)
+    {
+        if (value is DateTime date && date <= DateTime.UtcNow)
+            return new ValidationResult("Date must be in the future.");
+        return ValidationResult.Success;
+    }
+}
+
+public class BookingRequest
+{
+    [FutureDate]
+    public DateTime ScheduledFor { get; set; }
+}
+```
+
+Cross-field validation (jaise "EndDate `StartDate` se baad honi chahiye") ke liye class-level `IValidatableObject` interface implement karna better approach hai, kyunki single-property attribute me doosri property tak access nahi hota easily.
+
+### Common gotcha — [FromBody] sirf ek baar
+
+Ek action me **sirf ek parameter** `[FromBody]` le sakta hai — HTTP request body ek hi baar stream se read hota hai, do alag `[FromBody]` parameters try karoge to runtime error milega ("multiple parameters bound to body"). Agar multiple pieces of data chahiye, ek wrapper DTO banao jisme sab fields ho.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`[ApiController]` ke saath automatic 400 sirf **DataAnnotations validation failures** ke liye hai — business-rule validation (jaise "quantity available stock se zyada hai") ye automatically catch nahi karta, wo tumhe action ke andar explicitly check karke `BadRequest()` ya `UnprocessableEntity()` return karna hoga.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Cognizant">
+
+Ek claims-processing Web API me `SubmitClaimRequest` DTO pe `[Required]`, `[Range]`, aur ek custom `[ValidPolicyNumberFormat]` attribute (regex-based) lagta hai — sab structural/format validation `[ApiController]`-driven automatic 400 se handle hoti hai, koi manual `ModelState.IsValid` check nahi likha jaata action methods me. Business rules (jaise "policy active honi chahiye claim date pe", jo database lookup maangti hai) action ke andar service layer call karke check hote hain, aur fail hone pe explicitly `UnprocessableEntity(new { error = "Policy is not active for the claim date" })` return hota hai — team ne consciously ye split follow kiya: structural validation attributes se, business validation code se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Only one parameter per action can carry [FromBody] -- the HTTP body stream is read once
+- [ApiController] enables automatic 400 with ValidationProblemDetails (RFC 7807 shape) before the action body runs
+- Default inference: simple types match route params first, else query string; complex types default to body (with [ApiController])
+- Common DataAnnotations: Required, StringLength, Range, RegularExpression, EmailAddress, Compare
+- Custom attributes extend ValidationAttribute; cross-field validation typically uses IValidatableObject instead
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`[ApiController]` laga ho to `ModelState.IsValid` manually check karna zaroori hai?" — strong answer: nahi, `[ApiController]` automatically model validation fail hone pe 400 return kar deta hai action body run hone se pehle hi, isliye manual check redundant hai (kuch codebases readability ke liye phir bhi rakhti hain, functionally harmless hai). "DataAnnotations validation kya business rules bhi validate karti hai?" — strong answer: nahi, DataAnnotations sirf structural/format validation hai (required, range, regex) — business rules jo database state pe depend karti hain (jaise duplicate check, stock availability) action/service layer ke andar explicitly check honi chahiye aur appropriate status code (409/422) ke saath return honi chahiye. "Ek action me do `[FromBody]` parameters kyun nahi le sakte?" — HTTP request body ek hi baar read ho sakta hai stream ki tarah, isliye single binding target chahiye — solution: sab data ek combined DTO me wrap karo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`[ApiController]` present hone ke bawajood har action me manually `if (!ModelState.IsValid) return BadRequest(ModelState);` likhna — redundant hai, `[ApiController]` ye already automatic karta hai action body run hone se pehle hi.
+
+</Mistake>
+
+<Mistake>
+
+DataAnnotations validation ko business-rule validation samajh lena — `[Required]`/`[Range]` sirf structural checks hain, "stock available hai ya nahi" jaisi checks in attributes se cover nahi hoti, explicit code chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ek action me do parameters ko `[FromBody]` lagana — runtime error aata hai kyunki request body stream sirf ek baar read ho sakta hai. Sab data ek DTO me combine karna sahi approach hai.
+
+</Mistake>
+
+<Mistake>
+
+Cross-field validation (jaise EndDate `>` StartDate) ko single-property `ValidationAttribute` se karne ki koshish karna — doosri property tak clean access nahi milta us pattern me; `IValidatableObject` class-level interface use karna better hai.
+
+</Mistake>
+
+<Mistake>
+
+Query string parameters ko `[FromBody]` expect karna ya vice versa, jisse client se 400 (missing body) ya silently null values milte hain — binding source attribute explicitly likhna in mismatches ko avoid karta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["HTTP Request arrives"] --> B["Model binding: FromRoute/FromQuery/FromBody populate parameters"]
+    B --> C["DataAnnotations validation attributes evaluated automatically"]
+    C --> D["ModelState populated with any errors"]
+    D --> E{"ApiController present AND ModelState.IsValid == false?"}
+    E -->|Yes| F["Automatic 400 Bad Request with ValidationProblemDetails -- action body never runs"]
+    E -->|No| G["Action method body executes"]
+    G --> H["Business-rule checks inside action/service layer, if any"]
+    H --> I["Appropriate response: Ok, CreatedAtAction, Conflict, UnprocessableEntity, etc."]
+`}
+  caption="Structural validation (DataAnnotations) is fully automatic with ApiController and short-circuits before the action runs; business-rule validation is always explicit code inside the action or service layer."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Binding sources: [FromRoute], [FromQuery], [FromBody], [FromForm], [FromHeader] -- explicit is better than relying on inference
+- With [ApiController], complex types default to [FromBody] and simple types default to route-then-query
+- DataAnnotations attributes (Required, Range, StringLength, RegularExpression, EmailAddress) run automatically after binding
+- [ApiController] auto-returns 400 with ValidationProblemDetails when ModelState is invalid -- action body never executes
+- Manual ModelState.IsValid checks are redundant (but harmless) when [ApiController] is present
+- DataAnnotations only cover structural/format validation, never business rules -- those need explicit code
+- Only one action parameter can be [FromBody] -- the request body stream is read exactly once
+- Cross-field validation belongs in IValidatableObject, not a single-property ValidationAttribute
+
+</QuickRevision>

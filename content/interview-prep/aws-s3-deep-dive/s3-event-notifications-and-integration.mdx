@@ -1,0 +1,190 @@
+---
+slug: "s3-event-notifications-and-integration"
+title: "S3 Event Notifications and Integration"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 8
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["s3-performance-and-multipart-upload"]
+tags: ["aws", "s3", "events", "lambda", "sqs", "sns"]
+englishDefinition: "S3 event notifications let a bucket automatically publish events such as ObjectCreated or ObjectRemoved to Lambda, SQS, SNS, or EventBridge whenever a matching operation occurs, enabling event-driven pipelines like automatic thumbnail generation without polling, while requiring careful prefix and destination design to avoid infinite trigger loops."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 event notifications let a bucket automatically publish events such as ObjectCreated or ObjectRemoved to Lambda, SQS, SNS, or EventBridge whenever a matching operation occurs, enabling event-driven pipelines like automatic thumbnail generation without polling, while requiring careful prefix and destination design to avoid infinite trigger loops.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+S3 events ka core idea simple hai — jab bucket me koi specific operation ho (object create, delete, restore), S3 khud ek notification publish kar deta hai kisi destination ko. Ye poll-based nahi hai — koi service continuously "kya kuch naya aaya" check nahi kar rahi, S3 khud push karta hai jaise hi event ho. Isse event-driven pipelines banti hain jaha compute sirf tab chalta hai jab actually kuch hua ho, 24×7 idle polling server ki zaroorat nahi.
+
+### Event types
+
+Sabse common event types:
+
+- **`s3:ObjectCreated:*`** — PUT, POST, COPY, ya multipart upload complete hone par. Specific sub-events bhi hain: `ObjectCreated:Put`, `ObjectCreated:Post`, `ObjectCreated:CompleteMultipartUpload` — agar sirf multipart uploads pe react karna ho to specific sub-event use kar sakte ho
+- **`s3:ObjectRemoved:*`** — DELETE hone par, ya versioned bucket me delete marker create hone par (`ObjectRemoved:DeleteMarkerCreated`)
+- **`s3:ObjectRestore:*`** — Glacier se restore initiate/complete hone par
+- **`s3:ReducedRedundancyLostObject`** — legacy, rarely used
+- **`s3:Replication:*`** — cross-region replication ke failures track karne ke liye
+
+Har event notification me S3 bucket name, object key, event time, event name, aur (agar versioning enabled hai) version ID JSON payload me aata hai — actual object bytes nahi aate, sirf metadata.
+
+### Destinations — teen options aur kab kaunsa
+
+**Lambda** — direct compute trigger. Best jab immediate processing chahiye (thumbnail generation, metadata extraction, validation). S3 khud Lambda ko invoke karta hai asynchronously, aur automatically **2 retries** karta hai agar Lambda fail ho. Simplicity high hai lekin agar downstream slow ho to backpressure handle karna Lambda ki responsibility hai.
+
+**SQS** — queue-based buffering. Best jab processing rate control karni ho, ya multiple consumers ek hi event stream se independently process karna chahte ho, ya downstream system events ko apni speed pe consume karna chahta ho (batch processing). Events queue me accumulate hote hain jab tak consumer unhe poll na kare — traffic spikes absorb ho jaate hain.
+
+**SNS** — fan-out pattern. Best jab ek hi event ko **multiple independent subscribers** tak bhejna ho (jaise ek event 3 alag Lambda functions, ek email alert, aur ek SQS queue ko trigger kare). SNS topic ek event ko sabhi subscribers ko parallel deliver karta hai.
+
+**EventBridge** — sabse flexible, advanced routing/filtering ke liye. Content-based filtering rules laga sakte ho (sirf specific prefix ya specific metadata wale events route karo), aur cross-account/cross-service routing bhi asaan hai. Bucket-level ek settings flag enable karta hai jo saare S3 events ko EventBridge me bhejta hai, phir EventBridge rules decide karte hain kaun sa target milega.
+
+### Concrete example — thumbnail generation pipeline
+
+Ek classic pattern: user profile photo `originals/` prefix me upload karta hai, isse `ObjectCreated` event fire hota hai, jo ek Lambda trigger karta hai jo image ko resize karke thumbnail generate karta hai aur `thumbnails/` prefix me save karta hai — **alag prefix, alag bucket bhi ho sakta hai**.
+
+```json
+{
+  "LambdaFunctionConfigurations": [
+    {
+      "LambdaFunctionArn": "arn:aws:lambda:ap-south-1:123456789012:function:generate-thumbnail",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            { "Name": "prefix", "Value": "originals/" },
+            { "Name": "suffix", "Value": ".jpg" }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+Ye configuration ensure karta hai ki sirf `originals/` prefix me aane wale `.jpg` files hi Lambda ko trigger karein — na ki har object upload.
+
+### Infinite-loop trap — sabse critical gotcha
+
+Sabse dangerous mistake: Lambda ka output usi prefix (ya bucket) me likhna jisne event trigger kiya tha. Agar `originals/photo.jpg` upload hone se Lambda trigger hua, aur Lambda ne apna output bhi `originals/` me hi likh diya (jaise `originals/photo-processed.jpg`), to us naye write se **phir ObjectCreated event fire hoga**, jo phir Lambda ko trigger karega, jo phir write karega — ek exponentially growing, self-perpetuating loop. Ye sirf infinite processing nahi, balki **bill exponentially badhta jaata hai** jab tak koi manually rok na de ya Lambda concurrency limit hit na ho jaaye.
+
+Fix ke do reliable tareeke:
+
+1. **Output ko hamesha alag prefix ya alag bucket me likho** (`originals/` → `thumbnails/`) — trigger filter aur output prefix kabhi overlap na karein
+2. **Event filter me suffix/prefix precisely scope karo** taaki output files trigger criteria match hi na karein
+
+Ek IAM-level defense-in-depth bhi possible hai: Lambda ke execution role ko sirf `thumbnails/` prefix par write permission do, `originals/` par nahi — isse loop physically impossible ho jaata hai chahe code me bug ho bhi.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Trigger prefix/suffix filter aur output location ko kabhi overlap mat hone do. Agar Lambda `originals/` se trigger hoke `originals/` me hi write kare, to har write naya event fire karta hai — infinite loop jo bill ko exponentially badhata hai jab tak concurrency limit ya manual intervention na ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek document-processing pipeline me users KYC documents `uploads/{userId}/` prefix me daalte the, jo ek Lambda trigger karta tha OCR extraction ke liye, output `extracted/{userId}/` prefix me jaata tha. Ek staging deployment me galti se filter prefix hata diya gaya (debugging ke liye "sab events dekhne" ke liye) aur Lambda code me ek fallback path tha jo galat configuration ki wajah se kabhi kabhi `uploads/` me hi ek log-style JSON likh deta tha. 20 minutes ke andar hi CloudWatch billing alarm trigger hua — Lambda invocations exponentially badh rahe the. Root cause: har accidental write `uploads/` me naya `ObjectCreated` event fire kar raha tha. Fix turant IAM role se `uploads/` prefix par write permission hata kar hua (sirf `extracted/` par rehne diya), jisse loop turant physically ruk gaya chahe code bug abhi bhi maujood tha — iske baad hi code-level root cause fix kiya gaya. Is incident ke baad team ne har naye event-driven pipeline ke liye mandatory checklist banaya: trigger prefix aur output prefix kabhi ek dusre se overlap nahi karne chahiye, aur IAM role ko trigger prefix par kabhi write access nahi milna chahiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Lambda destination: S3 automatically retries failed async invocations 2 times before giving up (or routing to a configured DLQ)</li>
+<li>Event notification payload: metadata only (bucket, key, event type, timestamp, size) — never the actual object bytes</li>
+<li>Max event notification configurations per bucket: no hard practical limit for typical use, but each needs a distinct, non-overlapping prefix/suffix filter to avoid ambiguity</li>
+<li>EventBridge routing: supports content-based filtering rules, unlike direct Lambda/SQS/SNS destinations which only filter on prefix/suffix</li>
+<li>SNS fan-out: a single event can be delivered to an effectively unlimited number of independent subscribers per topic</li>
+<li>Notification delivery: at-least-once, meaning duplicate event delivery is possible — consumers must be idempotent</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Design an image thumbnail generation pipeline" is a near-universal S3 events question, and the strong answer always separates the trigger prefix from the output prefix explicitly, naming the infinite-loop risk unprompted rather than waiting to be asked. A frequent follow-up, "how would you choose between Lambda, SQS, and SNS as the destination," tests whether the candidate understands these solve different problems: Lambda for immediate single-consumer processing, SQS for buffering/rate-control with one consumer, SNS for fan-out to multiple independent consumers, and EventBridge when content-based filtering or cross-account routing is needed. A sharper trap question: "your Lambda is being invoked millions of times unexpectedly and the bill spiked — what happened and how do you stop it immediately" — the fastest correct fix is revoking the Lambda's write IAM permission on the triggering prefix (stops the loop instantly), not just editing the trigger configuration (which may take longer to propagate).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Writing a Lambda's processed output to the same prefix (or bucket, without a prefix filter) that triggered it — this creates a self-perpetuating infinite loop where each write fires a new event, and the bill grows exponentially until manually stopped.
+
+</Mistake>
+
+<Mistake>
+
+Relying only on the event trigger's prefix/suffix filter to prevent loops without also restricting the Lambda's IAM write permissions — a code bug or configuration mistake can still cause an accidental write into the trigger prefix; IAM-level restriction is the actual safety net.
+
+</Mistake>
+
+<Mistake>
+
+Assuming event delivery is exactly-once and writing non-idempotent processing logic — S3 event delivery is at-least-once, so the same event can arrive twice, and processing must handle duplicates gracefully (e.g. checking if the output already exists before reprocessing).
+
+</Mistake>
+
+<Mistake>
+
+Choosing Lambda as a direct destination for a workload that actually needs rate control or multiple independent consumers — without SQS buffering, a traffic spike can overwhelm downstream systems Lambda calls into; without SNS fan-out, adding a second consumer requires reconfiguring the trigger itself.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that the event payload contains only metadata, not the object body — code that tries to read file contents directly from the event JSON will fail; the Lambda must make a separate GetObject call using the key from the event.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[User uploads photo.jpg to originals/ prefix] --> B[S3 fires ObjectCreated event]
+    B --> C[Lambda triggered: generate-thumbnail]
+    C --> D[Resize image]
+    D --> E[Write thumbnail to thumbnails/ prefix]
+    E --> F{Does thumbnails/ prefix also match the trigger filter?}
+    F -->|No - correctly scoped| G[Pipeline complete, no further events]
+    F -->|Yes - misconfigured| H[New ObjectCreated event fires]
+    H --> C
+    H -.->|Exponential growth| I[Runaway Lambda invocations and bill]
+`}
+  caption="The safe path (left) keeps the output prefix outside the trigger filter's scope; the trap path (right) shows how an overlapping output prefix turns a single upload into a self-perpetuating, bill-exploding loop."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>S3 events are push-based, not polled — notifications fire automatically on matching operations like ObjectCreated, ObjectRemoved, ObjectRestore</li>
+<li>Event payload carries metadata only (bucket, key, timestamp) — never the object bytes; consumers must call GetObject separately</li>
+<li>Lambda destination: direct compute, 2 automatic retries on async failure; best for immediate single-consumer processing</li>
+<li>SQS destination: buffers events for rate-controlled or batch consumption by one consumer</li>
+<li>SNS destination: fan-out to multiple independent subscribers from a single event</li>
+<li>EventBridge: most flexible, supports content-based filtering and cross-account routing</li>
+<li>The infinite-loop trap: never let a trigger's output land back in a prefix that matches its own trigger filter — separate prefixes or buckets, plus IAM write restriction as defense-in-depth</li>
+<li>Event delivery is at-least-once — processing logic must be idempotent to handle occasional duplicate deliveries</li>
+</ul>
+
+</QuickRevision>

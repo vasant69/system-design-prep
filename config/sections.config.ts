@@ -382,4 +382,56 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "interview-prep",
+    title: "Interview Preparation",
+    description:
+      "A self-contained, exam-ready pack for the exact stack most full-stack interviews test — ASP.NET Core Web API, Angular, SQL, and AWS (S3 + Lambda) — plus the Git/GitHub commands you're expected to just know. Basic to advanced.",
+    icon: "GraduationCap",
+    enabled: true,
+    modules: [
+      {
+        id: "dotnet-web-api",
+        title: "ASP.NET Core Web API — Deep Dive",
+        description:
+          "Project anatomy, routing, model binding, DI, middleware, filters, exception handling, versioning, Swagger, JWT auth, minimal APIs, rate limiting, and async performance.",
+        order: 1,
+      },
+      {
+        id: "angular-deep-dive",
+        title: "Angular — Deep Dive",
+        description:
+          "Architecture, components, data binding, directives, DI, component communication, routing, forms, RxJS, HTTP interceptors, change detection, lifecycle hooks, state management, performance, and testing basics.",
+        order: 2,
+      },
+      {
+        id: "sql-deep-dive",
+        title: "SQL — Deep Dive",
+        description:
+          "Core querying and joins through window functions, indexing, normalization, transactions, locking, stored procedures, triggers/views, injection defense, and query optimization.",
+        order: 3,
+      },
+      {
+        id: "aws-s3-deep-dive",
+        title: "AWS S3 — Deep Dive",
+        description:
+          "Core concepts, storage classes and lifecycle, permissions, versioning and replication, encryption, presigned URLs, performance, event notifications, consistency, and cost optimization.",
+        order: 4,
+      },
+      {
+        id: "aws-lambda-deep-dive",
+        title: "AWS Lambda — Deep Dive",
+        description:
+          "Core concepts, triggers and event sources, execution lifecycle and cold starts, configuration, IAM, environment variables and layers, VPC integration, error handling, cost, and serverless patterns.",
+        order: 5,
+      },
+      {
+        id: "github-commands",
+        title: "GitHub Commands",
+        description:
+          "The actual command-line muscle memory — init/clone/status, add/commit/push/pull, branching, merge vs rebase, stash, history/undo, remotes, tags, PR workflow, GitHub Actions basics, and the advanced rescue commands.",
+        order: 6,
+      },
+    ],
+  },
 ];

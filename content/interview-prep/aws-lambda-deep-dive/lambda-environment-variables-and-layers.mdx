@@ -1,0 +1,183 @@
+---
+slug: "lambda-environment-variables-and-layers"
+title: "Lambda Environment Variables and Layers"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 6
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["lambda-iam-and-permissions"]
+tags: ["aws", "lambda", "serverless", "configuration"]
+englishDefinition: "Lambda environment variables are key-value pairs attached to a function version that configure behavior without a code change, while Lambda Layers are versioned ZIP archives of shared code or dependencies that multiple functions can attach to, keeping deployment packages small and reducing duplication."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda environment variables are key-value pairs attached to a function version that configure behavior without a code change, while Lambda Layers are versioned ZIP archives of shared code or dependencies that multiple functions can attach to, keeping deployment packages small and reducing duplication.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har real Lambda function ke paas config values hoti hain jo environment ke hisaab se change hoti hain — table name, API endpoint, log level, feature flag. Ye values code me hardcode karne ka matlab hai har environment (dev/staging/prod) ke liye alag deployment package banana, jo maintainable nahi hai. Environment variables isi problem ko solve karte hain — same code, alag config, function ki settings me set hoti hai aur `process.env` (Node) ya `os.environ` (Python) se read hoti hai.
+
+### Environment variables kaise kaam karte hain
+
+Console, CLI, ya IaC (Terraform/CDK/SAM) se key-value pairs set karte ho, aur ye function ki configuration ka hissa ban jaate hain — jab bhi function publish hota hai, us version ke environment variables **freeze** ho jaate hain. Total size limit **4 KB** hai (saari keys aur values milaake), jo kaafi chhota hai — isliye bade JSON blobs ya certificates environment variables me nahi, S3 ya Parameter Store me rakhte hain.
+
+AWS kuch **reserved environment variables** automatically inject karta hai jo aap override nahi kar sakte — jaise `AWS_REGION`, `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, `_HANDLER`. Agar aap galti se `AWS_REGION` naam ki apni variable set karne ki koshish karo, deployment fail ho jaata hai.
+
+### Encryption — at rest hamesha, in transit optional
+
+Lambda environment variables **at rest** hamesha encrypted hote hain — default AWS-managed KMS key se, ya aap apni **customer-managed key (CMK)** specify kar sakte ho. Lekin console me values **plaintext dikhti hain** jab tak "Enable helpers for encryption in transit" na enable karo — jo values ko client-side bhi encrypt karta hai, taaki console/API response me bhi ciphertext hi dikhe.
+
+**Sabse bada security gotcha:** koi bhi IAM principal jisko `lambda:GetFunctionConfiguration` ya `lambda:GetFunction` permission hai, wo environment variables **plaintext** me dekh sakta hai (encryption at rest ka matlab hai disk pe encrypted, API response me decrypt hokar aata hai). Ye permission bohot common hai — CI/CD pipelines, monitoring tools, developers jo sirf function dekhna chahte hain, sabko ye access mil jaata hai kabhi kabhi over-broad IAM policies ki wajah se.
+
+<Callout type="trap">
+
+Database password ya API key ko seedha environment variable me `DB_PASSWORD=hunter2` jaise likhna production me bahut common mistake hai. Sahi tareeka: **Secrets Manager** (automatic rotation support, higher cost — per-secret + API call pricing) ya **SSM Parameter Store SecureString** (free tier generous, no built-in rotation UI) me secret rakho, environment variable me sirf uska **ARN ya name** rakho, aur INIT phase me fetch karke cache karo — taaki har invocation pe API call na ho.
+
+</Callout>
+
+```javascript
+// INIT phase - ek baar fetch, cache karo
+const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
+const client = new SecretsManagerClient();
+let cachedSecret = null;
+
+exports.handler = async (event) => {
+    if (!cachedSecret) {
+        const response = await client.send(
+            new GetSecretValueCommand({ SecretId: process.env.DB_SECRET_ARN })
+        );
+        cachedSecret = JSON.parse(response.SecretString);
+    }
+    // cachedSecret.password use karo
+};
+```
+
+### Lambda Layers — shared code ka mechanism
+
+Layer ek ZIP archive hai jisme libraries, custom runtimes, ya shared utility code hota hai, jo function ke deployment package se **alag** upload hota hai aur runtime pe `/opt` directory me extract hota hai. Ek function **max 5 layers** attach kar sakta hai, aur combined unzipped size (function code + saare layers) **250 MB** se zyada nahi ho sakta — ye limit AWS Lambda topic me dekha gaya deployment package limit ka hi extension hai.
+
+Common use cases: bade third-party dependencies (jaise Pandas, NumPy) ko function code se alag rakhna taaki deployment fast ho; multiple functions ke beech shared utility code (logging wrapper, common validation) distribute karna; ya AWS-provided layers use karna (jaise Lambda Insights monitoring layer, ya Parameters and Secrets Lambda Extension jo Secrets Manager caching built-in deta hai).
+
+```bash
+# Node.js layer structure - /opt/nodejs/node_modules me extract hota hai
+my-layer.zip
+└── nodejs/
+    └── node_modules/
+        └── lodash/
+```
+
+### Layer versioning
+
+Har baar jab layer update karte ho, ek naya **immutable version** create hota hai (layer-name:1, layer-name:2, ...) — purana version delete nahi hota jab tak explicitly delete na karo, aur jo functions purane version pe pin hain wo unaffected rehte hain. Isse alag alag functions alag alag layer versions use kar sakte hain independently — ek team layer:3 pe upgrade kare, doosri team abhi layer:2 pe hi rahe, dono kaam karte rahenge.
+
+**Ordering matters** — jab multiple layers attach karte ho, list ka order define karta hai extraction order, aur baad wale layer pehle wale ko override kar sakte hain agar same file path ho. Layer version ka ARN function config me specific version number ke saath store hota hai — production me hamesha **pinned version** use karo, "latest" jaisi koi cheez nahi hai Lambda layers me.
+
+### Kab use na karo
+
+Chhoti dependencies (jaise ek single utility function) ke liye layer banana overkill hai — bundling directly function ke saath simpler hai. Aur layers cross-account share ho sakte hain (resource-based policy se), lekin agar dependency versioning strict hai (security patch turant chahiye har function me), to centralized layer update karke sabko turant migrate karwana mushkil hai kyunki har function ko manually naye version pe point karna padta hai — ye automatic propagate nahi hota.
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek microservices setup me 8 Lambda functions the jo saare same logging format aur DynamoDB helper functions use karte the. Pehle har function apne `node_modules` me duplicate code carry karta tha — deployment package badi, aur logging format me inconsistency (kisi function me typo fix karo to sab jagah manually update karna padta). Team ne ek shared layer banaya jisme common logging wrapper aur DynamoDB client factory tha. Har function sirf apna business logic rakhta, layer se shared utilities import karta. Secrets ke liye har function `DB_SECRET_ARN` environment variable rakhta tha (sirf ARN, plaintext password nahi), aur INIT phase me Secrets Manager se fetch karke cache karta — cold start me thoda extra latency, lekin per-invocation API call se bachaav.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Environment variables total size limit: 4 KB (all keys + values combined)
+- Max layers per function: 5
+- Combined unzipped size (function code + all layers): 250 MB
+- Layer versions are immutable — each update creates a new version number, old versions persist until explicitly deleted
+- Secrets Manager: ~$0.40/secret/month + $0.05 per 10,000 API calls
+- SSM Parameter Store standard parameters: free (advanced tier has per-parameter charges)
+- Environment variables encrypted at rest by default (AWS-managed KMS key, or a customer-managed key optionally)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The "where do you store secrets" question is near-universal — the strong answer names the exact IAM gap (`lambda:GetFunctionConfiguration` exposes plaintext env vars to anyone with that permission) rather than a vague "it's not secure enough," and follows up with the INIT-phase-caching detail so the interviewer sees you understand the cold-start cost of naive per-invocation fetching. Layers questions test whether you understand the 5-layer/250 MB limits and immutable versioning — a common follow-up is "how do you roll out a security patch to a shared layer across 20 functions," where the correct answer is that there's no automatic propagation, each function's config must be updated to point at the new layer version, which is a real operational cost worth mentioning as a trade-off.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Database passwords or API keys stored directly as plaintext environment variables instead of a reference (ARN/name) to Secrets Manager or Parameter Store — anyone with `lambda:GetFunctionConfiguration` can read them straight from the console.
+
+</Mistake>
+
+<Mistake>
+
+Fetching a secret from Secrets Manager inside the handler on every invocation instead of caching it in the INIT phase — adds an unnecessary API call (and cost) to every single request.
+
+</Mistake>
+
+<Mistake>
+
+Assuming a Lambda layer update automatically applies to every function that uses it — layer versions are immutable and each consuming function must be explicitly re-pointed at the new version number.
+
+</Mistake>
+
+<Mistake>
+
+Bundling a large dependency (like a data science library) directly into every function's deployment package instead of a shared layer — bloats deploy times and hits the 250 MB unzipped ceiling faster than necessary.
+
+</Mistake>
+
+<Mistake>
+
+Trying to set a reserved environment variable name (like `AWS_REGION`) as a custom variable — deployment fails because Lambda injects these itself and does not allow overrides.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Function deployment package] --> D[Combined execution environment]
+    B[Layer 1: shared logging utils] --> D
+    C[Layer 2: shared DB client] --> D
+    D --> E["/opt directory - layers extracted here"]
+    D --> F[Function code at root]
+    F --> G[Handler imports from /opt/nodejs/node_modules]
+    H[Environment variables] --> I[Encrypted at rest - KMS]
+    I --> J{Caller has GetFunctionConfiguration?}
+    J -->|Yes| K[Plaintext values visible]
+    J -->|No| L[Access denied]
+`}
+  caption="Layers extract into /opt at cold start, sitting alongside the function's own code; environment variables are encrypted at rest but decrypt to plaintext for anyone holding the right IAM permission, which is why secrets belong in Secrets Manager, not raw env vars."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Environment variables configure behavior without code changes, freeze per published version, capped at 4 KB total
+- Encrypted at rest by default, but `lambda:GetFunctionConfiguration` exposes plaintext to anyone holding that permission
+- Never store raw secrets in env vars — store an ARN/name pointing to Secrets Manager or SSM Parameter Store SecureString, fetch and cache in INIT phase
+- Layers are ZIP archives extracted to `/opt` at cold start, shared across multiple functions
+- Max 5 layers per function; combined unzipped size (code + layers) capped at 250 MB
+- Layer versions are immutable — each update is a new version number, old versions keep working for functions still pinned to them
+- No automatic propagation: updating a shared layer does not update the functions using it, each must be manually re-pointed
+- Reserved environment variable names (like `AWS_REGION`) cannot be overridden — Lambda injects these itself
+
+</QuickRevision>

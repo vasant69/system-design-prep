@@ -1,0 +1,170 @@
+---
+slug: "routing-and-controllers"
+title: "Routing and Controllers: Attribute Routing, Templates, Constraints"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 2
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["web-api-project-anatomy"]
+tags: ["dotnet", "aspnetcore", "webapi", "routing", "controllers"]
+englishDefinition: "ASP.NET Core Web API routing maps an incoming HTTP request's URL and verb to a specific controller action, predominantly via attribute routing ([Route], [HttpGet], [HttpPost] on controllers and actions) with optional route templates and constraints, and controllers derive from ControllerBase rather than Controller since Web APIs have no need for view-rendering support."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Cognizant", "Infosys"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core Web API routing maps an incoming HTTP request's URL and verb to a specific controller action, predominantly via attribute routing ([Route], [HttpGet], [HttpPost] on controllers and actions) with optional route templates and constraints, and controllers derive from ControllerBase rather than Controller since Web APIs have no need for view-rendering support.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Routing ka kaam simple hai — incoming request `GET /api/orders/42` aaye to ASP.NET Core ko pata hona chahiye ye kis controller ke kis action method pe jaayega. Do tareeke hain ye karne ke: **attribute routing** aur **conventional routing** — Web APIs me almost hamesha attribute routing use hota hai, conventional routing MVC views-based apps ka legacy pattern hai.
+
+### Attribute routing vs conventional routing
+
+**Conventional routing** ek central jagah (`Program.cs` me `app.MapControllerRoute(...)`) pattern define karta hai jaise `{controller}/{action}/{id?}`, aur sab controllers usi convention follow karte hain — URL structure implicit hai, controller/action naming se derive hota hai. Ye MVC views apps me common hai jahan human-friendly URLs chahiye.
+
+**Attribute routing** har controller/action pe explicitly route template likhta hai — `[Route("api/[controller]")]` class pe, `[HttpGet("{id}")]` action pe. Web APIs me ye standard hai kyunki: (1) route explicitly visible hai method ke upar, dhoondhna nahi padta central config me, (2) complex/nested URLs (`api/orders/{orderId}/items/{itemId}`) easily express hote hain, (3) REST conventions (resource-based URLs) ke saath naturally fit karta hai.
+
+```csharp
+[ApiController]
+[Route("api/[controller]")] // "[controller]" token class name se "Controller" suffix hata ke replace hota hai
+public class OrdersController : ControllerBase
+{
+    [HttpGet] // GET api/orders
+    public IActionResult GetAll() => Ok(_orders);
+
+    [HttpGet("{id:int}")] // GET api/orders/42 -- route constraint: id must be int
+    public IActionResult GetById(int id) => Ok(_orders.FirstOrDefault(o => o.Id == id));
+
+    [HttpPost] // POST api/orders
+    public IActionResult Create([FromBody] CreateOrderRequest request) => Ok();
+
+    [HttpGet("{orderId:int}/items/{itemId:int}")] // nested resource
+    public IActionResult GetItem(int orderId, int itemId) => Ok();
+}
+```
+
+`[controller]` ek token hai jo class name se automatically fill hota hai — `OrdersController` ke liye "Orders" (Controller suffix drop ho jaata hai). Ye maintenance-friendly hai — class rename ho to route bhi automatically update ho jaata hai.
+
+### Route templates aur constraints
+
+Route template me `{parameterName}` placeholder hota hai, aur optionally `:constraint` laga sakte ho type/format enforce karne ke liye:
+
+- `{id:int}` — sirf integer match karega, `api/orders/abc` 404 dega (route match hi nahi hoga, action call nahi hoga)
+- `{id:guid}` — GUID format expect karta hai
+- `{slug:alpha}` — sirf alphabetic characters
+- `{id:min(1)}` — minimum value constraint
+- `{id?}` — optional parameter
+- `{id=0}` — default value agar parameter na diya jaaye
+
+Constraint ka fayda: `GetById(int id)` method ke andar manually `int.TryParse` karke check karne ki zaroorat nahi — agar URL me non-integer aaya, routing khud hi us action ko match hi nahi karega (404 return hoga, action code chalega hi nahi). Ye validation ko routing layer pe hi push kar deta hai, jo cleaner hai.
+
+**Ambiguous route matches** ek real problem hain — agar do actions same template match kar sakte hain (jaise dono `[HttpGet("{id}")]` bina constraint ke different parameter types ke saath), runtime pe `AmbiguousMatchException` aata hai. Constraints (jaise `{id:int}` vs `{code:alpha}`) is ambiguity ko resolve karte hain.
+
+### HTTP verb attributes
+
+Har verb ke liye dedicated attribute hai: `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpDelete]`, `[HttpPatch]`. Ek action pe multiple verbs bhi allow ho sakte hain `[HttpGet]` aur `[HttpHead]` jaisa combo `[AcceptVerbs("GET", "HEAD")]` se, lekin practically har action ek hi verb handle karta hai — REST semantics clean rehti hain.
+
+### ControllerBase vs Controller
+
+`Controller` class `ControllerBase` ko extend karti hai aur **view-rendering support** add karti hai (`View()`, `PartialView()`, ViewData, ViewBag jaisi MVC-views-specific functionality). Web API me views ki zaroorat nahi hoti — response hamesha JSON/data hota hai, HTML nahi. Isliye Web API controllers **`ControllerBase`** se inherit karte hain — `Ok()`, `NotFound()`, `BadRequest()`, `CreatedAtAction()` jaisi helper methods `ControllerBase` me hi defined hain, view-related cheezein nahi aatin. Agar galti se `Controller` use kar liya, functionally zyada farak nahi padta (extra unused capability hai), lekin ye code-review me flag hota hai kyunki intent clear nahi hota aur unnecessary MVC views dependency signal deta hai.
+
+### [ApiController] attribute
+
+Class pe `[ApiController]` lagana kaafi behavior automatically enable karta hai: automatic 400 response on model validation failure (model binding + validation ka combo agle topic me detail se), `[FromBody]` inference for complex types, binding source parameter inference, aur multipart/form-data support ke liye better defaults. Ye attribute controller ko explicitly "Web API controller hai, MVC views wala nahi" declare karta hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Route constraint (`{id:int}`) sirf **URL format** validate karta hai routing stage pe — ye business validation (jaise "id positive hona chahiye" ya "id database me exist karta hai") ka replacement nahi hai. Wo validation model binding/action logic ke andar hi honi chahiye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="TCS">
+
+Ek typical enterprise order-management Web API me `OrdersController` `api/[controller]` route base use karta hai, aur nested resources ke liye `api/orders/{orderId:int}/items` pattern follow karta hai taaki URL hierarchy REST resource hierarchy ko reflect kare. Legacy internal tools jo purane .NET Framework MVC se migrate hue hain, unme kabhi kabhi conventional routing residual milta hai, lekin naye Web API projects strictly attribute routing use karte hain kyunki teams multiple microservices maintain karti hain aur explicit per-action routes code review me faster samajh aate hain conventional central-config routes se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `[controller]` token automatically strips the "Controller" suffix from the class name
+- Common route constraints: int, guid, alpha, bool, datetime, decimal, double, float, long, min(), max(), range(), regex()
+- `[ApiController]` attribute auto-enables: 400 on invalid ModelState, [FromBody] inference, binding source inference, multipart form-data handling
+- A route with an unmatched or wrongly-typed constrained parameter returns 404, not 400 — the action never executes
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Attribute routing vs conventional routing kab use karoge?" — strong answer: Web APIs me almost hamesha attribute routing, kyunki route explicitly visible hai method ke upar aur REST-style resource URLs (including nested resources) naturally express hoti hain; conventional routing legacy MVC-views pattern hai jahan controller/action naming se URL derive hota hai. "ControllerBase aur Controller me fark?" — Controller extra view-rendering support add karta hai jo Web APIs ko chahiye hi nahi, isliye Web API controllers ControllerBase use karte hain. Ek tricky scenario question: "agar `{id}` route me koi string aa jaaye jab constraint `int` hai, to kya response milega?" — strong answer: 404, kyunki constraint match hi fail ho jaata hai routing stage pe, action method call hi nahi hota — ye 400 (validation error) se different hai jahan action call hota hai but data invalid hoti hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Route constraints ko business validation ka substitute samajhna — `{id:int}` sirf format check karta hai, ye ensure nahi karta ki wo id database me exist karti hai ya business rules satisfy karti hai.
+
+</Mistake>
+
+<Mistake>
+
+Web API controller ko `Controller` se inherit karna instead of `ControllerBase` — functionally zyada break nahi hota lekin unnecessary MVC views dependency signal karta hai aur code intent unclear banata hai.
+
+</Mistake>
+
+<Mistake>
+
+Do actions ko same route template match hone dena bina disambiguating constraint ke — runtime pe `AmbiguousMatchException` aata hai jo debug karna confusing hota hai agar constraint ka role samajh na ho.
+
+</Mistake>
+
+<Mistake>
+
+`[ApiController]` attribute lagana bhool jaana aur phir manually ModelState.IsValid check karna har action me — jab `[ApiController]` present ho to ye automatic ho jaata hai, isse bhool jaana redundant ya missing validation dono create kar sakta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Incoming Request: GET api/orders/42"] --> B["Routing middleware matches template"]
+    B --> C{"Template: api/orders/{id:int} matches?"}
+    C -->|Yes, 42 is int| D["Action method invoked: GetById(42)"]
+    C -->|No, e.g. abc is not int| E["404 Not Found -- action never runs"]
+    D --> F["Ok(order) or NotFound() returned from action logic"]
+`}
+  caption="Route constraints operate before the action method runs -- a format mismatch produces 404 at the routing layer, distinct from validation failures that happen inside the action."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Web APIs use attribute routing ([Route], [HttpGet] etc.) almost exclusively over conventional routing
+- The `[controller]` token in a route template resolves to the class name minus the "Controller" suffix
+- Route constraints (`{id:int}`, `{id:guid}`) validate URL format at the routing layer, before the action runs
+- A constraint mismatch returns 404 (route never matches) -- different from a 400 (action runs, data is invalid)
+- ControllerBase (no view support) is correct for Web API controllers; Controller adds unneeded view-rendering
+- [ApiController] auto-enables automatic 400 on invalid ModelState, [FromBody] inference, and binding source inference
+- Ambiguous route matches between two actions cause AmbiguousMatchException at runtime -- constraints resolve this
+- Nested resource routes (`api/orders/{orderId}/items/{itemId}`) map naturally to REST resource hierarchies
+
+</QuickRevision>

@@ -1,0 +1,253 @@
+---
+slug: "authentication-and-authorization-jwt"
+title: "Authentication and Authorization with JWT in Web API"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 11
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["swagger-and-openapi"]
+tags: ["dotnet", "webapi", "jwt", "authentication", "authorization", "security"]
+englishDefinition: "JWT bearer authentication in ASP.NET Core Web API validates a signed, self-contained token on every request via AddAuthentication/AddJwtBearer to establish a ClaimsPrincipal, while authorization — role-based or policy-based — separately decides what that established identity is permitted to do, with refresh tokens used to renew access without forcing the user to log in again."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+JWT bearer authentication in ASP.NET Core Web API validates a signed, self-contained token on every request via AddAuthentication/AddJwtBearer to establish a ClaimsPrincipal, while authorization — role-based or policy-based — separately decides what that established identity is permitted to do, with refresh tokens used to renew access without forcing the user to log in again.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Web API projects me sabse zyada asked security topic yahi hai — kyunki almost har real API JWT use karta hai, aur interviewers exact setup, token structure, aur policy-vs-role distinction pe deep dig karte hain, sirf `[Authorize]` attribute lagana kaafi nahi hota answer ke liye.
+
+### Setup — AddAuthentication aur AddJwtBearer
+
+`Program.cs` me sabse pehla step scheme register karna hai, phir us scheme ke liye validation rules define karna:
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
+            ClockSkew = TimeSpan.FromMinutes(1) // Default 5 min — tighten agar expiry precise chahiye
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+app.UseAuthentication(); // Pehle authentication
+app.UseAuthorization();  // Phir authorization
+```
+
+Middleware order critical hai — `UseAuthorization()` ko identity chahiye hoti hai decide karne ke liye ki permission hai ya nahi, aur wo identity `UseAuthentication()` populate karta hai.
+
+### Token structure — teen parts
+
+JWT `header.payload.signature` hai, dot-separated, base64url-encoded. Payload (claims) me `sub` (user ID), `exp` (expiry timestamp), `iss`, `aud`, plus custom claims (role, tenant ID) hote hain. **Signature sirf tamper-detection ke liye hai — payload encrypted nahi hai**, koi bhi decode karke padh sakta hai. Isliye password ya sensitive PII kabhi payload me nahi jaani chahiye.
+
+```csharp
+var claims = new[]
+{
+    new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+    new Claim(ClaimTypes.Role, user.Role),
+    new Claim("tenant_id", user.TenantId.ToString())
+};
+
+var token = new JwtSecurityToken(
+    issuer: issuer,
+    audience: audience,
+    claims: claims,
+    expires: DateTime.UtcNow.AddMinutes(15), // Short-lived — refresh token compensates
+    signingCredentials: new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256));
+```
+
+### Role-based vs Policy-based authorization
+
+Simplest form role check hai:
+
+```csharp
+[Authorize(Roles = "Admin")]
+[HttpDelete("{id:int}")]
+public IActionResult Delete(int id) => Ok();
+```
+
+Ye kaam karta hai chhote apps ke liye, lekin string-based role names hardcode ho jaate hain har controller me — scale nahi karta jab logic complex ho (jaise "Admin ya Owner, aur tenant match hona chahiye"). **Policy-based authorization** ye decouple karta hai — ek named policy define karo ek jagah, phir usko reference karo:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("MinimumAge18", policy =>
+        policy.RequireAssertion(ctx =>
+            ctx.User.HasClaim(c => c.Type == "age") &&
+            int.Parse(ctx.User.FindFirst("age")!.Value) >= 18));
+
+    options.AddPolicy("SameTenant", policy =>
+        policy.RequireClaim("tenant_id"));
+});
+```
+
+```csharp
+[Authorize(Policy = "MinimumAge18")]
+[HttpGet("restricted-content")]
+public IActionResult Restricted() => Ok();
+```
+
+**Interview-relevant distinction:** role-based check "hai ya nahi" ek simple boolean hai, policy-based custom logic allow karta hai (claims combination, `IAuthorizationHandler` implement karke resource-based checks bhi) — real production systems me policy-based zyada maintainable hota hai kyunki authorization logic ek central jagah define hoti hai, controllers me scattered nahi.
+
+### Refresh token pattern
+
+Access token short-lived rakha jaata hai (15-30 minutes) taaki agar compromise ho to damage window chhota rahe — lekin har 15 minute pe user ko dobara login karwana bad UX hai. Solution: login pe do tokens issue karo — short-lived access token aur long-lived (days/weeks) refresh token, jo ek secure, HTTP-only cookie ya database me stored hota hai.
+
+```csharp
+[HttpPost("refresh")]
+public async Task<IActionResult> Refresh(RefreshRequest request)
+{
+    var stored = await _tokenStore.FindAsync(request.RefreshToken);
+    if (stored is null || stored.ExpiresAt < DateTime.UtcNow)
+        return Unauthorized();
+
+    var newAccessToken = GenerateAccessToken(stored.UserId);
+    var newRefreshToken = GenerateRefreshToken(); // Rotate — old one invalidated
+    await _tokenStore.ReplaceAsync(stored, newRefreshToken);
+
+    return Ok(new { accessToken = newAccessToken, refreshToken = newRefreshToken });
+}
+```
+
+Refresh token rotation (har use pe naya token issue karke purana invalidate) ek important detail hai — agar rotate na karo aur ek refresh token leak ho jaaye, attacker indefinitely naye access tokens generate kar sakta hai.
+
+### Common pitfalls
+
+`ValidateLifetime = false` set kar dena debugging ke time aur production me le jaana bhool jaana — expired tokens hamesha accept honge. Secret key ko `appsettings.json` me plaintext commit kar dena — production me `IConfiguration` ke through environment variables ya a secrets manager (Azure Key Vault, AWS Secrets Manager) use karna chahiye. Symmetric key (`HS256`) chhota rakhna — weak key brute-forceable hoti hai; kam se kam 256-bit random key use karo.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Stateless — no server-side session lookup, horizontally scales easily", "Self-contained — claims travel with the token, no extra DB round-trip per request", "Works naturally across mobile, SPA, and third-party API clients"]}
+  cons={["Cannot be revoked instantly without extra infrastructure (blocklist/short expiry)", "Payload is readable by anyone with the token — not a place for secrets", "Refresh token storage/rotation adds real implementation complexity"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+ASP.NET Core Identity aur `Microsoft.AspNetCore.Authentication.JwtBearer` package deliberately validation ko `TokenValidationParameters` ke through explicit, opt-in karte hain — har flag (`ValidateIssuer`, `ValidateAudience`, `ValidateLifetime`) alag se set karna padta hai, taaki developer accidentally ek check disable na kar de bina samjhe. Ye design choice directly interview trap questions ka source hai — "agar `ValidateLifetime` false ho to kya hoga" jaise sawaal isi explicit-configuration philosophy se aate hain.
+
+</RealWorld>
+
+<RealWorld company="An Indian Fintech Startup">
+
+Ek typical lending-platform API me access token 15 minute ka hota hai, refresh token 7 din ka, database me hashed form me stored — agar user apna device lost report kare, support team us refresh token record ko revoke kar deta hai database se, jisse next refresh attempt fail ho jaaye chahe token khud abhi expire na hua ho. Ye pattern (refresh token ko revocable rakhna, access token ko stateless) short-lived-token ke security benefit aur seamless-UX ke beech balance achieve karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical access token lifetime: 15 to 30 minutes
+- Typical refresh token lifetime: 7 to 30 days
+- JWT structure: `header.payload.signature` — 3 base64url-encoded, dot-separated parts
+- Default `ClockSkew` in `TokenValidationParameters`: 5 minutes
+- Recommended minimum symmetric signing key size: 256 bits for `HS256`
+- Response codes: `401` = authentication failed/missing; `403` = authenticated but not permitted
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"JWT authentication kaise set up karoge ASP.NET Core Web API me, aur agar token expire ho jaaye to user ko fresh login karwaye bina kaise handle karoge?" — strong answer: "`AddAuthentication().AddJwtBearer()` se scheme register karta hoon, `TokenValidationParameters` me issuer/audience/lifetime/signing-key sab explicitly validate karta hoon. Access token short-lived rakhta hoon (15-30 min) security ke liye, aur ek separate long-lived refresh token issue karta hoon jo secure storage me rehta hai — jab access token expire ho, client `/refresh` endpoint call karta hai refresh token ke saath, jo naya access token aur (rotation ke saath) naya refresh token return karta hai, bina user ko dobara password type karwaye." Follow-up: "role-based aur policy-based authorization me kab kaunsa use karoge?" — answer: simple, static permission checks ke liye role-based sufficient hai; jab logic multi-condition ho ya resource-specific ho (jaise "sirf record ka owner edit kar sakta hai"), policy-based with `IAuthorizationHandler` zyada maintainable aur testable hota hai kyunki logic ek jagah centralized hoti hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`ValidateLifetime = false` ya bahut lenient `ClockSkew` production me chhod dena — expired tokens accept hote reh jaate hain, effectively token expiry ka koi security benefit nahi rehta.
+
+</Mistake>
+
+<Mistake>
+
+JWT signing key ya secrets `appsettings.json` me plaintext commit kar dena source control me — production secrets hamesha environment variables ya a dedicated secrets manager se aane chahiye, kabhi repo me nahi.
+
+</Mistake>
+
+<Mistake>
+
+Sensitive data (password hash, full account number, PII) JWT payload me daal dena — payload sirf signed hai, encrypted nahi, koi bhi base64-decode karke padh sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Refresh token ko rotate na karna har use pe — ek leaked refresh token attacker ko indefinitely naye access tokens generate karne deta hai jab tak explicit expiry na aaye.
+
+</Mistake>
+
+<Mistake>
+
+`app.UseAuthorization()` ko `app.UseAuthentication()` se pehle call kar dena — authorization checks ko identity hi available nahi hogi, requests unexpectedly fail hongi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant API as Web API
+    participant Store as Token Store
+
+    Client->>API: POST /login (credentials)
+    API->>API: Verify credentials
+    API->>Store: Save refresh token
+    API-->>Client: access token (15 min) + refresh token (7 days)
+
+    Client->>API: GET /orders (Bearer access token)
+    API->>API: Validate signature, expiry, issuer, audience
+    API-->>Client: 200 OK
+
+    Note over Client,API: 15 minutes later - access token expired
+
+    Client->>API: POST /refresh (refresh token)
+    API->>Store: Validate + rotate refresh token
+    Store-->>API: OK, issue new tokens
+    API-->>Client: new access token + new refresh token
+`}
+  caption="Short-lived access tokens limit the blast radius of a leak, while a rotated, revocable refresh token restores usability without re-login."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `AddAuthentication().AddJwtBearer()` registers the scheme; `TokenValidationParameters` controls what's actually checked
+- `UseAuthentication()` must run before `UseAuthorization()` in the pipeline
+- JWT = `header.payload.signature` — signed (tamper-evident), NOT encrypted (readable by anyone with the token)
+- Role-based authorization: simple, static; Policy-based: composable, supports custom `IAuthorizationHandler` logic
+- Access tokens should be short-lived (15-30 min); refresh tokens long-lived and rotated on each use
+- Never put sensitive data in a JWT payload
+- Keep signing keys/secrets out of source control — use environment variables or a secrets manager
+- 401 = authentication failure; 403 = authenticated but not permitted
+
+</QuickRevision>

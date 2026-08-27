@@ -1,0 +1,203 @@
+---
+slug: "action-results-and-status-codes"
+title: "Action Results and Status Codes: IActionResult, ActionResult<T>, ProblemDetails"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 4
+difficulty: "beginner"
+readingTime: 11
+prerequisites: ["model-binding-and-validation"]
+tags: ["dotnet", "aspnetcore", "webapi", "actionresult", "statuscodes", "problemdetails"]
+englishDefinition: "ASP.NET Core Web API actions communicate outcomes through IActionResult (a flexible action-result interface), the generic ActionResult<T> that lets a method both declare its success payload type and return alternate result types like NotFound, and the ProblemDetails standard from RFC 7807, which gives error responses a consistent machine-readable JSON shape across an API instead of ad hoc error bodies."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Infosys", "TCS", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core Web API actions communicate outcomes through IActionResult (a flexible action-result interface), the generic `ActionResult<T>` that lets a method both declare its success payload type and return alternate result types like NotFound, and the ProblemDetails standard from RFC 7807, which gives error responses a consistent machine-readable JSON shape across an API instead of ad hoc error bodies.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Action method se response kaise return karein — ye choice sirf syntax preference nahi hai, ye API consumer ke liye documentation aur type-safety dono affect karti hai. Teen options hain: raw type, `IActionResult`, ya `ActionResult<T>` — har ek ka trade-off samajhna interview me expect kiya jaata hai.
+
+### Raw type vs IActionResult vs `ActionResult<T>`
+
+**Raw type** (`public Order GetById(int id)`) — sirf tab kaam karta hai jab action **hamesha same type** return kare, kabhi alternate response (404, 400) nahi de sakta bina exception throw kiye. Real-world APIs me ye almost kabhi sufficient nahi hota kyunki "resource not found" ek normal case hai, exception nahi honi chahiye.
+
+**`IActionResult`** — interface hai jo `Ok()`, `NotFound()`, `BadRequest()`, `CreatedAtAction()` sab return type ko represent karta hai. Flexible hai (kisi bhi combination ke results return kar sakte ho), lekin **compile-time type safety kam hai** — method signature se pata nahi chalta success case me kya data shape aayegi (Swagger/OpenAPI documentation ke liye extra `[ProducesResponseType]` attributes chahiye hote hain).
+
+```csharp
+[HttpGet("{id:int}")]
+public IActionResult GetById(int id)
+{
+    var order = _service.GetById(id);
+    if (order is null) return NotFound();
+    return Ok(order);
+}
+```
+
+**`ActionResult<T>`** — .NET Core 2.1+ me aaya, best of both worlds: method signature khud declare karta hai success payload type (`ActionResult<Order>`), aur andar se `NotFound()`/`BadRequest()` bhi return kar sakte ho (implicit conversion operators ki wajah se). Swagger/OpenAPI is se success response type automatically infer kar leta hai, extra attribute ki zaroorat kam hoti hai.
+
+```csharp
+[HttpGet("{id:int}")]
+public ActionResult<Order> GetById(int id)
+{
+    var order = _service.GetById(id);
+    if (order is null) return NotFound(); // implicit conversion to ActionResult<Order>
+    return order; // implicit conversion, Ok() wrap karne ki zaroorat nahi (though Ok(order) bhi chalega)
+}
+```
+
+**Practical guidance:** naye Web API code me `ActionResult<T>` preferred hai jab action variable outcomes de sakta hai (jo almost hamesha true hota hai) — better documentation, better type safety, minimal extra code.
+
+### Common result helpers aur unka exact status code
+
+- `Ok(value)` — 200, body ke saath
+- `Ok()` — 200, no body
+- `CreatedAtAction(actionName, routeValues, value)` — 201, `Location` header populate hota hai given action ke route se, body me created resource
+- `NoContent()` — 204, no body
+- `BadRequest(errors)` — 400
+- `NotFound()` — 404
+- `Conflict()` — 409
+- `UnprocessableEntity(errors)` — 422
+- `StatusCode(code, value)` — custom status code jab koi dedicated helper na ho
+
+`CreatedAtAction` specifically interview-relevant hai kyunki ye **REST convention correctly follow karta hai** — POST se resource create hone ke baad response me `Location` header hona chahiye jo naya resource kahan access hoga batata hai, `CreatedAtAction` ye automatically generate karta hai given action name aur route values se.
+
+### ProblemDetails — RFC 7807 standard
+
+Error responses ko random shape (`{ "error": "..." }`, `{ "message": "..." }`, plain string) me return karna consumers ke liye inconsistent hota hai — har error alag parse karna padta hai. **ProblemDetails** ek standardized JSON shape define karta hai:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "traceId": "00-abc123...",
+  "errors": {
+    "CustomerName": ["The CustomerName field is required."]
+  }
+}
+```
+
+`[ApiController]`'s automatic 400 response already ye format use karta hai (`ValidationProblemDetails`, ek `ProblemDetails` subclass jisme `errors` dictionary hota hai). Custom errors ke liye bhi ye pattern follow karna chahiye consistency ke liye:
+
+```csharp
+return Problem(
+    title: "Insufficient stock",
+    statusCode: StatusCodes.Status422UnprocessableEntity,
+    detail: $"Only {available} units available, requested {requested}.");
+```
+
+`Problem()` helper method (`ControllerBase` me built-in) automatically ProblemDetails shape wrap kar deta hai. Modern .NET (8+) me `AddProblemDetails()` service registration se **saare unhandled errors bhi** (exceptions, 404s, etc.) automatically ProblemDetails format me return hote hain without har jagah manually `Problem()` call kiye.
+
+### `[ProducesResponseType]` — documentation ke liye
+
+Swagger/OpenAPI ke liye alternate response types explicitly declare karna helpful hai, especially `IActionResult` use karte waqt (jahan return type khud se infer nahi hota):
+
+```csharp
+[HttpGet("{id:int}")]
+[ProducesResponseType(typeof(Order), StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status404NotFound)]
+public IActionResult GetById(int id) { ... }
+```
+
+</Hinglish>
+
+<Callout type="tip">
+
+`ActionResult<T>` use karte waqt success case me `Ok(order)` likhna zaroori nahi — sirf `return order;` bhi implicit conversion se 200 OK response ban jaata hai. Dono valid hain, lekin `Ok(order)` explicit aur readable rehta hai bade codebases me.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Infosys">
+
+Ek client-facing Web API me team ne consciously decide kiya ki har naya endpoint `ActionResult<T>` use karega raw type ya plain `IActionResult` ke bajaye — code review checklist me ye explicitly item hai. `POST` endpoints hamesha `CreatedAtAction` use karte hain taaki `Location` header consistently populate ho, aur global exception handling middleware (`AddProblemDetails()` + custom `IExceptionHandler`) sab unhandled exceptions ko automatically RFC 7807 `ProblemDetails` shape me convert karta hai — frontend team ko sirf ek consistent error shape parse karni padti hai chahe error kahin se bhi aaya ho (validation, business logic, ya unexpected exception).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- ActionResult&lt;T&gt; introduced in ASP.NET Core 2.1 -- combines type safety with flexible alternate results
+- ProblemDetails is standardized by RFC 7807 -- machine-readable JSON error shape
+- [ApiController]'s automatic 400 uses ValidationProblemDetails, a ProblemDetails subclass with an "errors" dictionary
+- .NET 8+ AddProblemDetails() service extends ProblemDetails formatting to unhandled exceptions and framework-generated error responses too
+- CreatedAtAction populates the Location header automatically from the given action name and route values
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"IActionResult aur ActionResult&lt;T&gt; me fark?" — strong answer: dono flexible multiple-result-type actions allow karte hain, lekin ActionResult&lt;T&gt; method signature me hi success payload type declare kar deta hai jisse Swagger/OpenAPI better documentation generate kar leta hai bina extra [ProducesResponseType] attributes ke, aur implicit conversion operators ki wajah se NotFound()/BadRequest() bhi seedha return ho sakte hain — practically naye code me ActionResult&lt;T&gt; preferred hai. "ProblemDetails kyun use karte ho custom error object ke bajaye?" — strong answer: RFC 7807 ek standardized shape define karta hai jo consumers predictably parse kar sakte hain across saari APIs, chahe wo internal ho ya third-party; [ApiController] ka automatic validation-error response bhi isi shape ka use karta hai, isliye custom errors ko bhi wahi convention follow karna consistency deta hai. Scenario question: "POST endpoint se 200 return karna theek hai ya galat?" — technically kaam karega lekin REST semantics precisely 201 Created with Location header expect karti hai, jo CreatedAtAction se milta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har success response ke liye generic `Ok()` use karna chahe resource newly created hua ho — `201 Created` with `Location` header (via `CreatedAtAction`) zyada precise aur REST-compliant hai POST creates ke liye.
+
+</Mistake>
+
+<Mistake>
+
+Error responses ko inconsistent ad hoc shapes me return karna (`{ "error": "..." }` kahin, `{ "message": "..." }` kahin aur) — ProblemDetails ka consistent RFC 7807 shape use na karne se API consumers ko har endpoint ke liye alag parsing logic likhni padti hai.
+
+</Mistake>
+
+<Mistake>
+
+Raw type return karna (jaise `public Order GetById(int id)`) jab action genuinely alternate outcomes (not found, invalid) de sakta hai — exceptions ko control-flow ke roop me use karna padta hai jo performance aur readability dono ke liye kharab hai.
+
+</Mistake>
+
+<Mistake>
+
+`IActionResult` use karte waqt `[ProducesResponseType]` attributes likhna bhool jaana — Swagger/OpenAPI documentation incomplete reh jaati hai, frontend/consumer teams ko exact response shapes guess karni padti hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Action method needs to return a result"] --> B{"Can this action have multiple outcomes?"}
+    B -->|No, always same shape| C["Raw type -- rare in practice"]
+    B -->|Yes| D{"Want typed success payload in signature?"}
+    D -->|Yes| E["ActionResult&lt;T&gt; -- preferred for new code"]
+    D -->|No / mixed needs| F["IActionResult with ProducesResponseType attributes"]
+    E --> G["Success: return value or Ok(value) -- 200"]
+    E --> H["Not found: return NotFound() -- 404"]
+    F --> G
+    F --> H
+`}
+  caption="ActionResult<T> gives the same flexibility as IActionResult while also documenting the success payload type in the method signature -- the reason it is the modern default choice."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Raw types only work when an action always returns the same shape -- rarely realistic for real endpoints
+- IActionResult is flexible but loses compile-time success-type info -- needs [ProducesResponseType] for full docs
+- ActionResult&lt;T&gt; combines both: typed success payload plus implicit conversion from NotFound()/BadRequest()/etc.
+- CreatedAtAction returns 201 and auto-populates the Location header -- the correct response for POST-created resources
+- ProblemDetails (RFC 7807) is the standard JSON shape for error responses -- [ApiController]'s auto-400 already uses it
+- .NET 8+ AddProblemDetails() extends that consistent shape to unhandled exceptions too
+- Use Problem() helper to return custom errors in the same ProblemDetails shape as framework-generated ones
+- ActionResult&lt;T&gt; is the modern default for new Web API action methods
+
+</QuickRevision>

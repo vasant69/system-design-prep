@@ -1,0 +1,246 @@
+---
+slug: "subqueries-and-ctes"
+title: "Subqueries and Common Table Expressions (CTEs)"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 4
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["aggregate-functions-and-group-by"]
+tags: ["sql", "subquery", "cte", "recursive-cte"]
+englishDefinition: "A subquery is a query nested inside another query, evaluated as scalar, non-correlated, or correlated depending on how it relates to the outer query. A Common Table Expression (CTE), defined with the WITH clause, names a temporary result set that can be referenced later in the same query, improving readability over deeply nested subqueries and enabling recursive traversal of hierarchical data."
+interviewFrequency: "high"
+companies: ["Amazon", "Microsoft", "TCS"]
+---
+
+<SimpleDefinition>
+
+A subquery is a query nested inside another query, evaluated as scalar, non-correlated, or correlated depending on how it relates to the outer query. A Common Table Expression (CTE), defined with the WITH clause, names a temporary result set that can be referenced later in the same query, improving readability over deeply nested subqueries and enabling recursive traversal of hierarchical data.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Jab ek query ka result dusri query ka input banta hai, do options hain — subquery (nested query) ya CTE (named, WITH clause se). Dono functionally overlap karte hain lekin readability aur use-case ke hisaab se alag-alag situations mein better hote hain.
+
+### Scalar subquery — ek single value return karti hai
+
+Scalar subquery exactly ek row, ek column return karti hai, jise ek expression ki jagah use kar sakte ho. E-commerce example: "har order ka amount, aur company-wide average order amount se kitna zyada/kam hai."
+
+```sql
+SELECT order_id, amount, amount - (SELECT AVG(amount) FROM orders) AS diff_from_avg
+FROM orders;
+```
+
+Yahan inner query `(SELECT AVG(amount) FROM orders)` sirf ek number return karti hai, jo outer query mein directly ek value ki tarah use ho gaya.
+
+### Non-correlated subquery — independently evaluate hoti hai
+
+Non-correlated subquery outer query se independent hai — ek baar evaluate hoti hai, result outer query use karti hai. Yeh typically `IN`, `NOT IN`, `EXISTS` ke saath use hoti hai. Blogging platform example: "un authors ko dikhao jinke kam se kam ek post 10000 se zyada views wala hai."
+
+```sql
+SELECT author_id, name
+FROM authors
+WHERE author_id IN (
+  SELECT author_id FROM posts WHERE views > 10000
+);
+```
+
+Inner query poori tarah independent hai — pehle woh khud chal jaati hai, ek list of `author_id` return karti hai, phir outer query us list ke against check karti hai.
+
+### Correlated subquery — outer query pe depend karti hai
+
+Correlated subquery outer query ki current row ko reference karti hai — isliye yeh conceptually **har outer row ke liye ek baar** evaluate hoti hai (though optimizer isse rewrite/optimize kar sakta hai). Ride-hailing example: "har driver ka sabse recent ride kaunsa tha."
+
+```sql
+SELECT d.driver_id, d.name,
+  (SELECT MAX(ride_date) FROM rides r WHERE r.driver_id = d.driver_id) AS last_ride_date
+FROM drivers d;
+```
+
+Yahan inner query `r.driver_id = d.driver_id` se outer query ki current row ko reference karti hai — is wajah se yeh correlated hai. Correlated subqueries logically simple hain lekin naive execution mein slow ho sakti hain (N times evaluate, N = outer rows), agar `driver_id` pe index na ho.
+
+### CTE (WITH clause) — readability ke liye named subquery
+
+`WITH` clause ek ya zyada named, temporary result sets define karta hai jo main query mein baad mein reference ho sakte hain — jaise ek query ke andar variables define karna. Same "top spenders" logic ab CTE se:
+
+```sql
+WITH monthly_spend AS (
+  SELECT customer_id, SUM(amount) AS total_spend
+  FROM orders
+  WHERE order_date >= '2026-08-01'
+  GROUP BY customer_id
+)
+SELECT customer_id, total_spend
+FROM monthly_spend
+WHERE total_spend > 50000;
+```
+
+Isi cheez ko nested subquery se likhte to:
+
+```sql
+SELECT customer_id, total_spend
+FROM (
+  SELECT customer_id, SUM(amount) AS total_spend
+  FROM orders
+  WHERE order_date >= '2026-08-01'
+  GROUP BY customer_id
+) AS monthly_spend
+WHERE total_spend > 50000;
+```
+
+Dono queries same result dengi, lekin jab logic ke multiple steps hon (jaise pehle "har customer ka is month ka spend", phir "un customers ko filter karo jo threshold cross karte hain", phir "unka latest order date bhi nikaalo"), CTE zyada readable ban jaata hai kyunki har step ko naam mil jaata hai — deeply nested subqueries padhna mushkil ho jaata hai jaise ek Russian doll ke andar doll.
+
+Multiple CTEs bhi chain kar sakte ho, ek dusre ko reference karte hue:
+
+```sql
+WITH monthly_spend AS (
+  SELECT customer_id, SUM(amount) AS total_spend
+  FROM orders
+  WHERE order_date >= '2026-08-01'
+  GROUP BY customer_id
+),
+top_spenders AS (
+  SELECT customer_id FROM monthly_spend WHERE total_spend > 50000
+)
+SELECT c.name, ms.total_spend
+FROM top_spenders ts
+JOIN monthly_spend ms ON ts.customer_id = ms.customer_id
+JOIN customers c ON c.customer_id = ts.customer_id;
+```
+
+### Recursive CTE — hierarchical data traverse karna
+
+Recursive CTE ek special case hai jahan CTE apne aap ko reference karta hai, tab tak jab tak ek base condition satisfy na ho jaaye. Classic use-case: org chart traversal — "employee X ke saare direct aur indirect reports."
+
+```sql
+WITH RECURSIVE org_chart AS (
+  -- Base case: seedha X ko report karne wale
+  SELECT employee_id, name, manager_id, 1 AS depth
+  FROM employees
+  WHERE manager_id = 101
+
+  UNION ALL
+
+  -- Recursive case: previous level ko report karne wale
+  SELECT e.employee_id, e.name, e.manager_id, oc.depth + 1
+  FROM employees e
+  INNER JOIN org_chart oc ON e.manager_id = oc.employee_id
+)
+SELECT * FROM org_chart ORDER BY depth;
+```
+
+Yeh kaam kaise karta hai: base case pehle chalti hai (direct reports of employee 101). Phir recursive case bar-bar chalti hai — har iteration mein pichle iteration ke result (`org_chart`) ko `employees` se join karke ek level neeche jaati hai — jab tak koi naya row match na ho (koi aur reports na ho). Yeh exact pattern comment threads (nested replies), category trees, ya file system folder structures ke liye bhi use hota hai.
+
+### Kab CTE better hai subquery se, aur kab temp table
+
+- **Subquery**: chhoti, one-off logic ke liye theek hai, especially jab sirf ek baar reference karna ho.
+- **CTE**: jab query multiple logical steps mein todni ho, ya same intermediate result ko multiple jagah reference karna ho within the same query — readability ka bada fayda milta hai. Recursive traversal ke liye CTE hi ek clean option hai (subquery se recursion possible nahi hai standard SQL mein).
+- **Temp table**: jab intermediate result bahut bada ho, aur usse multiple separate queries (alag statements) mein reuse karna ho, ya usse explicitly index karna ho — CTE har baar re-evaluate ho sakta hai (database ke optimizer ke decision pe depend karta hai, kuch databases materialize kar dete hain, kuch nahi), temp table ek baar materialize hoti hai aur baar-baar reuse hoti hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["CTEs dramatically improve readability for multi-step logic over deeply nested subqueries", "Recursive CTEs solve hierarchical traversal cleanly, without application-level loops", "Named CTEs can be referenced multiple times in the same query without repeating logic"]}
+  cons={["Correlated subqueries can be slow if evaluated naively once per outer row without a supporting index", "A non-recursive CTE isn't always materialized/cached by the optimizer — it can be re-evaluated each time it's referenced, depending on the database", "For very large intermediate results reused across separate statements, a temp table with its own index often beats a CTE"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Order analytics dashboards often use a CTE to first compute per-customer monthly spend, then a second CTE to filter down to top spenders, then a final SELECT joining back to customer details — exactly the kind of multi-step logic where nested subqueries would become unreadable fast.
+
+</RealWorld>
+
+<RealWorld company="Microsoft">
+
+Internal org-chart and permission-inheritance tools (who has access via which parent group, several levels deep) are a textbook recursive CTE use-case — traversing a manager hierarchy or a nested security-group structure without hardcoding a fixed number of JOIN levels.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>A correlated subquery without a supporting index effectively runs once per outer row — on 100,000 outer rows that can mean 100,000 inner query executions</li>
+<li>CTEs and equivalent nested subqueries usually produce the same execution plan on modern optimizers, so the readability gain from CTEs is often free</li>
+<li>Recursive CTEs need an explicit termination condition — an unbounded cycle (e.g. a corrupted manager_id pointing back to a descendant) can cause a runaway query</li>
+<li>Deeply nested subqueries (3+ levels) measurably slow down code review and debugging time, even when execution performance is unaffected</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common prompt: "Find employees at every level below a given manager" — this is a direct recursive CTE test. Model answer shape: define the base case (direct reports), define the recursive case (join the CTE back to the employees table one level down), UNION ALL them together, and mention the termination happens automatically when no more matching rows exist. Bonus points for proactively mentioning that a correlated subquery approach would need a fixed, hardcoded depth and can't handle arbitrary hierarchy depth the way a recursive CTE can.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Correlated subquery likhna bina yeh soche ki woh conceptually har outer row ke liye chal sakti hai — bina index ke, bade tables pe yeh bahut slow ho jaati hai.
+
+</Mistake>
+
+<Mistake>
+
+Deeply nested subqueries (3-4 levels) likhna jab CTE se same logic zyada readable ho sakti thi — future debugging ko unnecessarily hard bana deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Recursive CTE mein base case aur recursive case ko UNION (bina ALL) se combine karna jab duplicates expected/valid hon — UNION extra deduplication cost add karta hai jo zaroori nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Recursive CTE mein termination condition ko implicit chhod dena aur corrupted/cyclic data assume na karna — ek self-referencing loop (A reports to B, B reports to A) runaway query bana sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Yeh assume karna ki CTE hamesha materialize hoti hai (ek baar compute hoke cache ho jaati hai) — kai databases mein non-recursive CTE ko multiple baar reference karne pe woh re-evaluate ho sakti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["WITH RECURSIVE org_chart AS"] --> B["Base case:<br/>direct reports of manager X"]
+    B --> C["UNION ALL"]
+    C --> D["Recursive case:<br/>JOIN employees to previous level"]
+    D --> E{More matching rows?}
+    E -- Yes --> D
+    E -- No --> F["Final result: all levels of the hierarchy"]
+`}
+  caption="A recursive CTE repeatedly joins its own growing result back to the source table until no new matching rows are found."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Scalar subquery returns exactly one row, one column — usable as an expression</li>
+<li>Non-correlated subquery evaluates independently of the outer query, common with IN/EXISTS</li>
+<li>Correlated subquery references the outer query's current row — conceptually runs once per outer row</li>
+<li>CTE (WITH clause) names an intermediate result for readability, especially for multi-step logic</li>
+<li>Recursive CTE = base case UNION ALL recursive case, joining back to itself until no new rows match</li>
+<li>Use a temp table instead of a CTE when the intermediate result is huge and reused across separate statements</li>
+<li>Recursive CTEs need a natural termination condition to avoid runaway queries on cyclic data</li>
+</ul>
+
+</QuickRevision>

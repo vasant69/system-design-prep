@@ -1,0 +1,194 @@
+---
+slug: "indexes-and-query-performance"
+title: "Indexes and Query Performance"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 6
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["window-functions-deep-dive"]
+tags: ["indexing", "performance", "execution-plan"]
+englishDefinition: "An index is an auxiliary sorted data structure, typically a B-Tree, built on one or more columns of a table that lets the database engine locate matching rows without scanning every row. It trades extra storage and slower writes for dramatically faster reads on the indexed columns, and the choice of clustered vs non-clustered, single-column vs composite, directly shapes which queries actually benefit."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Microsoft", "Oracle"]
+---
+
+<SimpleDefinition>
+
+An index is an auxiliary sorted data structure, typically a B-Tree, built on one or more columns of a table that lets the database engine locate matching rows without scanning every row. It trades extra storage and slower writes for dramatically faster reads on the indexed columns, and the choice of clustered vs non-clustered, single-column vs composite, directly shapes which queries actually benefit.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Socho ek e-commerce app hai — `orders` table mein lakhon rows hain, aur ek common query hai "is customer ke saare orders dikhao" (`WHERE customer_id = 501`). Index ke bina, database ko har row check karni padegi — yeh `Seq Scan` hai, jo table jitna bada hoga utna slow hoga. Index ke saath, database seedha relevant rows tak jump kar sakta hai, jaise kitaab ke index page se seedha chapter pe pahunch jaana.
+
+### B-Tree kaise kaam karta hai
+
+Zyadatar databases (PostgreSQL, MySQL/InnoDB) default index type B-Tree use karte hain. Teen properties important hain:
+
+- **Sorted** — values sorted order mein stored hain, isliye equality (`customer_id = 501`) aur range queries (`order_date > some date`) dono efficiently serve hoti hain.
+- **Balanced** — har branch roughly equal depth pe hoti hai, isliye lookup time predictable rehta hai chahe table kitna bhi grow kare.
+- **O(log n) lookup** — ek 10 million row table mein bhi, B-Tree sirf handful comparisons mein target row dhoondh leta hai, kyunki har node disk-page-aligned hota hai aur wide hota hai (sirf 2 children nahi, balki sainkdon).
+
+Lekin index free nahi hai — har `INSERT`/`UPDATE`/`DELETE` ab table row ke saath-saath har related index ko bhi update karta hai. Isliye "har column pe index laga do" ek galat instinct hai.
+
+### Clustered vs Non-Clustered
+
+- **Clustered index** table ki physical row ordering define karta hai — data disk pe usi order mein stored hota hai. Ek table mein sirf **ek hi** clustered index ho sakta hai. Aksar primary key hi default clustered index hota hai.
+- **Non-clustered index** ek separate structure hai jo indexed column ki sorted values ko actual row location ke saath map karta hai. Ek table mein multiple non-clustered indexes ho sakte hain.
+
+Example: agar `orders` table `order_id` (sequential) pe clustered hai, to naye orders hamesha end mein insert hote hain — fast. Lekin "customer ke saare orders" query ab scattered pages se read karegi, kyunki physical order `customer_id` se match nahi karta. Yeh trade-off table design karte waqt hi socha jaana chahiye.
+
+### Covering index — extra trick
+
+Ek **covering index** wo index hai jisme query ke saare zaroori columns already include hain — SELECT list ke columns bhi, WHERE clause ke bhi. Iska matlab database ko actual table row (heap) tak jaane ki zaroorat hi nahi padti, kyunki index khud hi poora answer de deta hai. Isse "index-only scan" hota hai, jo normal index lookup se bhi fast hai kyunki ek extra disk read (index se row tak) avoid ho jaata hai.
+
+```sql
+CREATE INDEX idx_orders_customer_covering
+ON orders (customer_id) INCLUDE (order_date, status, total_amount);
+```
+
+Ab `SELECT order_date, status, total_amount FROM orders WHERE customer_id = 501` poori tarah index se serve ho sakta hai.
+
+### Composite index — column order matters
+
+Agar query pattern "customer ke orders, ek specific status ke, sorted by date" hai:
+
+```sql
+SELECT * FROM orders
+WHERE customer_id = 501 AND status = 'shipped'
+ORDER BY order_date DESC;
+```
+
+Ek composite index `(customer_id, status, order_date)` banayi jaaye to yeh query bahut efficiently serve hoti hai — B-Tree pehle `customer_id` pe sort hota hai, uske andar `status` pe, uske andar `order_date` pe. Lekin agar column order ulta ho — `(order_date, status, customer_id)` — to yehi index is query ke liye almost bekaar hai, kyunki B-Tree leftmost column se hi navigate hota hai. Yeh rule "leftmost prefix" kehlata hai: composite index sirf tabhi useful hai jab query us index ke leftmost columns ka use kare, chahe order pura ho ya partial prefix.
+
+### Execution plan padhna
+
+`EXPLAIN` (ya `EXPLAIN ANALYZE`) query ke saamne lagane se database batata hai woh plan actually kaise execute karega:
+
+```sql
+EXPLAIN ANALYZE
+SELECT * FROM orders WHERE customer_id = 501;
+```
+
+Do cheezein dhoondo: **`Seq Scan`** (poora table scan, red flag on bade tables agar filter selective hai) vs **`Index Scan`** ya **`Index Only Scan`** (index use ho raha hai). Aur **estimated rows vs actual rows** — bada mismatch batata hai statistics stale hain, jo query planner ko galat decision lene pe majboor karta hai.
+
+### Jab index kaam nahi karta
+
+`LIKE '%searchterm%'` (leading wildcard) pe normal B-Tree index kaam nahi karta, kyunki B-Tree sorted-prefix search pe based hai — agar tumhe pata hi nahi ki string kahan se shuru hoti hai to sorted structure navigate nahi ho sakta. Yeh pattern hamesha full scan (ya specialized full-text/trigram index) maangta hai. Isi tarah, indexed column pe function apply karna (jaise `WHERE UPPER(email) = 'X'`) bhi normal index ko bypass kar deta hai — jab tak function-based/expression index na ho.
+
+### Kab naya index NAHI banana chahiye
+
+Low-cardinality columns (jaise `status` jisme sirf 4-5 distinct values hon) pe index rarely worth hota hai — index itna selective nahi hota ki full-table-scan se meaningfully behtar ho, lekin write cost pura pay karna padta hai. Aur write-heavy tables (jahan inserts bahut frequent hain) pe har extra index directly insert latency badhata hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Equality and range lookups become O(log n) instead of full scan", "Covering indexes eliminate the extra heap fetch entirely", "Predictable performance even as tables grow to millions of rows"]}
+  cons={["Every INSERT/UPDATE/DELETE pays extra B-Tree maintenance cost per index", "Composite index column order must match actual query patterns or it's near-useless", "Leading-wildcard LIKE and function-wrapped columns bypass a normal index entirely"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Amazon jaise order-processing systems mein `customer_id` pe index almost universal hai kyunki "my orders" page sabse zyada frequent query hai. Lekin peak sale events ke time, teams explicitly audit karti hain ki kaunse indexes actually use ho rahe hain — unused ya rarely-hit indexes ko drop kar dete hain taaki insert throughput peak load pe maintain rahe.
+
+</RealWorld>
+
+<RealWorld company="Microsoft">
+
+SQL Server jaise systems mein covering indexes ek common optimization pattern hain reporting-heavy dashboards ke liye — jahan ek specific query bahut baar chalti hai (jaise "recent orders summary"), team us exact query ke columns ko match karta hua ek covering index bana deti hai taaki query planner index-only scan use kar sake, disk I/O drastically kam ho jaaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>B-Tree lookup on a 10M-row table typically takes only 3-4 disk-page reads (log base ~100-200 per node)</li>
+<li>Each additional index adds roughly 10-30% write latency overhead per insert/update on that table</li>
+<li>Index storage overhead is often 10-20% of table size for a single-column index, more for wide composite indexes</li>
+<li>An index-only scan (covering index) can be 2-5x faster than a normal index scan plus heap fetch, depending on row width</li>
+<li>A table can have exactly one clustered index but many non-clustered indexes</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer often asks "how would you speed up this slow query" expecting "add an index" as the first instinct — the strong signal is immediately following up with "on which column, in what order if composite, and what's the write cost." Be ready to explain the leftmost-prefix rule for composite indexes with a concrete example, and to name at least one case where indexing doesn't help (leading-wildcard LIKE, function-wrapped columns). Reading a basic `EXPLAIN` output (Seq Scan vs Index Scan, estimated vs actual rows) is a very common practical follow-up.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Indexing every column just in case, without checking actual query patterns — this silently kills insert/update throughput on write-heavy tables.
+
+</Mistake>
+
+<Mistake>
+
+Building a composite index in the wrong column order — an index on `(order_date, customer_id)` does almost nothing for a query filtering by `customer_id` alone, because B-Tree navigation starts from the leftmost column.
+
+</Mistake>
+
+<Mistake>
+
+Expecting an index to help a `LIKE '%term%'` query — leading wildcards defeat B-Tree's sorted-prefix navigation entirely.
+
+</Mistake>
+
+<Mistake>
+
+Indexing low-cardinality columns like a 4-value `status` column, expecting a big speedup that the write cost never justifies.
+
+</Mistake>
+
+<Mistake>
+
+Wrapping an indexed column in a function in the WHERE clause (like `UPPER(email) = 'X'`) and being surprised the index isn't used — a plain index can't match a transformed value.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q["Query: WHERE customer_id = 501"] --> D{Index on customer_id?}
+    D -- No --> SCAN["Seq Scan: read every row in orders table"]
+    D -- Yes --> BT["B-Tree index lookup: O(log n)"]
+    BT --> COV{Covering index?}
+    COV -- Yes --> IOS["Index Only Scan: answer directly from index"]
+    COV -- No --> HEAP["Fetch matching row from table heap"]
+    SCAN --> SLOW["Slow on large tables"]
+    IOS --> FASTEST["Fastest: no heap access needed"]
+    HEAP --> FAST["Fast, predictable latency"]
+`}
+  caption="From no index (full scan) to a plain index lookup to a covering index that skips the heap fetch entirely."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Index = auxiliary B-Tree: sorted, balanced, O(log n) lookup — but every write pays maintenance cost</li>
+<li>Clustered index = physical row order, one per table; non-clustered = separate structure, many per table</li>
+<li>Composite index follows the leftmost-prefix rule — column order must match the query's filter pattern</li>
+<li>Covering index includes all needed columns so the engine skips the table heap entirely (index-only scan)</li>
+<li>Leading-wildcard LIKE and function-wrapped columns bypass a normal B-Tree index</li>
+<li>Use EXPLAIN/EXPLAIN ANALYZE to check Seq Scan vs Index Scan and estimated vs actual row counts</li>
+<li>Avoid indexing low-cardinality columns — the write cost rarely pays off</li>
+</ul>
+
+</QuickRevision>

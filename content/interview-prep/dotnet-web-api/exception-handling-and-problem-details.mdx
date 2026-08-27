@@ -1,0 +1,237 @@
+---
+slug: "exception-handling-and-problem-details"
+title: "Exception Handling and Problem Details"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 8
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["filters-and-action-filters"]
+tags: ["aspnet-core", "exception-handling", "problem-details", "web-api"]
+englishDefinition: "ASP.NET Core provides multiple layered mechanisms for turning unhandled exceptions into consistent HTTP error responses — the UseExceptionHandler middleware, exception filters, and the .NET 8+ IExceptionHandler interface — with ProblemDetails as the standardized RFC 7807 response shape."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core provides multiple layered mechanisms for turning unhandled exceptions into consistent HTTP error responses — the UseExceptionHandler middleware, exception filters, and the .NET 8+ IExceptionHandler interface — with ProblemDetails as the standardized RFC 7807 response shape.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Production API me raw exception stack trace client ko dikhana sabse common security aur professionalism mistake hai. ASP.NET Core teen level pe exception handle karne ke tareeke deta hai, aur interview me expect kiya jaata hai ki aapko pata ho kaunsa kab use karna hai.
+
+### Teen approaches — middleware, filter, aur IExceptionHandler
+
+**1. `UseExceptionHandler` middleware** — sabse global aur reliable tareeka. Middleware pipeline ke sabse upar rehta hai, isliye har jagah (routing, model binding, action, aur even non-MVC middleware) se aayi exception ko catch kar leta hai.
+
+```csharp
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var exceptionFeature = context.Features.Get<IExceptionHandlerFeature>();
+        var problemDetails = new ProblemDetails
+        {
+            Status = StatusCodes.Status500InternalServerError,
+            Title = "An unexpected error occurred",
+            Detail = app.Environment.IsDevelopment() ? exceptionFeature?.Error.Message : null,
+            Instance = context.Request.Path
+        };
+        context.Response.StatusCode = problemDetails.Status.Value;
+        await context.Response.WriteAsJsonAsync(problemDetails);
+    });
+});
+```
+
+**2. Exception filters** — sirf MVC action execution ke andar aayi exceptions catch karte hain, middleware ya routing exceptions nahi. Inka faayda ye hai ki inhe controller-specific ya action-specific exception handling ke liye scope kiya ja sakta hai — jaise ek payment controller ke liye special domain exception mapping.
+
+**3. `IExceptionHandler` (.NET 8+)** — ye newer, cleaner approach hai jo purane `UseExceptionHandler` lambda-style setup ko replace karta hai. DI-friendly hai, unit-testable hai, aur multiple handlers ko chain kar sakte ho (pehla jo `true` return kare wahi "handled" maan liya jaata hai):
+
+```csharp
+public class ValidationExceptionHandler : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is not ValidationException validationEx)
+            return false; // agla handler try karega
+
+        var problemDetails = new ProblemDetails
+        {
+            Status = StatusCodes.Status400BadRequest,
+            Title = "Validation failed",
+            Detail = validationEx.Message
+        };
+        httpContext.Response.StatusCode = problemDetails.Status.Value;
+        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
+        return true; // handled
+    }
+}
+
+// Program.cs
+builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>(); // fallback, catch-all
+builder.Services.AddProblemDetails();
+app.UseExceptionHandler();
+```
+
+Handlers registration order me try hote hain — specific handlers pehle, generic catch-all sabse aakhri me. `AddProblemDetails()` framework ko batata hai ki unhandled exceptions ke liye bhi automatically `ProblemDetails` shape use karo, chahe koi custom handler explicitly na likha ho.
+
+### ProblemDetails — RFC 7807 standard
+
+`ProblemDetails` ek standardized JSON error shape hai jisme `type`, `title`, `status`, `detail`, aur `instance` fields hote hain. Isse client-side error handling consistent banta hai — chahe error validation ka ho, not-found ka ho, ya server crash ka, response shape same rehta hai:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.5",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "Customer with ID 42 was not found",
+  "instance": "/api/customers/42"
+}
+```
+
+ASP.NET Core builtin validation errors bhi is shape ka use karte hain (`ValidationProblemDetails`, jisme `errors` dictionary bhi hota hai field-wise messages ke saath).
+
+### Custom exception hierarchy — status code mapping
+
+Ek clean pattern hai domain exceptions ko ek base type se derive karna aur ek dictionary/switch se HTTP status map karna:
+
+```csharp
+public abstract class AppException : Exception
+{
+    public abstract int StatusCode { get; }
+    protected AppException(string message) : base(message) { }
+}
+
+public class NotFoundException : AppException
+{
+    public override int StatusCode => StatusCodes.Status404NotFound;
+    public NotFoundException(string message) : base(message) { }
+}
+
+public class ConflictException : AppException
+{
+    public override int StatusCode => StatusCodes.Status409Conflict;
+    public ConflictException(string message) : base(message) { }
+}
+```
+
+Global handler me phir sirf `if (exception is AppException appEx) { statusCode = appEx.StatusCode; }` — is se naya domain exception add karne pe global handler ko baar-baar modify nahi karna padta.
+
+### Stack trace leak na ho — production hardening
+
+`app.Environment.IsDevelopment()` check karke hi actual exception message ya stack trace expose karo. Production me generic message do ("An unexpected error occurred") aur actual details sirf structured logs (Serilog/Application Insights) me jaaye, saath me ek correlation ID jo response me bhi ho — is se support team log me actual error dhoondh sakti hai bina client ko sensitive info diye. Stack trace me database connection strings, internal file paths, ya class names leak hona attacker ke liye reconnaissance information hai.
+
+### Kab kaunsa use karo
+
+- Poori app ke liye ek consistent fallback → `UseExceptionHandler` ya `IExceptionHandler` (naya code likh rahe ho to `IExceptionHandler` prefer karo, .NET 8+ pe)
+- Sirf ek controller/action group ke liye specific handling → exception filter
+- Domain-specific exceptions ko clean status codes me map karna → custom exception hierarchy + global handler ka combination
+
+</Hinglish>
+
+<Callout type="trap">
+
+`app.UseExceptionHandler()` middleware ko galti se `UseDeveloperExceptionPage()` ke saath production me bhi chhod dena bahut common trap hai — developer exception page **poora stack trace HTML page me render** karta hai, jo production me severe information disclosure hai. Isko sirf `if (app.Environment.IsDevelopment())` guard ke andar use karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production .NET API">
+
+Ek order-management API me `IExceptionHandler` implementations chain kiye gaye the: pehla `DomainExceptionHandler` jo custom `AppException` hierarchy (NotFoundException, ConflictException, ValidationException) ko unke status codes me map karta, dusra `GlobalExceptionHandler` catch-all jo baaki sab exceptions ke liye 500 return karta with a correlation ID jo Serilog me actual stack trace ke saath log hota. Client ko sirf `{ "status": 500, "title": "An unexpected error occurred", "correlationId": "abc-123" }` milta — support team us correlation ID se logs me actual root cause dhoondh leti, without client-facing responses me kabhi internal details expose kiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- RFC 7807 defines the ProblemDetails shape: type, title, status, detail, instance fields
+- `IExceptionHandler` was introduced in .NET 8 as the recommended replacement for the lambda-based UseExceptionHandler setup
+- Multiple `IExceptionHandler` implementations are tried in registration order — first one returning true stops the chain
+- Leaking a stack trace in production is one of the top OWASP-flagged information-disclosure issues in API security reviews
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common opener is "how do you handle exceptions globally in ASP.NET Core" — the strong answer names all three layers (middleware, exception filters, IExceptionHandler) and explains their scope differences rather than describing just one. Interviewers frequently ask "why not just try-catch in every controller action" — the answer is DRY plus consistency: a global handler guarantees every unhandled path produces the same ProblemDetails shape, whereas scattered try-catch blocks drift in format over time. A sharp follow-up tests whether you know exception filters cannot catch exceptions thrown by middleware or during routing/model-binding — only action-level exceptions.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Production me actual exception message ya stack trace client ko return kar dena — internal implementation details aur potentially sensitive data (connection strings, file paths) leak hote hain.
+
+</Mistake>
+
+<Mistake>
+
+`UseDeveloperExceptionPage()` ko production build me bhi conditionally guard na karna — poora HTML stack trace page publicly accessible ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Har controller action me manually try-catch likhna instead of ek global exception handler — response format inconsistent ho jaata hai across endpoints, aur code duplication badhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Exception filter se expect karna ki middleware ya routing exceptions bhi catch honge — exception filters sirf action execution ke scope tak limited hain.
+
+</Mistake>
+
+<Mistake>
+
+Custom exception hierarchy banane ke baad bhi generic `Exception` catch karke sab kuch 500 return kar dena — domain-specific status codes (404, 409, 400) ka fayda hi nahi mila, client ko har error same generic response milta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Request throws exception] --> B{Where did it originate?}
+    B -->|Inside action method| C[Exception Filter can catch]
+    B -->|Middleware, routing, model binding| D[Only global middleware can catch]
+    C --> E[UseExceptionHandler / IExceptionHandler chain]
+    D --> E
+    E --> F{Registered IExceptionHandler tries in order}
+    F -->|Specific handler matches| G[Map to domain status code + ProblemDetails]
+    F -->|No specific match| H[Fallback GlobalExceptionHandler - 500 + correlation ID]
+    G --> I[Log full details server-side]
+    H --> I
+    I --> J[Return generic ProblemDetails JSON to client]
+`}
+  caption="Only middleware-level exception handling has visibility into every failure point; exception filters see only action-level exceptions, which is why a global handler is the reliable safety net."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Three layers exist: UseExceptionHandler middleware (catches everything), exception filters (action-scope only), IExceptionHandler (.NET 8+, DI-friendly, chainable)
+- ProblemDetails (RFC 7807) standardizes error responses with type, title, status, detail, instance
+- Multiple IExceptionHandler implementations run in registration order; first one returning true wins — order specific handlers before the catch-all
+- Never leak stack traces or exception messages to clients in production — log details server-side with a correlation ID instead
+- Custom exception hierarchy (base AppException with a StatusCode property) lets a global handler map domain errors to HTTP status without per-exception-type branching everywhere
+- `UseDeveloperExceptionPage()` must be guarded behind `IsDevelopment()` — it renders full stack traces as HTML
+- Exception filters cannot catch middleware, routing, or model-binding exceptions — only action execution failures
+- `AddProblemDetails()` wires automatic ProblemDetails shaping even for exceptions no custom handler explicitly handles
+
+</QuickRevision>

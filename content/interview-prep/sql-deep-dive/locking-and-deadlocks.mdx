@@ -1,0 +1,185 @@
+---
+slug: "locking-and-deadlocks"
+title: "Locking and Deadlocks"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 9
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["transactions-and-acid-in-sql"]
+tags: ["locking", "deadlocks", "concurrency"]
+englishDefinition: "A lock is a mechanism a database uses to control concurrent access to a resource, ranging from shared (read) locks that allow multiple readers to exclusive (write) locks that allow only one transaction. A deadlock happens when two or more transactions each hold a lock the other needs, forming a cycle with no way forward, which the database detects and resolves by aborting one transaction as the victim."
+interviewFrequency: "high"
+companies: ["Oracle", "Microsoft", "Amazon"]
+---
+
+<SimpleDefinition>
+
+A lock is a mechanism a database uses to control concurrent access to a resource, ranging from shared (read) locks that allow multiple readers to exclusive (write) locks that allow only one transaction. A deadlock happens when two or more transactions each hold a lock the other needs, forming a cycle with no way forward, which the database detects and resolves by aborting one transaction as the victim.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Isolation levels theory batate hain ki kya dikhna chahiye, lekin actually usko enforce karne ke liye database internally **locks** use karta hai. Ek ride-hailing app socho, jahan `drivers` table mein `status` column hai (available/busy), aur do riders simultaneously ek hi driver ko book karne ki koshish kar rahe hain.
+
+### Shared vs Exclusive Locks
+
+- **Shared lock (S-lock)**: read ke liye. Multiple transactions same row pe shared lock le sakte hain simultaneously — sab padh sakte hain, koi conflict nahi, jab tak koi write na kare.
+- **Exclusive lock (X-lock)**: write ke liye. Sirf ek transaction ek waqt pe exclusive lock hold kar sakta hai — koi doosra transaction usi resource pe na read (agar strict) na write kar sakta hai jab tak lock release na ho.
+
+Jab Transaction 1 driver ko book karne ke liye `UPDATE drivers SET status = 'busy' WHERE driver_id = 42` chalata hai, to woh row pe exclusive lock leta hai. Transaction 2 agar isi row ko update karna chahe (dusra rider bhi usi driver ko book karne ki koshish kare), to woh block ho jaayega jab tak T1 commit ya rollback na kare.
+
+### Row-level vs Table-level Locking
+
+- **Row-level locking**: sirf specific rows lock hoti hain jo transaction touch kar raha hai. Baaki table ke rows par doosre transactions kaam kar sakte hain bina rukawat ke. Modern OLTP databases (PostgreSQL, MySQL/InnoDB) default row-level locking use karte hain.
+- **Table-level locking**: poori table lock ho jaati hai, chahe transaction ek hi row touch kar raha ho. Yeh bahut zyada restrictive hai — high concurrency workloads ke liye almost unusable, kyunki ek unrelated row update bhi baaki saari activity ko block kar dega.
+
+Ride-hailing example mein, agar `drivers` table pe table-level lock lagta, to ek driver ko book karne ka operation poori table ko lock kar deta — koi aur driver book hi nahi ho paata us waqt. Row-level locking se sirf woh ek driver row lock hoti hai, baaki drivers freely book ho sakte hain.
+
+### Deadlock kaise banta hai
+
+Deadlock tab hota hai jab do (ya zyada) transactions resources ko **opposite order** mein lock karte hain. Concrete example:
+
+```sql
+-- Transaction 1
+BEGIN;
+UPDATE drivers SET status = 'busy' WHERE driver_id = 42; -- locks row 42
+-- ... kuch processing ...
+UPDATE riders SET current_driver_id = 42 WHERE rider_id = 7; -- tries to lock rider row 7
+
+-- Transaction 2 (simultaneously)
+BEGIN;
+UPDATE riders SET current_driver_id = NULL WHERE rider_id = 7; -- locks row 7
+-- ... kuch processing ...
+UPDATE drivers SET status = 'available' WHERE driver_id = 42; -- tries to lock driver row 42
+```
+
+T1 driver row (42) lock kar chuka hai, ab rider row (7) chahiye — jo T2 ne already lock kar rakhi hai. T2 rider row (7) lock kar chuka hai, ab driver row (42) chahiye — jo T1 ne already lock kar rakhi hai. Dono ek doosre ka wait kar rahe hain, aur koi aage nahi badh sakta — yeh ek **cycle** hai, classic deadlock.
+
+### Database deadlock ko detect aur resolve kaise karta hai
+
+Database periodically ek **wait-for graph** check karta hai — kaun transaction kis lock ka wait kar raha hai. Agar cycle mil jaaye (T1 waits for T2, T2 waits for T1), to deadlock confirm ho jaata hai. Database ek transaction ko **victim** ke roop mein choose karta hai (typically jiska rollback sabse "sasta" hoga — kam kaam kiya ho, ya kam locks hold kar raha ho) aur usko forcibly ROLLBACK kar deta hai, ek deadlock error return karke. Doosra transaction aage badh jaata hai.
+
+Application ka responsibility hai deadlock error ko catch karna aur transaction ko **retry** karna — deadlock ek expected, recoverable situation hai, crash nahi.
+
+### Practical Prevention
+
+- **Consistent lock ordering** — sabse effective fix. Agar har transaction hamesha `drivers` ko `riders` se pehle lock kare (chahe operation kuch bhi ho), to cycle ban hi nahi sakta, kyunki sab ek hi direction mein wait karenge.
+
+```sql
+-- Dono transactions ab same order follow karte hain: drivers pehle, phir riders
+UPDATE drivers SET status = 'busy' WHERE driver_id = 42;
+UPDATE riders SET current_driver_id = 42 WHERE rider_id = 7;
+```
+
+- **Shorter transactions** — jitni jaldi lock release ho, utna kam window hota hai deadlock ban-ne ka. Unnecessary processing (jaise external API calls) transaction ke andar mat rakho.
+- **Lower isolation where safe** — kam strict isolation level kam locking overhead lata hai, jahan business logic allow kare.
+- **Retry logic with backoff** — chahe prevention perfect ho, deadlocks kabhi-kabhi phir bhi ho sakte hain high concurrency mein; application level pe retry-with-backoff ek zaroori safety net hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Row-level locking allows very high concurrency, only conflicting rows block each other", "Consistent lock ordering eliminates deadlocks almost entirely with minimal code change"]}
+  cons={["Row-level locking has more bookkeeping overhead than simpler table-level locking", "Even with prevention, deadlocks can still occur under complex, high-concurrency workloads — retry logic is still needed"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Oracle">
+
+Oracle-based order-management systems that update both an `orders` row and an `inventory` row in the same transaction are a classic deadlock risk if different code paths touch them in different orders — the fix applied in practice is almost always establishing one canonical lock order (say, always inventory before orders) across every code path that touches both tables.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+High-throughput systems like Amazon's order processing rely on row-level locking rather than table-level locking specifically because table-level locks would serialize unrelated operations across the entire table, collapsing throughput at peak traffic — row-level locking lets thousands of unrelated orders proceed concurrently.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Databases typically run a deadlock detection cycle check every few hundred milliseconds to a couple of seconds, depending on configuration</li>
+<li>Victim selection commonly favors rolling back the transaction with the least work done or fewest locks held, to minimize wasted effort</li>
+<li>Consistent lock ordering alone eliminates the vast majority of deadlocks seen in production without any other change</li>
+<li>Shortening a transaction's duration from seconds to milliseconds can reduce lock contention and deadlock frequency by an order of magnitude</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common interview ask is "design a scenario where a deadlock occurs and explain how you'd fix it" — the strong answer draws out two transactions locking two resources in opposite order, names the wait-for-graph cycle, and then proposes consistent lock ordering as the primary fix plus retry-with-backoff as the safety net. Being able to explain row-level vs table-level locking's effect on concurrency is a frequent follow-up, especially in a high-throughput system design context.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Believing deadlocks are a bug or crash to be "fixed once" — they are an expected, recoverable condition that application code must catch and retry.
+
+</Mistake>
+
+<Mistake>
+
+Locking resources in inconsistent order across different code paths — the single most common real-world cause of production deadlocks.
+
+</Mistake>
+
+<Mistake>
+
+Holding a transaction open across a slow external call (like a network API request) instead of doing that work outside the transaction — dramatically widens the deadlock window.
+
+</Mistake>
+
+<Mistake>
+
+Confusing a deadlock with simple lock contention (one transaction just waiting for another to finish) — a deadlock specifically requires a cycle where no transaction can ever proceed without intervention.
+
+</Mistake>
+
+<Mistake>
+
+Assuming table-level locking is "simpler and therefore safer" without weighing its severe concurrency cost on high-throughput tables.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    T1["Transaction 1"] -- holds lock on --> D["drivers row 42"]
+    T1 -- waits for lock on --> R["riders row 7"]
+    T2["Transaction 2"] -- holds lock on --> R
+    T2 -- waits for lock on --> D
+    D -.cycle.-> T2
+    R -.cycle.-> T1
+`}
+  caption="Classic deadlock: T1 holds drivers row 42 and waits for riders row 7, while T2 holds riders row 7 and waits for drivers row 42 — a wait-for cycle with no way forward."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Shared (S) locks allow concurrent reads; exclusive (X) locks allow only one writer at a time</li>
+<li>Row-level locking blocks only conflicting rows; table-level locking blocks the entire table, killing concurrency</li>
+<li>Deadlock = a cycle in the wait-for graph, where each transaction holds a lock the other needs</li>
+<li>Databases detect deadlocks via periodic cycle checks and resolve by rolling back a chosen victim transaction</li>
+<li>Consistent lock ordering across all code paths is the primary deadlock prevention technique</li>
+<li>Shorter transactions and lower isolation (where safe) reduce the lock contention window</li>
+<li>Application code must catch deadlock errors and retry — deadlocks are expected, not fatal bugs</li>
+</ul>
+
+</QuickRevision>

@@ -44,6 +44,10 @@ import {
   Table2,
   Shapes,
   TestTube2,
+  GraduationCap,
+  Webhook,
+  LayoutTemplate,
+  GitCommit,
   type LucideIcon,
 } from "lucide-react";
 
@@ -56,6 +60,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Cloud,
   Boxes,
   Terminal,
+  GraduationCap,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -96,4 +101,10 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "data-access-adonet-efcore": Table2,
   "design-patterns-architecture": Shapes,
   "testing-and-others": TestTube2,
+  "dotnet-web-api": Webhook,
+  "angular-deep-dive": LayoutTemplate,
+  "sql-deep-dive": Database,
+  "aws-s3-deep-dive": HardDrive,
+  "aws-lambda-deep-dive": Zap,
+  "github-commands": GitCommit,
 };

@@ -1,0 +1,183 @@
+---
+slug: "git-stash-and-cleanup-commands"
+title: "Git Stash and Cleanup Commands"
+section: "interview-prep"
+module: "github-commands"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["git-merge-vs-rebase-commands"]
+tags: ["git", "stash", "clean", "workflow"]
+englishDefinition: "git stash temporarily shelves uncommitted changes (staged and unstaged) so you can switch context on a clean working directory, then reapply them later. git clean removes untracked files and directories that git is not tracking at all, separate from stash's tracked-file scope."
+interviewFrequency: "high"
+companies: ["GitHub", "Atlassian", "Infosys"]
+---
+
+<SimpleDefinition>
+
+git stash temporarily shelves uncommitted changes (staged and unstaged) so you can switch context on a clean working directory, then reapply them later. git clean removes untracked files and directories that git is not tracking at all, separate from stash's tracked-file scope.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Kabhi kabhi tum kaam ke beech mein ho — half-done changes hain working directory mein — aur suddenly ek urgent bug fix ke liye branch switch karna padta hai. Agar tum directly `git checkout` ya `git switch` karoge to Git complain karega (ya worse, changes silently carry ho jaayenge galat branch pe). Yahan `git stash` kaam aata hai — yeh tumhare uncommitted changes ko ek temporary "shelf" pe rakh deta hai aur working directory ko last commit jaisa clean bana deta hai.
+
+### git stash — basic save aur pop
+
+```bash
+git stash                          # staged + unstaged tracked changes ko shelf pe rakho
+git stash save "WIP: payment retry logic"   # optional message ke saath (deprecated syntax, but common)
+git stash push -m "WIP: payment retry logic"  # modern equivalent of the above
+```
+
+Isse working directory clean ho jaata hai — jaise tumne kuch kiya hi nahi. Ab tum safely branch switch kar sakte ho, bug fix kar sakte ho, aur wapas aakar apna kaam continue kar sakte ho.
+
+```bash
+git stash list                     # sab stashes dekho (stack hai, LIFO order)
+git stash pop                      # latest stash apply karo AUR stash list se remove karo
+git stash apply                    # latest stash apply karo, lekin stash list mein rakhо (safer if unsure)
+git stash apply stash@{2}          # ek specific stash apply karo (index se)
+git stash drop stash@{1}           # ek specific stash ko permanently delete karo
+git stash clear                    # SAB stashes delete — irreversible, use carefully
+```
+
+`pop` aur `apply` ka farak yaad rakhna important hai: `pop` apply karke turant delete kar deta hai (agar conflict aaya to stash list mein wapas reh jaata hai), jabki `apply` stash ko list mein rakhta hai taaki tum use dobara kisi aur branch pe bhi apply kar sako. Jab tumhe ek hi stash multiple branches pe try karna ho, `apply` use karo, `pop` nahi.
+
+### Untracked files bhi chahiye? -u flag
+
+By default `git stash` sirf tracked files (jo already `git add` ho chuki hain ya modified hain) ko shelve karta hai — naye, untracked files ko chhod deta hai. Agar tumne naya file banaya hai jo abhi tak `git add` nahi hua, aur usko bhi stash karna hai:
+
+```bash
+git stash -u                       # -u = --include-untracked, naye files bhi shelve karo
+git stash --include-untracked
+git stash -a                       # -a = --all, ignored files (.gitignore wale) bhi shelve karo
+```
+
+`-u` most common use-case hai — jab tumne naya config file ya component file banaya ho aur woh bhi tumhare WIP ka part ho.
+
+### git clean — untracked files/directories delete karna
+
+`git stash` sirf Git ko pata hone wale changes ko manage karta hai. Lekin agar tumhare working directory mein garbage untracked files ikatthe ho gaye hain — build artifacts, temp files, accidentally-created folders — toh unko clean karne ka tool hai `git clean`.
+
+```bash
+git clean -n                       # -n = --dry-run, DEKHO kya delete hoga, kuch delete mat karo
+git clean -f                       # -f = --force, untracked FILES delete karo (directories nahi)
+git clean -fd                      # -f + -d, untracked files AUR directories dono delete karo
+git clean -fdx                     # -x = .gitignore wale files bhi include karo (node_modules jaisa risky!)
+```
+
+`-n` (dry-run) pehle chalana ek non-negotiable habit hona chahiye. `git clean -fd` irreversible hai — ek baar delete hone ke baad, un files ka koi history nahi hai (kyunki woh kabhi commit hi nahi hui thi), toh `git reflog` bhi unko wapas nahi la sakta. Production repos mein `-fdx` especially dangerous hai kyunki yeh `.gitignore`'d files bhi udaa deta hai — jaise `.env` files ya `node_modules` — agar galti se run ho gaya without dry-run check, ek poora din waste ho sakta hai dependencies reinstall karne mein.
+
+### Stash vs commit-to-WIP-branch — kab kya use karo
+
+Stash quick, throwaway context-switches ke liye best hai — "5 minute ka kaam hai, branch switch karke wapas aana hai." Lekin agar kaam substantial hai, ya multiple din tak incomplete rahega, ya team ke saath share karna hai, toh ek proper WIP commit better hai:
+
+```bash
+git add -A
+git commit -m "WIP: payment retry logic (incomplete, do not merge)"
+```
+
+Stash ka data local hai — kisi aur machine pe nahi jaata, aur agar tum `git stash clear` ya accidental `git gc` chala do (bahut purane, unreferenced stashes garbage collect ho sakte hain eventually), toh woh permanently gone ho sakta hai. Ek WIP branch commit push kiya ja sakta hai, backed up hai remote pe, aur team visibility ke liye better hai. Rule of thumb: stash for minutes, commit-to-branch for days.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["git stash is fast — one command to get a clean working directory for quick context switches", "Stash supports partial stashing, multiple named stashes, and applying to different branches", "git clean with -n dry-run gives full visibility before any destructive action"]}
+  cons={["Stashed changes are local only — not backed up to remote, easy to lose track of or forget", "git stash pop can conflict just like a merge if the target branch has diverged", "git clean -fd is irreversible and has no reflog safety net since the files were never committed"]}
+/>
+
+## Real World Example
+
+<RealWorld company="GitHub">
+
+Engineers mid-feature often get pulled into an urgent hotfix review. Instead of committing half-broken code, `git stash -u` shelves the WIP (including any new untracked files), the engineer switches to `main`, fixes the hotfix branch, and comes back to `git stash pop` to resume exactly where they left off.
+
+</RealWorld>
+
+<RealWorld company="Atlassian">
+
+CI pipelines sometimes run `git clean -fdx` as a first step before a fresh build, to guarantee the workspace matches exactly what's in version control — no leftover build artifacts or stale generated files from a previous run can silently affect the build output.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>git stash without flags only covers tracked files — untracked files need -u, ignored files need -a, two separate opt-ins</li>
+<li>Stash is a stack (LIFO) — stash@{0} is always the most recently created stash</li>
+<li>git clean -fd deletes both untracked files and untracked directories; -f alone only deletes files</li>
+<li>Unreferenced stashes are eventually eligible for garbage collection by git gc, typically after 90 days of inactivity by default</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**"You're mid-feature and asked to urgently fix a bug on another branch. Walk me through what you'd do."** Interviewers want to hear `git stash` (or `git stash -u` if new files exist), a clean branch switch, the fix, then `git stash pop` to resume. A stronger answer distinguishes `pop` (apply and delete) from `apply` (apply and keep), and knows when a WIP commit on a dedicated branch is the better call instead of stash — showing judgment about tool selection, not just command recall.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`git stash` bina `-u` ke chalana jab naye untracked files bhi WIP ka part hain — woh files stash mein include nahi hote aur branch switch karne pe confusing state create karte hain.
+
+</Mistake>
+
+<Mistake>
+
+`git clean -fd` seedha chalana bina pehle `-n` (dry-run) se check kiye — untracked files permanently delete ho jaate hain, koi reflog recovery nahi hai kyunki woh kabhi commit hi nahi hui.
+
+</Mistake>
+
+<Mistake>
+
+`git stash pop` conflict aane par confuse ho jaana — conflict resolve karne ke baad stash automatically list se remove nahi hota (safety feature hai), manually `git stash drop` karna padta hai agar conflict resolve ho gaya ho.
+
+</Mistake>
+
+<Mistake>
+
+Stash ko long-term storage jaisa treat karna — hafton purane stashes bhool jaana, jo eventually garbage collected ho sakte hain ya jab wapas apply karte ho tab tak codebase itna diverge ho chuka hota hai ki conflicts ka pahaad khada ho jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Working Directory (dirty, WIP changes)"] -->|git stash -u| B["Stash Stack: stash@{0}"]
+    B -->|Working Directory now clean| C["Switch branch, fix urgent bug"]
+    C --> D["Return to original branch"]
+    D -->|git stash pop| A2["Working Directory (WIP restored)"]
+    E["Untracked garbage files"] -->|git clean -n| F["Preview: what WOULD be deleted"]
+    F -->|git clean -fd| G["Untracked files + dirs permanently removed"]
+`}
+  caption="Stash shelves tracked changes for later reapplication; clean permanently removes untracked files that were never in git's history to begin with."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>git stash / git stash push -m "msg" — shelve tracked changes, clean working directory</li>
+<li>git stash -u (--include-untracked) — also shelve new untracked files</li>
+<li>git stash list — view the stash stack, most recent is stash@{0}</li>
+<li>git stash pop — apply latest stash AND remove it from the stack</li>
+<li>git stash apply — apply latest stash but KEEP it in the stack (useful across branches)</li>
+<li>git stash drop `stash@{N}` / git stash clear — delete one stash / delete all stashes</li>
+<li>git clean -n — dry-run, always check first before deleting anything</li>
+<li>git clean -fd — force-delete untracked files and directories, irreversible</li>
+</ul>
+
+</QuickRevision>

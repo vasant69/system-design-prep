@@ -1,0 +1,218 @@
+---
+slug: "window-functions-deep-dive"
+title: "Window Functions Deep Dive"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 5
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["subqueries-and-ctes"]
+tags: ["sql", "window-functions", "row-number", "rank", "partition-by"]
+englishDefinition: "Window functions like ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, and SUM OVER compute a value for each row based on a related set of rows, called a window, defined by an OVER clause with optional PARTITION BY and ORDER BY. Unlike GROUP BY, window functions preserve every individual row in the output instead of collapsing rows into groups."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Microsoft", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Window functions like ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, and SUM OVER compute a value for each row based on a related set of rows, called a window, defined by an OVER clause with optional PARTITION BY and ORDER BY. Unlike GROUP BY, window functions preserve every individual row in the output instead of collapsing rows into groups.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Window functions SQL ka ek powerful feature hain jo aggregate-jaisi calculations karte hain lekin `GROUP BY` ki tarah rows ko collapse nahi karte — har individual row apni jagah result mein rehti hai, saath mein ek extra computed column mil jaata hai jo uske "window" (related rows ka set) ke basis pe calculate hua hota hai.
+
+### PARTITION BY vs GROUP BY — yeh core difference hai
+
+Yeh sabse important concept hai jo confuse karta hai: `GROUP BY` rows ko groups mein collapse karta hai — 1000 rows agar 10 categories mein group ho, to result mein sirf 10 rows aati hain. `PARTITION BY` (window function ke andar) rows ko collapse **nahi** karta — 1000 rows still 1000 rows rehti hain result mein, bas har row ko pata chal jaata hai uske partition ka aggregate value bhi.
+
+```sql
+-- GROUP BY: 1000 rows -> 10 rows (ek row per category)
+SELECT category, SUM(amount) AS total
+FROM orders
+GROUP BY category;
+
+-- Window function: 1000 rows -> 1000 rows, har row ko uske category ka total bhi pata hai
+SELECT order_id, category, amount,
+  SUM(amount) OVER (PARTITION BY category) AS category_total
+FROM orders;
+```
+
+Doosri query mein har order row apni original detail (order_id, amount) ke saath rehti hai, lekin ek extra column `category_total` bhi milta hai jo uss order ki category ka overall total dikhata hai — yeh ek e-commerce example hai "har order ke saath yeh bhi dikhao ki uski category ka total revenue kitna hai."
+
+### ROW_NUMBER, RANK, DENSE_RANK — ranking functions
+
+Teenon ranking dete hain, lekin ties (equal values) ko alag tarike se handle karte hain:
+
+- **ROW_NUMBER()** — har row ko ek unique sequential number deta hai, chahe values tie ho ya na ho. Ties ko arbitrary order mein tod deta hai.
+- **RANK()** — tied rows ko same rank deta hai, lekin next rank mein gap chhod deta hai (jaise 1, 2, 2, 4 — teen aur chaar ke beech mein 3 skip ho gaya).
+- **DENSE_RANK()** — tied rows ko same rank deta hai, lekin gap nahi chhodta (jaise 1, 2, 2, 3).
+
+Blogging platform example: "har post ko uske views ke hisaab se rank do."
+
+```sql
+SELECT post_id, views,
+  ROW_NUMBER() OVER (ORDER BY views DESC) AS row_num,
+  RANK() OVER (ORDER BY views DESC) AS rank_val,
+  DENSE_RANK() OVER (ORDER BY views DESC) AS dense_rank_val
+FROM posts;
+```
+
+Agar do posts ka same `views` = 500 ho, aur woh sabse top pe hon: `ROW_NUMBER` unhe 1, 2 dega (arbitrary tie-break), `RANK` dono ko 1 dega aur agla post 3 se start hoga, `DENSE_RANK` dono ko 1 dega aur agla post 2 se start hoga.
+
+### Top N per group — sabse common real-world pattern
+
+Yeh interview mein sabse zyada poocha jaane wala window function use-case hai: "har category ka top 3 highest-revenue product dikhao." `PARTITION BY` yahan `GROUP BY` jaisa kaam karta hai (har category apna alag partition), lekin `ROW_NUMBER` ko `ORDER BY` ke saath combine karke ranking milti hai, jise phir ek outer query mein filter kar sakte ho.
+
+```sql
+WITH ranked_products AS (
+  SELECT product_id, category, revenue,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY revenue DESC) AS rn
+  FROM products
+)
+SELECT product_id, category, revenue
+FROM ranked_products
+WHERE rn <= 3;
+```
+
+Yahan `PARTITION BY category` har category ke andar ranking restart karta hai (electronics ke andar 1, 2, 3..., clothing ke andar phir se 1, 2, 3...), aur `ORDER BY revenue DESC` sabse zyada revenue wale ko rank 1 deta hai. Note ki `WHERE rn <= 3` seedha nahi likh sakte same query mein — window function `WHERE` se pehle logically evaluate hoti hai, lekin syntax ki wajah se `WHERE` clause mein window function directly reference nahi kar sakte, isliye CTE ya subquery zaroori hai.
+
+### LAG aur LEAD — row-to-row comparison
+
+`LAG()` current row se pichli row ka value laata hai, `LEAD()` agli row ka value laata hai — same partition/order ke context mein. Ride-hailing example: "har driver ke consecutive rides ke beech ka time gap nikaalo."
+
+```sql
+SELECT driver_id, ride_id, ride_start_time,
+  LAG(ride_start_time) OVER (PARTITION BY driver_id ORDER BY ride_start_time) AS previous_ride_time,
+  ride_start_time - LAG(ride_start_time) OVER (PARTITION BY driver_id ORDER BY ride_start_time) AS gap
+FROM rides;
+```
+
+Yeh pattern month-over-month growth calculate karne mein bhi bahut common hai — "is month ka revenue vs pichle month ka revenue" ke liye `LAG` use hota hai, bina self-join kiye.
+
+### Running totals — SUM() OVER with ORDER BY
+
+Jab `SUM() OVER` ke andar `ORDER BY` bhi diya jaaye (bina explicit frame clause ke), default frame "start se current row tak" hoti hai — isse ek **running total** (cumulative sum) ban jaata hai. E-commerce example: "har din ka revenue, aur uska running total month ke start se."
+
+```sql
+SELECT order_date, daily_revenue,
+  SUM(daily_revenue) OVER (ORDER BY order_date) AS running_total
+FROM daily_sales;
+```
+
+Yahan har row ka `running_total` uss row tak ke saare `daily_revenue` ka cumulative sum hai — pehli row ka running total = uska khud ka revenue, doosri row ka running total = pehli + doosri, aur aage badhta jaata hai. Yeh sirf `ORDER BY` add karne se ban gaya, `PARTITION BY` yahan zaroori nahi tha kyunki poora table ek hi "window" hai.
+
+### Kab window function use karo, kab GROUP BY
+
+- Agar tumhe sirf summary numbers chahiye (rows collapse karke) — `GROUP BY`.
+- Agar tumhe har individual row detail bhi chahiye, sirf uske saath ek related aggregate/rank/comparison value bhi chahiye — window function.
+- "Top N per group", running totals, aur row-to-row comparisons (previous/next row) — yeh teeno classic window function use-cases hain jo `GROUP BY` se practically impossible ya bahut awkward hote hain (self-joins ya correlated subqueries ka use karna padta, jo slow aur unreadable hota).
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Window functions preserve row-level detail while still computing aggregate-style values", "Top N per group becomes a clean, single query instead of correlated subqueries or self-joins", "LAG/LEAD eliminate the need for manual self-joins for row-to-row comparisons"]}
+  cons={["Window functions can't be directly filtered in the same query's WHERE clause — need a CTE or subquery wrapper", "RANK vs DENSE_RANK vs ROW_NUMBER differences are subtle and easy to pick wrong for a given business requirement", "Wide partitions with no supporting index on the partition/order columns can be expensive on very large tables"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+"Best-selling product per category" widgets on category landing pages are a textbook top-N-per-group window function query — ROW_NUMBER partitioned by category, ordered by sales, filtered to the top few in an outer query.
+
+</RealWorld>
+
+<RealWorld company="Infosys">
+
+Payroll and attendance systems commonly use LAG to compute the gap between an employee's consecutive check-in timestamps, flagging anomalies (like a check-in with no matching check-out) without a manual self-join.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>ROW_NUMBER always produces a unique sequence (1, 2, 3, 4); RANK can skip numbers after ties (1, 2, 2, 4); DENSE_RANK never skips (1, 2, 2, 3)</li>
+<li>A top-3-per-category query across 50 categories with window functions returns at most 150 rows, computed in a single pass rather than 50 separate queries</li>
+<li>SUM() OVER (ORDER BY ...) with no explicit frame defaults to a running total from the first row to the current row</li>
+<li>Window functions logically execute after WHERE and GROUP BY but before the final ORDER BY of the outer query</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Find the top 3 highest-paid employees per department" is one of the most frequently asked SQL interview questions, and it's a direct window function test. Model answer shape: use ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) inside a CTE, then filter `WHERE rn <= 3` in the outer query — and proactively explain why RANK() or DENSE_RANK() might be preferred instead if ties should share the same position rather than being arbitrarily broken. This distinction (ROW_NUMBER vs RANK vs DENSE_RANK) is exactly the kind of detail interviewers probe with a quick follow-up.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Window function ko directly WHERE clause mein filter karne ki koshish karna in the same query — window functions WHERE se pehle nahi, balki row processing ke baad evaluate hoti hain, isliye ek CTE ya subquery wrapper zaroori hai.
+
+</Mistake>
+
+<Mistake>
+
+ROW_NUMBER, RANK, aur DENSE_RANK ko interchangeable samajhna — ties ke case mein teenon ka output different hota hai, aur galat choice se business requirement (jaise "sabko equal rank do agar tie ho") galat implement ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+PARTITION BY ko GROUP BY jaisa "rows collapse karega" samajh lena — window function kabhi rows collapse nahi karta, output row count input ke barabar hi rehta hai.
+
+</Mistake>
+
+<Mistake>
+
+Running total ke liye SUM() OVER () bina ORDER BY use karna — bina ORDER BY ke poori partition ka total har row pe repeat hoga, running/cumulative total nahi banega.
+
+</Mistake>
+
+<Mistake>
+
+Bade tables pe partition/order columns pe index na hone ke bawajood complex window function queries chalana, phir performance issue se surprised hona.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["1000 rows in orders table"] --> B{GROUP BY category}
+    A --> C["Window function:<br/>PARTITION BY category"]
+    B --> D["Collapsed: 10 rows<br/>(one per category)"]
+    C --> E["Preserved: 1000 rows<br/>each with its category's aggregate attached"]
+
+    style D fill:#450a0a,stroke:#ef4444,color:#fecaca
+    style E fill:#052e16,stroke:#34d399,color:#bbf7d0
+`}
+  caption="GROUP BY collapses rows into one per group; PARTITION BY in a window function keeps every row while still attaching a per-group aggregate value."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Window functions compute per-row values based on a related window, without collapsing rows (unlike GROUP BY)</li>
+<li>PARTITION BY divides rows into windows; ORDER BY within OVER defines row order for ranking/running calculations</li>
+<li>ROW_NUMBER: always unique, arbitrary tie-break. RANK: ties share rank, gaps after. DENSE_RANK: ties share rank, no gaps</li>
+<li>Top N per group: ROW_NUMBER() PARTITION BY group ORDER BY metric, wrapped in a CTE, filtered in the outer query</li>
+<li>LAG/LEAD fetch a previous/next row's value within the same partition, avoiding manual self-joins</li>
+<li>SUM() OVER (ORDER BY ...) with default frame produces a running/cumulative total</li>
+<li>Window functions can't be filtered directly in the same query's WHERE — wrap in a CTE or subquery</li>
+</ul>
+
+</QuickRevision>

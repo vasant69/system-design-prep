@@ -1,0 +1,171 @@
+---
+slug: "change-detection-and-zonejs"
+title: "Change Detection and Zone.js"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 11
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["http-client-and-interceptors"]
+tags: ["angular", "change-detection", "zonejs", "performance", "signals", "frontend"]
+englishDefinition: "Angular's change detection is the mechanism that syncs component templates with underlying data, historically triggered by zone.js patching every async browser API to notify Angular after it runs, refined by the OnPush strategy that skips subtrees unless a specific set of signals occurs, and now moving toward a zoneless model driven by fine-grained signals."
+interviewFrequency: "high"
+companies: ["Google", "Microsoft"]
+---
+
+<SimpleDefinition>
+
+Angular's change detection is the mechanism that syncs component templates with underlying data, historically triggered by zone.js patching every async browser API to notify Angular after it runs, refined by the OnPush strategy that skips subtrees unless a specific set of signals occurs, and now moving toward a zoneless model driven by fine-grained signals.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic Angular ke sabse "magic-lagne-wale" behavior ko explain karta hai — `{{ someValue }}` template me kaise automatically update ho jaata hai bina developer ne kabhi explicitly "re-render karo" bola.
+
+### zone.js — patching async APIs
+
+Angular default rup se `zone.js` library use karta hai jo browser ke **almost saare async APIs ko monkey-patch** kar deti hai — `setTimeout`, `Promise.then`, `addEventListener` (click, input, etc.), `XMLHttpRequest`/`fetch`. Matlab jab bhi in me se koi bhi async operation **complete** hoti hai (jaise ek click event fire hua, ek `setTimeout` callback chala, ek HTTP response aaya), zone.js Angular ko notify karti hai "kuch ho gaya hai, ek baar poore component tree ko check kar lo."
+
+Iske baad Angular **poore component tree ko top se neeche traverse** karta hai (default strategy), har component ka template data check karta hai, aur jahan bhi difference dikhta hai DOM update karta hai. Ye developer ko `this.x = 5` likhne ke baad manually kuch trigger karne ki zaroorat nahi deta — zone.js ne already Angular ko bata diya "check karo."
+
+### Default strategy ka cost
+
+Default strategy simple hai lekin **expensive** — agar app me 500 components hain aur ek button click hua kisi deep child me, Angular poore tree ke 500 components check karega, chahe unme se sirf ek hi actually change hua ho. Chhote apps me ye unnoticeable hai, lekin bade/complex apps me performance bottleneck ban sakta hai.
+
+### OnPush strategy
+
+`ChangeDetectionStrategy.OnPush` component ko batata hai "mujhe check mat karo har baar — sirf in specific situations me check karo":
+
+```typescript
+@Component({
+  selector: "app-user-card",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  ...
+})
+export class UserCardComponent {
+  @Input() user!: User;
+}
+```
+
+OnPush component **re-check hota hai sirf teen situations me**:
+1. **`@Input` reference change** — naya object/array reference aaya (mutation nahi, naya reference — `user.name = "x"` se OnPush trigger nahi hoga, lekin `this.user = {...this.user, name: "x"}` hoga)
+2. **Event component ke andar se hi fire hua** — jaise `(click)` handler khud us component ke template me
+3. **`async` pipe ne naya value emit kiya** template me
+
+Agar in teeno me se koi bhi nahi hua, Angular us component (aur uske children) ko **skip** kar deta hai change detection cycle me — bade performance win.
+
+### OnPush ka trap — direct mutation
+
+Sabse common OnPush bug: developer array/object ko **mutate** karta hai (`this.items.push(newItem)`) instead of naya reference banane ke (`this.items = [...this.items, newItem]`). Mutation se reference same rehta hai, isliye OnPush component ko pata hi nahi chalta kuch change hua — UI stale reh jaata hai jab tak koi doosra trigger (jaise event) na aaye.
+
+### Zoneless Angular — signals ki taraf move
+
+Zone.js ka fundamental limitation ye hai ki ye **bahut coarse-grained** hai — "kuch bhi hua, poora tree check karo" wala approach, chahe actual change ek chhoti si property ho. Angular Signals (Angular 16+ introduced, 17+ stable-ish, 19+ mature) is problem ko **fine-grained reactivity** se solve karte hain — jab ek signal ki value change hoti hai, Angular **exactly** wo components update karta hai jo us signal ko directly consume karte hain, poore tree ko traverse kiye bina.
+
+```typescript
+count = signal(0);
+increment() {
+  this.count.set(this.count() + 1);
+}
+```
+
+```html
+<p>{{ count() }}</p>
+```
+
+Zoneless mode (`provideZonelessChangeDetection()`, experimental/stabilizing) zone.js ko **completely hata deta hai** — Angular signals ke through hi track karta hai kya change hua, zone.js ke "patch every async API" approach ki zaroorat nahi rehti. Fayda: chhota bundle (zone.js ek significant chunk hai), predictable aur precise updates, better debugging (stack traces zone.js ke patches se pollute nahi hote).
+
+</Hinglish>
+
+<Tradeoff
+  pros={["OnPush + immutable data patterns se large apps me change detection cost drastically kam ho jaata hai", "Signals se fine-grained updates milte hain — sirf wo hi UI part update hota hai jo actually depend karta hai"]}
+  cons={["OnPush ke saath direct mutation ek silent, debug-karne-mein-mushkil bug class create karta hai", "Zoneless migration existing zone.js-dependent third-party libraries ke saath compatibility issues la sakta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Google">
+
+Bade Angular dashboards (jaise data-heavy admin panels with hundreds of rows/widgets) me OnPush + immutable state pattern combine karke teams change detection cycles ko 10x tak reduce kar dete hain — ek single unrelated click (jaise sidebar toggle) poore dashboard ke saare charts/tables ko re-check karne se bachta hai kyunki wo sab OnPush hain aur unka input reference nahi badla.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- zone.js typically adds roughly 30-40 KB to the bundle before compression
+- Angular Signals introduced as developer preview in Angular 16 (2023)
+- provideZonelessChangeDetection() available as experimental starting Angular 18
+- A default-strategy app with 500+ components can see noticeable jank on frequent events (scroll, mousemove) that OnPush + signals largely eliminate
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Explain how Angular knows to update the UI when data changes" is a common senior-level question — the complete answer chains zone.js patching async APIs, triggering a full tree change-detection pass, and names OnPush and signals as the two refinements on top of that default. A frequent trap: "why isn't my OnPush component updating when I push to an array" — the correct diagnosis is reference equality, not "OnPush is broken," and the fix is immutable updates. Expect a forward-looking question on zoneless Angular — naming that it uses signals for fine-grained tracking instead of zone.js's coarse "something happened, recheck everything" model shows awareness of where the framework is heading, not just how it works today.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+OnPush component me array/object ko mutate karna (`this.list.push(x)`, `this.user.name = "x"`) instead of naya reference create karne ke — reference same rehta hai isliye Angular ko pata nahi chalta kuch change hua, UI stale reh jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+"OnPush har jagah laga do, automatically fast ho jayega" soch lena bina immutable data pattern adopt kiye — OnPush sirf ek optimization hook hai, agar data mutation pattern nahi badla to bugs (missed updates) aayenge, benefit nahi milega.
+
+</Mistake>
+
+<Mistake>
+
+Change detection ko "React jaisa virtual DOM diffing" samajh lena — Angular actual real DOM ke against directly template expressions compare karta hai (no virtual DOM), fundamentally different mechanism hai.
+
+</Mistake>
+
+<Mistake>
+
+Signals ko samajhe bina "Angular ab automatically fast ho gaya" bol dena — signals sirf tab benefit dete hain jab actively use kiye jayein (`signal()`, `computed()`), purana `@Input`/plain-property-based code automatically signal-powered nahi ban jaata.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Browser event: click, setTimeout, HTTP response] --> B[zone.js intercepts the patched API call]
+    B --> C[zone.js notifies Angular: something happened]
+    C --> D{Change detection strategy?}
+    D -->|Default| E[Traverse entire component tree top to bottom]
+    D -->|OnPush| F{Input ref changed OR internal event OR async pipe emit?}
+    F -->|Yes| G[Check this component + children]
+    F -->|No| H[Skip this subtree entirely]
+    E --> I[Update DOM where template values differ]
+    G --> I
+`}
+  caption="zone.js triggers change detection on any patched async API completion; OnPush narrows which subtrees actually get re-checked."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- zone.js monkey-patches async browser APIs (setTimeout, events, Promises, HTTP) to notify Angular after they run
+- Default strategy re-checks the entire component tree on every notification — simple but potentially expensive
+- OnPush skips a subtree unless: @Input reference changes, an event fires from within the component, or an async pipe emits
+- OnPush + mutating data in place is the classic bug — always create new references for OnPush inputs
+- Angular has no virtual DOM — it compares template expressions directly against the real DOM
+- Signals (Angular 16+) give fine-grained reactivity — only components that read a changed signal update
+- provideZonelessChangeDetection() removes zone.js entirely, relying on signals for change tracking
+
+</QuickRevision>

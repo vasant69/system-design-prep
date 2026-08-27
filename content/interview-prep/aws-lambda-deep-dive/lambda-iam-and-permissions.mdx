@@ -1,0 +1,191 @@
+---
+slug: "lambda-iam-and-permissions"
+title: "Lambda IAM and Permissions"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 5
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["lambda-configuration-memory-timeout"]
+tags: ["aws", "lambda", "serverless", "iam", "security"]
+englishDefinition: "Lambda security has two distinct halves - the execution role, which grants the function permission to call other AWS services outbound, and the resource-based policy, which grants other services or accounts permission to invoke the function inbound, and confusing or omitting the latter in infrastructure-as-code is one of the most common Lambda deployment bugs."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda security has two distinct halves - the execution role, which grants the function permission to call other AWS services outbound, and the resource-based policy, which grants other services or accounts permission to invoke the function inbound, and confusing or omitting the latter in infrastructure-as-code is one of the most common Lambda deployment bugs.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Lambda permissions ko samajhne ke liye ek hi cheez yaad rakhni hai: **do alag directions, do alag mechanisms**. Ek batata hai Lambda **kya kar sakta hai** (outbound), doosra batata hai **Lambda ko kaun call kar sakta hai** (inbound). Ye dono bilkul independent hain aur alag jagah configure hote hain — yehi confusion ka sabse bada source hai.
+
+### Execution Role — outbound permissions
+
+**Execution Role** ek IAM role hai jo function ke saath attach hota hai, aur ye define karta hai Lambda code apne andar se **kaunse AWS resources access kar sakta hai**. Jaise: S3 bucket se read karna, DynamoDB table me write karna, SNS topic pe publish karna. Ye role do cheezein cover karta hai: (1) function ke apne business logic ke permissions (jo aap explicitly add karte ho), aur (2) basic execution permissions jo har Lambda ko chahiye — jaise CloudWatch Logs me likhne ki permission (`AWSLambdaBasicExecutionRole` managed policy), jiske bina function logs hi nahi bhej payega.
+
+**Least-privilege design** yaha critical hai. Ek common galti: `AmazonS3FullAccess` jaisi broad managed policy attach kar dena jab function ko sirf ek specific bucket ke ek specific prefix se read karna hai. Sahi approach: resource ARN ko exact specify karna, aur agar possible ho to specific actions (`s3:GetObject`, na ki `s3:*`). Example ek tight policy:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject"],
+  "Resource": "arn:aws:s3:::my-bucket/originals/*"
+}
+```
+
+Ye policy sirf `originals/` prefix se read allow karti hai — agar function galti se `thumbnails/` me bhi likhne ki koshish kare (jaise koi bug ki wajah se), IAM khud reject kar dega, jo ek accidental infinite-loop jaisi situation se bachaata hai (originals prefix pe process karke output usi prefix me likhna, jo dubara trigger kar de).
+
+### Resource-based Policy — inbound permissions
+
+**Resource-based policy** Lambda function pe khud attach hoti hai (execution role se alag), aur ye define karti hai **kaun (kaunsi service ya kaunsa AWS account) is function ko invoke kar sakta hai**. Jab aap **console** se koi trigger add karte ho (jaise S3 event source configure karna), AWS **automatically** ye resource-based policy add kar deta hai — aapko manually kuch nahi karna padta, isliye console-based setup me ye problem kabhi dikhti hi nahi.
+
+Lekin jab aap **Infrastructure as Code** (Terraform, AWS CDK, CloudFormation) use karte ho, ye automatic magic nahi hoti — aapko explicitly ek permission resource add karna padta hai (`AWS::Lambda::Permission` CloudFormation resource type, ya Terraform me `aws_lambda_permission`). Agar ye step **miss** ho jaaye:
+
+- S3 bucket me trigger configuration dikhega (event notification set hai)
+- Lambda function bhi exist karega, code sahi hoga
+- Lekin file upload karne pe function **kabhi invoke hi nahi hoga**
+- Koi obvious error bhi nahi milta — bas silently kuch nahi hota, jab tak aap CloudWatch Logs me dekh ke confirm na karo ki invocation hua hi nahi
+
+Ye ek **extremely common, extremely confusing bug** hai kyunki har cheez "sahi dikhti hai" — trigger configured hai, code deployed hai, IAM role bhi sahi hai — sirf ek chhota missing resource-based policy statement poori chain ko silently break kar deta hai.
+
+### Classic Terraform example jo ye bug demonstrate karta hai
+
+```hcl
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = aws_s3_bucket.my_bucket.id
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.my_function.arn
+    events              = ["s3:ObjectCreated:*"]
+  }
+}
+
+# Ye resource missing hone pe upar wala notification silently kaam nahi karega
+resource "aws_lambda_permission" "allow_s3" {
+  statement_id  = "AllowExecutionFromS3Bucket"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.my_function.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = aws_s3_bucket.my_bucket.arn
+}
+```
+
+Agar `aws_lambda_permission` resource likhna bhool jaayein, S3 notification configure ho jaayega (koi Terraform error nahi aayega), lekin runtime me S3 Lambda ko invoke karne ki koshish karega aur access denied ki wajah se fail hoga — silently, kyunki ye asynchronous invocation hai aur error caller (S3) ko wapas kabhi report nahi hota jab tak explicitly DLQ/monitoring set na ho.
+
+### Cross-account invocation
+
+Resource-based policy sirf same-account services tak limited nahi hai — ye **cross-account** invocation bhi allow kar sakti hai, jaise account A ka koi service account B ke Lambda function ko invoke kare. Ye multi-account architectures (jaise separate prod/staging AWS accounts, ya third-party integrations) me common hai, aur principal me specific account ID ya ARN specify karke tightly scope kiya jaata hai.
+
+### Debugging checklist jab "trigger configured hai lekin function chalta nahi"
+
+1. CloudWatch Logs check karo — koi invocation record hua hi nahi? To ye almost certainly resource-based policy issue hai
+2. `aws lambda get-policy --function-name <name>` chala ke dekho ki expected principal/source ARN wahan hai ya nahi
+3. Agar invocation record hua hai lekin fail ho raha hai, to ye execution role issue hai (permission denied kisi downstream resource access karte waqt) — CloudWatch Logs me actual error message milega
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Trigger configured hai lekin function chalta hi nahi" — ye Lambda ka sabse classic IaC bug hai. Pehla instinct execution role check karna hota hai, lekin agar CloudWatch Logs me invocation record hi nahi hai, to problem execution role me nahi, **resource-based policy** (inbound permission) me hai. Console setup me ye automatic hota hai isliye kabhi dikhta nahi, jab tak IaC me switch na karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek team apna S3-triggered thumbnail generator Terraform se migrate kar rahi thi (pehle console se manually set kiya gaya tha). `aws_s3_bucket_notification` resource define kiya, `aws_lambda_function` define kiya, lekin `aws_lambda_permission` resource add karna bhool gaye — kyunki console setup me ye kabhi manually karna hi nahi pada tha, is step ka concept hi team ko pata nahi tha. Deploy successful raha, koi Terraform error nahi aaya. Production me file uploads chalte rahe lekin thumbnails kabhi generate nahi hue. Debugging me 2 ghante lage jab tak koi engineer ne CloudWatch Logs check nahi kiya aur dekha ki function **kabhi invoke hi nahi hua** — jiske baad `aws_lambda_permission` resource add karke fix ho gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Execution role requires at minimum the AWSLambdaBasicExecutionRole managed policy for CloudWatch Logs write access</li>
+<li>Resource-based policy statements per function: up to 20 KB total policy size (soft limit)</li>
+<li>Cross-account invocation is supported via resource-based policy principal scoping to a specific AWS account ID</li>
+<li>Console-configured triggers auto-create the resource-based policy statement; IaC tools require an explicit separate resource/permission declaration</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Execution role vs resource-based policy" is one of the highest-frequency Lambda security questions, and a huge fraction of candidates answer it vaguely as "permissions for the function" without distinguishing direction. The strong answer states the directionality explicitly: execution role is outbound (what Lambda can do), resource-based policy is inbound (who can invoke Lambda). An excellent follow-up to demonstrate depth: describe the exact "trigger configured but function never fires" bug from IaC missing a permission resource, and the debugging path (check CloudWatch Logs first to see if invocation even happened, before assuming it's an execution-role denial). Least-privilege role design is also commonly probed with a live scenario ("this function only needs to read one S3 prefix, write the policy") - the strong answer scopes both the action and the resource ARN tightly.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Execution role aur resource-based policy ko same cheez samajhna, ya confuse kar dena — ye do bilkul alag directions (outbound vs inbound) aur alag mechanisms hain.
+
+</Mistake>
+
+<Mistake>
+
+IaC (Terraform/CDK/CloudFormation) me trigger configure karna lekin corresponding resource-based policy/permission resource add karna bhool jaana — trigger dikhta hai, function bhi hai, lekin invoke kabhi hota hi nahi.
+
+</Mistake>
+
+<Mistake>
+
+Execution role me broad managed policies (jaise full-access policies) attach karna jab specific, scoped resource ARN aur actions kaafi hote — least-privilege violate karta hai aur blast radius badhata hai agar function compromise ho jaaye.
+
+</Mistake>
+
+<Mistake>
+
+"Function nahi chal raha" debug karte waqt seedha execution role check karna, CloudWatch Logs pehle check kiye bina — agar invocation record hi nahi hua, problem resource-based policy me hai, execution role me nahi, aur galat jagah debug karne me time waste hota hai.
+
+</Mistake>
+
+<Mistake>
+
+S3-triggered function ke execution role ko usi bucket ke output prefix pe bhi write access dena jab input aur output prefix same bucket me hon — accidental infinite loop ka risk create karta hai jo scoped IAM policy easily prevent kar sakti thi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Outbound["Execution Role - outbound"]
+        L1[Lambda Function] -->|assumes role, calls| S3[S3 / DynamoDB / SNS etc]
+    end
+    subgraph Inbound["Resource-based Policy - inbound"]
+        Trigger[S3 / API Gateway / other account] -->|needs InvokeFunction permission| L2[Lambda Function]
+    end
+    Note1[Console trigger setup: auto-creates resource-based policy]
+    Note2[IaC trigger setup: must explicitly add permission resource]
+    Trigger -.->|if permission missing| Fail[Invocation silently never happens]
+`}
+  caption="The execution role and resource-based policy govern opposite directions of trust - mixing them up, or forgetting the inbound permission in infrastructure-as-code, is the single most common Lambda permissions bug."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Execution role = outbound - what the Lambda function itself is allowed to do (call S3, DynamoDB, etc.)</li>
+<li>Resource-based policy = inbound - who is allowed to invoke the Lambda function (a service, or another AWS account)</li>
+<li>Console-based trigger setup auto-creates the resource-based policy statement; infrastructure-as-code requires it as an explicit separate resource</li>
+<li>Missing resource-based policy in IaC is the classic "trigger configured but function never fires" bug - deploy succeeds, nothing errors, invocation just silently never happens</li>
+<li>Debugging path: check CloudWatch Logs first - no invocation record means resource-based policy issue, an invocation that fails mid-execution means an execution role issue</li>
+<li>Least-privilege execution roles should scope both actions (specific API calls, not wildcards) and resources (specific ARNs/prefixes, not entire services)</li>
+<li>Resource-based policies also support cross-account invocation by scoping the principal to a specific external AWS account ID</li>
+</ul>
+
+</QuickRevision>

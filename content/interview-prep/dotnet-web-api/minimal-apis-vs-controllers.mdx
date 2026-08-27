@@ -1,0 +1,197 @@
+---
+slug: "minimal-apis-vs-controllers"
+title: "Minimal APIs vs Controllers"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 12
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["authentication-and-authorization-jwt"]
+tags: ["dotnet", "webapi", "minimalapi", "controllers", "architecture"]
+englishDefinition: "Minimal APIs define HTTP endpoints directly on the WebApplication instance using methods like app.MapGet, offering a lightweight, low-ceremony syntax well suited to small services and microservices, while controller-based APIs (MVC-style, using [ApiController] classes) provide a richer, convention-driven feature set — model binding conventions, filters, and structured testability — that scales better for large, complex API surfaces."
+interviewFrequency: "high"
+companies: ["Microsoft", "Infosys", "TCS"]
+---
+
+<SimpleDefinition>
+
+Minimal APIs define HTTP endpoints directly on the WebApplication instance using methods like app.MapGet, offering a lightweight, low-ceremony syntax well suited to small services and microservices, while controller-based APIs (MVC-style, using [ApiController] classes) provide a richer, convention-driven feature set — model binding conventions, filters, and structured testability — that scales better for large, complex API surfaces.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+.NET 6 me minimal APIs introduce hone ke baad se ye ek genuinely asked architecture-choice question ban gaya hai interviews me — "tumhare naye project me minimal API use karoge ya controllers", aur interviewer sirf syntax nahi, reasoning sunna chahta hai.
+
+### Minimal API syntax
+
+Endpoint directly `app` instance pe define hota hai, koi separate class ya attribute-based routing nahi chahiye:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddScoped<IOrderService, OrderService>();
+var app = builder.Build();
+
+app.MapGet("/orders/{id:int}", async (int id, IOrderService svc) =>
+{
+    var order = await svc.GetByIdAsync(id);
+    return order is not null ? Results.Ok(order) : Results.NotFound();
+});
+
+app.MapPost("/orders", async (CreateOrderRequest req, IOrderService svc) =>
+{
+    var created = await svc.CreateAsync(req);
+    return Results.Created($"/orders/{created.Id}", created);
+});
+
+app.Run();
+```
+
+Dependency injection lambda parameters me directly resolve ho jaati hai (`IOrderService svc`) — koi constructor injection ki zaroorat nahi ek poori class ke liye jab endpoint khud hi ek chhota, self-contained function ho.
+
+### Route groups — organization ke liye
+
+Bade route sets ko organize karne ke liye `MapGroup` use hota hai, jisse common prefix aur shared filters/auth ek jagah apply ho sakein:
+
+```csharp
+var orders = app.MapGroup("/orders").RequireAuthorization();
+
+orders.MapGet("/{id:int}", GetOrder);
+orders.MapPost("/", CreateOrder);
+orders.MapDelete("/{id:int}", DeleteOrder);
+```
+
+Ye controllers ke route-prefix + shared `[Authorize]` attribute jaisa hi organizational benefit deta hai, bina class hierarchy ke.
+
+### Controllers — traditional MVC approach
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase
+{
+    private readonly IOrderService _svc;
+    public OrdersController(IOrderService svc) => _svc = svc;
+
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> Get(int id)
+    {
+        var order = await _svc.GetByIdAsync(id);
+        return order is not null ? Ok(order) : NotFound();
+    }
+}
+```
+
+`[ApiController]` attribute automatic behaviors deta hai — automatic model validation (`400 BadRequest` agar `ModelState` invalid ho, bina explicit check likhe), automatic `[FromBody]` inference complex types ke liye, problem-details-formatted error responses by default.
+
+### Kab kya use karo — real trade-off
+
+**Minimal APIs jab sense banate hain:** chhoti microservices (5-15 endpoints), simple CRUD-heavy services, serverless/container functions jaha startup time aur memory footprint matter karte hain, aur jab team explicitly lightweight, less-ceremony code chahta ho.
+
+**Controllers jab still win karte hain:** large API surface (50+ endpoints) jaha convention-driven organization (folders, base classes, shared filters) genuinely maintainability improve karti hai; jab model binding conventions (complex `[FromBody]`/`[FromQuery]`/`[FromRoute]` combinations) heavily use ho rahi hon; jab action filters/exception filters ka rich pipeline chahiye jo controllers me zyada mature hai (`OnActionExecuting` jaisa fine-grained hook minimal APIs me endpoint filters se approximate hota hai lekin kam mature hai); aur jab team already MVC patterns me deeply invested ho, migration cost justify nahi karta.
+
+**Testability:** dono testable hain, lekin controllers unit-testing ke liye zyada established patterns rakhte hain (controller class ko directly instantiate karke test karna) — minimal API endpoints ko test karne ke liye typically `WebApplicationFactory` ke through integration-style testing zyada natural hota hai, kyunki endpoint logic khud ek lambda hai jo route se tightly coupled hai.
+
+### Performance difference
+
+Minimal APIs ka startup aur per-request overhead thoda kam hota hai kyunki controller-discovery, action-selector, aur MVC-specific middleware pipeline steps skip ho jaate hain. Microsoft ke apne benchmarks (TechEmpower jaisa) me minimal APIs consistently thoda better raw throughput dikhate hain — lekin real-world me difference typically negligible hota hai jab tak app genuinely extreme-scale, low-latency requirement na ho (jaise ek serverless function jaha cold-start milliseconds matter karte hain). **Interview trap:** "minimal API hamesha fast hota hai" ek oversimplification hai — difference measurable hai but zyadatar business applications ke liye practically irrelevant, architecture choice zyada maintainability/team-fit pe based honi chahiye, raw microbenchmark pe nahi.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Ek pragmatic middle-ground bhi common hai production codebases me: naye, chhote, isolated services minimal API me likhna, jabki existing large controller-based APIs ko as-is rakhna — ye dono approaches ek hi solution me coexist kar sakte hain, migration force karne ki zaroorat nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+.NET team ne minimal APIs ko explicitly microservices aur containerized workloads ke liye design kiya — startup time aur memory footprint reduction ka direct impact hota hai jab tum hazaron chhote container instances run kar rahe ho (jaise Kubernetes me auto-scaled pods), jaha har instance ka cold-start cost multiply hota hai scale pe. Ye design intent hi explain karta hai ki minimal APIs "chhoti services ke liye" recommended kyun hain, "har API ke liye" nahi.
+
+</RealWorld>
+
+<RealWorld company="An Indian E-commerce Platform">
+
+Ek typical mid-size e-commerce backend me core order-management/catalog APIs (100+ endpoints, complex validation, shared filters) controllers me rehte hain kyunki team ka existing investment aur tooling (Swagger annotations, action filters for logging/auditing) already mature hai us pattern ke around. Lekin nayi, isolated internal services — jaise ek chhota "price-calculator" microservice jo sirf 4 endpoints expose karta hai — minimal API me likhe jaate hain kyunki wo genuinely simple hain aur fast container startup benefit deta hai frequent auto-scaling scenarios me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Minimal APIs introduced in .NET 6 (2021); route groups (`MapGroup`) added in .NET 7
+- Rough guideline: minimal API sweet spot ~5-15 endpoints; controllers scale better past 50+
+- Minimal APIs skip controller discovery/action selector — measurable but typically small startup/throughput edge
+- `[ApiController]` attribute enables automatic 400 responses on invalid `ModelState` — a controllers-only convenience
+- Endpoint filters (minimal API's approximation of controller action filters) added in .NET 7
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Naye microservice ke liye minimal API choose karoge ya controller? Reasoning batao." — strong answer: "Depend karta hai API surface size aur complexity pe. Agar service chhota hai — 10-15 endpoints, simple CRUD, koi heavy shared-filter pipeline nahi — minimal API choose karunga kyunki syntax lightweight hai, startup fast hai, aur container-heavy deployment me (jaise Kubernetes auto-scaling) ye genuinely matter karta hai. Agar API surface bada hai, complex model-binding scenarios hain, ya team already controller-based filters/conventions pe heavily depend karti hai, controllers better choice hain kyunki unka convention-driven structure large codebase ko zyada maintainable rakhta hai. Performance difference dono ke beech real hai but zyadatar business apps ke liye negligible — architecture decision maintainability aur team-familiarity pe based honi chahiye, sirf microbenchmark pe nahi." Follow-up: "Minimal API me dependency injection kaise kaam karta hai?" — answer: lambda parameters directly resolve ho jaate hain DI container se, framework automatically detect kar leta hai parameter services collection me registered hai ya route parameter hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+"Minimal API hamesha faster hai isliye hamesha use karo" — ye oversimplification hai; difference small services/high-scale-container scenarios me matter karta hai, zyadatar apps ke liye maintainability zyada important factor hai.
+
+</Mistake>
+
+<Mistake>
+
+Bade, complex API surface (50+ endpoints) ko minimal API me likhna sirf "naya hai isliye better hoga" soch kar — bina route groups aur endpoint filters ko carefully organize kiye, code jaldi unmaintainable ho jaata hai kyunki controllers ka convention-driven structure miss ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+`[ApiController]`-style automatic model validation ko minimal API me bhi assume kar lena — minimal API me explicit validation likhni padti hai (ya validation filter add karna padta hai), automatically nahi hoti jaise controllers me hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+Route groups (`MapGroup`) use na karke saare minimal API endpoints ko ek hi flat `Program.cs` file me daal dena bina organization ke — 20-30 endpoints ke baad ye file genuinely unmanageable ho jaati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["New API endpoint needed"] --> B{"API surface size?"}
+    B -->|"Small, 5-15 endpoints, simple CRUD"| C["Minimal API"]
+    B -->|"Large, 50+ endpoints, complex binding/filters"| D["Controllers"]
+    C --> E["app.MapGet/MapPost + MapGroup for organization"]
+    D --> F["[ApiController] class + attribute routing + action filters"]
+    E --> G["Faster startup, less ceremony, ideal for microservices"]
+    F --> H["Richer conventions, mature filter pipeline, scales for large teams"]
+`}
+  caption="The choice is a spectrum driven by API surface size and team convention investment, not a universal winner."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Minimal APIs: `app.MapGet/MapPost/...` directly on `WebApplication`, DI resolved via lambda parameters
+- `MapGroup` organizes minimal API routes with shared prefix/auth — the route-groups analog to controller `[Route]` + `[Authorize]`
+- `[ApiController]` gives controllers automatic model validation and problem-details error responses — not present by default in minimal APIs
+- Minimal APIs fit small services/microservices/containers where startup time and low ceremony matter
+- Controllers fit large API surfaces where convention-driven organization, model binding, and mature filter pipelines pay off
+- Performance edge for minimal APIs is real but usually negligible outside extreme-scale/cold-start-sensitive scenarios
+- Both can coexist in the same solution — no need to force a single choice project-wide
+
+</QuickRevision>

@@ -1,0 +1,181 @@
+---
+slug: "git-undoing-changes-commands"
+title: "Git Undoing Changes: Checkout, Restore, Reset, and Revert"
+section: "interview-prep"
+module: "github-commands"
+order: 7
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["git-log-diff-and-history-commands"]
+tags: ["git", "reset", "revert", "restore", "undo"]
+englishDefinition: "Git offers several distinct ways to undo work: git restore or git checkout -- discard uncommitted working directory changes, git reset moves HEAD and optionally alters staging and working directory contents, and git revert creates a new commit that reverses a previous one without rewriting shared history."
+interviewFrequency: "very-high"
+companies: ["GitHub", "Microsoft", "Atlassian"]
+---
+
+<SimpleDefinition>
+
+Git offers several distinct ways to undo work: git restore or git checkout -- discard uncommitted working directory changes, git reset moves HEAD and optionally alters staging and working directory contents, and git revert creates a new commit that reverses a previous one without rewriting shared history.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Undo" ke liye Git mein ek nahi, kai commands hain — aur yeh sabse zyada confusing area hai naye developers ke liye kyunki har command ka scope aur effect alag hai. Galat command use karne se ya to data permanently lose ho sakta hai, ya shared team history corrupt ho sakti hai. Isliye yeh distinction interview mein bahut baar poocha jaata hai.
+
+### Working directory changes discard karna — restore / checkout --
+
+Agar tumne ek file edit ki lekin abhi tak stage/commit nahi kiya, aur ab wapas last-committed version pe jaana hai:
+
+```bash
+git restore file.js                # modern (Git 2.23+) way — working dir change discard karo
+git checkout -- file.js            # older, equivalent way (legacy syntax)
+git restore --staged file.js       # sirf unstage karo, working dir changes rakho
+```
+
+Dono commands sirf working directory ko affect karte hain, staged ya committed history ko nahi. Yeh sabse "safe" undo hai kyunki scope bahut chhota hai — ek file, uncommitted changes.
+
+### git reset — HEAD move karna, teen modes
+
+`git reset` commit history mein peeche jaata hai — HEAD (aur current branch pointer) ko kisi purane commit pe move kar deta hai. Teen modes hain, aur farak yeh hai ki staging area aur working directory ka kya hota hai:
+
+```bash
+git reset --soft HEAD~1     # HEAD move, staging area SAME rehta hai (changes staged reh jaate hain)
+git reset --mixed HEAD~1    # HEAD move, staging area RESET, working dir SAME (default mode)
+git reset --hard HEAD~1     # HEAD move, staging area AUR working dir dono reset — DATA LOSS
+```
+
+- `--soft`: commit undo ho gaya, lekin uske changes ab bhi staged hain — jaise commit karna hi nahi hua ho, bas message likhna reh gaya. Use-case: "maine commit kar diya lekin message galat tha ya do commits ko squash karna hai."
+- `--mixed` (default agar mode specify na karo): commit bhi undo, aur staging bhi undo — changes working directory mein wapas aa jaate hain as unstaged. Use-case: "commit galat tha, ab dobara se select karna hai kya stage karna hai."
+- `--hard`: sabse dangerous — commit undo, staging undo, AUR working directory ke changes bhi gone. Jo bhi uncommitted tha, permanently delete ho jaata hai (bina commit ke, koi reflog bhi seedha recovery nahi deta files content ke liye agar kabhi staged/committed nahi hua tha).
+
+```bash
+# reset kisi specific commit pe bhi ja sakta hai, sirf HEAD~N nahi
+git reset --hard <commit-hash>
+```
+
+### git revert — safe undo for shared/pushed history
+
+`git reset` history ko rewrite karta hai — commits literally gayab ho jaate hain branch se. Yeh tab problematic hai jab woh commits already push ho chuke hain aur doosre log ne unpe kaam shuru kar diya hai — unki local history team ke remote se mismatch ho jaayegi.
+
+`git revert` iska solution hai: yeh purane commit ko delete nahi karta, balki ek NAYA commit banata hai jo us purane commit ke changes ko reverse kar deta hai. History intact rehti hai, sirf ek naya "undo" commit add hota hai.
+
+```bash
+git revert <commit-hash>           # us commit ko reverse karne wala naya commit banao
+git revert HEAD                    # last commit ko revert karo
+git revert --no-commit <commit-hash>  # revert karo lekin commit mat karo, manually review karne do
+```
+
+### Decision table — kab kya use karo
+
+| Situation | Command |
+|---|---|
+| File edit ki, commit nahi kiya, discard karna hai | `git restore file.js` |
+| Galti se stage kar diya, unstage karna hai (changes rakhne hain) | `git restore --staged file.js` |
+| Last commit ka message/content fix karna hai, changes staged rakhne hain | `git reset --soft HEAD~1` |
+| Last commit undo karke changes ko unstaged rakhna hai (re-select karna hai) | `git reset --mixed HEAD~1` |
+| Sab kuch (commit + staging + working dir) discard karke ek purani state pe jaana hai, aur yeh history LOCAL/unpushed hai | `git reset --hard <commit>` |
+| Ek purana commit undo karna hai lekin woh commit already PUSHED/shared hai | `git revert <commit-hash>` |
+
+Sabse important interview signal: `reset --hard` sirf tab safe hai jab commits abhi tak push nahi hue hain — shared, already-pushed history pe `reset --hard` (aur phir force-push) team ke liye divergent history create kar deta hai, jisse doosre logon ko manually apni local history fix karni padti hai. `revert` iske liye designed hai — safe, additive, aur shared branches pe use karne layak.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["git revert is always safe on shared branches since it adds history instead of rewriting it", "git reset --soft/--mixed give fine-grained control over exactly what gets undone (commit only, vs commit + staging)", "git restore has a small, clearly-scoped blast radius (working directory only), reducing accidental data loss"]}
+  cons={["git reset --hard permanently deletes uncommitted working directory changes with no recovery path", "git reset on already-pushed commits requires a force-push, which can silently overwrite teammates' work", "git revert on a merge commit needs an extra -m flag to specify which parent to revert to, a common stumbling point"]}
+/>
+
+## Real World Example
+
+<RealWorld company="GitHub">
+
+A bad commit gets merged into a shared release branch that other engineers have already pulled. Instead of `git reset --hard` (which would require a disruptive force-push), the team uses `git revert <commit-hash>` — a new commit reverses the bad change, history stays intact, and everyone's local clone stays in sync with a simple pull.
+
+</RealWorld>
+
+<RealWorld company="Microsoft">
+
+A developer commits locally, immediately realizes the commit message is wrong and one file was left out. `git reset --soft HEAD~1` undoes just the commit (keeping everything staged), lets them `git add` the missing file, and re-commit with a corrected message — all before anything was ever pushed.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>git reset has exactly three modes: --soft, --mixed (default), --hard, each affecting a different combination of HEAD/staging/working directory</li>
+<li>git reset --hard on unpushed commits is generally recoverable via git reflog for about 30-90 days (default gc settings) since the commits still exist as dangling objects</li>
+<li>Uncommitted working directory changes wiped by --hard have zero recovery path — they were never a Git object to begin with</li>
+<li>git revert on a merge commit requires specifying which parent with -m 1 or -m 2, a two-option decision that trips up most first-time users</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+**"What's the difference between git reset and git revert, and when would you use each?"** A strong answer leads with the shared-history rule: reset rewrites history by moving HEAD (fine for local, unpushed commits), revert adds a new commit that undoes a previous one (safe for shared, pushed history). Bonus points for correctly explaining the three reset modes (soft/mixed/hard) and their differing effect on the staging area versus the working directory — this is one of the most commonly asked Git questions precisely because it separates candidates who've memorized commands from those who understand what each one actually does to repository state.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`git reset --hard` chalana bina soche ki uncommitted changes permanently lose ho jaayenge — is command ka koi undo nahi hai working-directory-only changes ke liye.
+
+</Mistake>
+
+<Mistake>
+
+Already-pushed, shared commits pe `git reset --hard` + force-push use karna — yeh team ke remote history ko diverge kara deta hai aur sabko manually apni local branch fix karni padti hai. Yahan `git revert` use karna chahiye tha.
+
+</Mistake>
+
+<Mistake>
+
+`git reset --soft`, `--mixed`, aur `--hard` mein confuse ho jaana — yeh yaad na rakhna ki kaunsa mode staging area ko touch karta hai aur kaunsa working directory ko bhi.
+
+</Mistake>
+
+<Mistake>
+
+`git checkout -- file.js` aur `git checkout <branch-name>` ko confuse karna — dono ek hi command hain (checkout) lekin context ke hisaab se completely different cheez karte hain (file discard vs branch switch), jo Git 2.23+ mein `restore` aur `switch` se split kiya gaya hai exactly is confusion ko fix karne ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Uncommitted change in working directory"] -->|git restore file| B["Discarded — back to last commit"]
+    C["Bad commit, NOT pushed yet"] -->|git reset --soft| D["Commit undone, changes still STAGED"]
+    C -->|git reset --mixed| E["Commit undone, changes UNSTAGED"]
+    C -->|git reset --hard| F["Commit + staging + working dir ALL gone"]
+    G["Bad commit, ALREADY pushed/shared"] -->|git revert| H["New commit added that reverses it — history intact"]
+`}
+  caption="Scope of undo grows from restore (one file, uncommitted) to reset modes (local history) to revert (safe for shared history since it adds rather than removes)."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>git restore file.js — discard uncommitted working directory changes to one file</li>
+<li>git restore --staged file.js — unstage a file, keep its working directory changes</li>
+<li>git reset --soft `HEAD~1` — undo last commit, keep changes staged</li>
+<li>git reset --mixed `HEAD~1` (default) — undo last commit, changes become unstaged</li>
+<li>git reset --hard `HEAD~1` — undo commit + staging + working dir, irreversible for uncommitted work</li>
+<li>git revert &lt;hash&gt; — new commit that safely undoes an old one, safe for shared/pushed history</li>
+<li>Rule: reset for local/unpushed history, revert for shared/pushed history</li>
+<li>git revert on a merge commit needs -m 1 or -m 2 to pick which parent to revert against</li>
+</ul>
+
+</QuickRevision>

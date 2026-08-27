@@ -1,0 +1,171 @@
+---
+slug: "angular-routing-deep-dive"
+title: "Angular Routing Deep Dive"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 7
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["component-communication-patterns"]
+tags: ["angular", "routing", "lazy-loading", "guards", "frontend"]
+englishDefinition: "Angular Router is the built-in navigation module that maps URL paths to components, using router-outlet as a placeholder for the active route, route guards to control access, resolvers to pre-fetch data, and lazy loading to split code into on-demand-loaded chunks."
+interviewFrequency: "very-high"
+companies: ["Google", "Microsoft", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Angular Router is the built-in navigation module that maps URL paths to components, using router-outlet as a placeholder for the active route, route guards to control access, resolvers to pre-fetch data, and lazy loading to split code into on-demand-loaded chunks.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Router Angular ka **built-in navigation system** hai — koi third-party library nahi chahiye jaise React me `react-router` alag se install karte hain. Ye URL ko component ke saath map karta hai, aur `RouterModule.forRoot(routes)` (ya standalone `provideRouter(routes)`) se configure hota hai.
+
+### Routes config aur router-outlet
+
+Ek route object me kam se kam `path` aur `component` (ya `loadComponent`) hota hai:
+
+```typescript
+const routes: Routes = [
+  { path: "", component: HomeComponent },
+  { path: "users/:id", component: UserDetailComponent },
+  { path: "admin", loadChildren: () => import("./admin/admin.routes").then(m => m.ADMIN_ROUTES) },
+  { path: "**", component: NotFoundComponent },
+];
+```
+
+`<router-outlet></router-outlet>` ek placeholder tag hai template me — jo bhi route active hai, uska component yahan render hota hai. Ye same concept hai jaise `{children}` React me, lekin Angular me Router khud decide karta hai kaunsa component dikhana hai based on current URL.
+
+### Route parameters
+
+Do tarah ke parameters milte hain: **path parameters** (`:id` jaisa, mandatory part of URL, jaise `/users/42`) aur **query parameters** (`?sort=name`, optional). Inhe read karne ke do tareeke hain — snapshot (`this.route.snapshot.paramMap.get("id")`, ek baar read karta hai) ya observable (`this.route.paramMap.subscribe(...)`, jab component reuse ho raha ho tab bhi update milta hai). Snapshot tab safe hai jab component destroy-recreate hota hai har navigation pe; agar same component instance reuse ho rahi hai (jaise `/users/1` se `/users/2` navigate karo without leaving the component), to observable use karna zaroori hai warna stale data dikhega.
+
+### Route guards — access control
+
+Guards decide karte hain ki navigation allow ho ya nahi. Purana class-based interface (`CanActivate`, `CanDeactivate`) tha, lekin Angular 14.2+ ne **functional guards** introduce kiye jo ab recommended approach hain — ek plain function jo `boolean`, `UrlTree`, ya `Observable<boolean>` return karta hai:
+
+```typescript
+export const authGuard: CanActivateFn = (route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+  return auth.isLoggedIn() ? true : router.parseUrl("/login");
+};
+
+// route config me:
+{ path: "dashboard", component: DashboardComponent, canActivate: [authGuard] }
+```
+
+`CanDeactivate` guard ek alag use-case cover karta hai — user ko route se **bahar jaane se** rokna, jaise "unsaved changes hain, sach me chhodna chahte ho?" confirmation dialog. Isme component khud ek method expose karta hai (`canDeactivate(): boolean`) jo guard check karta hai.
+
+### Lazy loading — feature modules aur standalone components
+
+Poore app ka JavaScript ek hi bundle me bhejna slow startup deta hai. Lazy loading ka matlab hai kisi feature ka code tabhi download ho jab user usme navigate kare. NgModule-based approach: `loadChildren: () => import("./admin/admin.module").then(m => m.AdminModule)`. Standalone-component era me ye aur simple ho gaya — `loadComponent` seedha ek component ko lazy-load kar sakta hai, poora module wrap karne ki zaroorat nahi:
+
+```typescript
+{ path: "reports", loadComponent: () => import("./reports/reports.component").then(m => m.ReportsComponent) }
+```
+
+### Resolvers — data pehle se ready rakhna
+
+Resolver ek function/class hai jo route activate hone se **pehle** data fetch kar leta hai — component ko empty state se render nahi karna padta phir loading spinner dikhake data aane ka wait karna. `ResolveFn<T>` (functional style) route config me `resolve` property me attach hota hai, aur component me `this.route.snapshot.data["user"]` se already-resolved data milta hai. Trade-off: navigation tab tak block rehta hai jab tak resolver complete na ho — agar API slow hai to poori navigation slow feel hogi, is liye resolvers sirf critical, jaldi load hone wale data ke liye use karo, poore page ka data nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Resolvers se component instant fully-loaded data ke saath render hota hai, no loading-flash", "Guards se centralized access control milta hai, har component me duplicate auth-check code nahi likhna padta"]}
+  cons={["Resolver slow API ke sath poori navigation ko block kar deta hai — bad perceived performance", "Bahut zyada guards chain karne se debugging mushkil ho jaati hai ki navigation kyun block hua"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Enterprise Angular apps (jaise internal admin dashboards) me feature-based lazy loading standard practice hai — HR module, Finance module, Reporting module sab alag lazy-loaded routes hote hain. Ek user jo sirf apna expense report submit karne aaya hai, use HR ya Reporting module ka code download hi nahi karna padta — sirf jis feature me navigate karega uska bundle download hoga, initial load 2-3x faster ho jaata hai bade apps me.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Functional guards (`CanActivateFn` etc.) available since Angular 14.2, now the recommended default over class-based guards
+- `loadComponent` for standalone lazy loading available since Angular 14
+- A well-lazy-loaded enterprise app can cut initial bundle by 60-70 percent compared to eager-loading everything
+- Route resolvers block navigation until they resolve — a resolver taking over 1 second is a common source of a "frozen click" complaint in QA
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How does lazy loading actually improve performance" is asked constantly — the strong answer names the mechanism (webpack/esbuild splits code at the `import()` boundary named in `loadChildren`/`loadComponent`, so that chunk is a separate JS file only fetched on navigation) not just "it makes it faster." "Guard vs resolver" is a common confusion check — a guard answers yes/no "can this navigation happen," a resolver answers "what data does this navigation need before it happens," and both can be combined on the same route. Expect a follow-up on why functional guards replaced class-based ones — smaller bundle (no need to register a provider class), easier to compose/test as plain functions, and alignment with Angular's broader move away from decorators-only patterns.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`this.route.snapshot.paramMap` use karna jab component same instance reuse hota hai (jaise `/users/1` to `/users/2`) — snapshot sirf ek baar read hota hai, param change pe update nahi hoga. Observable (`paramMap.subscribe`) chahiye is case me.
+
+</Mistake>
+
+<Mistake>
+
+Har route pe heavy resolver laga dena "data pehle se ready rahe" ke naam pe — user ko blank white screen milta hai navigation click karne ke turant baad kyunki resolver complete hone tak router wait karta hai. Non-critical data ko component ke andar hi async fetch karo, resolver me mat daalo.
+
+</Mistake>
+
+<Mistake>
+
+`canDeactivate` guard ko sirf UI confirmation ke liye use karna bhool jaana — form me unsaved changes ke baad user accidentally back button dabaye to data loss ho jaata hai bina warning ke.
+
+</Mistake>
+
+<Mistake>
+
+Wildcard route (`path: "**"`) ko routes array me sabse pehle rakh dena — Router routes ko order me match karta hai top se, wildcard sabse last hona chahiye warna wo baaki sab routes ko shadow kar dega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant User
+    participant Router
+    participant Guard as authGuard
+    participant Resolver
+    participant Component
+
+    User->>Router: navigate to /dashboard
+    Router->>Guard: canActivate check
+    Guard-->>Router: true (logged in)
+    Router->>Resolver: resolve dashboard data
+    Resolver->>Resolver: fetch from API
+    Resolver-->>Router: data ready
+    Router->>Component: create + render with data
+    Component-->>User: fully loaded page
+`}
+  caption="A guarded, resolved navigation: the guard decides if navigation proceeds, the resolver fetches data before the component ever renders."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `router-outlet` is the placeholder where the active route's component renders
+- Path params (`:id`) are mandatory URL segments, query params (`?x=y`) are optional — use observable paramMap when a component instance is reused across navigations
+- Functional guards (`CanActivateFn`) are the modern replacement for class-based `CanActivate` — return `true`, `false`, or a `UrlTree` to redirect
+- `CanDeactivate` protects against leaving a route with unsaved changes
+- `loadChildren` lazy-loads a feature module/routes; `loadComponent` (Angular 14+) lazy-loads a single standalone component
+- Resolvers pre-fetch data before a route activates, but block navigation until they finish — use only for critical, fast data
+- Always put the wildcard `**` route last in the routes array
+
+</QuickRevision>

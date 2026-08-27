@@ -1,0 +1,203 @@
+---
+slug: "filters-and-action-filters"
+title: "Filters and Action Filters"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 7
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["middleware-pipeline-deep-dive"]
+tags: ["aspnet-core", "filters", "action-filters", "web-api"]
+englishDefinition: "Filters are MVC-aware pipeline components that run at specific stages of action execution — authorization, resource, action, exception, and result — with access to action arguments and MVC context that plain middleware does not have."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Filters are MVC-aware pipeline components that run at specific stages of action execution — authorization, resource, action, exception, and result — with access to action arguments and MVC context that plain middleware does not have.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Filters ASP.NET Core MVC/Web API pipeline ke andar ek dusra, **finer-grained** hook system hai. Middleware ko sirf raw `HttpContext` dikhta hai — usko pata nahi hota kaunsa controller action call hoga, kya arguments hain, ya model binding successful hui ya nahi. Filters ko ye sab context milta hai kyunki wo MVC framework ke andar chalte hain, routing aur model binding ke baad.
+
+### Filter pipeline order — exact sequence
+
+Filters five categories me chalte hain, is exact order me:
+
+1. **Authorization filters** — sabse pehle, decide karte hain ki request aage badhegi ya nahi (`[Authorize]` attribute isi category ka hai)
+2. **Resource filters** — authorization ke baad, model binding se **pehle** — caching, short-circuiting ke liye useful (jaise cached response seedha yahin return kar dena)
+3. **Action filters** — action method call hone se pehle aur baad me chalte hain — action arguments aur result dono ko dekh/modify kar sakte hain
+4. **Exception filters** — sirf tab chalte hain jab action ya baad ke filters me exception aaye
+5. **Result filters** — action result execute hone se pehle aur baad me (jaise response format karne se pehle headers add karna)
+
+```csharp
+// Order: Authorization -> Resource -> Action -> (Exception if thrown) -> Result
+```
+
+Ye order middleware jaisa "aap khud decide karo" nahi hai — ye **framework-defined** hai, aapko sirf ye decide karna hai kaunsa filter type use karna hai apne use case ke liye.
+
+### Filters middleware se kaise alag hain
+
+Do fundamental differences interview me expect kiye jaate hain:
+
+- **Scope**: Middleware har request pe chalta hai — static file ho, MVC action ho, ya kuch bhi. Filters sirf tab chalte hain jab request ek MVC/API controller action tak pahunchti hai.
+- **Context**: Middleware ko sirf `HttpContext` milta hai. Filters ko `ActionExecutingContext` milta hai jisme action ke **arguments** (already model-bound), controller instance, aur `ActionDescriptor` jaisi rich MVC-specific information hoti hai — is se aap action ke parameters ko directly inspect ya modify kar sakte ho, jo middleware se possible nahi.
+
+Practical rule: agar logic ko action ke arguments ya result object ki zaroorat hai, filter chahiye. Agar logic sabhi requests pe (chahe MVC ho ya na ho) apply honi hai, middleware chahiye.
+
+### Custom action filter banana
+
+```csharp
+public class ValidateModelAttribute : ActionFilterAttribute
+{
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        if (!context.ModelState.IsValid)
+        {
+            context.Result = new BadRequestObjectResult(context.ModelState);
+            // action method kabhi call hi nahi hoga
+        }
+    }
+}
+```
+
+`context.Result` set karna filter ko **short-circuit** kar deta hai — agle filter ya action method ko call hi nahi kiya jaata, seedha result pipeline unwind hone lagta hai. Ye pattern bahut common hai — model validation, caching (agar cached value mil gayi to action skip), aur rate limiting me use hota hai.
+
+### `IAsyncActionFilter` — async filters ka sahi tareeka
+
+Sync `OnActionExecuting`/`OnActionExecuted` do separate methods hain, jinke beech action khud execute hota hai — is model me "before aur after ek jagah likhna" possible nahi hai bina extra state store kiye. `IAsyncActionFilter` ka `OnActionExecutionAsync` ek hi method me pura control deta hai:
+
+```csharp
+public class TimingFilter : IAsyncActionFilter
+{
+    private readonly ILogger<TimingFilter> _logger;
+    public TimingFilter(ILogger<TimingFilter> logger) => _logger = logger;
+
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        var sw = Stopwatch.StartNew();
+        var executedContext = await next(); // action method yahan chalta hai
+        sw.Stop();
+        _logger.LogInformation("{Action} took {Ms}ms", context.ActionDescriptor.DisplayName, sw.ElapsedMilliseconds);
+        // executedContext.Exception check karke error case bhi handle kar sakte ho
+    }
+}
+```
+
+`next()` call karna action method (aur usse aage ke filters) ko chalata hai — response milne ke baad wapas isi method me continue hota hai, jisse before/after logic ek jagah, ek try-catch ke andar bhi likha ja sakta hai. Interview me `IAsyncActionFilter` prefer karne ka reasoning yahi hai: cleaner control flow, easier exception handling around the action call.
+
+### Global vs scoped registration
+
+Filters ko teen levels pe apply kar sakte ho — **global** (`options.Filters.Add<T>()` in `AddControllers`), **controller-level** (attribute directly controller class pe), ya **action-level** (attribute sirf ek method pe). Global filters sabse zyada reusable hain lekin overuse se performance cost hoti hai kyunki wo har single request pe chalte hain chahe zaroorat ho ya na ho — jaise ek heavy logging filter jo sirf specific endpoints ke liye chahiye tha, agar global laga diya to sab endpoints slow ho jaayenge.
+
+### Kab filter, kab middleware — decision
+
+Rule of thumb: cross-cutting, framework-agnostic concerns (CORS, HTTPS redirect, static files, top-level exception handling) middleware me. MVC-specific, action-aware concerns (model validation, response shaping based on action metadata, per-action caching keyed by arguments) filters me. Dono ka mix ek real API me common hai — top-level exception handler middleware me, but domain-specific validation exception filter me.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Global filters sabhi controllers/actions pe chalte hain chahe unko us filter ki zaroorat ho ya na ho — is se unnecessary overhead aata hai. Jab tak logic genuinely universal na ho, controller-level ya action-level attribute prefer karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production .NET API">
+
+Ek internal admin API me `ValidateModelAttribute` action filter globally register kiya gaya taaki har controller me manually `ModelState.IsValid` check dobara na likhna pade — is se ek hi jagah se validation error response format consistent rehta hai (RFC 7807 `ProblemDetails` shape me). Isi API me ek `AuditLogFilter` (`IAsyncActionFilter`) sirf write operations (`POST`/`PUT`/`DELETE`) wale controllers pe controller-level attribute se apply kiya gaya, jo action arguments (customer ID, changed fields) ko audit table me store karta — global nahi rakha kyunki read-heavy GET endpoints ke liye ye overhead avoidable tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Five filter categories run in a fixed order: Authorization, Resource, Action, Exception, Result
+- Setting `context.Result` inside any filter short-circuits the pipeline — the action method and remaining filters in that stage never execute
+- `IAsyncActionFilter` uses one method (`OnActionExecutionAsync`) vs two for the sync `ActionFilterAttribute` (`OnActionExecuting`/`OnActionExecuted`)
+- Global filters run on every single controller action in the app — a filter registered globally that only 2 of 40 endpoints need still executes on all 40
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The staple question is "filters vs middleware" — the strong answer leads with scope (all requests vs MVC pipeline only) and context (raw HttpContext vs action arguments/ModelState), not just "filters run later." A frequent follow-up is naming the five filter stages in order and giving one real use case per stage — most candidates can name two or three, naming all five with reasoning is what separates strong answers. Interviewers also probe whether you know `IAsyncActionFilter` exists and why it's preferred over the sync split-method version for anything needing shared before/after state (timing, transaction wrapping).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har cross-cutting concern ko filter me daal dena jab wo actually middleware honi chahiye — jaise ek logging filter jo static files ke liye bhi chalna chahiye tha, lekin filters sirf MVC actions pe chalte hain, static file requests unhe kabhi touch hi nahi karti.
+
+</Mistake>
+
+<Mistake>
+
+Heavy logic wale filters ko globally register kar dena jab sirf kuch specific controllers ko unki zaroorat thi — har request pe unnecessary overhead.
+
+</Mistake>
+
+<Mistake>
+
+Sync `ActionFilterAttribute` me `OnActionExecuting` aur `OnActionExecuted` ke beech state share karne ke liye instance fields use karna — filter instances DI lifetime ke hisaab se reuse ho sakte hain, isliye ye thread-safety bugs create karta hai. `IAsyncActionFilter` ka local variable approach safe hai.
+
+</Mistake>
+
+<Mistake>
+
+Filter me `context.Result` set karne ke baad bhi socha ki action method chalega — Result set karte hi pipeline short-circuit ho jaata hai, action kabhi invoke nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Exception filter se expect karna ki middleware-level exceptions bhi catch ho jaayenge — exception filters sirf action execution ke andar aayi exceptions catch karte hain, middleware pipeline ki exceptions (jaise routing se pehle) inke scope me nahi aatin.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Request reaches MVC pipeline] --> B[Authorization Filters]
+    B -->|Denied| Z[403/401 Response]
+    B -->|Allowed| C[Resource Filters]
+    C -->|Short-circuit e.g. cache hit| Z
+    C --> D[Model Binding]
+    D --> E[Action Filters - OnActionExecuting]
+    E --> F[Action Method Executes]
+    F --> G[Action Filters - OnActionExecuted]
+    G -->|Exception thrown| H[Exception Filters]
+    G -->|No exception| I[Result Filters]
+    H --> I
+    I --> J[Action Result Executed - Response Written]
+`}
+  caption="Filters run in a fixed framework-defined order, and setting context.Result at any stage short-circuits everything below it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Filter order is fixed: Authorization, Resource, Action, Exception, Result
+- Filters run only inside the MVC/API pipeline; middleware runs for every request regardless of MVC involvement
+- Filters get MVC-specific context — action arguments, ModelState, ActionDescriptor — that middleware never sees
+- Setting `context.Result` in a filter short-circuits the pipeline — action method and later filters skip execution
+- `IAsyncActionFilter.OnActionExecutionAsync` gives one method with a `next()` call, cleaner for before/after logic and exception wrapping than the sync two-method split
+- Global filters run on every action — prefer controller-level or action-level attributes unless the logic is truly universal
+- Exception filters only catch exceptions from action execution, not from middleware or routing
+- Use filters for action-aware concerns (validation, per-action caching); use middleware for cross-cutting concerns (CORS, HTTPS redirect, top-level error handling)
+
+</QuickRevision>

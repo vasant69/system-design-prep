@@ -1,0 +1,143 @@
+---
+slug: "s3-core-concepts"
+title: "S3 Core Concepts"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 1
+difficulty: "beginner"
+readingTime: 11
+prerequisites: []
+tags: ["aws", "s3", "storage", "fundamentals"]
+englishDefinition: "Amazon S3 is an object storage service that stores data as objects inside buckets, addressed by a key, within a specific AWS region. It is not a filesystem — the object key is a single opaque string, and any 'folder' structure you see in the console is a UI convenience built on top of a flat namespace."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Amazon S3 is an object storage service that stores data as objects inside buckets, addressed by a key, within a specific AWS region. It is not a filesystem — the object key is a single opaque string, and any 'folder' structure you see in the console is a UI convenience built on top of a flat namespace.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+S3 (Simple Storage Service) object storage hai — file storage nahi, block storage nahi. Isme teen cheezein samajhna zaroori hai: **bucket**, **object**, aur **key**. Bucket ek globally unique named container hai (globally unique isliye kyunki bucket names DNS-compatible URLs banate hain — `bucket-name.s3.amazonaws.com`). Object ek file hoti hai plus uska metadata. Key wo string hai jisse object identify hota hai bucket ke andar.
+
+### Flat namespace — sabse important mental model shift
+
+Console me jab aap `photos/2024/vacation.jpg` dekhte ho, aapko lagta hai ki `photos` aur `2024` folders hain. **Ye galat hai.** S3 ke andar koi real directory structure exist nahi karta — poora `photos/2024/vacation.jpg` ek hi flat key string hai. Forward slash (`/`) sirf ek character hai key ke andar, jisko S3 console/CLI visually parse karke folder-jaisi tree dikhate hain, taaki humans navigate kar sakein. Actual storage engine ke liye ye ek single opaque string hai — koi "directory" object nahi banta, koi nested filesystem lookup nahi hota.
+
+Ye distinction interview me bahut common hai kyunki isse do real consequences nikalte hain: (1) "list objects with prefix `photos/2024/`" operation ek **string prefix match** hai, filesystem traversal nahi — isliye lakhon objects ek hi "folder" me daalna S3 ke liye technically fine hai, koi directory-inode limit nahi. (2) Key **naming** performance ko affect karta hai — purane S3 me sequential prefixes (jaise timestamp-based keys `2024-01-01-...`) hot partitioning cause karte the kyunki internally keys partition range ke hisaab se distribute hote the. AWS ne 2018 me ye automatically solve kar diya (S3 ab automatically partition karta hai key patterns ke hisaab se, koi manual randomization prefix zaroori nahi), lekin bahut purane docs/interview questions abhi bhi "randomize your key prefix" bolte hain — modern S3 me ye largely obsolete advice hai, phir bhi extremely high request rate (thousands of requests/second on a narrow prefix) pe throttling avoid karne ke liye workload ko multiple prefixes me spread karna still recommended hai.
+
+### Region — data kahan rehta hai
+
+Har bucket ek specific AWS region me create hota hai (jaise `ap-south-1` Mumbai), aur us region me hi rehta hai jab tak explicitly replicate na karo. Region choice do cheezon ko affect karta hai: latency (application aur bucket same region me ho to fast) aur compliance (data residency laws — BFSI/healthcare workloads me ye legally mandatory hota hai ki data country ke bahar na jaaye). Bucket name globally unique hota hai across **saare AWS accounts**, na ki sirf apne account me — isliye `my-app-data` jaisa generic name almost hamesha already taken milega.
+
+### Object size limits — exact numbers
+
+Single object ka max size **5 TB** hai. Ek single `PUT` operation (ek hi HTTP request me) se max **5 GB** upload kar sakte ho. Isse bada kuch bhi upload karna ho (5 GB se lekar 5 TB tak), to **Multipart Upload** use karna mandatory hai — file ko parts (each 5 MB se 5 GB tak) me todke parallel upload karte ho, phir S3 unko ek object me assemble karta hai. AWS khud recommend karta hai ki 100 MB se bade kisi bhi object ke liye multipart upload use karo, chahe single PUT se possible ho — kyunki isse resume-on-failure milta hai (ek part fail hua to poora upload restart nahi karna padta) aur parallel parts se throughput badhta hai.
+
+### Consistency model
+
+2020 tak S3 **eventually consistent** tha reads ke liye (naya object PUT karke turant read karne pe purana/no data mil sakta tha, especially overwrite/delete ke case me). Dec 2020 se S3 **strong read-after-write consistency** deta hai automatically, sabhi operations ke liye — na koi extra config chahiye, na koi cost. Ye ek genuinely underrated AWS improvement hai jo interview me pucha jaata hai — "S3 ka consistency model kya hai" — purana jawab (eventually consistent) ab galat hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Folder create karo" S3 console me ek button hai, lekin under the hood ye sirf ek zero-byte object banata hai jiski key `foldername/` (trailing slash ke saath) hoti hai. Ye purely cosmetic hai — S3 ko koi real directory nahi chahiye kisi bhi key ko store karne ke liye. `photos/2024/x.jpg` upload karne se pehle `photos/` ya `photos/2024/` "create" karna zaroori nahi hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek e-commerce catalog system product images S3 me store karta hai keys ke saath jaise `products/{productId}/main.jpg` aur `products/{productId}/thumb-{size}.jpg`. Team ne initially socha ki har product ke liye ek "folder" S3 me manually banani padegi — turns out zaroorat hi nahi thi, key seedha upload API me pass ho jaati hai aur S3 automatically "existing" dikhne lagta hai console me. High-traffic sale event ke dauraan jab lakhon images ek hi din me upload hui, koi partition throttling issue nahi aaya kyunki modern S3 automatically key patterns ke hisaab se partitions scale kar leta hai — sirf tab dikkat aati jab ek hi exact prefix pe (jaise sirf `products/`) request rate 3,500+ PUT/sec cross karta, jo is scale pe nahi hua.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Max single object size: 5 TB
+- Max size for a single PUT request: 5 GB
+- Multipart upload part size: 5 MB to 5 GB per part (last part can be smaller)
+- Multipart upload recommended threshold: objects over 100 MB
+- Max number of parts in a multipart upload: 10,000
+- Bucket names: globally unique across all AWS accounts, 3-63 characters, DNS-compliant
+- Read-after-write consistency: strong, since December 2020 (previously eventually consistent)
+- Default request-rate scaling: 3,500 PUT/COPY/POST/DELETE and 5,500 GET/HEAD requests per second, per prefix
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The flat-namespace vs folders question is almost guaranteed — a strong answer explicitly says "the slash is just a character in the key string, there's no directory inode," not just "it looks like folders." Interviewers often follow up with "does creating nested folders slow things down" — the correct answer is no, because there's no real nesting to traverse. The consistency-model question is a good trap for candidates using stale knowledge — saying "eventually consistent" without the 2020 correction is an immediate signal the candidate hasn't kept current. Expect a sizing question too: "how would you upload a 20 GB file" should immediately reach for multipart upload, with the reasoning being resumability and parallelism, not just the 5 GB single-PUT hard limit.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Sochna ki S3 me real directories hain aur "folder" delete karne se andar ke saare objects ek filesystem-jaisi recursive delete se hatte hain — actually console/SDK ye simulate karta hai prefix-matched objects ko individually delete karke, ek asli filesystem rmdir operation nahi hai.
+
+</Mistake>
+
+<Mistake>
+
+Purani advice follow karke keys me random hash prefix daalna "hot partition avoid karne ke liye" jab workload itna high-throughput hai hi nahi ki ye zaroorat pade — modern S3 automatically scale karta hai, aur random prefixes se object listing/organization unnecessarily complex ho jaata hai bina kisi real benefit ke.
+
+</Mistake>
+
+<Mistake>
+
+100+ MB files ko single PUT se upload karne ki koshish karna instead of multipart upload — network glitch pe poora upload restart karna padta hai, jabki multipart me sirf fail hui part retry hoti hai.
+
+</Mistake>
+
+<Mistake>
+
+Bucket naming me ye assume karna ki naam sirf apne AWS account ke andar unique hona chahiye — actual constraint global hai, isliye production deployment scripts me generic names (`data-bucket`, `app-storage`) almost hamesha "already exists" error dete hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Client uploads object] --> B[Specify bucket + key + region]
+    B --> C{Object size?}
+    C -->|Under 5 GB| D[Single PUT request]
+    C -->|Over 100 MB recommended, up to 5 TB| E[Multipart Upload]
+    E --> F[Split into parts: 5 MB - 5 GB each]
+    F --> G[Upload parts in parallel]
+    G --> H[Complete Multipart Upload - S3 assembles parts]
+    D --> I[Object stored under flat key in bucket]
+    H --> I
+    I --> J[Key is one opaque string - no real directory tree]
+`}
+  caption="A folder-looking key like photos/2024/x.jpg is a single flat string end to end — S3 never creates or traverses a directory structure, it just stores and matches key strings."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- S3 stores objects (data + metadata) inside buckets, addressed by a key, in one specific region
+- The key is a flat, opaque string — forward slashes are just characters, not real directories; console "folders" are a UI simulation
+- Bucket names are globally unique across all AWS accounts, not just your own
+- Max object size: 5 TB; max single-PUT size: 5 GB; use Multipart Upload above ~100 MB
+- Multipart Upload parts range 5 MB-5 GB each, up to 10,000 parts, enables parallelism and resumability
+- S3 has offered strong read-after-write consistency for all operations since December 2020 — not "eventually consistent" anymore
+- Old advice about randomizing key prefixes to avoid hot partitions is largely obsolete since S3's automatic partition scaling
+- Request-rate scaling defaults: 3,500 writes/sec and 5,500 reads/sec per prefix before you'd need to spread load across prefixes
+
+</QuickRevision>

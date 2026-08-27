@@ -1,0 +1,221 @@
+---
+slug: "middleware-pipeline-deep-dive"
+title: "Middleware Pipeline Deep Dive"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 6
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["dependency-injection-in-web-api"]
+tags: ["aspnet-core", "middleware", "pipeline", "web-api"]
+englishDefinition: "ASP.NET Core middleware is a chain of components assembled into a request pipeline, where each component can process an incoming request, pass it to the next component, and process the outgoing response on the way back — order of registration directly determines behavior."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core middleware is a chain of components assembled into a request pipeline, where each component can process an incoming request, pass it to the next component, and process the outgoing response on the way back — order of registration directly determines behavior.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Middleware pipeline ASP.NET Core ke request handling ka core hai. Har request ek chain of middleware se guzarti hai, aur har middleware ke paas do jobs hote hain: request ko aage bhejna (`next` call karke) ya wahi pe short-circuit kar dena. Response wapas jaate waqt bhi wahi chain reverse order me chalti hai — isliye ye ek pipeline nahi, ek **nested onion** jaisa hai. Jo middleware pehle register hota hai, wo request path pe pehle chalta hai aur response path pe sabse aakhri me.
+
+### Kyun order sabse important cheez hai
+
+Ye interview me sabse zyada poocha jaane wala concept hai kyunki galat order se subtle bugs aate hain jo production me hi pakde jaate hain. Sochiye agar `UseAuthorization()` ko `UseAuthentication()` se pehle rakh diya — authorization check chalega jab user identity abhi set hi nahi hui, to har request unauthorized ban jaayegi ya wrong context pe decision lega. Standard, battle-tested order hota hai:
+
+```csharp
+var app = builder.Build();
+
+app.UseExceptionHandler("/error"); // sabse pehle — sab kuch iske andar wrap ho
+app.UseHsts();
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+app.UseRouting();          // endpoint match karta hai
+app.UseCors();
+app.UseAuthentication();   // "who are you" — pehle
+app.UseAuthorization();    // "kya tum ye kar sakte ho" — baad me
+app.MapControllers();      // endpoint execution
+app.Run();
+```
+
+Exception handler sabse upar isliye hota hai kyunki agar niche kahin bhi exception throw ho, to usko catch karne wala middleware call stack me sabse **bahar** hona chahiye — jaisa ek try-catch outermost layer pe wrap karta hai. `UseRouting()` ke baad hi `UseAuthorization()` kaam kar sakta hai kyunki authorization ko pata hona chahiye kaunsa endpoint match hua (uske metadata me `[Authorize]` attribute check karna hai).
+
+### `app.Use` vs `app.Run` vs `app.Map`
+
+Teeno alag purpose serve karte hain:
+
+- **`app.Use(...)`** — ek middleware jo pipeline me continue karta hai, `next()` ko explicitly call karke agle middleware ko control deta hai. Ye "pass-through" middleware hai.
+- **`app.Run(...)`** — terminal middleware, matlab yahi pipeline ka end hai. Isme `next` parameter hota hi nahi kyunki iske baad koi middleware call nahi hota — chahe aap code me kuch bhi likh lo uske baad, wo kabhi chalega nahi.
+- **`app.Map(...)` / `app.MapWhen(...)`** — path ya condition ke basis pe pipeline branch karta hai. `Map("/admin", adminApp => {...})` ek alag sub-pipeline banata hai sirf `/admin` prefix wali requests ke liye.
+
+```csharp
+// Custom inline middleware — request timing
+app.Use(async (context, next) =>
+{
+    var sw = Stopwatch.StartNew();
+    await next(context); // agla middleware chalao
+    sw.Stop();
+    context.Response.Headers["X-Response-Time-Ms"] = sw.ElapsedMilliseconds.ToString();
+});
+```
+
+### `UseWhen` — conditional branching without a fork
+
+`Map`/`MapWhen` pipeline ko literally split kar dete hain — branch me se wapas main pipeline me aana easy nahi hota. `UseWhen` ek zyada flexible tareeka hai: condition ke true hone pe ek nested pipeline chalata hai, lekin us branch ke khatam hone ke baad control **wapas main pipeline me** aa jaata hai.
+
+```csharp
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/api/reports"),
+    branch => branch.UseMiddleware<HeavyRequestLoggingMiddleware>()
+);
+// yahan se aage har request (branch ho ya na ho) continue karti hai
+app.MapControllers();
+```
+
+Ye use hota hai jab aap kisi specific route group pe extra logging, caching, ya rate-limiting lagana chahte ho bina poori pipeline ko fork kiye.
+
+### Custom middleware — class-based vs inline
+
+Chhoti, one-off logic ke liye inline `app.Use(...)` theek hai. Lekin agar middleware ko dependencies chahiye (DI se), unit-testable hona chahiye, ya reusable hona chahiye across projects — to class-based approach behtar hai:
+
+```csharp
+public class RequestLoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestLoggingMiddleware> _logger;
+
+    public RequestLoggingMiddleware(RequestDelegate next, ILogger<RequestLoggingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        _logger.LogInformation("Incoming: {Method} {Path}", context.Request.Method, context.Request.Path);
+        await _next(context);
+        _logger.LogInformation("Outgoing status: {StatusCode}", context.Response.StatusCode);
+    }
+}
+```
+
+`RequestDelegate _next` **constructor** me sirf ek baar inject hota hai (per pipeline build, not per request), jabki `InvokeAsync` har request pe chalta hai — is wajah se class-based middleware effectively **singleton** ki tarah behave karta hai, chahe usme scoped services `InvokeAsync` ke method parameters se inject kiye ja sakte hain (constructor injection se scoped service lena bug hai, method-parameter injection sahi tareeka hai).
+
+### Kab middleware, kab filter
+
+Middleware **ASP.NET Core level** pe kaam karta hai — har request ke liye chalta hai chahe woh MVC controller ho, minimal API ho, ya static file. Filters (agla topic) sirf **MVC/API pipeline** ke andar chalte hain aur unko action arguments, model binding results jaisa MVC-specific context milta hai. Cross-cutting cheezein jo sab requests pe apply honi chahiye (CORS, HTTPS redirect, exception handling) middleware me jaati hain; jo sirf controllers/actions ke liye specific hain (model validation, action-level authorization logic) wo filters me.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Fine-grained control over cross-cutting concerns across the entire pipeline", "Reusable across projects, testable in isolation as classes", "UseWhen/MapWhen allow targeted behavior without duplicating pipeline setup"]}
+  cons={["Order-dependent — a wrong position silently breaks auth or error handling", "Class-based middleware constructor injection accidentally scoped-service leaks are a common bug", "Deeply branched pipelines (many MapWhen) become hard to reason about"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production .NET API">
+
+Ek payments API me exception handling middleware sabse upar tha, uske baad ek custom `CorrelationIdMiddleware` jo incoming `X-Correlation-Id` header read karta ya naya GUID generate karta, use `HttpContext.Items` me store karta, aur response header me wapas add karta — is se distributed tracing possible hua bina kisi APM tool ke bhi. `UseWhen` se `/api/internal` prefix wale routes pe ek extra IP-allowlist middleware lagaya gaya tha jo sirf internal network se aane wali requests allow karta, baaki sab jagah wo middleware skip ho jaata — is se ek alag pipeline fork banane ki zaroorat nahi padi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Standard pipeline order violation (auth before authn) is one of the most common production incidents in ASP.NET Core teams
+- Class-based middleware constructor runs once per app startup, `InvokeAsync` runs once per request — a 10x difference in call frequency people often miscalculate
+- `UseExceptionHandler` placed anywhere except first in the chain fails to catch exceptions thrown by middleware registered above it
+- A typical production pipeline has 8-12 middleware components registered before `MapControllers()`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The near-universal question is "what happens if you swap `UseAuthentication` and `UseAuthorization`" — the strong answer explains authentication establishes `HttpContext.User` first, and authorization reads that identity to make an allow/deny decision, so swapping breaks every authorized endpoint. A second common question is "difference between middleware and filters" — the sharp answer is scope (all requests vs MVC pipeline only) and context (raw HttpContext vs action arguments/model binding results). Interviewers also probe whether you know `app.Run` is terminal and `next` doesn't exist there, and whether you understand why class-based middleware constructors can't safely take scoped services.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`UseAuthorization()` ko `UseAuthentication()` se pehle register karna — authorization checks chalte hain bina user identity establish hue, so requests randomly unauthorized ho jaati hain.
+
+</Mistake>
+
+<Mistake>
+
+Class-based middleware ke constructor me scoped service (jaise `DbContext`) inject karna — constructor sirf ek baar chalta hai app startup pe, isliye wo service effectively singleton-scoped ban jaata hai aur stale/shared state ka bug aata hai. Scoped services `InvokeAsync` method parameters se lo.
+
+</Mistake>
+
+<Mistake>
+
+`app.Run()` ke baad aur middleware register karna aur expect karna ki wo chalega — `Run` terminal hai, uske baad ka code kabhi invoke hi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+`UseExceptionHandler` ko pipeline me neeche kahin rakhna instead of top — us se upar wale middleware ke exceptions catch hi nahi hote.
+
+</Mistake>
+
+<Mistake>
+
+`Map()` use karna jab actually `UseWhen()` chahiye tha — `Map` pipeline ko permanently branch kar deta hai, so branch ke baad main pipeline (jaise `MapControllers`) us branch me duplicate karna padta hai, jo maintenance nightmare ban jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant ExceptionHandler
+    participant Routing
+    participant Authn as Authentication
+    participant Authz as Authorization
+    participant Endpoint as Controller Action
+
+    Client->>ExceptionHandler: HTTP Request
+    ExceptionHandler->>Routing: next()
+    Routing->>Authn: next()
+    Authn->>Authn: Set HttpContext.User
+    Authn->>Authz: next()
+    Authz->>Authz: Check [Authorize] policy
+    Authz->>Endpoint: next()
+    Endpoint-->>Authz: Response
+    Authz-->>Authn: Response
+    Authn-->>Routing: Response
+    Routing-->>ExceptionHandler: Response
+    ExceptionHandler-->>Client: HTTP Response
+`}
+  caption="Request travels down the middleware chain in registration order, and the response travels back up in reverse — exception handling wraps everything because it sits at the outermost layer."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Middleware pipeline is nested/onion-shaped — request goes down in registration order, response comes back up in reverse
+- `app.Use` = pass-through (calls next), `app.Run` = terminal (no next), `app.Map`/`app.MapWhen` = branches the pipeline
+- `UseWhen` runs a nested branch conditionally but rejoins the main pipeline afterward — unlike `Map`, which forks permanently
+- Standard order: exception handler first, then HTTPS/static files, then routing, then authentication, then authorization, then endpoints
+- Authentication ("who are you") must always come before authorization ("what can you do") — swapping them is the classic bug
+- Class-based middleware constructor runs once at startup (effectively singleton scope) — inject scoped services via `InvokeAsync` parameters, not the constructor
+- Middleware applies to every request across the whole app; filters apply only inside the MVC/API pipeline with action-level context
+- `UseExceptionHandler` must be registered first so it can catch exceptions from everything below it
+
+</QuickRevision>

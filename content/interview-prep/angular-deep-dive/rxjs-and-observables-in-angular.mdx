@@ -1,0 +1,179 @@
+---
+slug: "rxjs-and-observables-in-angular"
+title: "RxJS and Observables in Angular"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 9
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["reactive-forms-vs-template-driven-forms"]
+tags: ["angular", "rxjs", "observables", "async", "frontend"]
+englishDefinition: "RxJS Observables are a core building block of Angular representing a lazy, cancellable stream of values over time, transformed and combined via operators, and consumed either through manual subscription or the async pipe, which subscribes and unsubscribes automatically."
+interviewFrequency: "very-high"
+companies: ["Google", "Microsoft", "TCS"]
+---
+
+<SimpleDefinition>
+
+RxJS Observables are a core building block of Angular representing a lazy, cancellable stream of values over time, transformed and combined via operators, and consumed either through manual subscription or the async pipe, which subscribes and unsubscribes automatically.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular ki bahut saari APIs (`HttpClient`, `Router` events, reactive forms `valueChanges`) Observables return karti hain, na ki Promises — is liye RxJS samajhna Angular me optional nahi hai, core skill hai.
+
+### Observable vs Promise
+
+Teen fundamental differences hain. Pehla — **lazy vs eager**: Promise banate hi execute hona shuru ho jaata hai, Observable tab tak kuch nahi karta jab tak koi `.subscribe()` na kare. Doosra — **cancellable vs not**: Observable ko `unsubscribe()` karke beech me rok sakte ho (jaise user ne page chhod diya, ab API response ka koi matlab nahi), Promise ko cancel nahi kar sakte ek baar start hone ke baad. Teesra — **multiple values vs single value**: Promise sirf ek baar resolve/reject hota hai, Observable time ke saath multiple values emit kar sakta hai (jaise WebSocket messages, ya form input ka `valueChanges` jo har keystroke pe naya value deta hai).
+
+```typescript
+// Promise - ek baar resolve
+fetch("/api/user").then(res => res.json());
+
+// Observable - cancellable, multiple values possible
+this.http.get("/api/user").subscribe(user => console.log(user));
+```
+
+### Common operators
+
+- `map` — har emitted value ko transform karta hai (jaise API response se sirf ek field nikalna)
+- `filter` — sirf condition match karne wale values pass hone deta hai
+- `switchMap` — naya inner observable start karta hai aur **purana automatically cancel kar deta hai** — search-as-you-type ke liye perfect (naya keystroke aaya, purani API call irrelevant ho gayi)
+- `mergeMap` — sab inner observables ko **parallel** run hone deta hai, koi cancellation nahi — jab sab results chahiye ho, order matter na kare
+- `debounceTime(300)` — rapid-fire events (jaise typing) ko silence karta hai, sirf tab emit karta hai jab specified time tak koi naya event na aaya ho
+
+```typescript
+searchControl.valueChanges.pipe(
+  debounceTime(300),
+  switchMap(term => this.searchService.search(term))
+).subscribe(results => this.results = results);
+```
+
+Ye pattern (`debounceTime` + `switchMap`) itna common hai ki interview me almost guaranteed pucha jaata hai — "typeahead search kaise implement karoge" ka standard jawaab.
+
+### async pipe — auto-subscribe, auto-unsubscribe
+
+Template me `| async` pipe lagane se Angular khud subscribe karta hai component render hone pe, aur khud unsubscribe karta hai component destroy hone pe:
+
+```html
+<div *ngIf="user$ | async as user">{{ user.name }}</div>
+```
+
+Ye memory leak ka risk **completely eliminate** karta hai us specific subscription ke liye — developer ko kuch manually clean up nahi karna padta. Yahi wajah hai ki Angular style guide async pipe ko manual `.subscribe()` se **hamesha prefer** karne ko kehta hai jab bhi possible ho.
+
+### Manual subscription leaks aur takeUntil pattern
+
+Jab `.subscribe()` manually component class me call karte ho (jaise `ngOnInit` me), aur us subscription ko explicitly unsubscribe nahi karte, to component destroy hone ke baad bhi wo subscription zinda rehti hai — callback fire hota rehta hai ek aisa component ke liye jo ab DOM me hai hi nahi. Ye classic **memory leak** hai, aur agar callback `this.someProperty` update kar raha hai, to Angular console me warnings/errors bhi de sakta hai.
+
+Standard fix hai **takeUntil pattern**:
+
+```typescript
+private destroy$ = new Subject<void>();
+
+ngOnInit() {
+  this.someObservable$.pipe(
+    takeUntil(this.destroy$)
+  ).subscribe(value => this.doSomething(value));
+}
+
+ngOnDestroy() {
+  this.destroy$.next();
+  this.destroy$.complete();
+}
+```
+
+`destroy$` subject `ngOnDestroy` me emit hota hai, jo `takeUntil` ko trigger karta hai aur subscription ko automatically complete kar deta hai. Modern Angular (16+) me `takeUntilDestroyed()` operator bhi hai jo `DestroyRef` use karke ye boilerplate khud handle kar deta hai, `destroy$` Subject manually banane ki zaroorat nahi rehti.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Har manual `.subscribe()` ek potential memory leak hai jab tak explicitly unsubscribe na ho. Jahan possible ho, async pipe use karo — jahan zaroori ho manual subscribe karna, `takeUntil`/`takeUntilDestroyed` pattern ke bina kabhi mat chodo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Google">
+
+Angular Material ke `MatAutocomplete` jaise components internally exactly `debounceTime` + `distinctUntilChanged` + `switchMap` pattern use karte hain — user type karta hai, thoda rukta hai, tab hi backend call jaati hai, aur agar user naya letter type kar de to purani pending call automatically cancel ho jaati hai. Ye pattern itna standard hai ki almost har production Angular app ke search/autocomplete feature me exactly ye teenon operators saath dikhte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- debounceTime for search-as-you-type UX: commonly 250-400ms
+- takeUntilDestroyed() operator (using DestroyRef) available since Angular 16
+- A typical mid-size Angular app with unmanaged manual subscriptions can accumulate dozens of leaked subscriptions after extended navigation between routes
+- switchMap cancels the previous inner observable synchronously the moment a new outer value arrives — zero extra latency
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"switchMap vs mergeMap vs concatMap" is a guaranteed deep-dive question — the strong answer names the cancellation behavior precisely: switchMap cancels the previous inner observable (good for search-as-you-type, bad if you need every request to complete, like a sequence of save operations), mergeMap runs everything in parallel with no cancellation (good when order and completeness both matter), concatMap queues them strictly in order one at a time (good when order matters but parallelism would cause a race, like sequential form-save requests). "How do you prevent memory leaks with subscriptions" is asked almost every time RxJS comes up — naming both the async pipe (preferred, zero boilerplate) and the takeUntil pattern (for manual subscriptions) shows a complete answer; naming only one signals partial understanding.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`ngOnInit` me `.subscribe()` call karna aur kabhi unsubscribe na karna — component destroy hone ke baad bhi callback fire hota rehta hai, memory leak aur unexpected behavior (jaise destroyed component ki property update karne ki koshish) create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`switchMap` use karna jab actually `mergeMap` chahiye tha (ya vice versa) — jaise ek "save" button click handler me switchMap lagana matlab agar user jaldi-jaldi do baar click kare, pehli save request cancel ho jayegi, jo data loss cause kar sakta hai. Save/create operations ke liye usually mergeMap ya exhaustMap zyada sahi hote hain.
+
+</Mistake>
+
+<Mistake>
+
+Search input pe debounceTime na lagana — har single keystroke pe API call fire hoti hai, server pe unnecessary load aur race conditions ka risk (jab tak switchMap na ho).
+
+</Mistake>
+
+<Mistake>
+
+Observable ko Promise jaisa treat karna aur assume karna ki wo sirf ek baar value dega — jaise `valueChanges` ya WebSocket stream pe `.subscribe()` ke andar logic likhna jo sirf "first value" ke liye design kiya gaya tha, jabki ye stream multiple times fire hoga.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[User types in search box] --> B[valueChanges Observable emits]
+    B --> C[debounceTime 300ms]
+    C --> D[switchMap: cancel previous API call]
+    D --> E[New HTTP request to search API]
+    E --> F[async pipe subscribes in template]
+    F --> G[Results rendered]
+    H[Component destroyed] -.async pipe auto-unsubscribes.-> F
+`}
+  caption="A typeahead search pipeline: debounceTime throttles rapid typing, switchMap cancels stale in-flight requests, and the async pipe handles subscription cleanup automatically."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Observable: lazy (runs only on subscribe), cancellable (unsubscribe), can emit multiple values over time
+- Promise: eager, not cancellable, resolves exactly once
+- switchMap cancels the previous inner observable (search-as-you-type); mergeMap runs all in parallel (no cancellation); concatMap queues strictly in order
+- debounceTime(300) + switchMap is the standard typeahead search pattern
+- async pipe auto-subscribes and auto-unsubscribes — prefer it over manual .subscribe() whenever possible
+- Manual .subscribe() without cleanup is a classic memory leak — use takeUntil(destroy$) or takeUntilDestroyed() (Angular 16+)
+- HttpClient, Router events, and reactive forms valueChanges all return Observables, not Promises
+
+</QuickRevision>

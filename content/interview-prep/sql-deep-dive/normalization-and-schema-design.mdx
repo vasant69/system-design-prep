@@ -1,0 +1,219 @@
+---
+slug: "normalization-and-schema-design"
+title: "Normalization and Schema Design"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 7
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["indexes-and-query-performance"]
+tags: ["normalization", "schema-design", "denormalization"]
+englishDefinition: "Normalization is the process of organizing relational tables to reduce data redundancy and prevent update anomalies, formalized as a series of normal forms (1NF, 2NF, 3NF) each fixing a specific class of design flaw. Denormalization deliberately reverses this for read-heavy workloads, trading some redundancy and write complexity for fewer joins and faster reads."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Oracle", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Normalization is the process of organizing relational tables to reduce data redundancy and prevent update anomalies, formalized as a series of normal forms (1NF, 2NF, 3NF) each fixing a specific class of design flaw. Denormalization deliberately reverses this for read-heavy workloads, trading some redundancy and write complexity for fewer joins and faster reads.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Normalization ek disciplined tarika hai tables design karne ka, taaki same data ek jagah se zyada baar store na ho, aur agar wo data change ho to sirf ek jagah update karna pade. Ek blogging platform ka example lete hain, jahan galat design se le kar step-by-step normal form tak jaayenge.
+
+### 1NF — Atomic values, no repeating groups
+
+Galat design (1NF violate karta hai):
+
+```sql
+-- posts table jisme tags ek hi column mein comma-separated store hain
+posts(id, title, author_name, tags)
+-- Row: (1, "SQL Basics", "Aditi Sharma", "sql,database,tutorial")
+```
+
+Yeh 1NF violate karta hai kyunki `tags` column mein multiple values ek hi cell mein hain (non-atomic). Query karna mushkil hai — "sql tag wale saare posts dhoondo" ke liye string matching (`LIKE %sql%`) karna padega, jo na sirf slow hai balki galat bhi ho sakta hai (jaise "mysql" tag bhi match ho jaaye).
+
+1NF fix: har value apni khud ki row/cell mein ho, ek separate `post_tags` table banao:
+
+```sql
+posts(id, title, author_name)
+post_tags(post_id, tag)
+```
+
+### 2NF — No partial dependency (composite key wale tables ke liye relevant)
+
+2NF sirf tab relevant hai jab primary key composite ho. Socho ek `order_items` table:
+
+```sql
+-- Bad: composite key (order_id, product_id), lekin product_name sirf product_id pe depend karta hai
+order_items(order_id, product_id, product_name, quantity)
+```
+
+Yahan `product_name` sirf `product_id` pe depend karta hai, poori composite key `(order_id, product_id)` pe nahi — yeh **partial dependency** hai, jo 2NF violate karta hai. Problem: agar product ka naam change ho (jaise typo fix), to har order_items row mein update karna padega jahan wo product hai — redundant aur error-prone.
+
+2NF fix: `product_name` ko alag `products` table mein nikaal do:
+
+```sql
+products(product_id, product_name)
+order_items(order_id, product_id, quantity)
+```
+
+### 3NF — No transitive dependency
+
+Socho `posts` table mein author ki details bhi inline hain:
+
+```sql
+-- Bad: author_email sirf author_name pe depend karta hai, post id pe nahi
+posts(id, title, author_name, author_email)
+```
+
+Yahan `author_email` `id` (primary key) pe directly depend nahi karta — woh `author_name` ke through transitively depend karta hai. Yeh **transitive dependency** hai, 3NF violation. Problem same hai: agar author apna email change kare, to uske har post ki row update karni padegi.
+
+3NF fix: authors ko apni table do:
+
+```sql
+authors(author_id, author_name, author_email)
+posts(id, title, author_id)
+```
+
+Ab email sirf ek jagah store hai — authors table mein. Update ek hi row mein hota hai, chahe us author ke 500 posts hi kyun na hon.
+
+### Denormalization — jab normalization overkill ban jaaye
+
+Fully normalized schema writes ke liye best hai (no redundancy, no update anomalies) lekin reads ke liye costly ho sakta hai, kyunki data multiple tables mein bikhra hota hai aur query karte waqt joins lagate hain. Ek reporting dashboard socho jo "top 10 authors by post count, with their latest post title" dikhata hai — fully normalized schema pe yeh query 3-4 table joins maangegi, aur agar yeh dashboard bahut baar refresh hota hai (jaise real-time analytics), to joins ka repeated cost add up ho jaata hai.
+
+Yahan denormalization sahi choice ban jaata hai — jaan-boojh kar redundant data store karna taaki reads fast ho:
+
+```sql
+-- Denormalized: author_name copy kiya gaya hai posts table mein bhi
+posts(id, title, author_id, author_name, published_at)
+```
+
+Ab "posts with author name" query bina join ke chal jaati hai. Trade-off yeh hai ki agar author apna naam change kare, to ab har uske post ki row update karni padegi (ya ek async job/trigger se sync karna padega) — write complexity aur redundancy risk badh gaya, lekin read path drastically simple aur fast ho gaya.
+
+### Kab normalize karo, kab denormalize
+
+- **Normalize** jab table write-heavy hai, data integrity critical hai (jaise transactional/OLTP core tables — orders, payments, inventory), aur anomalies ka cost high hai.
+- **Denormalize** jab table read-heavy hai, especially reporting/analytics/dashboard queries jahan joins repeatedly expensive pad rahe hon, aur thoda staleness ya extra write complexity acceptable ho.
+
+Practical middle ground: OLTP core tables ko normalized rakho for correctness, aur alag read-optimized denormalized views/tables (ya materialized views, ya a separate read-replica schema) banao reporting ke liye — best of both duniya.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Normalization: no redundant data, updates happen in exactly one place, fewer anomalies", "Denormalization: fewer joins, much faster reads for reporting/dashboard-style queries"]}
+  cons={["Normalization: reads often need multiple joins, can be slower for read-heavy reporting", "Denormalization: redundant data must be kept in sync, write complexity and staleness risk increase"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Amazon jaise e-commerce catalog systems mein core `products` aur `inventory` tables normalized rakhe jaate hain taaki stock counts aur pricing kabhi inconsistent na hon. Lekin product search/browse page jo customers dekhte hain, wo aksar ek heavily denormalized, pre-computed "search index" se serve hota hai jisme product name, price, rating sab ek jagah ready-made hote hain — joins avoid karke page load fast rakhne ke liye.
+
+</RealWorld>
+
+<RealWorld company="Infosys">
+
+Enterprise reporting projects mein Infosys jaisi consulting teams aksar OLTP source system (fully normalized) se data nikal ke ek denormalized reporting/data-warehouse schema (star schema style) banate hain, taaki business analysts complex joins likhe bina hi dashboards bana saken.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>A 3-4 table join on large normalized tables can add tens to hundreds of milliseconds versus a single denormalized table read</li>
+<li>Denormalized reporting tables commonly refresh every few minutes to a few hours, accepting that much staleness for read speed</li>
+<li>A well-normalized OLTP schema can reduce redundant storage by 30-60% compared to a flat, denormalized equivalent</li>
+<li>3NF is the practical target for most transactional schemas — going further (BCNF, 4NF) is rare outside academic or highly specialized cases</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewers often give a flat, unnormalized table and ask "what's wrong with this design" — the strong answer walks through 1NF/2NF/3NF violations concretely (name the specific dependency that's broken), not just recites definitions. Equally important is the follow-up: "would you always normalize fully?" — a strong candidate immediately brings up denormalization for read-heavy reporting workloads and gives a concrete example of when the trade-off makes sense, rather than treating normalization as an unconditional good.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Treating normalization as always correct and denormalization as always bad — real systems intentionally denormalize read-heavy paths.
+
+</Mistake>
+
+<Mistake>
+
+Confusing 2NF and 3NF — 2NF is about partial dependency on part of a composite key, 3NF is about transitive dependency through a non-key column.
+
+</Mistake>
+
+<Mistake>
+
+Storing comma-separated or JSON-blob multi-values in a single column when a proper 1NF child table would make querying and indexing possible.
+
+</Mistake>
+
+<Mistake>
+
+Denormalizing without a plan for keeping the redundant copies in sync — leads to silently inconsistent data over time.
+
+</Mistake>
+
+<Mistake>
+
+Over-normalizing a read-heavy reporting schema purely out of habit, resulting in dashboards that need 6+ joins for a single simple report.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    AUTHORS ||--o{ POSTS : writes
+    POSTS ||--o{ POST_TAGS : has
+    AUTHORS {
+        int author_id PK
+        string author_name
+        string author_email
+    }
+    POSTS {
+        int id PK
+        string title
+        int author_id FK
+        datetime published_at
+    }
+    POST_TAGS {
+        int post_id FK
+        string tag
+    }
+`}
+  caption="A 3NF-normalized blogging schema — author details live once in AUTHORS, tags are atomic rows in POST_TAGS, no transitive or repeating-group data in POSTS."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>1NF: atomic values only, no repeating groups or comma-separated multi-values in a cell</li>
+<li>2NF: no partial dependency — every non-key column depends on the whole composite key, not just part of it</li>
+<li>3NF: no transitive dependency — non-key columns depend only on the primary key, not on another non-key column</li>
+<li>Normalization prevents update anomalies but often needs more joins to read</li>
+<li>Denormalization trades redundancy and write complexity for faster, join-free reads</li>
+<li>Normalize write-heavy, integrity-critical OLTP tables; denormalize read-heavy reporting/dashboard paths</li>
+<li>A common real-world pattern: keep the source-of-truth schema normalized, build a separate denormalized read/reporting layer</li>
+</ul>
+
+</QuickRevision>

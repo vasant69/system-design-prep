@@ -1,0 +1,151 @@
+---
+slug: "s3-permissions-and-bucket-policies"
+title: "S3 Permissions and Bucket Policies"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["s3-storage-classes-and-lifecycle"]
+tags: ["aws", "s3", "iam", "security", "bucket policy"]
+englishDefinition: "S3 access control combines identity-based IAM policies attached to users or roles, resource-based bucket policies attached to the bucket itself, and legacy per-object ACLs, all evaluated together with explicit deny always winning. Block Public Access settings act as an account- or bucket-level override that can neutralize an otherwise-public policy."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 access control combines identity-based IAM policies attached to users or roles, resource-based bucket policies attached to the bucket itself, and legacy per-object ACLs, all evaluated together with explicit deny always winning. Block Public Access settings act as an account- or bucket-level override that can neutralize an otherwise-public policy.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+S3 permissions samajhna interview me ek weak spot common hai kyunki teen alag mechanisms overlap karte hain — **IAM policy**, **bucket policy**, aur **ACL** — aur inka evaluation order confusing lagta hai jab tak underlying model clear na ho.
+
+### Teen mechanisms — kaun kya hai
+
+**IAM policy** (identity-based) — kisi IAM user, group, ya role pe attach hoti hai. Ye batata hai "ye identity kya kar sakti hai" — jaise "user Alice `s3:GetObject` kar sakti hai bucket `my-app-data` pe." Ye policy identity ke saath travel karti hai, resource ke saath nahi.
+
+**Bucket policy** (resource-based) — bucket pe hi attach hoti hai, ek JSON document. Ye batata hai "is bucket ko kaun access kar sakta hai" — including cross-account access (kisi doosre AWS account ke principal ko permission dena, jo IAM policy se possible nahi hai kyunki IAM policy sirf apne account ki identities ko permission de sakti hai). Bucket policy public access dene ke liye bhi use hoti hai (`Principal: "*"`).
+
+**ACL (Access Control List)** — sabse purana mechanism, per-bucket ya per-object level grant, bahut coarse-grained (jaise "ye doosra AWS account is object ko read kar sakta hai"). AWS ne 2021 se naye buckets me ACLs ko **default disabled** kar diya hai (Object Ownership setting "Bucket owner enforced") kyunki ACLs confusing aur error-prone the — modern practice ACLs bilkul avoid karna hai, sab kuch IAM + bucket policy se karo.
+
+### Evaluation — kaise combine hoti hain
+
+Jab koi request aati hai, AWS **saari applicable policies** (IAM + bucket policy + ACL + any Service Control Policy agar Organizations use ho rahi hai) collect karta hai aur evaluate karta hai. Rule simple hai: **explicit Deny hamesha jeetta hai**, chahe kahin bhi ho. Agar koi bhi policy explicitly deny karti hai, request reject ho jaati hai — doosri policies allow bhi kar rahi hon to farak nahi padta. Agar koi explicit deny nahi hai, to kam se kam ek policy ka explicit Allow chahiye — default sab **implicit deny** hota hai. Cross-account case me dono taraf allow chahiye: requester ki IAM policy allow kare AND bucket ki resource policy allow kare — dono zaroori hain, sirf ek kaafi nahi.
+
+### Block Public Access — ek override switch
+
+**S3 Block Public Access (BPA)** ek separate, higher-priority control hai — ye account-level ya bucket-level pe set hota hai, aur agar enabled hai to ye kisi bhi bucket policy ya ACL ko override kar deta hai jo bucket ko public banati ho, **chahe wo policy technically valid ho**. Isme 4 alag settings hain: naya public ACL block karo, existing public ACLs ko ignore karo, naya public bucket policy block karo, aur public/cross-account access ko sabhi bucket policies me override karo. AWS 2018 se naye buckets pe **default sabhi 4 ON** rakhta hai — matlab galti se public bucket banana ab kaafi hard hai unless koi jaan-boojh kar BPA off kare.
+
+### Classic "public bucket" misconfiguration — kaise hota hai
+
+Ye interview me bahut common scenario hai. Typically ye teen galtiyon ka combination hota hai: (1) developer ne BPA settings ko off kar diya "kyunki policy kaam nahi kar rahi thi" — bina samjhe ki BPA hi wo cheez hai jo unhe protect kar rahi thi. (2) Bucket policy me `Principal: "*"` ke saath ek overly-broad Action (jaise `s3:*` instead of sirf `s3:GetObject`) daal diya. (3) Koi condition (jaise `aws:SourceIp` ya `aws:PrincipalOrgID`) nahi lagayi jo access ko restrict karti. Result: poora bucket internet pe publicly readable/writable ho jaata hai — ye exact pattern kayi real-world data breaches ka root cause raha hai.
+
+### Practical rule of thumb
+
+Modern best practice: BPA **hamesha ON rakho** unless bucket ko genuinely public hosting ke liye use kar rahe ho (jaise static website with clearly-scoped read-only policy). Cross-account access ke liye bucket policy + specific account ARN + specific actions use karo, kabhi `Principal: "*"` nahi. ACLs bilkul avoid karo — "Bucket owner enforced" Object Ownership setting use karo jisse ACLs completely disable ho jaate hain aur sirf IAM/bucket-policy se access control hota hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Block Public Access off karna bucket ko turant public nahi banata — lekin ye us aakhri safety net ko hata deta hai jo galat bucket policy ko public hone se rokti thi. Isko off karna sirf tabhi karo jab tumhe pata ho ki policy exactly kya allow karegi, aur ideally sirf specific settings off karo (sabhi 4 nahi) jitna kam zaroori ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek internal reporting dashboard S3 me static assets (JS/CSS bundles) serve karta hai via CloudFront, aur underlying bucket **fully private** hai — Block Public Access sabhi 4 settings ON, bucket policy sirf CloudFront ke Origin Access Control principal ko `s3:GetObject` deti hai specific `AWS:SourceArn` condition ke saath (sirf ye specific CloudFront distribution access kar sakti hai, koi aur nahi). Ek doosra bucket vendor ko data export files bhejne ke liye use hota hai — cross-account access via bucket policy, jisme `Principal` specifically vendor ke AWS account ID pe set hai, `Action` sirf `s3:GetObject` aur `s3:ListBucket` tak limited hai, aur ek `aws:PrincipalOrgID` condition bhi hai taaki agar vendor ka account kabhi compromise ho to bhi unauthorized org se access na ho sake.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Block Public Access: 4 independent settings, all default ON for buckets created since 2018
+- Policy evaluation: explicit Deny always wins, regardless of how many Allow statements exist elsewhere
+- Cross-account access requires both sides to allow: requester's IAM policy AND bucket's resource policy
+- Object Ownership "Bucket owner enforced" (default since April 2023 for new buckets): fully disables ACLs
+- IAM policy document size limit: 6,144 characters for inline identity policies (bucket policies: 20 KB)
+- Default access without any explicit Allow: implicit deny (nothing is accessible by default)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How would you debug a bucket that's unexpectedly public" or "walk me through how S3 access is evaluated" are near-guaranteed questions — the strong answer names all three mechanisms (IAM, bucket policy, ACL), states the explicit-deny-wins rule precisely, and explains that Block Public Access sits above all of them as an override. A frequent trick question probes cross-account access specifically — many candidates forget that both the IAM policy on the requester's side and the bucket policy on the resource side must independently allow the action. Expect a root-cause-analysis style question around a public-bucket incident — the strong answer walks through checking BPA settings first, then the bucket policy's Principal and Action scope, rather than guessing.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Block Public Access ko poora off kar dena kyunki ek legitimate cross-account access "kaam nahi kar raha" — actual fix scoped bucket policy + specific principal hota hai, BPA ko off karna galat aur overly broad solution hai.
+
+</Mistake>
+
+<Mistake>
+
+Bucket policy me `Principal: "*"` aur broad `Action: "s3:*"` combine karna bina kisi condition ke — ye poore bucket ko world-writable bana sakta hai, sirf world-readable nahi.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki sirf ek jagah (jaise sirf bucket policy) allow kar dene se access mil jaayega, jabki koi doosri jagah (jaise ek SCP ya IAM policy) explicitly deny kar rahi ho — explicit deny hamesha override karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Legacy ACLs use karte rehna naye buckets me jab "Bucket owner enforced" setting available hai — ACLs debug karna mushkil hai aur unintended access grants easily ho jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+Cross-account access ke liye sirf ek taraf (bucket policy) set karke ye assume karna ki kaam ho jaayega — requester side ki IAM policy me bhi corresponding Allow chahiye, warna access denied milega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Request to access S3 object] --> B{Block Public Access enabled and blocks this?}
+    B -->|Yes| C[Denied - overrides everything below]
+    B -->|No| D[Collect all applicable policies: IAM + Bucket Policy + ACL + SCP]
+    D --> E{Any explicit Deny in any policy?}
+    E -->|Yes| C
+    E -->|No| F{At least one explicit Allow?}
+    F -->|No| G[Denied - implicit deny by default]
+    F -->|Yes| H[Access Granted]
+`}
+  caption="Block Public Access is checked first as an account/bucket-level override, then explicit Deny beats every Allow, and with no explicit Deny at least one explicit Allow is still required because everything defaults to implicit deny."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Three access-control mechanisms: IAM policy (identity-based, travels with the user/role), bucket policy (resource-based, on the bucket, supports cross-account), ACL (legacy, avoid on new buckets)
+- Explicit Deny in any policy always wins, regardless of Allow statements elsewhere
+- Everything is implicit deny by default — at least one explicit Allow is required
+- Cross-account access needs both sides to allow: the requester's IAM policy AND the bucket's resource policy
+- Block Public Access is a higher-priority override — 4 independent settings, default ON since 2018 for new buckets
+- "Bucket owner enforced" Object Ownership setting fully disables ACLs — modern best practice
+- The classic public-bucket breach pattern: BPA disabled + Principal "*" + overly broad Action + no restricting condition
+- Never use Principal "*" with broad actions for cross-account sharing — scope to a specific account ARN and specific actions
+
+</QuickRevision>

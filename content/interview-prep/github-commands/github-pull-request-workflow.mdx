@@ -1,0 +1,208 @@
+---
+slug: "github-pull-request-workflow"
+title: "GitHub Pull Request Workflow: Creation, Review, Merge Strategies"
+section: "interview-prep"
+module: "github-commands"
+order: 10
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["git-tags-and-releases"]
+tags: ["github", "pull-requests", "code-review", "workflow", "gh-cli"]
+englishDefinition: "A GitHub pull request (PR) is a request to merge changes from one branch (or a fork) into another, providing a dedicated space for code review, automated checks, and discussion before the merge happens, and can be created either through the GitHub web UI or the gh CLI, then merged using one of three strategies -- merge commit, squash, or rebase -- depending on team convention."
+interviewFrequency: "very-high"
+companies: ["GitHub", "Microsoft", "Atlassian", "Infosys"]
+---
+
+<SimpleDefinition>
+
+A GitHub pull request (PR) is a request to merge changes from one branch (or a fork) into another, providing a dedicated space for code review, automated checks, and discussion before the merge happens, and can be created either through the GitHub web UI or the gh CLI, then merged using one of three strategies -- merge commit, squash, or rebase -- depending on team convention.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pull request ka core idea simple hai: code seedha `main` branch me push nahi hota, balki ek "propose karo, review karwao, phir merge karo" gate se guzarta hai. Ye gate hi team ki code quality aur knowledge-sharing ka sabse bada lever hai.
+
+### Fork vs branch workflow
+
+Do alag models hain jinme PRs use hote hain:
+
+- **Branch workflow** (internal team members, same repo par write access): direct repo me naya branch banao (`git checkout -b feature/add-login`), kaam karo, push karo, PR kholo `feature/add-login` se `main` me.
+- **Fork workflow** (external contributors, open-source, ya bahut strict access-control wale orgs): pehle repo ko apne account me **fork** karo (GitHub UI pe "Fork" button -- ye ek independent copy banata hai aapke account me), fork me branch banao, kaam karo, push karo apne fork me, phir PR kholo apne fork ke branch se **upstream** repo ke `main` me. Ye pattern isliye zaroori hai kyunki external contributors ko original repo par direct write access nahi diya jaata -- security boundary maintain rehti hai.
+
+### Creating a PR
+
+**GitHub UI se**: branch push karne ke baad GitHub khud ek banner dikhata hai "Compare & pull request" -- click karo, base branch (jaha merge hoga) aur compare branch (jaha se changes aa rahe) confirm karo, title/description likho, "Create pull request" click karo.
+
+**`gh` CLI se** (GitHub's official command-line tool):
+
+```bash
+gh pr create --title "Add login validation" --body "Adds email format check and password strength rule" --base main --head feature/add-login
+```
+
+`--base` target branch hai (jaha merge hoga), `--head` source branch hai. Agar current branch already pushed hai, `gh pr create` interactively bhi chal sakta hai bina flags ke -- prompts pooch lega title/body ke liye.
+
+### Draft PRs
+
+Jab kaam abhi complete nahi hai lekin early feedback chahiye, ya CI checks dekhna hai without inviting formal review, **draft PR** banao:
+
+```bash
+gh pr create --draft --title "WIP: refactor auth module"
+```
+
+Draft PR ek normal PR jaisa hi kaam karta hai (CI chalta hai, comments ho sakte hain) lekin reviewers ko explicit signal deta hai "abhi review-ready nahi hai, merge mat karo." Jab ready ho jaaye:
+
+```bash
+gh pr ready
+```
+
+### Requesting reviewers
+
+```bash
+gh pr create --reviewer alice,bob --title "..." --body "..."
+# or on an existing PR:
+gh pr edit 42 --add-reviewer alice
+```
+
+UI me right sidebar par "Reviewers" section se bhi same kar sakte ho. Kayi orgs **CODEOWNERS** file use karte hain (`.github/CODEOWNERS`) jo automatically specific files/folders ke liye specific reviewers assign kar deta hai -- jaise `/auth/ @security-team`.
+
+### Resolving review comments
+
+Reviewer jab specific line pe comment chhodta hai, wo ek "conversation thread" banata hai PR pe. Author ka flow:
+
+1. Local branch pe fix karo requested change ke liye
+2. Commit karo aur push karo -- same branch pe push karne se PR **automatically update** ho jaata hai, naya commit list me dikhta hai
+3. GitHub UI pe us comment thread ko "Resolve conversation" mark karo (ye sirf visual bookkeeping hai, koi Git operation nahi)
+
+```bash
+git add .
+git commit -m "Address review: extract validation into separate method"
+git push origin feature/add-login
+```
+
+Important: ye follow-up commits **naye commits** hote hain, purane commits amend nahi hote (jab tak explicitly force-push na karo) -- isse reviewer exactly dekh sakta hai kya naya add hua hai without re-reading everything.
+
+### Squash-merge vs merge-commit vs rebase-merge
+
+GitHub ke merge button pe teen options hote hain (repo settings me admin enable/disable kar sakta hai):
+
+**Merge commit** -- saare PR commits as-is target branch me le aata hai, plus ek naya merge commit banata hai jo dono parents ko point karta hai. History me PR ka har chhota commit (including "fix typo", "oops") visible rehta hai. Fayda: complete audit trail. Nuksan: agar PR me bahut saare messy WIP commits hain, `main` ki history noisy ho jaati hai.
+
+**Squash and merge** -- PR ke saare commits ek single commit me combine ho jaate hain target branch pe, PR title/description default commit message ban jaate hain. Fayda: `main` ki history clean rehti hai, ek PR = ek commit. Nuksan: individual commit-level history (kisne kab kya specific chhota change kiya) lost ho jaata hai target branch pe (though PR page pe abhi bhi dikhta hai).
+
+**Rebase and merge** -- PR ke individual commits ko as-is, bina merge commit banaye, target branch ke tip pe replay kiya jaata hai (linear history). Fayda: history bilkul linear rehti hai, koi extra merge commit noise nahi. Nuksan: agar commits messy hain, wo sab as-is history me chale jaate hain (squash jaisa cleanup nahi hota).
+
+Team convention decide karta hai kaunsa use hoga -- kayi orgs squash-merge default rakhte hain kyunki `main` history simple rehti hai aur "ek feature = ek commit" traceability easy hoti hai, especially jab revert karna ho.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Squash-merge: clean linear main history, easy single-commit reverts", "Merge commit: full audit trail of every intermediate commit preserved"]}
+  cons={["Squash-merge: loses individual commit granularity on main", "Merge commit: noisy history if PR had messy WIP commits"]}
+/>
+
+## Real World Example
+
+<RealWorld company="GitHub">
+
+GitHub's own open-source repos (like the CLI tool `gh` itself) require every PR to pass CI checks and get at least one approving review before the merge button even becomes clickable -- enforced via branch protection rules on `main`, not just team discipline.
+
+</RealWorld>
+
+<RealWorld company="Atlassian">
+
+Enterprise teams using Bitbucket/GitHub together often standardize on squash-merge for feature branches specifically so that `git revert` on `main` only ever needs to undo one commit per feature, even if the original feature branch had 15 messy WIP commits.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>3 merge strategies available on GitHub: merge commit, squash and merge, rebase and merge</li>
+<li>`gh pr create` accepts `--base` and `--head` to specify target and source branches explicitly</li>
+<li>Draft PRs still trigger CI checks -- the "draft" state only blocks the merge action and signals review intent</li>
+<li>CODEOWNERS file path convention: `.github/CODEOWNERS` at repo root</li>
+<li>Pushing new commits to a PR's source branch updates the PR automatically -- zero extra commands needed</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Fork workflow aur branch workflow me kab kaunsa use karoge?" -- strong answer: internal team members jinke paas repo write access hai, direct branch workflow use karte hain; external/open-source contributors fork workflow use karte hain kyunki unhe direct write access nahi milta, security boundary maintain rehti hai. "Squash-merge, merge-commit, rebase-merge me fark aur kab kaunsa?" -- strong answer: squash clean single-commit history deta hai (easy revert, kam noise), merge commit full audit trail preserve karta hai, rebase linear history deta hai bina merge commit ke; team convention aur "kitna commit-level detail chahiye main pe" decide karta hai. Ek practical follow-up: "reviewer ne comment diya, aapne fix kiya -- kya karoge?" -- strong answer: naya commit banao usi branch pe, push karo (PR auto-update ho jaayega), conversation thread ko resolve mark karo -- force-push/amend avoid karo jab tak reviewer explicitly bole, taaki incremental diff review-friendly rahe.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+External contributor jaisa direct branch banane ki koshish karna repo me jab actually write access nahi hai -- fork workflow use karna chahiye tha, push hi reject ho jaata hai permission error ke saath.
+
+</Mistake>
+
+<Mistake>
+
+Review comments address karne ke baad force-push kar dena history rewrite karke -- reviewer ka pura context lost ho jaata hai kyunki GitHub purane commits ke against diye comments ko naye force-pushed commits se match nahi kar paata cleanly.
+
+</Mistake>
+
+<Mistake>
+
+Draft PR ko normal PR samajh ke jaldi review request bhej dena -- draft state ka poora point hai "abhi ready nahi hai," reviewers ka time waste hota hai agar draft pe formal review maang liya.
+
+</Mistake>
+
+<Mistake>
+
+Merge strategy team convention check kiye bina apni marzi se choose karna -- ek hi repo me mix of merge-commit aur squash history inconsistent aur confusing ban jaati hai, especially revert/bisect karte waqt.
+
+</Mistake>
+
+<Mistake>
+
+"Resolve conversation" click kar dena bina actually fix kiye -- ye sirf UI bookkeeping hai, koi Git validation nahi karta ki fix actually hua ya nahi, isliye reviewer ko explicitly bata kar hi resolve karna chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["git checkout -b feature/add-login"] --> B["Work + commit locally"]
+    B --> C["git push origin feature/add-login"]
+    C --> D["gh pr create --base main --head feature/add-login"]
+    D --> E["Reviewer comments on specific lines"]
+    E --> F["Author commits fix + pushes -- PR auto-updates"]
+    F --> G{"CI passes + approval given?"}
+    G -->|No| E
+    G -->|Yes| H["Merge: squash / merge-commit / rebase"]
+    H --> I["main branch updated"]
+`}
+  caption="A PR cycles through review-and-fix iterations before merge -- each fix is a new commit pushed to the same branch, not a rewrite of history."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Branch workflow: direct branch in same repo, for team members with write access</li>
+<li>Fork workflow: independent copy in your own account, for external contributors without write access</li>
+<li>`gh pr create --title "..." --body "..." --base main --head feature/x` -- create a PR from the CLI</li>
+<li>`gh pr create --draft` -- marks PR not ready for formal review; `gh pr ready` promotes it</li>
+<li>`gh pr edit 42 --add-reviewer alice` -- request a specific reviewer on an existing PR</li>
+<li>Fixing review feedback: new commit + push to the same branch, PR auto-updates, avoid force-push</li>
+<li>Merge commit: preserves every commit + adds a merge commit -- full audit trail, noisier history</li>
+<li>Squash merge: all PR commits collapse to one on target branch -- clean history, easy single-commit revert</li>
+<li>Rebase merge: PR commits replayed individually onto target tip -- linear history, no merge commit</li>
+</ul>
+
+</QuickRevision>

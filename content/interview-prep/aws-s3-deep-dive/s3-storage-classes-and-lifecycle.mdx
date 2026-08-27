@@ -1,0 +1,156 @@
+---
+slug: "s3-storage-classes-and-lifecycle"
+title: "S3 Storage Classes and Lifecycle Rules"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 2
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["s3-core-concepts"]
+tags: ["aws", "s3", "storage classes", "lifecycle", "cost optimization"]
+englishDefinition: "S3 storage classes trade retrieval speed and availability for lower per-GB storage cost, ranging from Standard for frequently accessed data down to Glacier Deep Archive for rarely accessed data. Lifecycle rules automate moving objects between classes or deleting them entirely as they age, without any application code change."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 storage classes trade retrieval speed and availability for lower per-GB storage cost, ranging from Standard for frequently accessed data down to Glacier Deep Archive for rarely accessed data. Lifecycle rules automate moving objects between classes or deleting them entirely as they age, without any application code change.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+S3 ka sabse bada cost-optimization lever storage class hai. Same durability (11 nines — 99.999999999%) sabhi classes me milti hai, farak sirf **availability**, **retrieval time**, aur **per-GB price** ka hota hai. Core idea simple hai: jitna kam access hoga data ka, utna sasta store kar sakte ho — bas retrieval slow ya costly ho jaata hai.
+
+### Frequently accessed tier
+
+**S3 Standard** default hai — high availability (99.99%), multi-AZ redundancy, milliseconds latency, koi retrieval fee nahi. Naye/active data ke liye ye hi use karo.
+
+**S3 Intelligent-Tiering** ek monitoring-based class hai — S3 khud track karta hai access pattern aur automatically object ko frequent/infrequent/archive tiers ke beech move karta hai, bina application ko kuch bhi karna pade. Chhota monitoring fee lagta hai per object, lekin agar access pattern unpredictable hai (kabhi pata nahi kaunsa object kab access hoga), to ye manual lifecycle rules likhne se better hai.
+
+### Infrequently accessed tiers
+
+**Standard-IA** (Infrequent Access) — same milliseconds latency aur 99.9% availability jaisa Standard, lekin per-GB storage cost ~40% kam hai. Trade-off: per-GB **retrieval fee** lagta hai, aur minimum storage duration **30 din** hai (30 din se pehle delete/transition karoge to bhi 30 din ka charge lagega). Use case: backups, disaster-recovery copies — jo chahiye turant milliseconds me agar zaroorat pade, lekin normally touch nahi hote.
+
+**One Zone-IA** — Standard-IA jaisa hi, lekin sirf **ek** Availability Zone me store hota hai (multi-AZ nahi). ~20% aur sasta, lekin agar wo ek AZ fail ho jaaye to data loss ho sakta hai. Use case: easily-regenerable data (thumbnails jo original se dobara ban sakte hain) ya secondary backup copies jinki primary kahin aur already exist karti hai.
+
+### Archive tiers — retrieval time ka spectrum
+
+Teen Glacier variants hain, retrieval speed aur cost ka spectrum:
+
+- **Glacier Instant Retrieval** — milliseconds latency (Standard jaisa), lekin sabse sasta archive tier jisme instant access milta hai. Quarterly access wale data ke liye best (jaise medical images, news archives jo kabhi kabhar turant chahiye hote hain).
+- **Glacier Flexible Retrieval** — retrieval me minutes se hours lagte hain. Teen speed options: Expedited (1-5 min, extra costly), Standard (3-5 hours), Bulk (5-12 hours, sabse sasta). Use case: disaster recovery jaha kuch ghante wait acceptable hai.
+- **Glacier Deep Archive** — sabse sasta S3 storage class overall, retrieval me **12-48 hours** lagte hain (Standard retrieval 12 hours, Bulk 48 hours). Use case: 7-10 saal ka regulatory/compliance data jo almost kabhi access nahi hota lekin legally rakhna padta hai.
+
+### Lifecycle rules — automation ka mechanism
+
+Lifecycle rule ek bucket-level (ya prefix/tag-filtered) policy hai jo do tarah ke actions automate karti hai: **Transition** actions (object ko ek storage class se doosre me move karna after N din) aur **Expiration** actions (object ko permanently delete karna after N din). Ye rule S3 ke background process se apne aap chalti hai — koi cron job, koi Lambda schedule likhne ki zaroorat nahi.
+
+Typical production pattern: log files upload hote hi Standard me jaate hain (active analysis ke liye), 30 din baad automatically Standard-IA me move (occasional audit access), 90 din baad Glacier Flexible Retrieval me (compliance retention), aur 365 din baad automatically delete. Ye poora lifecycle ek JSON rule se define hota hai, ek baar set karo aur bhool jaao.
+
+**Important constraint jo interview me pucha jaata hai**: transitions ka ek minimum-days-in-class rule hai — Standard se Standard-IA me minimum 30 din baad hi transition kar sakte ho (kyunki Standard-IA ka khud minimum storage duration 30 din hai). Isse chhote-chhote objects (128 KB se kam) ko IA/Glacier me transition karna aksar cost-negative hota hai — per-object overhead charge (ek minimum billable size hota hai) storage saving se zyada pad sakta hai. Isliye lifecycle rules likhte waqt **object size filter** (jaise sirf 128 KB se bade objects) lagana best practice hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Same 11-nines durability across every class, so choosing a colder tier never risks data loss", "Lifecycle rules fully automate the cost curve without any app code", "Intelligent-Tiering removes the need to predict access patterns manually"]}
+  cons={["Retrieval fees and minimum storage durations can make cold tiers cost-negative for small or frequently-touched objects", "Glacier Deep Archive retrieval (12-48 hours) is unusable for anything time-sensitive", "One Zone-IA trades away multi-AZ durability for cost, a real availability risk if misapplied"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek fintech application transaction receipts (PDFs) ko S3 me store karta hai. Lifecycle policy: din 0-90 Standard (customers regularly download recent receipts), din 90-365 Standard-IA (occasional audit/dispute lookup), din 365+ Glacier Deep Archive (7-saal regulatory retention, kabhi access nahi hoti unless legal audit ho). Ek separate bucket application logs ke liye Intelligent-Tiering use karta hai kyunki access pattern unpredictable hai — kuch logs recent incident investigation me baar-baar access hote hain, baaki kabhi touch nahi hote, aur team ko manually predict karna practical nahi tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Durability across all storage classes: 99.999999999% (11 nines)
+- S3 Standard availability: 99.99%; Standard-IA/One Zone-IA: 99.9%
+- Standard-IA minimum storage duration: 30 days; minimum billable object size consideration below ~128 KB
+- Glacier Instant Retrieval: milliseconds; Glacier Flexible Retrieval: 1 minute to 12 hours depending on tier; Glacier Deep Archive: 12-48 hours
+- Standard-IA storage cost: roughly 40% less than Standard per GB
+- One Zone-IA storage cost: roughly 20% less than Standard-IA per GB, single-AZ only
+- Glacier Deep Archive: cheapest storage class overall, roughly a fraction of Standard's per-GB price
+- Intelligent-Tiering: small monthly monitoring fee per object, in exchange for automatic tier movement
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How would you reduce S3 storage cost for a large, aging dataset" is close to a guaranteed question, and the strong answer walks through a concrete lifecycle policy (Standard to durationally-appropriate IA/Glacier tiers to expiration) rather than just naming the classes. A common trick question is asking about One Zone-IA's actual risk — the correct answer names single-AZ durability exposure explicitly, not a vague "it's cheaper." Interviewers also probe the small-object gotcha: candidates who don't mention the minimum-storage-duration and per-object overhead cost trap for small files usually haven't operated S3 at scale. Expect a follow-up comparing Intelligent-Tiering against hand-written lifecycle rules — the differentiator is predictability of access pattern, not just cost.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Chhote objects (KBs range) ko Glacier me lifecycle transition karna bina soche — minimum storage duration charge aur per-object overhead ki wajah se ye actual me Standard me rakhne se **costlier** pad sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+One Zone-IA ko primary/only copy ke liye use karna jab data regenerate nahi ho sakta — single-AZ failure pe permanent data loss ka risk hai jo team ne accept nahi kiya tha.
+
+</Mistake>
+
+<Mistake>
+
+Glacier Deep Archive me aisa data daalna jo kabhi bhi jaldi chahiye ho sakta hai — 12-48 hour retrieval time ka matlab hai ki emergency access practically impossible hai.
+
+</Mistake>
+
+<Mistake>
+
+Lifecycle rule set karke bhool jaana bina test kiye ki rule sahi prefix/tag filter target kar rahi hai — galat filter se production data accidentally expire (delete) ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Intelligent-Tiering hamesha "best of both worlds" samajhna — predictable, consistently-accessed data (jaise active application assets) ke liye plain Standard sasta padta hai kyunki monitoring fee bina benefit ke lagta rehta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A[Object uploaded - Day 0] --> B[S3 Standard]
+    B -->|Day 30 - lifecycle rule| C[Standard-IA]
+    C -->|Day 90 - lifecycle rule| D[Glacier Flexible Retrieval]
+    D -->|Day 365 - lifecycle rule| E[Glacier Deep Archive]
+    E -->|Day 2555 - expiration rule| F[Object permanently deleted]
+    G[Unpredictable access pattern] --> H[Intelligent-Tiering]
+    H --> I[S3 monitors access automatically]
+    I --> J[Moves between frequent/infrequent/archive tiers on its own]
+`}
+  caption="A lifecycle policy is a set of age-based transition and expiration rules that run automatically in the background; Intelligent-Tiering replaces the age-based guesswork with real access-pattern monitoring."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- All S3 storage classes share the same 11-nines durability — only availability, retrieval time, and cost differ
+- Standard: milliseconds latency, no retrieval fee, use for actively accessed data
+- Standard-IA / One Zone-IA: same-ish latency, per-GB retrieval fee, 30-day minimum storage duration; One Zone-IA is single-AZ (cheaper, less durable placement)
+- Glacier Instant Retrieval: milliseconds but archive pricing; Glacier Flexible: minutes to 12 hours; Glacier Deep Archive: 12-48 hours, cheapest overall
+- Lifecycle rules automate Transition (move to another class) and Expiration (delete) actions purely by object age, no code needed
+- Small objects transitioned to IA/Glacier can end up costing more due to minimum storage duration and per-object overhead — filter by size
+- Intelligent-Tiering is best for unpredictable access patterns; hand-written lifecycle rules are best when the access timeline is known
+- Always test a lifecycle rule's prefix/tag filter before relying on it — a wrong filter can silently expire production data
+
+</QuickRevision>

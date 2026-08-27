@@ -1,0 +1,236 @@
+---
+slug: "web-api-performance-and-async-best-practices"
+title: "Web API Performance and Async Best Practices"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 14
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["rate-limiting-and-output-caching"]
+tags: ["dotnet", "webapi", "performance", "async", "httpclientfactory", "efcore"]
+englishDefinition: "High-throughput ASP.NET Core Web APIs stay async all the way from the controller down to the database call, avoid sync-over-async patterns like .Result and .Wait() that can exhaust the thread pool and deadlock, use IHttpClientFactory instead of manually created HttpClient instances to avoid socket exhaustion, and take deliberate steps to prevent Entity Framework Core N+1 query patterns and unnecessary response payload size."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "TCS", "Infosys", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+High-throughput ASP.NET Core Web APIs stay async all the way from the controller down to the database call, avoid sync-over-async patterns like .Result and .Wait() that can exhaust the thread pool and deadlock, use IHttpClientFactory instead of manually created HttpClient instances to avoid socket exhaustion, and take deliberate steps to prevent Entity Framework Core N+1 query patterns and unnecessary response payload size.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Performance ka topic senior-level interviews me almost guaranteed aata hai — kyunki ye conceptual understanding test karta hai, sirf syntax nahi. Ek candidate jo async/await ko "bas fast banane wala keyword" samajhta hai, usually is topic pe struggle karta hai.
+
+### Async all the way down
+
+Ek genuinely common mistake: controller/endpoint async hai, lekin beech me kahin `.Result` ya `.Wait()` call kar diya ek async method pe — isse **sync-over-async** ban jaata hai, jo thread pool starvation aur deadlock dono risk create karta hai.
+
+```csharp
+// GALAT — sync-over-async, deadlock risk (especially ASP.NET Framework me,
+// aur ASP.NET Core me bhi thread pool exhaustion ka risk)
+public IActionResult GetOrder(int id)
+{
+    var order = _service.GetByIdAsync(id).Result; // .Result blocking call
+    return Ok(order);
+}
+
+// SAHI — async poori chain me
+public async Task<IActionResult> GetOrder(int id)
+{
+    var order = await _service.GetByIdAsync(id);
+    return Ok(order);
+}
+```
+
+**Deadlock kyun hota hai (conceptually):** jab `.Result`/`.Wait()` call hota hai, calling thread block ho jaata hai jab tak awaited task complete na ho. Agar us awaited task ko continue karne ke liye same synchronization context/thread chahiye jo already blocked hai — circular wait, deadlock. ASP.NET Core me by default koi `SynchronizationContext` nahi hoti (ASP.NET Framework me hoti thi), isliye classic deadlock kam common hai, lekin **thread pool exhaustion** phir bhi real risk hai — high load pe, har blocked thread ek thread-pool thread occupy karta hai bina kaam kiye, aur naye incoming requests process karne ke liye threads kam pad jaate hain.
+
+### IHttpClientFactory — socket exhaustion avoid karna
+
+`new HttpClient()` har baar manually create karna (especially `using` block ke andar, dispose karte hue) ek classic anti-pattern hai — har `HttpClient` instance apna underlying socket connection hold karta hai, aur frequent create/dispose se sockets `TIME_WAIT` state me accumulate ho jaate hain, eventually socket exhaustion ho sakta hai high-throughput scenarios me.
+
+```csharp
+// GALAT — har call pe naya HttpClient, socket exhaustion risk
+public async Task<string> GetDataAsync()
+{
+    using var client = new HttpClient();
+    return await client.GetStringAsync("https://api.example.com/data");
+}
+```
+
+```csharp
+// SAHI — IHttpClientFactory se managed, pooled HttpMessageHandler
+builder.Services.AddHttpClient("ExternalApi", client =>
+{
+    client.BaseAddress = new Uri("https://api.example.com");
+});
+
+public class DataService
+{
+    private readonly HttpClient _client;
+    public DataService(IHttpClientFactory factory) =>
+        _client = factory.CreateClient("ExternalApi");
+
+    public Task<string> GetDataAsync() => _client.GetStringAsync("/data");
+}
+```
+
+`IHttpClientFactory` internally `HttpMessageHandler` instances ko pool aur recycle karta hai — connection reuse hoti hai, socket exhaustion avoid hota hai, aur saath me DNS changes ko bhi periodically handle karta hai (handler recycling ke through) jo ek raw long-lived static `HttpClient` miss kar sakta hai.
+
+### N+1 query pattern avoid karna EF Core me
+
+Ye ek almost-guaranteed-asked performance bug hai:
+
+```csharp
+// GALAT — N+1: 1 query orders ke liye, phir HAR order ke liye alag query customer fetch karne ke liye
+var orders = await _db.Orders.ToListAsync();
+foreach (var order in orders)
+{
+    var customer = await _db.Customers.FindAsync(order.CustomerId); // N extra queries!
+}
+```
+
+```csharp
+// SAHI — eager loading Include() se, single query with a JOIN
+var orders = await _db.Orders
+    .Include(o => o.Customer)
+    .ToListAsync();
+```
+
+Bade result sets ke liye `AsSplitQuery()` bhi consider karo agar multiple `Include()` chains cartesian-explosion create kar rahe hon (ek single JOIN query bahut zyada duplicate rows produce kar sakti hai jab multiple one-to-many relations include ho rahe hon).
+
+### Response compression aur payload size
+
+```csharp
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+});
+app.UseResponseCompression();
+```
+
+Bade JSON responses (list endpoints especially) ke liye compression network transfer time significantly reduce karta hai — lekin CPU overhead trade-off hai, isliye small/already-fast responses pe compression ka net benefit negligible ya negative bhi ho sakta hai. Saath hi, DTOs use karo entities directly return karne ke bajaye — unnecessary fields (navigation properties, internal-only columns) payload size badhate hain bina kaam ke.
+
+### ValueTask — kab actually faayda deta hai
+
+`ValueTask<T>` `Task<T>` ka ek lightweight alternative hai jo heap allocation avoid karta hai **jab result already synchronously available ho** (jaise cache-hit scenario). Agar method zyadatar synchronously complete hota hai (jaise ek cached-value-check jo rarely actually await karta hai), `ValueTask` allocation overhead bachata hai high-call-frequency paths pe.
+
+```csharp
+public ValueTask<int> GetCachedCountAsync(string key)
+{
+    if (_cache.TryGetValue(key, out int count))
+        return ValueTask.FromResult(count); // Synchronous path, no Task allocation
+
+    return new ValueTask<int>(FetchFromDbAsync(key)); // Genuinely async path
+}
+```
+
+**Interview-relevant caveat:** `ValueTask` ko multiple baar await karna, ya usko store karke baad me await karna, undefined behavior create kar sakta hai — `Task` ke unlike, `ValueTask` sirf ek baar consume hone ke liye designed hai. Agar method call site pe ye guarantee nahi hai (jaise ek public API jo bahut jagah se consume hoti hai unpredictably), `Task<T>` safer default hai — `ValueTask` sirf specific, hot-path, high-frequency scenarios me use karo jaha allocation genuinely measured problem hai, "hamesha ValueTask better hai" ek galat generalization hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Async all the way down keeps threads free to serve other requests under load", "IHttpClientFactory avoids socket exhaustion and handles DNS/handler recycling automatically", "Eager loading and compression cut real, measurable latency on data-heavy and list endpoints"]}
+  cons={["Async everywhere adds cognitive overhead and can obscure simple code paths", "Response compression has real CPU cost — not always a net win on small payloads", "ValueTask used carelessly (multiple awaits, stored and reused) introduces subtle bugs"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Microsoft ke official ASP.NET Core performance guidance explicitly `.Result`/`.Wait()` ko "avoid" karne ko top recommendation ke roop me list karta hai, aur `IHttpClientFactory` ko HttpClient lifetime-management ke default-recommended approach ke roop me — dono guidance directly production incidents se aaye hain jaha manually-managed `HttpClient` instances ne socket exhaustion cause kiya tha real deployed services me, jo is guidance ke practical, battle-tested origin ko reflect karta hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian SaaS Company">
+
+Ek typical B2B SaaS product ka reporting API endpoint (jo hundreds of related records return karta hai) initially N+1 query pattern ke saath implement hua tha — response time load ke saath linearly degrade ho raha tha kyunki har report row ke liye alag database round-trip ho raha tha. `Include()` se eager loading add karne ke baad (single JOIN query), response time significantly improve hua bina database schema change kiye — ye ek classic example hai ki EF Core query patterns ka performance impact application code layer pe kitna directly visible hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Sync-over-async (`.Result`/`.Wait()`) risks thread pool exhaustion under load, even without a classic deadlock
+- `IHttpClientFactory` pools and recycles `HttpMessageHandler` instances — avoids per-instance socket exhaustion
+- N+1 query pattern: 1 query becomes `1 + N` queries — a list of 100 orders can trigger 101 database round-trips
+- Response compression (Brotli/Gzip) meaningfully reduces network transfer time on large JSON payloads, at real CPU cost
+- `ValueTask<T>` avoids heap allocation only on the synchronous-completion path — genuinely useful in hot, high-frequency call paths
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Ek Web API endpoint high load pe slow ho raha hai, aur latency badh rahi hai time ke saath. Kaise debug/fix karoge?" — strong answer: "Sabse pehle check karunga async chain me kahin `.Result` ya `.Wait()` to nahi hai — sync-over-async thread pool exhaust kar sakta hai jo load badhne ke saath cascading slowdown create karta hai. Phir database queries dekhunga — EF Core me N+1 pattern common culprit hota hai, `Include()` se eager loading fix kar sakta hai. Agar API external service calls kar rahi hai, confirm karunga `IHttpClientFactory` use ho raha hai, na ki manually created `HttpClient` instances — warna socket exhaustion possible hai. Aur response payload size check karunga — agar entities directly serialize ho rahi hain unnecessary fields ke saath, DTOs se trim kar sakta hai, aur bade list responses ke liye compression enable kar sakta hai." Follow-up: "Sync-over-async se deadlock kaise hota hai conceptually?" — answer: blocking call (`.Result`) calling thread ko occupy kar leta hai jab tak awaited task complete na ho; agar awaited task ko continue karne ke liye wahi thread/context chahiye jo already blocked hai, circular wait ban jaata hai — ASP.NET Core me classic SynchronizationContext-deadlock kam common hai (koi context nahi hoti by default) lekin thread pool exhaustion phir bhi genuine risk rehta hai high load pe.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Async method ko `.Result` ya `.Wait()` se synchronously call karna — thread pool exhaustion aur (context-dependent) deadlock ka genuine risk create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har request/call pe naya `HttpClient` manually create karna (`using var client = new HttpClient()`) — socket exhaustion ka classic anti-pattern, `IHttpClientFactory` use karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+EF Core me loop ke andar related data fetch karna (N+1 pattern) — `Include()` se eager loading ya explicit projection se single-query approach use karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+"ValueTask hamesha Task se better hai, hamesha use karo" — ValueTask ko carelessly multiple baar await karna ya store karke baad me use karna undefined behavior create kar sakta hai; sirf genuinely hot, high-frequency, mostly-synchronous paths me use karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Entities ko directly API response me serialize karna DTOs ke bajaye — unnecessary fields aur navigation properties payload size badhate hain aur potentially internal data expose kar dete hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Slow Web API endpoint under load"] --> B{"Sync-over-async in the chain?"}
+    B -->|Yes| C[".Result/.Wait() found - convert to async all the way"]
+    B -->|No| D{"N+1 query pattern in EF Core?"}
+    D -->|Yes| E["Add Include() for eager loading"]
+    D -->|No| F{"Manually created HttpClient?"}
+    F -->|Yes| G["Switch to IHttpClientFactory"]
+    F -->|No| H["Check payload size - DTOs, compression"]
+`}
+  caption="A systematic elimination path for the most common Web API performance culprits, roughly in order of blast radius."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never mix sync-over-async (`.Result`, `.Wait()`) into an async chain — risks thread pool exhaustion and deadlocks
+- Use `IHttpClientFactory` instead of manually creating/disposing `HttpClient` — avoids socket exhaustion, handles DNS/handler recycling
+- Watch for EF Core N+1 patterns — a foreach loop making per-item DB calls; fix with `Include()` for eager loading
+- `AsSplitQuery()` helps when multiple `Include()` chains cause a cartesian-explosion join
+- Response compression (Brotli/Gzip) helps large payloads, has real CPU cost on small ones
+- Return DTOs, not entities directly — trims payload size and avoids leaking internal fields
+- `ValueTask<T>` only pays off in hot, mostly-synchronous, high-frequency paths — never await/store it carelessly
+- ASP.NET Core has no default `SynchronizationContext`, so thread pool exhaustion (not classic deadlock) is the main sync-over-async risk here
+
+</QuickRevision>

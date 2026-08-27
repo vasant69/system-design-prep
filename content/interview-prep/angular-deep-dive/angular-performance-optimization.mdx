@@ -1,0 +1,208 @@
+---
+slug: "angular-performance-optimization"
+title: "Angular Performance Optimization"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 14
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["state-management-in-angular"]
+tags: ["angular", "frontend", "performance", "onpush", "lazy-loading", "virtual-scrolling"]
+englishDefinition: "Angular performance optimization is the set of techniques used to keep an application fast as it grows, covering how efficiently the change detection cycle runs, how much JavaScript ships to the browser upfront, and how the DOM renders large or frequently updated lists."
+interviewFrequency: "very-high"
+companies: ["Google", "Microsoft", "Infosys", "TCS"]
+---
+
+<SimpleDefinition>
+
+Angular performance optimization is the set of techniques used to keep an application fast as it grows, covering how efficiently the change detection cycle runs, how much JavaScript ships to the browser upfront, and how the DOM renders large or frequently updated lists.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular apps me performance problems generally teen categories me aate hain: **change detection zyada kaam kar rahi hai**, **bahut saara JavaScript ek saath load ho raha hai**, ya **DOM me bahut saare elements ek saath render ho rahe hain**. Har category ka apna fix hai.
+
+### 1. `trackBy` with `*ngFor` — list re-render minimize karna
+
+Default me, jab ek array jisse `*ngFor` bind hai change hoti hai (naya reference milta hai), Angular **poori list ko destroy karke dobara create** kar sakta hai — even agar sirf ek item change hua ho, kyunki Angular ko pata nahi kaunsa item "same" hai. `trackBy` function Angular ko batata hai har item ko uniquely identify kaise karein (jaise `id` se):
+
+```typescript
+trackByUserId(index: number, user: User): string {
+  return user.id;
+}
+```
+```html
+<div *ngFor="let user of users; trackBy: trackByUserId">
+  {{ user.name }}
+</div>
+```
+
+Isse Angular sirf **actually changed items ko hi DOM me update** karta hai, baaki DOM nodes reuse hote hain — bade lists (100+ items) me ye difference bahut noticeable hoti hai, especially jab list frequently update hoti ho (real-time feeds, search results).
+
+### 2. `OnPush` change detection strategy
+
+Default change detection strategy me Angular **har event** (click, HTTP response, timer, etc.) ke baad **poore component tree** ko check karta hai ki kahin kuch change to nahi hua — chahe wo component ka data change hua ho ya nahi. `OnPush` strategy ek component ko batati hai: "mujhe sirf tab recheck karo jab mera `@Input` reference change ho, ya mere andar ka koi event fire ho, ya main khud `markForCheck()` call karun."
+
+```typescript
+@Component({
+  selector: "app-user-card",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  templateUrl: "./user-card.component.html",
+})
+export class UserCardComponent {
+  @Input() user!: User;
+}
+```
+
+Isse Angular ko poore tree me har cycle check nahi karna padta — sirf wahi subtrees jinke inputs actually change hue hain. Bada catch: `OnPush` component ke andar agar tum kisi `@Input` object ko **directly mutate** karte ho (reference same rakhte hue), Angular ko pata hi nahi chalega ki kuch change hua — isliye `OnPush` ke saath **immutable data patterns** (naya object/array banana, mutate nahi) zaroori ho jaate hain.
+
+### 3. Lazy loading — feature modules aur standalone components
+
+Poori app ka JavaScript ek hi bundle me bhejna initial load ko slow kar deta hai, especially bade apps me jinme dozens of routes hon. **Lazy loading** ka matlab hai ek route ka code tabhi download ho jab user usse actually navigate kare:
+
+```typescript
+const routes: Routes = [
+  {
+    path: "admin",
+    loadChildren: () => import("./admin/admin.routes").then(m => m.ADMIN_ROUTES),
+  },
+  {
+    path: "reports",
+    loadComponent: () => import("./reports/reports.component").then(m => m.ReportsComponent),
+  },
+];
+```
+
+Isse initial bundle chhota rehta hai — user sirf uss feature ka code download karta hai jo wo actually use kar raha hai, baaki routes background me ya on-demand load hote hain.
+
+### 4. Bundle size analysis
+
+Bundle kitna bada hai, aur usme kya-kya hai, ye jaanne ke liye `source-map-explorer` ya Angular CLI ke `--stats-json` flag se generate hui report ko webpack-bundle-analyzer jaise tools me analyze karte hain. Common culprits: poori library import karna jab sirf ek function chahiye ho (`import _ from "lodash"` instead of `import debounce from "lodash/debounce"`), duplicate dependencies (do alag versions ek hi package ki), ya unnecessary polyfills.
+
+### 5. Virtual scrolling — bahut lambi lists ke liye
+
+Agar list me hazaaron items hain (jaise ek chat history ya log viewer), poore items ko ek saath DOM me render karna khud hi slow hai, chahe change detection kitni bhi optimized ho — browser ko itne saare DOM nodes manage karne hi padte hain. Angular CDK ka `ScrollingModule` **virtual scrolling** provide karta hai — sirf wahi items DOM me render hote hain jo currently viewport me visible hain (plus thoda buffer), baaki items ke liye sirf empty space reserve hota hai:
+
+```html
+<cdk-virtual-scroll-viewport itemSize="50" class="viewport">
+  <div *cdkVirtualFor="let item of items" class="item">
+    {{ item.name }}
+  </div>
+</cdk-virtual-scroll-viewport>
+```
+
+Isse 10,000 items ki list bhi smooth scroll karti hai, kyunki DOM me kabhi bhi sirf 20-30 nodes hote hain.
+
+### 6. Templates me function calls avoid karna
+
+Angular template me `{{ someFunction() }}` likhna ek trap hai — ye function **har single change detection cycle me dobara call hota hai**, chahe uska result change hua ho ya nahi. Agar function heavy hai (filtering, sorting, formatting), ye repeated calls ek real performance drag ban jaate hain:
+
+```html
+<!-- BAD - filterActiveUsers() har cycle me chalta hai -->
+<div *ngFor="let user of filterActiveUsers()">{{ user.name }}</div>
+
+<!-- GOOD - ek baar compute karke property me store karo, ya pipe use karo -->
+<div *ngFor="let user of activeUsers">{{ user.name }}</div>
+```
+
+Behtar tareeka: result ko ek component property me pre-compute karke store karo (`ngOnChanges` ya jab source data change ho), ya ek **pure pipe** banao — pure pipes Angular by default cache karta hai aur sirf tab dobara evaluate karta hai jab input reference change ho.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Sabse zyada leverage do techniques se milta hai jinhe combine karna easy hai: `OnPush` strategy poore app me consistently apply karo, aur data updates ko hamesha immutable patterns se karo (spread operator, naye arrays/objects). Ye combination bina major refactor ke bhi kaafi performance improvement deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Google">
+
+Large-scale internal Angular dashboards me (jahan ek hi screen pe sainkdo widgets/charts render hote hain), `OnPush` change detection strategy default banaya jaata hai poore codebase me — teams ise ek lint rule se enforce karte hain taaki naye developers accidentally default (`Default`) strategy wapas na le aayein. Isi tarah virtual scrolling standard hai kisi bhi list view ke liye jo hazaaron rows dikhata ho, jaise audit logs ya transaction history.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A list of 1,000+ items rendered without trackBy can trigger full DOM node recreation on every array update
+- OnPush strategy can reduce change detection checks by skipping entire subtrees whose inputs have not changed by reference
+- Angular CDK virtual scrolling typically keeps DOM node count around 20-40 regardless of total list size (10 or 10,000 items)
+- A well-optimized initial Angular bundle targets under 200 KB gzipped, with the rest lazy-loaded on demand
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How would you optimize a slow Angular list rendering thousands of rows?" is a very common scenario question — the strong answer layers multiple techniques: trackBy first (cheapest fix), OnPush if the component tree is large, and virtual scrolling if the DOM itself is the bottleneck at very large counts. "What does OnPush actually skip?" tests real understanding — the answer should mention it skips change detection for that subtree unless an @Input reference changes, an event originates inside it, or markForCheck/async pipe triggers it explicitly. Interviewers also probe for awareness that immutability is a prerequisite for OnPush to work correctly, not just a nice-to-have.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`*ngFor` ke saath `trackBy` na use karna bade dynamic lists me — Angular poori list ko unnecessarily destroy-recreate karta rehta hai har update pe.
+
+</Mistake>
+
+<Mistake>
+
+`OnPush` component ke andar `@Input` object ko directly mutate karna (jaise `this.user.name = x`) instead of naya reference banana — change detection ko pata hi nahi chalta ki kuch update hua hai.
+
+</Mistake>
+
+<Mistake>
+
+Template me function call daal dena (jaise `{{ getFilteredList() }}`) — ye function har change detection cycle me re-execute hota hai, heavy logic ke liye ye real bottleneck ban jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Poori app ko ek hi eager-loaded bundle me rakhna, lazy loading kabhi use na karna — initial load time unnecessarily badh jaata hai jab user sirf ek chhota sa hissa app ka use kar raha ho.
+
+</Mistake>
+
+<Mistake>
+
+Bade lists (jaise 5,000+ rows) ko bina virtual scrolling ke render karna, sirf change detection optimizations pe bharosa karna — kabhi kabhi bottleneck khud DOM node count hoti hai, change detection nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Slow Angular App] --> B{Root cause?}
+    B -->|List updates re-render everything| C[Add trackBy to ngFor]
+    B -->|Whole tree checked every cycle| D[Apply OnPush + immutable updates]
+    B -->|Large initial bundle| E[Lazy load feature modules/components]
+    B -->|Thousands of DOM nodes| F[Use CDK virtual scrolling]
+    B -->|Heavy calls inside template| G[Move logic to pure pipe or precomputed property]
+`}
+  caption="A diagnostic flow for Angular performance issues, matching the symptom to the right fix instead of applying every optimization blindly."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- trackBy prevents Angular from destroying/recreating unchanged *ngFor items on array reference change
+- OnPush skips change detection for a subtree unless an Input reference changes, an internal event fires, or markForCheck/async pipe is used
+- OnPush requires immutable data updates to work correctly - direct mutation breaks it silently
+- Lazy loading (loadChildren/loadComponent) keeps the initial bundle small by deferring feature code
+- Bundle analysis (source-map-explorer, webpack-bundle-analyzer) finds accidental large/duplicate dependencies
+- CDK virtual scrolling renders only visible items, keeping large lists (10,000+) smooth
+- Never call functions directly inside templates for heavy logic - use pure pipes or precomputed properties instead
+- Combine trackBy + OnPush + immutability first - it is the highest-leverage, lowest-effort optimization set
+
+</QuickRevision>

@@ -1,0 +1,216 @@
+---
+slug: "rate-limiting-and-output-caching"
+title: "Rate Limiting and Output Caching in Web API"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 13
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["minimal-apis-vs-controllers"]
+tags: ["dotnet", "webapi", "ratelimiting", "outputcaching", "performance"]
+englishDefinition: "The built-in rate limiter middleware (.NET 7+) throttles incoming requests using one of several algorithms — fixed window, sliding window, token bucket, or a concurrency limiter — while output caching middleware (also .NET 7+) stores an entire generated response server-side keyed by route/query/headers and serves it directly on a cache hit, distinct from response caching which relies on client and proxy caches honoring HTTP cache-control headers."
+interviewFrequency: "high"
+companies: ["Microsoft", "Amazon", "TCS", "Infosys"]
+---
+
+<SimpleDefinition>
+
+The built-in rate limiter middleware (.NET 7+) throttles incoming requests using one of several algorithms — fixed window, sliding window, token bucket, or a concurrency limiter — while output caching middleware (also .NET 7+) stores an entire generated response server-side keyed by route/query/headers and serves it directly on a cache hit, distinct from response caching which relies on client and proxy caches honoring HTTP cache-control headers.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye dono features .NET 7 me built-in aa gaye — pehle third-party packages ya manual implementation ki zaroorat padti thi. Interview me inka exact mechanism aur "kab NAHI use karna" utna hi important hai jitna "kaise use karna".
+
+### Rate limiting — chaar algorithms
+
+`Microsoft.AspNetCore.RateLimiting` namespace me chaar limiter types hain, har ek alag scenario ke liye fit:
+
+**Fixed Window** — ek fixed duration (jaise 1 minute) me max N requests. Simplest hai, lekin window-boundary pe burst issue hai — agar window khatam hone se just pehle N requests aayen aur window start hote hi turant N aur, effectively 2N requests bahut kam time me possible hain.
+
+```csharp
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("fixed", opt =>
+    {
+        opt.PermitLimit = 100;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueLimit = 10; // Excess requests queue ho sakti hain reject hone se pehle
+    });
+});
+```
+
+**Sliding Window** — window ko segments me divide karke smoothly slide karta hai, boundary-burst problem ko significantly reduce karta hai, thoda zyada tracking overhead ke saath.
+
+**Token Bucket** — bucket fixed rate se tokens se refill hoti hai; har request ek token consume karti hai. Short bursts naturally accommodate hote hain jab tak bucket me tokens hain, jabki sustained overuse control me rehta hai.
+
+```csharp
+options.AddTokenBucketLimiter("token", opt =>
+{
+    opt.TokenLimit = 100;
+    opt.TokensPerPeriod = 20;
+    opt.ReplenishmentPeriod = TimeSpan.FromSeconds(10);
+});
+```
+
+**Concurrency Limiter** — time-based nahi, ye **simultaneously in-flight requests** limit karta hai. Useful jab downstream resource genuinely concurrency-constrained ho (jaise ek external payment gateway jo sirf N parallel connections accept karta hai), na ki request-rate-constrained.
+
+```csharp
+app.UseRateLimiter();
+app.MapGet("/api/orders", GetOrders).RequireRateLimiting("token");
+```
+
+Rejected requests typically `429 Too Many Requests` return karte hain, `Retry-After` header ke saath jo client ko batata hai kitni der wait karna hai.
+
+### Output caching — poori response cache
+
+.NET 7 se pehle response caching sirf HTTP headers (`Cache-Control`) set karta tha, aur actual caching client/proxy pe depend karta tha — server khud kuch cache nahi karta tha. Output caching isse fundamentally different hai: server khud response ko cache karta hai (memory me, ya distributed cache configure karke), aur next matching request pe endpoint ko dobara execute kiye bina directly cached response serve kar deta hai.
+
+```csharp
+builder.Services.AddOutputCache(options =>
+{
+    options.AddPolicy("Expire60", policy => policy.Expire(TimeSpan.FromSeconds(60)));
+});
+
+var app = builder.Build();
+app.UseOutputCache();
+
+app.MapGet("/api/products", GetProducts)
+   .CacheOutput("Expire60");
+```
+
+Cache key by default route + query string se banti hai — agar query parameters different hain, alag cache entries banti hain. Headers ya custom logic se bhi vary kiya ja sakta hai (`VaryByHeader`, `VaryByQuery`, `VaryByValue`).
+
+### Output caching vs Response caching — precise distinction
+
+**Response Caching middleware:** `Cache-Control`, `Expires` headers set karta hai response pe — actual caching browser ya intermediate proxy (CDN) karta hai. Server har request pe endpoint logic dobara execute karta hai (jab tak koi upstream cache hit na ho) — server khud kuch store nahi karta apne memory me is middleware se.
+
+**Output Caching middleware:** server-side hi cache store karta hai — endpoint logic sirf pehli request pe execute hota hai, subsequent matching requests seedha cached response se serve hoti hain, endpoint code re-run hi nahi hota. Ye significantly zyada server-load-reducing hai kyunki expensive computation (database query, external API call) khud skip ho jaata hai.
+
+### Cache invalidation strategy
+
+Time-based expiry (`Expire(TimeSpan)`) simplest hai lekin stale-data window create karta hai. Tag-based invalidation zyada precise control deta hai:
+
+```csharp
+app.MapGet("/api/products/{id}", GetProduct)
+   .CacheOutput(policy => policy.Tag("products"));
+
+app.MapPost("/api/products", async (Product p, IOutputCacheStore cache) =>
+{
+    await _repo.CreateAsync(p);
+    await cache.EvictByTagAsync("products", default); // Related cache entries clear
+    return Results.Created();
+});
+```
+
+### Kab NAHI cache karna — critical gotcha
+
+**Personalized responses kabhi output-cache mat karo bina careful `VaryBy` setup ke** — agar ek user ka order-history response cache ho jaaye aur agla user (different authenticated identity) usi cached response ko mil jaaye kyunki cache key me user identity include nahi thi, ye ek genuine data-leak security bug hai. Agar per-user data cache karna hi hai, `VaryByValue` me user ID explicitly include karo cache key me. Similarly, koi bhi response jo authorization decisions pe based hai (jaise role-specific content) careful cache-key design ke bina cache mat karo.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Personalized ya authorization-dependent responses ko galat cache key ke saath output-cache karna ek genuine data-leak vulnerability create kar sakta hai — ek user ka cached response galti se doosre user ko serve ho sakta hai. Hamesha `VaryByValue`/`VaryByHeader` me user-specific identity include karo agar per-user data involved hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+AWS ke apne API Gateway aur similar services rate limiting ko multiple dimensions pe apply karte hain — per-client-key, per-IP, aur burst-vs-sustained-rate dono ko alag configure karne deta hai, jo directly token-bucket-style thinking reflect karta hai (short burst allow karo, lekin sustained rate control me raho). Ye pattern ASP.NET Core ke token bucket limiter ke design philosophy se directly maps karta hai.
+
+</RealWorld>
+
+<RealWorld company="An Indian News/Content Platform">
+
+Ek typical high-traffic news website ka public "top headlines" API endpoint output caching use karta hai 30-60 second expiry ke saath — hazaron concurrent readers same content dekh rahe hote hain, isliye database ko har request pe hit karne ke bajaye ek cached response sabko serve ho jaati hai, database load drastically kam ho jaata hai. Same platform ka "my saved articles" endpoint (per-user personalized) explicitly output-cache **nahi** kiya gaya — ya to bilkul cache nahi hota, ya `VaryByValue` me user ID explicitly include hota hai taaki cross-user data leak na ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Both rate limiting and output caching middleware introduced in .NET 7
+- Rate limiting algorithms: Fixed Window, Sliding Window, Token Bucket, Concurrency Limiter
+- Rejected rate-limited requests typically return `429 Too Many Requests`, often with `Retry-After`
+- Output cache default cache key: route + query string (extendable via VaryByHeader/VaryByQuery/VaryByValue)
+- Response caching relies on client/proxy honoring `Cache-Control` headers; output caching stores server-side
+- Tag-based eviction (`EvictByTagAsync`) allows precise, targeted cache invalidation over blanket time expiry
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Output caching aur response caching me kya fark hai, aur tum kaunsa use karoge ek high-traffic read endpoint ke liye?" — strong answer: "Response caching sirf HTTP `Cache-Control` headers set karta hai — actual storage browser ya CDN/proxy karta hai, server har request pe endpoint logic dobara execute karta hai jab tak koi upstream cache hit na ho. Output caching server-side hi response store karta hai — pehli request ke baad endpoint code dobara run hi nahi hota matching requests ke liye, jo server load ko genuinely reduce karta hai. High-traffic, non-personalized read endpoint (jaise public headlines list) ke liye output caching zyada effective hai kyunki expensive computation khud skip ho jaata hai, na ki sirf transfer optimize hota hai." Follow-up: "Personalized data ko output-cache karne me kya risk hai?" — answer: agar cache key me user-identity include na ho, ek user ka cached response galti se doosre user ko serve ho sakta hai — genuine data-leak security bug, isliye VaryByValue me user identity explicitly include karna zaroori hai per-user data ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Personalized ya authorization-dependent responses ko bina proper `VaryBy` setup ke output-cache kar dena — cross-user data leak ka genuine security risk create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Response caching aur output caching ko same cheez samajh lena — response caching sirf headers set karta hai (client/proxy dependent), output caching server-side actual storage karta hai jo endpoint re-execution khud skip karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Fixed window rate limiting use karna precision-sensitive scenarios me bina uske boundary-burst weakness consider kiye — window-reset ke exact moment pe effective rate double ho sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+Rate limiting ko authentication/authorization ka substitute samajh lena — ye sirf traffic-volume control karta hai, kisi ko authorized nahi banata, dono independent concerns hain.
+
+</Mistake>
+
+<Mistake>
+
+Output cache invalidation ke liye sirf time-based expiry pe depend karna jab data frequently change ho — stale data ek significant window ke liye serve hoti reh sakti hai; tag-based eviction better fit hai frequently-mutated data ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Incoming request"] --> B["Rate limiter middleware"]
+    B -->|"Over limit"| C["429 Too Many Requests + Retry-After"]
+    B -->|"Within limit"| D["Output cache middleware"]
+    D -->|"Cache hit"| E["Serve cached response directly - endpoint NOT executed"]
+    D -->|"Cache miss"| F["Execute endpoint logic"]
+    F --> G["Store response in output cache"]
+    G --> H["Return response to client"]
+`}
+  caption="Rate limiting protects capacity before work is done; output caching skips the work entirely on a hit, but requires care that cache keys never cross user boundaries."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Rate limiting algorithms: Fixed Window (simple, boundary-burst issue), Sliding Window (smoother), Token Bucket (burst-tolerant, sustained control), Concurrency Limiter (simultaneous in-flight requests)
+- Rejected rate-limited requests return `429 Too Many Requests`, often with `Retry-After`
+- Response caching = headers only, client/proxy stores; Output caching = server-side storage, skips endpoint re-execution on hit
+- Default output cache key = route + query string; extend with VaryByHeader/VaryByQuery/VaryByValue
+- Never output-cache personalized/authorization-dependent responses without including identity in the cache key — risk of cross-user data leak
+- Tag-based eviction (EvictByTagAsync) gives precise invalidation over blanket time expiry
+- Rate limiting is not a security/authorization mechanism — it's a traffic-volume control
+
+</QuickRevision>

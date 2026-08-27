@@ -1,0 +1,157 @@
+---
+slug: "lambda-configuration-memory-timeout"
+title: "Lambda Configuration - Memory, Timeout, and Concurrency"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["lambda-execution-model-and-lifecycle"]
+tags: ["aws", "lambda", "serverless", "memory", "timeout", "concurrency"]
+englishDefinition: "Lambda allocates CPU power proportionally to the memory you configure, with 1,769 MB corresponding to one full vCPU, a maximum timeout of 900 seconds, and a default regional concurrency limit of 1,000 simultaneous executions that determines how many execution environments can run at once."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda allocates CPU power proportionally to the memory you configure, with 1,769 MB corresponding to one full vCPU, a maximum timeout of 900 seconds, and a default regional concurrency limit of 1,000 simultaneous executions that determines how many execution environments can run at once.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Lambda configure karte waqt teen numbers decide karne padte hain: **memory**, **timeout**, aur (implicitly) **concurrency**. In teeno ko sahi se samajhna cost aur performance dono optimize karta hai — galat samajhna to production incidents bana sakta hai.
+
+### Memory-to-CPU — sabse counter-intuitive part
+
+Lambda me aap directly CPU set nahi karte — sirf **memory** set karte ho (128 MB se 10,240 MB tak), aur CPU **proportionally** allocate hoti hai. Exact anchor point: **1,769 MB memory pe exactly 1 full vCPU** milta hai. Isse neeche, fractional CPU milta hai; isse zyada, multiple vCPUs milte hain (jaise 3,538 MB pe roughly 2 vCPU).
+
+Isse ek counter-intuitive result nikalta hai: **zyada memory dena kabhi total cost kam kar sakta hai**, kyunki billing formula hai duration × memory. Socho ek CPU-bound function (jaise image processing ya JSON parsing heavy workload) 128 MB pe 10 second leta hai — billing units roughly 128 × 10 = 1,280. Wahi function 1,024 MB pe (jahan zyada CPU mila) sirf 1 second leta hai — billing units 1,024 × 1 = 1,024. Cost **kam** ho gaya, aur latency bhi **10x better** ho gayi. Lekin ye sirf **CPU-bound** functions ke liye sach hai — agar function **I/O-bound** hai (zyadatar time network call ya DB query ka wait kar raha hai), zyada memory dene se duration kam nahi hoga kyunki bottleneck CPU nahi, wait time hai — sirf cost badhega bina fayde ke.
+
+Practical approach: guess mat karo, **AWS Lambda Power Tuning** tool (open-source, Step Functions based) use karke different memory settings pe actual cost/duration test karo aur optimal point nikalo.
+
+### Timeout — kaise sahi value choose karo
+
+Max timeout **900 seconds (15 minutes)**, default sirf **3 seconds** — jo production ke liye almost hamesha bahut kam hota hai. Sahi approach: apne function ka **realistic p99 duration** measure karo (production-jaisi load ke saath), aur timeout ko us p99 ka roughly **1.5x** set karo. Bahut kam timeout set karna random, hard-to-debug failures deta hai (function actually kaam kar raha tha lekin timeout ne beech me kaat diya). Bahut zyada timeout set karna bhi risky hai — agar downstream dependency (jaise DB) slow/stuck ho jaaye, function 15 minute tak hang reh sakta hai, jo cost aur concurrency dono waste karta hai jab tak wo slot free na ho.
+
+Ek important nuance: agar function **synchronously** API Gateway ke through call ho raha hai, API Gateway ka apna integration timeout hai (**29 seconds max**) — Lambda ka timeout 900 second ho sakta hai, lekin API Gateway 29 second ke baad hi client ko 504 de dega. Isliye synchronous, user-facing APIs ke liye Lambda timeout kabhi 29 second se zyada set karna practically bekar hai.
+
+### Concurrency — kitne parallel invocations chal sakte hain
+
+Har region me default **1,000 concurrent executions** ka soft limit hai (support ticket se badhaya ja sakta hai). Iska matlab: agar ek waqt me 1,000 se zyada invocations active hain (chahe alag-alag functions ke across ho), naye invocations **throttle** ho jaate hain (`429 TooManyRequestsException` synchronous ke liye, ya async me automatic retry queue me jaate hain).
+
+**Burst behavior** important hai — traffic achanak spike hone pe Lambda turant 1,000 environments nahi bana sakta, ek **burst limit** hai jo initial concurrency ko regulate karta hai (approximately 500-3,000 initial burst depending on region, phir per-minute ek fixed rate se scale up hota hai). Isliye ek sudden, massive traffic spike me kuch requests throttle ho sakti hain even though steady-state concurrency limit exceed nahi hua ho — burst rate ne abhi utne environments banaye hi nahi.
+
+**Reserved concurrency** ek specific function ke liye concurrency **reserve** karta hai — dual purpose: (1) guarantee ki is function ko kam se kam itni concurrency milegi chahe baaki functions kitna bhi consume kar lein, (2) hard cap — ye function is limit se zyada kabhi nahi jaayega, jo downstream protection deta hai (jaise RDS max_connections ko exceed hone se bachana). Reserved concurrency ko **0** set karna function ko effectively **disable** kar deta hai — emergency "kill switch" ke liye useful.
+
+### In teeno ko ek saath sochna
+
+Ek real design scenario: ek Lambda jo RDS se query karta hai, agar reserved concurrency set na ho, to traffic spike pe 1,000 concurrent environments ek saath RDS ko hit kar sakte hain, jo database ko crash kar sakta hai. Sahi fix: reserved concurrency ko database ki safe connection capacity ke hisaab se cap karna (jaise 50), taaki extra requests throttle ho jaayein instead of database ko crash karne ke — throttled requests ko phir SQS queue ke through buffer kiya ja sakta hai taaki wo lost na ho, sirf delayed ho.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Zyada memory: CPU-bound workloads pe faster + cheaper; Reserved concurrency: predictable, guaranteed capacity + downstream protection"]}
+  cons={["Zyada memory: I/O-bound workloads pe sirf cost badhta hai, koi benefit nahi; Reserved concurrency: agar bahut low set kiya to legitimate traffic bhi throttle ho sakta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek video-thumbnail-generation Lambda (CPU-heavy image processing) shuru me 256 MB pe configure tha aur 8 second leta tha per invocation. AWS Lambda Power Tuning tool se test karne pe pata chala ki 1,536 MB pe wahi function sirf 1.2 second leta hai — total billing cost **kam** ho gaya (256×8=2048 units vs 1536×1.2≈1843 units) saath hi user experience bhi drastically better ho gaya. Ek alag function, jo external payment API call karta tha (mostly network-wait, I/O-bound), memory 128 MB se 512 MB badhane pe duration me koi farak nahi aaya — sirf cost badh gaya, isliye wo 128 MB pe hi wapas rakha gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Memory range: 128 MB to 10,240 MB, configurable in 1 MB increments</li>
+<li>1,769 MB memory = exactly 1 vCPU (proportional CPU allocation anchor point)</li>
+<li>Max timeout: 900 seconds (15 minutes); default timeout: 3 seconds</li>
+<li>API Gateway integration timeout ceiling: 29 seconds - caps effective Lambda timeout for synchronous, user-facing APIs</li>
+<li>Default regional concurrency limit: 1,000 concurrent executions (soft limit, raisable via support request)</li>
+<li>Initial burst concurrency: roughly 500-3,000 depending on region, then scales at a fixed per-minute rate beyond that</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The memory-to-cost relationship is a favorite trick question - the strong answer shows the counter-intuitive math (more memory can lower total cost for CPU-bound work because duration drops faster than the per-unit cost rises) and correctly caveats that this does not apply to I/O-bound functions. Timeout questions often hide a trap around API Gateway's 29-second integration ceiling - naming that ceiling shows you understand the full request path, not just the Lambda console setting. A classic live-scenario question: "Lambda-to-RDS connections are maxing out under a traffic spike" - the strong debugging answer reaches for reserved concurrency (a hard cap) and/or RDS Proxy, not just "increase max_connections," and explains burst-limit behavior when asked why throttling appeared even under the steady-state 1,000 limit.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+I/O-bound function ki memory badhana ye soch ke ki ye latency kam karega — I/O wait time CPU se independent hai, sirf cost badhta hai bina kisi performance fayde ke.
+
+</Mistake>
+
+<Mistake>
+
+Default 3-second timeout production me chhod dena jab function ko routinely 4+ second lagte hain — random, confusing failures aate hain jab p99 duration timeout ke close ya usse zyada ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Synchronous API-facing Lambda ka timeout 29 second se zyada set karna ye sochte hue ki wo help karega — API Gateway apni taraf se 29 second pe hi timeout kar dega, Lambda timeout irrelevant ho jaata hai us scenario me.
+
+</Mistake>
+
+<Mistake>
+
+Downstream database ki connection capacity ke hisaab se reserved concurrency cap na lagana — traffic spike pe sainkdo concurrent Lambda environments ek saath database ko overwhelm kar sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Memory setting guess karna instead of Lambda Power Tuning jaise tool se actually measure karna — "zyada memory dena hamesha behtar hai" ya "kam memory dena hamesha sasta hai" dono galat generalizations hain jo workload type pe depend karte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Configure Memory 128MB-10240MB] --> B[CPU allocated proportionally]
+    B --> C{1769 MB = 1 vCPU anchor}
+    C --> D[CPU-bound workload?]
+    D -->|Yes| E[More memory can lower total cost - duration drops faster than rate rises]
+    D -->|No, I/O-bound| F[More memory only raises cost - duration unaffected]
+    G[Configure Timeout up to 900s] --> H{Sync via API Gateway?}
+    H -->|Yes| I[Effective cap is 29s - API Gateway integration timeout]
+    H -->|No, async/poll-based| J[Full 900s available]
+    K[Concurrency] --> L[Default 1000 per region, burst-limited ramp-up]
+    L --> M[Reserved concurrency: guarantee + hard cap per function]
+`}
+  caption="Memory, timeout, and concurrency are three independent dials, but each has a hidden ceiling or interaction (I/O-bound workloads, API Gateway's 29s cap, burst limits) that a naive configuration easily misses."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Memory sets CPU proportionally - 1,769 MB is the exact point where you get one full vCPU</li>
+<li>More memory can reduce total cost on CPU-bound functions (duration drops faster than the per-GB-second rate rises) - not true for I/O-bound functions</li>
+<li>Use AWS Lambda Power Tuning to find the optimal memory point instead of guessing</li>
+<li>Max timeout is 900 seconds, default is 3 seconds - set it to roughly 1.5x realistic p99 duration</li>
+<li>API Gateway's own 29-second integration timeout caps effective Lambda timeout for synchronous, user-facing APIs regardless of the configured Lambda timeout</li>
+<li>Default regional concurrency limit is 1,000, with a lower initial burst rate that ramps up - sudden spikes can throttle even under the steady-state limit</li>
+<li>Reserved concurrency is both a guarantee (this function always gets some capacity) and a hard cap (protects downstream systems like a database from being overwhelmed) - setting it to 0 disables the function entirely</li>
+</ul>
+
+</QuickRevision>

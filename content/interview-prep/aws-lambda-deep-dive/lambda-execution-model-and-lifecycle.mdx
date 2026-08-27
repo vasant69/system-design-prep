@@ -1,0 +1,191 @@
+---
+slug: "lambda-execution-model-and-lifecycle"
+title: "Lambda Execution Model and Lifecycle"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["lambda-triggers-and-event-sources"]
+tags: ["aws", "lambda", "serverless", "cold-start", "execution-environment"]
+englishDefinition: "Every Lambda invocation runs inside an execution environment that either gets freshly created (cold start, paying an INIT-phase cost) or reused from a previous invocation (warm start), and because each environment handles exactly one request at a time, resources like database connections must be initialized carefully to be safely reused across invocations."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Every Lambda invocation runs inside an execution environment that either gets freshly created (cold start, paying an INIT-phase cost) or reused from a previous invocation (warm start), and because each environment handles exactly one request at a time, resources like database connections must be initialized carefully to be safely reused across invocations.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic Lambda interviews me sabse zyada pucha jaane wala hai, kyunki ye Lambda ke internal mechanics ko test karta hai, sirf surface-level knowledge nahi. Chaliye step by step samajhte hain ki ek invocation aane pe **actually** kya hota hai.
+
+### Execution environment kya hai
+
+Har invocation ek **execution environment** ke andar chalta hai — ye ek isolated sandbox hai (AWS Firecracker microVM technology use karta hai), jisme aapka code, runtime, aur configured memory allocated hoti hai. Ye environment ek single invocation ke liye nahi banta — ye kai invocations ke liye **reuse** ho sakta hai, jab tak AWS decide na kare use destroy karna.
+
+### Cold start vs warm start
+
+Jab invocation aata hai, Lambda service check karti hai: kya koi **idle, warm environment** available hai jo pehle se initialized hai? Agar haan — **warm start**: seedha handler function call ho jaata hai, latency typically **1-10 milliseconds**. Agar nahi — **cold start**: naya environment ground-up banta hai, jisme kai steps hain:
+
+1. Firecracker microVM boot (~100-125ms)
+2. Runtime bootstrap (language runtime load hota hai)
+3. **INIT phase** — handler ke **bahar** likha gaya code chalta hai (imports, SDK client creation, DB connection pool setup, config load) — ye 10 second tak allowed hai
+4. Handler invoke hota hai (actual request processing)
+
+Total cold start latency **100ms se 2 second** tak ho sakti hai, depend karta hai runtime (Java/.NET generally slower than Python/Node.js typescript), package size, aur INIT code ki complexity pe. Ye samajhna zaroori hai ki cold start sirf "environment banane" ka cost nahi hai — INIT phase ka code bhi is latency me count hota hai, isliye INIT phase me heavy kaam karna (jaise bade config files parse karna) cold start ko aur worse bana deta hai.
+
+### Freeze, reuse, aur destroy — environment ka lifecycle
+
+Invocation complete hone ke baad, execution environment **destroy nahi hota** — wo **freeze** ho jaata hai. Freeze ka matlab: CPU pause ho jaata hai, memory state (variables, open connections) preserved rehta hai, lekin koi processing nahi ho rahi. Agar agli invocation kuch minutes ke andar aa jaaye, wahi frozen environment **unfreeze** hoke reuse ho jaata hai — ye warm start hai, aur INIT phase code **dubara nahi chalta**, sirf handler chalta hai. Agar koi naya traffic na aaye (typically kuch minutes se 45 minutes tak, exact duration AWS internally manage karta hai aur guaranteed nahi hai), environment eventually **permanently destroy** ho jaata hai.
+
+### Kyun ek environment ek waqt me sirf ek request handle karta hai
+
+Ye Lambda ka sabse fundamental aur sabse zyada misunderstand kiya jaane wala rule hai: **ek execution environment, ek waqt me, sirf ek invocation** process karta hai. Agar 100 concurrent requests aa jaayein, Lambda **100 separate execution environments** spin up karega (jitni concurrency limit allow kare) — inke beech koi shared memory nahi hoti, koi shared state nahi hoti. Ye traditional multi-threaded server model se fundamentally different hai, jahan ek server process multiple requests ko threads/event-loop se concurrently handle karta hai.
+
+**Practical implication — connection reuse:** Agar aap DB connection ya SDK client ko **handler ke andar** banate ho, to har invocation (chahe warm ho ya cold) naya connection banayega — slow aur resource-wasteful, aur DB pe connection limit exhaust kar sakta hai (100 concurrent Lambda environments = potentially 100 DB connections). Sahi tareeka: connection/client ko **handler ke bahar, module-level ya INIT phase me** banao — cold start pe ek baar banega, aur jab tak wahi environment warm rehke reuse hota hai, wahi connection reuse hoga.
+
+```python
+import boto3
+
+# INIT phase - sirf cold start pe ek baar chalta hai
+s3_client = boto3.client('s3')
+db_connection = None
+
+def lambda_handler(event, context):
+    global db_connection
+    if db_connection is None:
+        db_connection = create_db_connection()  # sirf pehli baar (cold start)
+    result = db_connection.query(event['query'])
+    return {"statusCode": 200, "body": result}
+```
+
+Ye pattern warm invocations ko fast rakhta hai, lekin ek trap hai: agar connection kabhi stale ho jaaye (DB restart, network blip) aur environment usi purani connection ko reuse kare, error aayega jab tak explicit reconnect logic na ho. Isliye production code me **connection health check + reconnect-on-failure** logic add karna best practice hai, sirf "banao aur bhool jao" nahi.
+
+### Cold start kam karne ke practical tareeke
+
+- **Provisioned Concurrency**: AWS ko pehle se environments "pre-warm" karke rakhne ko bolna — cold start almost khatam ho jaata hai, lekin idle rehte hue bhi paid hai
+- Deployment package size kam rakhna (unused dependencies hatana, tree-shaking)
+- Zyada memory allocate karna (indirectly zyada CPU milta hai, jo INIT phase ko fast karta hai)
+- Runtime choice — interpreted languages (Python, Node.js) generally faster cold start dete hain compared to JVM-based (Java) ya .NET, jab tak SnapStart jaisi specific optimization use na ho
+- "Scheduled ping" / self-warming (har 5 min pe dummy invocation) — ye **anti-pattern** maana jaata hai kyunki ye sirf ek environment ko warm rakhta hai; concurrent traffic spike pe naye environments to phir bhi cold start honge
+
+</Hinglish>
+
+<Callout type="warning">
+
+Ek bahut common production bug: DB connection pool ko handler ke andar initialize karna. Sab kuch dev/testing me sahi lagta hai kyunki traffic kam hota hai, lekin production traffic spike pe har naya concurrent environment naya connection banata hai aur RDS ka `max_connections` limit exhaust ho jaata hai — poora system down ho jaata hai. Fix: connection banate waqt INIT phase use karo, aur high-concurrency scenarios me RDS Proxy jaisa connection pooler bhi consider karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek payment-processing Lambda function shuru me har invocation pe naya database connection banata tha — testing me sab theek chala kyunki traffic low tha. Production launch ke pehle hi hafte me, ek marketing campaign ki wajah se traffic 50x badha, aur RDS `max_connections` error se poora payment flow fail hone laga kyunki ek saath sainkdo Lambda environments ne apna apna connection banane ki koshish ki. Fix do-tarfa tha: connection creation ko INIT phase me move kiya (module-level variable, `if connection is None` check ke saath), aur RDS Proxy add kiya jo Lambda ke burst-heavy connection pattern ko database ke liye ek stable, pooled connection set me translate karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Warm start latency: typically 1-10 milliseconds (handler-only execution)</li>
+<li>Cold start latency: roughly 100ms to 2 seconds, depending on runtime and package size</li>
+<li>Firecracker microVM boot time: approximately 100-125 milliseconds</li>
+<li>Max INIT phase duration: 10 seconds (function fails to initialize if exceeded)</li>
+<li>Frozen environment retention: not guaranteed/documented precisely by AWS, informally observed in the range of a few minutes up to roughly 45 minutes of inactivity before teardown</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Explain cold start" is close to a guaranteed question - a strong answer names the specific phases (microVM boot, runtime bootstrap, INIT phase) rather than a vague "it takes longer sometimes," and pairs it with concrete mitigations. An extremely common follow-up scenario: "our Lambda function is exhausting database connections under load - why, and how do you fix it" - this directly tests whether you understand the one-environment-one-request rule and the INIT-phase connection reuse pattern; naming RDS Proxy as an additional layer of defense is a strong signal. Be ready to explain precisely why concurrent requests cannot share memory in Lambda, unlike a traditional multi-threaded server - this is the single most load-bearing concept in this topic.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+DB connections ya SDK clients ko handler ke andar banana instead of INIT phase (module-level) me — har invocation pe naya connection, latency badhti hai aur database connection limits exhaust ho sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Ye sochna ki ek Lambda function "server" jaisa hai jo multiple requests ko ek saath, shared memory ke saath handle karta hai — actually har concurrent request apna alag isolated execution environment paata hai.
+
+</Mistake>
+
+<Mistake>
+
+Reused (warm) connection ko bina health-check ke blindly use karna — agar underlying DB connection kisi wajah se stale ho gaya ho (network blip, DB restart), bina reconnect logic ke handler baar baar fail hota rahega.
+
+</Mistake>
+
+<Mistake>
+
+"Scheduled ping" / self-warming ko cold-start solution samajhna — ye sirf ek environment warm rakhta hai, ek saath aane wale traffic spike (jisme dozens of naye environments chahiye) pe koi asar nahi karta.
+
+</Mistake>
+
+<Mistake>
+
+INIT phase me heavy, avoidable kaam karna (jaise bade unnecessary files parse karna ya sabhi possible SDK clients pre-create karna jab sirf kuch hi use honge) — ye har cold start ki latency ko unnecessarily badhata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Event as Event Source
+    participant Lambda as Lambda Service
+    participant Env as Execution Environment
+
+    Event->>Lambda: Invocation request
+    alt Warm environment available
+        Lambda->>Env: Reuse existing environment
+        Env->>Env: Handler executes directly
+        Env-->>Lambda: Response (1-10ms)
+    else No warm environment (Cold Start)
+        Lambda->>Env: Create new microVM (~125ms)
+        Env->>Env: Runtime bootstrap
+        Env->>Env: INIT phase (imports, DB pool, clients)
+        Env->>Env: Handler executes
+        Env-->>Lambda: Response (100ms-2s)
+    end
+    Lambda-->>Event: Result returned
+    Note over Env: Environment freezes (not destroyed)
+    Note over Env: Next invocation soon = warm reuse
+    Note over Env: No traffic for a while = destroyed
+`}
+  caption="A cold start pays the full INIT-phase cost exactly once per execution environment - subsequent warm invocations on that same environment skip straight to the handler, which is why reusing connections and clients created during INIT matters so much."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Cold start = new execution environment: microVM boot + runtime bootstrap + INIT phase (code outside the handler) + handler execution</li>
+<li>Warm start = reused environment, INIT phase skipped entirely, only the handler runs (1-10ms typical)</li>
+<li>After an invocation, the environment freezes (not destroyed) - it may be reused for a later invocation or eventually torn down if idle</li>
+<li>One execution environment handles exactly one invocation at a time - concurrent requests always get separate environments, no shared memory</li>
+<li>Create DB connections and SDK clients in the INIT phase (outside the handler) so warm invocations reuse them instead of recreating them every time</li>
+<li>Add reconnect/health-check logic for reused connections - a stale connection in a frozen environment will otherwise fail silently on reuse</li>
+<li>Provisioned Concurrency pre-warms environments to eliminate cold starts, at extra cost; scheduled self-pinging is an anti-pattern that doesn't help with concurrent spikes</li>
+</ul>
+
+</QuickRevision>

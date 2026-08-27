@@ -1,0 +1,187 @@
+---
+slug: "lambda-error-handling-and-retries"
+title: "Lambda Error Handling and Retries"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 8
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["lambda-vpc-integration"]
+tags: ["aws", "lambda", "serverless", "reliability", "error-handling"]
+englishDefinition: "Lambda's retry behavior on failure depends entirely on how it was invoked — synchronous callers get no automatic retry and must handle failure themselves, asynchronous invocations get two automatic retries, and poll-based sources follow their own queue or stream retry rules, which is why idempotent handler logic is a mandatory design requirement, not an optional nicety."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda's retry behavior on failure depends entirely on how it was invoked — synchronous callers get no automatic retry and must handle failure themselves, asynchronous invocations get two automatic retries, and poll-based sources follow their own queue or stream retry rules, which is why idempotent handler logic is a mandatory design requirement, not an optional nicety.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Bahut log soch lete hain "Lambda fail ho gaya to AWS automatically retry karega" — ye **sirf partially sach hai**, aur exact behavior invocation type pe depend karta hai. Ye teeno type samajhna interview aur production dono ke liye critical hai.
+
+### Synchronous invocation — koi automatic retry nahi
+
+Jab caller directly response ka wait karta hai (API Gateway, ALB, ya seedha `Invoke` API call `RequestResponse` type ke saath), Lambda **koi automatic retry nahi** karta agar function fail ho jaaye. Error seedha caller ko return ho jaata hai, aur retry karna hai ya nahi — ye poori tarah caller ki responsibility hai. Agar API Gateway ke peeche Lambda fail hua, client ko 5xx milega, aur agar client retry logic nahi likha, request bas lost ho jaata hai.
+
+Isliye synchronous APIs ke liye **caller-side retry with exponential backoff aur jitter** implement karna best practice hai (AWS SDKs me ye often built-in hota hai for throttling errors, lekin business-logic errors ke liye khud handle karna padta hai).
+
+### Asynchronous invocation — 2 automatic retries
+
+Jab event source Lambda ko asynchronously invoke karta hai (S3 event notifications, SNS, EventBridge, ya seedha `Invoke` `Event` type ke saath), Lambda service **khud queue** karta hai request aur agar function error return kare (ya throttle ho jaaye), **automatically 2 baar retry** karta hai, exponential backoff ke saath (default delays ke beech kuch minutes tak ho sakte hain). Total processing window **max event age** se bound hai — default 6 hours, configurable 60 second se 6 hours tak.
+
+Agar dono retries bhi fail ho jaayen, event **discard** ho jaata hai — jab tak aapne **Dead Letter Queue** ya **Destinations** configure na kiya ho.
+
+### Poll-based (Event Source Mapping) — source apne rules follow karta hai
+
+SQS, Kinesis, aur DynamoDB Streams jaise poll-based sources ke liye Lambda service khud **poll** karti hai (Event Source Mapping ke through) — yahan retry Lambda ke apne rules follow nahi karta, balki **source ke** rules follow karta hai:
+
+- **SQS**: agar Lambda fail ho, message queue me wapas visible ho jaata hai (visibility timeout khatam hone ke baad), aur `maxReceiveCount` (queue policy me set) tak retry hota hai, uske baad DLQ (agar configured) me chala jaata hai.
+- **Kinesis / DynamoDB Streams**: shard-based ordering ki wajah se by default ek failing record **poora batch block** kar deta hai jab tak wo succeed na ho ya record expire na ho jaaye — isse "poison pill" problem hoti hai, jahan ek bad record poore shard ki processing ko stuck kar deta hai. Isko handle karne ke liye `BisectBatchOnFunctionError` (batch ko chhote pieces me split karke retry karta hai taaki bad record isolate ho jaaye) aur `MaximumRetryAttempts` (kitni baar retry ke baad skip kare) configure karna zaroori hai.
+
+### Dead Letter Queue vs Destinations
+
+**Dead Letter Queue (DLQ)** purana (aur simpler) mechanism hai — sirf **failed** async invocations ko ek SQS queue ya SNS topic me bhejta hai, after retries exhaust. Sirf failure capture karta hai, koi success info nahi, aur DynamoDB Streams/Kinesis ke liye kaam nahi karta (sirf async invocations aur SQS event source ke liye).
+
+**Destinations** newer aur zyada powerful feature hai — **success aur failure dono** ke liye alag destination configure kar sakte ho (SQS, SNS, Lambda, ya EventBridge), aur payload me **invocation ka poora context** (request ID, timestamps, response payload) milta hai, na ki sirf raw event. Destinations async invocations ke saath-saath **stream-based** sources (Kinesis, DynamoDB Streams) ke liye bhi failure destination support karta hai — jo DLQ nahi karta.
+
+<Callout type="tip">
+
+Naye projects me generally **Destinations** prefer karo DLQ ke bajaye — zyada context milta hai (structured JSON with error details), success path bhi track kar sakte ho (jaise "processing complete" event chain me next step trigger karne ke liye), aur stream sources ke saath bhi kaam karta hai. DLQ ab bhi supported hai backward compatibility ke liye, lekin naya design usme lock-in karna avoid karo.
+
+</Callout>
+
+### Idempotency — non-negotiable requirement
+
+Chunki async invocations retry hote hain aur SQS/Kinesis jaise sources "at-least-once delivery" guarantee dete hain (exactly-once nahi), **same event do baar (ya zyada) process ho sakta hai** — network glitch, Lambda timeout ke baad bhi actually complete ho chuka processing, ya retry race condition. Agar handler **idempotent** nahi hai (jaise "account balance me 100 add karo" bina check kiye ki ye transaction pehle se process hua ya nahi), duplicate processing se real bugs aate hain — double charge, duplicate email, wrong balance.
+
+Common idempotency pattern: event se ek unique identifier nikaalo (jaise SQS `MessageId`, ya business-level transaction ID), aur DynamoDB me ek **conditional put** (`attribute_not_exists`) try karo us ID ke saath — agar put fail ho (condition check fail), matlab ye event pehle se process ho chuka hai, skip kar do. Ye pattern "idempotency table" ya "processed events table" ke naam se jaana jaata hai.
+
+```python
+import boto3
+from botocore.exceptions import ClientError
+
+dynamodb = boto3.resource('dynamodb')
+idempotency_table = dynamodb.Table('processed-events')
+
+def handler(event, context):
+    event_id = event['detail']['transactionId']
+    try:
+        idempotency_table.put_item(
+            Item={'eventId': event_id, 'processedAt': int(time.time())},
+            ConditionExpression='attribute_not_exists(eventId)'
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            return {'status': 'already_processed'}  # duplicate, safely skip
+        raise
+    # actual business logic yahan chalega, sirf pehli baar
+    process_transaction(event)
+```
+
+</Hinglish>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek payment-processing pipeline SQS queue se triggered Lambda function use karta tha, jisme `maxReceiveCount` 3 pe set tha aur ek DLQ configured tha failed messages capture karne ke liye. Har message ek unique `paymentId` carry karta tha, aur handler sabse pehle DynamoDB me conditional put try karta (idempotency check) — agar transaction pehle se process ho chuka tha (jaise retry ki wajah se), function turant success return kar deta bina dobara charge kiye. Ek Kinesis-based analytics pipeline me `BisectBatchOnFunctionError` aur `MaximumRetryAttempts=2` set kiya gaya tha taaki ek corrupt record poore shard ko block na kare — jab bhi ek record consistently fail hota, wo automatically skip ho jaata (aur alag se logged hota) baaki records normally process hote rehte.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Asynchronous invocation: 2 automatic retries by default (configurable 0-2)
+- Async max event age: default 6 hours, configurable 60 seconds to 6 hours
+- SQS retry count: governed by queue's own `maxReceiveCount` (not Lambda's retry count)
+- SQS default visibility timeout: 30 seconds (should be set to at least 6x the function timeout, AWS recommendation)
+- DynamoDB Streams / Kinesis: failed records can block a shard indefinitely without `MaximumRetryAttempts` configured
+- Destinations supports 4 target types: SQS, SNS, Lambda, EventBridge
+- DLQ supports only 2 target types: SQS, SNS — and only for async invocations, not streams
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"What happens when a Lambda function fails" is a trick question precisely because there's no single answer — the strong response immediately branches by invocation type (sync/async/poll-based) instead of giving one generic answer, which is exactly what separates candidates who've only read docs from those who've debugged this in production. The Kinesis/DynamoDB Streams "poison pill" scenario is a favorite live-debugging question — the strong answer names `BisectBatchOnFunctionError` and `MaximumRetryAttempts` specifically, not just "add a DLQ" (which doesn't even apply to streams the same way). Idempotency questions ("how do you guarantee exactly-once processing") test whether the candidate understands that Lambda/SQS/Kinesis guarantee at-least-once, not exactly-once, and that idempotency has to be built into the handler logic itself — a common wrong answer is claiming AWS handles this automatically.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Assuming Lambda automatically retries every failure regardless of invocation type — synchronous invocations (API Gateway, direct `RequestResponse` calls) get zero automatic retries; the caller must implement its own retry logic.
+
+</Mistake>
+
+<Mistake>
+
+Writing non-idempotent handler logic (like blindly incrementing a balance or sending an email) without accounting for at-least-once delivery — duplicate processing from retries causes real bugs like double charges.
+
+</Mistake>
+
+<Mistake>
+
+Not configuring `BisectBatchOnFunctionError` or `MaximumRetryAttempts` for Kinesis/DynamoDB Streams event source mappings — a single consistently-failing record can block an entire shard's processing indefinitely (the poison pill problem).
+
+</Mistake>
+
+<Mistake>
+
+Setting an SQS queue's visibility timeout equal to (or shorter than) the Lambda function's timeout — the message becomes visible again and gets picked up by a second worker while the first is still processing, causing duplicate work.
+
+</Mistake>
+
+<Mistake>
+
+Reaching for a DLQ when a stream-based (Kinesis/DynamoDB Streams) source needs failure handling — DLQs only work for async invocations and SQS event sources; streams need Destinations' on-failure target instead.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Invocation type?] -->|Synchronous - API GW, direct call| B[Function fails]
+    B --> C[Error returned directly to caller]
+    C --> D[No automatic retry - caller must handle it]
+
+    A -->|Asynchronous - S3, SNS, EventBridge| E[Function fails]
+    E --> F[Lambda queues and retries automatically]
+    F --> G{Retry succeeded within 2 attempts?}
+    G -->|Yes| H[Success]
+    G -->|No| I[Send to DLQ or Destinations failure target]
+
+    A -->|Poll-based - SQS, Kinesis, DDB Streams| J[Function fails]
+    J --> K[Source's own retry rules apply]
+    K --> L[SQS: message revisible after timeout, retried up to maxReceiveCount]
+    K --> M[Kinesis/DDB Streams: batch blocks shard unless BisectBatchOnFunctionError configured]
+`}
+  caption="Retry behavior branches entirely on how Lambda was invoked — the same failing function behaves completely differently depending on whether it sits behind a synchronous API call, an async event, or a poll-based queue/stream."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Synchronous invocations (API Gateway, direct RequestResponse calls) get zero automatic retries — the caller is fully responsible for retry logic
+- Asynchronous invocations (S3, SNS, EventBridge) get 2 automatic retries with exponential backoff, bounded by a 6-hour default max event age
+- Poll-based sources (SQS, Kinesis, DynamoDB Streams) follow their own retry rules, not Lambda's — not a fixed retry count
+- SQS: failed messages become visible again after the visibility timeout and retry up to `maxReceiveCount` before hitting the DLQ
+- Kinesis/DynamoDB Streams: a failing record can block an entire shard (poison pill) unless `BisectBatchOnFunctionError` and `MaximumRetryAttempts` are configured
+- DLQ = older, simpler, failure-only, works for async and SQS — Destinations = newer, success and failure both, richer context, works for streams too
+- Idempotency is mandatory because Lambda's event sources guarantee at-least-once delivery, never exactly-once
+- Common idempotency pattern: conditional DynamoDB put keyed on a unique event/transaction ID to detect and skip duplicates
+
+</QuickRevision>

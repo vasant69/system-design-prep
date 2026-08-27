@@ -1,0 +1,219 @@
+---
+slug: "http-client-and-interceptors"
+title: "HttpClient and Interceptors"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 10
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["rxjs-and-observables-in-angular"]
+tags: ["angular", "http", "interceptors", "networking", "frontend"]
+englishDefinition: "Angular's HttpClient is a typed, Observable-based service for making HTTP requests, and HttpInterceptor is a pipeline hook that lets code intercept every outgoing request and incoming response to centrally attach headers, handle errors, or implement retry logic without touching individual API call sites."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Google", "TCS"]
+---
+
+<SimpleDefinition>
+
+Angular's HttpClient is a typed, Observable-based service for making HTTP requests, and HttpInterceptor is a pipeline hook that lets code intercept every outgoing request and incoming response to centrally attach headers, handle errors, or implement retry logic without touching individual API call sites.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`HttpClient` Angular ka built-in service hai HTTP requests ke liye — `@angular/common/http` se import hota hai, aur `HttpClientModule` (ya standalone `provideHttpClient()`) app me register karna padta hai.
+
+### Basic usage — typed responses
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+this.http.get<User>("/api/users/1").subscribe(user => {
+  console.log(user.name); // TypeScript knows the shape
+});
+
+this.http.post<User>("/api/users", { name: "Vasant" }).subscribe(newUser => {
+  console.log(newUser.id);
+});
+```
+
+Generic type parameter (`get<User>`) response ki shape TypeScript ko batata hai — compile-time me hi galat property access pakda jaata hai. Ye Observable return karta hai, matlab RxJS operators (`map`, `catchError`, `retry`) directly pipe kar sakte ho.
+
+### Interceptor — kya problem solve karta hai
+
+Bina interceptor ke, har API call site pe manually auth token header add karna padega:
+
+```typescript
+this.http.get("/api/data", { headers: { Authorization: `Bearer ${token}` } });
+```
+
+50 alag jagah is code ko duplicate karna maintenance nightmare hai — token refresh logic change ho to 50 jagah edit karna padega. Interceptor is problem ko **centralize** karta hai — ek jagah likho, har outgoing request automatically usse guzarta hai.
+
+### Class-based interceptor (traditional)
+
+```typescript
+@Injectable()
+export class AuthInterceptor implements HttpInterceptor {
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    const token = this.authService.getToken();
+    const cloned = req.clone({
+      setHeaders: { Authorization: `Bearer ${token}` },
+    });
+    return next.handle(cloned);
+  }
+}
+```
+
+Important detail — `HttpRequest` **immutable** hai, isliye request ko directly modify nahi kar sakte, `.clone()` se ek naya modified copy banana padta hai.
+
+### Functional interceptor API (Angular 15+)
+
+Modern approach ek plain function hai, class/provider boilerplate ke bina:
+
+```typescript
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+  const cloned = req.clone({
+    setHeaders: { Authorization: `Bearer ${authService.getToken()}` },
+  });
+  return next(cloned);
+};
+
+// registration:
+provideHttpClient(withInterceptors([authInterceptor]))
+```
+
+Ye class-based approach jaisa hi kaam karta hai lekin lighter aur `inject()` function ke through dependencies leta hai — Angular ka broader trend hai class-decorators se function-based APIs ki taraf, jaise routing me functional guards.
+
+### Centralized error handling
+
+Ek error-handling interceptor `catchError` RxJS operator se responses ko intercept kar sakta hai:
+
+```typescript
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      if (error.status === 401) {
+        router.navigate(["/login"]);
+      }
+      return throwError(() => error);
+    })
+  );
+};
+```
+
+Isse har component me alag-alag `try/catch`-jaisa error handling likhne ki zaroorat nahi — 401 aaya to global logout+redirect, 500 aaya to global toast notification, sab ek jagah.
+
+### Retry logic
+
+RxJS ka `retry` operator interceptor ke andar chain kiya ja sakta hai taaki transient network failures (jaise ek flaky mobile connection) automatically kuch baar retry ho jayein bina component ko pata chale:
+
+```typescript
+return next(req).pipe(retry(2));
+```
+
+Caution: retry sirf **idempotent** requests (GET) ke liye safe hai bina extra thought ke — POST request ko blindly retry karna duplicate records create kar sakta hai (jaise same payment do baar submit ho jaana).
+
+### Interceptor chain order
+
+Multiple interceptors ek chain me register hote hain, aur `provideHttpClient(withInterceptors([a, b, c]))` array ke order me hi execute hote hain request ke liye (aur reverse order me response ke liye). Order matter karta hai — jaise logging interceptor ko sabse pehle rakhna taaki wo har request/response dekh sake, chahe baad wale interceptors kya bhi karein.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Interceptors se cross-cutting concerns (auth, logging, error handling) ek jagah centralize hote hain", "Functional interceptors class/provider boilerplate ke bina lightweight hain"]}
+  cons={["Retry logic ko carelessly non-idempotent requests (POST) pe lagana duplicate side-effects create kar sakta hai", "Bahut zyada interceptors chain karne se debugging mushkil ho jaati hai ki request/response kaha modify hua"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Enterprise SaaS dashboards me ek typical interceptor stack hota hai: (1) auth interceptor jo token attach karta hai, (2) loading-indicator interceptor jo global spinner show/hide karta hai request start/end pe, (3) error interceptor jo 401 pe logout aur 500 pe toast dikhata hai. Ye teenon completely independent hain aur kisi bhi individual API call site me ek line bhi extra code nahi likhna padta — naya component banate waqt automatically inherit ho jaate hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Functional interceptor API (HttpInterceptorFn) available since Angular 15
+- Interceptors execute in array order for the outgoing request, reverse order for the incoming response
+- A typical enterprise app runs 2-4 interceptors in its chain (auth, error handling, logging, loading indicator)
+- retry(2) on a GET request is a common safe default; retrying POST/PUT without idempotency keys is a common production bug source
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How do you attach an auth token to every API call without repeating code" is the standard opener for this topic — the answer must name HttpInterceptor specifically, not just "add a header." A frequent trap: "would you retry a failed POST request the same way as a GET" — the correct answer is no, because POST is typically not idempotent and blind retry risks duplicate side effects (double-charging a payment is the classic example), unless the backend supports idempotency keys. Expect a question on why HttpRequest is immutable and requires `.clone()` — this ties back to Angular's broader RxJS-influenced design philosophy of predictable, side-effect-free data flow.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Auth token ko har component/service me manually header me add karna instead of using an interceptor — token refresh logic badalne pe dozens of call sites edit karne padte hain.
+
+</Mistake>
+
+<Mistake>
+
+`retry()` ko blindly har request pe laga dena, POST/PUT included — non-idempotent operations duplicate ho sakte hain agar server response slow tha lekin request actually process ho chuki thi.
+
+</Mistake>
+
+<Mistake>
+
+`req.clone()` use na karke `HttpRequest` object ko directly mutate karne ki koshish karna — ye kaam nahi karega kyunki HttpRequest immutable hai, silent failure ya TypeScript error dega.
+
+</Mistake>
+
+<Mistake>
+
+Interceptor registration order ignore karna — jaise error-handling interceptor ko auth interceptor se pehle register kar dena, jisse auth-related errors (401) sahi tarike se handle nahi ho paate expected chain order me.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Component
+    participant AuthInterceptor
+    participant ErrorInterceptor
+    participant Backend
+
+    Component->>AuthInterceptor: http.get(/api/data)
+    AuthInterceptor->>AuthInterceptor: clone request + add Bearer token
+    AuthInterceptor->>ErrorInterceptor: forward cloned request
+    ErrorInterceptor->>Backend: actual HTTP call
+    Backend-->>ErrorInterceptor: 401 Unauthorized
+    ErrorInterceptor->>ErrorInterceptor: catchError - redirect to /login
+    ErrorInterceptor-->>Component: throwError (propagated)
+`}
+  caption="An interceptor chain: the request passes through each interceptor in order (attaching a token), and errors are caught centrally on the way back without any per-component error-handling code."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- HttpClient methods (get/post/etc.) return Observables and support generic typing for response shape
+- HttpInterceptor centralizes cross-cutting concerns: auth headers, error handling, logging, retry
+- HttpRequest is immutable — use `.clone()` to produce a modified copy, never mutate directly
+- Functional interceptor API (HttpInterceptorFn, Angular 15+) replaces class-based interceptors with a plain function using inject()
+- Register functional interceptors via `provideHttpClient(withInterceptors([...]))` — array order = request execution order
+- retry() is safe for idempotent requests (GET); retrying POST/PUT blindly risks duplicate side effects
+- catchError + throwError is the standard pattern for centralized error handling in an interceptor
+
+</QuickRevision>

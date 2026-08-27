@@ -1,0 +1,181 @@
+---
+slug: "s3-presigned-urls-and-secure-access"
+title: "S3 Presigned URLs and Secure Access"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 6
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["s3-encryption-deep-dive"]
+tags: ["aws", "s3", "security", "presigned-urls"]
+englishDefinition: "A presigned URL is a time-limited URL that grants temporary access to a specific S3 object and operation by embedding a cryptographic signature generated with the signer's credentials, allowing a client to upload or download directly without S3 performing an IAM check at request time and without exposing the underlying AWS credentials."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+A presigned URL is a time-limited URL that grants temporary access to a specific S3 object and operation by embedding a cryptographic signature generated with the signer's credentials, allowing a client to upload or download directly without S3 performing an IAM check at request time and without exposing the underlying AWS credentials.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Presigned URL basically ek normal S3 URL hai jisme query string me ek signature embed hota hai — ye signature signer ke AWS credentials se generate hota hai aur usme ek specific action (GET ya PUT), ek specific object key, aur ek expiry timestamp encode hota hai. Jab request S3 tak pahunchti hai, S3 IAM policy evaluate nahi karta — sirf signature verify karta hai (kya ye request tamper nahi hui, aur kya expiry cross nahi hui). Isliye request bhejne wale ke paas khud koi AWS credentials nahi hone chahiye — permission URL ke andar hi baked hai.
+
+### Signature kaise kaam karta hai
+
+Signature **SigV4 (Signature Version 4)** algorithm se banta hai — signer ke secret access key, request ke details (method, bucket, key, timestamp, expiry), aur ek HMAC-SHA256 hash ka combination. URL kuch aisa dikhta hai: `https://bucket.s3.region.amazonaws.com/key?X-Amz-Algorithm=...&X-Amz-Credential=...&X-Amz-Date=...&X-Amz-Expires=900&X-Amz-Signature=...`. Query string ke parameters tamper-proof hain — agar koi expiry ya key change kare, signature match nahi karega aur S3 `403 SignatureDoesNotMatch` de dega. **Critical point:** URL banate waqt hi ye decide ho jaata hai ki kaun sa object aur kaun sa operation allowed hai — request bhejne wala sirf expiry ke andar us exact URL ko use kar sakta hai, kuch aur nahi.
+
+```python
+import boto3
+
+s3 = boto3.client("s3", region_name="ap-south-1")
+
+# Download URL — 15 minute expiry
+download_url = s3.generate_presigned_url(
+    "get_object",
+    Params={"Bucket": "jmfs-statements", "Key": "user-4521/aug-2026.pdf"},
+    ExpiresIn=900,
+)
+
+# Upload URL — 5 minute expiry, tighter kyunki upload zyada risky hai
+upload_url = s3.generate_presigned_url(
+    "put_object",
+    Params={"Bucket": "jmfs-uploads", "Key": "user-4521/kyc-doc.pdf"},
+    ExpiresIn=300,
+)
+```
+
+### Direct-upload pattern — kyun backend se bypass karna
+
+Ek common architecture mistake ye hai ki file upload backend server ke through route karo: client backend ko file bhejta hai, backend usko S3 me daalta hai. Isme file **do baar** network pe travel karti hai (client se backend, backend se S3), backend server ki memory/bandwidth file size ke proportion me consume hoti hai, aur agar backend single instance hai to har concurrent upload uski capacity ka hissa khaata hai — 10 users 100 MB file upload karein to backend ko 1 GB traffic handle karna padega jab usme sirf orchestration honi chahiye thi.
+
+Presigned URL pattern isse fix karta hai: client backend se pehle sirf ek short presigned PUT URL maangta hai (metadata request, bytes nahi), phir client **directly** S3 ko file bhejta hai, backend involved hi nahi hota is transfer me. Backend ki responsibility sirf ye reh jaati hai — authorize karna (ye user is key ko access kar sakta hai?), key generate karna (tenant-scoped, user input se nahi), aur URL sign karna. S3 khud horizontally scaled hai, isliye 10,000 concurrent uploads bhi backend ko touch nahi karte.
+
+### Expiry configuration — trade-off
+
+Expiry jitni lambi utna security risk zyada — URL leak hone (browser history, proxy logs, shared link) ke baad jitni der expiry baaki hai utni der tak koi bhi us URL se access le sakta hai. Expiry jitni chhoti utna user experience risk — slow network pe user ka upload beech me expiry cross kar sakta hai aur `403` mil sakta hai. Practical guideline: downloads (jaise report/statement) ke liye 5-15 minutes kaafi hai, uploads (jaha user file select karke upload button dabaye) ke liye 5-10 minutes, aur agar bahut bade file ka multipart upload hai to har part ka apna signed request hota hai isliye overall session lamba chal sakta hai.
+
+**Ek gotcha jo interview me common hai:** agar presigned URL temporary/role credentials (jaise Lambda execution role ya STS assumed role) se sign kiya gaya hai, to URL ki **actual** validity uss underlying credential ke apne expiry se bhi cut ho jaati hai — chahe tum `ExpiresIn=604800` (7 din) likh do, agar role session sirf 1 ghante me expire ho raha hai to URL bhi 1 ghante ke baad invalid ho jaayega. Sirf long-lived IAM user credentials se signed URL hi full 7-day max tak valid ho sakta hai.
+
+### Security caveat — anyone with the URL
+
+Sabse zaroori baat jo bhoolte hain: presigned URL me **koi additional authentication nahi hoti**. Jisko bhi wo poora URL mil jaaye — chahe legitimate user ho ya koi jisne URL ko accidentally forward kiya, screenshot liya, ya server log me dekh liya — wo expiry tak us operation ko perform kar sakta hai. URL string hi credential hai. Isliye:
+
+- URL ko kabhi bhi query-string ke saath application logs me mat likho (log middleware isse strip kare)
+- URL ko URL-shortener ke through mat bhejo — shortener provider ke paas full URL ki visibility aa jaati hai
+- HTTPS hamesha use karo taaki URL transit me intercept na ho
+- Bucket policy me `aws:SecureTransport` condition laga kar HTTP requests explicitly deny karo
+
+Presigned URL revoke karne ka **koi direct tareeka nahi hai** — ek baar generate ho gaya to expiry tak valid rehta hai. Agar turant revoke karna ho (jaise koi security incident), to signing credentials rotate karna padega — jo saare us waqt ke active presigned URLs ko bhi invalidate kar dega, ek bahut heavy-handed operation.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Presigned URL ki permission uske **signer** ki hoti hai, requester ki nahi. Agar backend role poore bucket ko read/write kar sakta hai aur URL galat key ke liye generate ho jaaye (jaise user input se seedha key le liya), to attacker kisi bhi doosre tenant ka data padh/overwrite kar sakta hai — object key hamesha server-side, tenant-scoped generate karo, kabhi user-supplied nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek KYC-document-upload flow me pehle backend seedha `multipart/form-data` accept karke S3 me relay karta tha — production load test me pata chala ki 50 concurrent uploads pe backend ka memory spike ho raha tha (Node process file buffer me hold kar raha tha). Migration presigned PUT URLs par hui: client pehle `/api/upload-url?docType=kyc` hit karta hai, backend user ki JWT se `userId` nikaal kar key `kyc/{userId}/{uuid}.pdf` (server-side) banata hai (kabhi client se key accept nahi karta), 5-minute expiry ke saath sign karta hai, aur URL return karta hai. Client seedha S3 ko PUT karta hai. Upload complete hone ke baad S3 ka `ObjectCreated` event ek Lambda trigger karta hai jo actual content-type aur size verify karta hai (kyunki presigned PUT me client-declared Content-Type par bharosa nahi kiya ja sakta) — agar mismatch ho to object turant delete ho jaata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Max presigned URL expiry with long-lived IAM user credentials: 7 days (604,800 seconds)</li>
+<li>Max expiry with temporary/STS credentials: capped at the credential's own remaining session lifetime, often as low as 15 minutes to 1 hour</li>
+<li>Signature algorithm: SigV4, HMAC-SHA256 based</li>
+<li>Typical practical expiry used in production: 5-15 minutes for both uploads and downloads</li>
+<li>No native revocation — only credential rotation invalidates all currently-active presigned URLs signed by that credential</li>
+<li>Presigned URLs work for any S3 operation the signer's credentials permit, not just GET/PUT — including DELETE and multipart operations</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Client ko directly S3 par file upload karwana hai — design karo" is one of the most frequently asked S3 scenario questions. A strong answer names presigned PUT (or POST if size/type enforcement is needed), explains that the backend never touches file bytes, states that the object key must be server-generated from the authenticated user's identity (never taken from client input, to prevent path traversal into another tenant's prefix), and mentions post-upload validation via an S3 event since the client-declared Content-Type can't be trusted. A common follow-up trap: "the URL was generated with 7-day expiry using a Lambda's execution role — will it still work after 2 days?" — the correct answer is usually no, because the role's own session credentials typically expire in about an hour, and the presigned URL inherits that shorter ceiling regardless of the `ExpiresIn` value passed. Interviewers also probe whether the candidate understands presigned URLs have no revocation mechanism short of credential rotation.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Taking the S3 object key directly from client/user input when generating a presigned URL — this opens a path-traversal risk where a malicious key like `../other-tenant/data.pdf` could read or overwrite another tenant's object. The key must be server-generated or strictly validated against the requesting user's own prefix.
+
+</Mistake>
+
+<Mistake>
+
+Assuming `ExpiresIn=604800` always means the URL is valid for 7 days — when signed with temporary/STS credentials, the URL's real lifetime is capped by the underlying credential's own expiry, which is frequently much shorter.
+
+</Mistake>
+
+<Mistake>
+
+Trusting the client-supplied Content-Type or file size on a presigned PUT upload without server-side verification afterward — presigned PUT has no built-in size/type enforcement, so a malicious or buggy client can upload anything.
+
+</Mistake>
+
+<Mistake>
+
+Logging the full presigned URL (including its signed query string) in application or proxy logs — anyone with read access to those logs effectively has the same temporary access as the original signer, until expiry.
+
+</Mistake>
+
+<Mistake>
+
+Expecting to revoke a single presigned URL after issuing it — there is no per-URL revocation; the only way to invalidate it early is rotating the signing credentials, which kills every other active URL signed with them too.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant Backend
+    participant S3
+
+    Client->>Backend: Request upload URL (authenticated)
+    Backend->>Backend: Validate user, build tenant-scoped key
+    Backend->>Backend: Sign PUT request with SigV4 (short expiry)
+    Backend-->>Client: Presigned URL
+    Client->>S3: PUT file bytes directly (no backend involved)
+    S3-->>Client: 200 OK
+    S3->>Backend: ObjectCreated event
+    Backend->>Backend: Verify actual content-type and size
+`}
+  caption="Bytes never pass through the backend — it only issues a short-lived, tenant-scoped signed URL and validates the result afterward via an S3 event."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Presigned URL embeds a SigV4 signature carrying operation, key, and expiry — S3 checks the signature, not an IAM policy, at request time</li>
+<li>Permission belongs to the signer, not the requester — never derive the object key from raw client input</li>
+<li>Max expiry is 7 days with long-lived IAM user credentials, but capped by the underlying session's own expiry with temporary/STS credentials</li>
+<li>Direct client-to-S3 upload via presigned URL avoids routing file bytes through the backend, keeping it stateless and cheap under concurrent load</li>
+<li>No native revocation — early invalidation requires rotating the signing credentials, which kills all URLs signed with them</li>
+<li>Always validate the uploaded object's real content-type and size server-side after upload; presigned PUT enforces neither</li>
+<li>Use HTTPS and avoid logging the full signed URL — anyone holding it has access until expiry, no extra auth required</li>
+</ul>
+
+</QuickRevision>

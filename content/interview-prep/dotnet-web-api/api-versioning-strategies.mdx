@@ -1,0 +1,217 @@
+---
+slug: "api-versioning-strategies"
+title: "API Versioning Strategies"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 9
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["exception-handling-and-problem-details"]
+tags: ["aspnet-core", "api-versioning", "rest", "web-api"]
+englishDefinition: "API versioning is the practice of evolving an API's contract without breaking existing consumers, implemented in ASP.NET Core via URL segment, query string, header, or media type strategies, each with different trade-offs around discoverability, caching, and client friction."
+interviewFrequency: "high"
+companies: ["Microsoft", "TCS", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+API versioning is the practice of evolving an API's contract without breaking existing consumers, implemented in ASP.NET Core via URL segment, query string, header, or media type strategies, each with different trade-offs around discoverability, caching, and client friction.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek baar API publish ho jaaye aur clients use karne lagein, uske contract me breaking change (field remove karna, response shape badalna, behavior change) directly consumers ko todta hai. Versioning is problem ko solve karta hai — purane clients ko purana behavior milta rehta hai, naye clients naya version use kar sakte hain, aur eventually purana version deprecate karke hata sakte ho.
+
+### Chaar main strategies
+
+**1. URL segment versioning** — sabse common aur discoverable approach:
+
+```
+GET /api/v1/customers/42
+GET /api/v2/customers/42
+```
+
+Sabse simple hai samajhne me, browser me directly test ho sakta hai, aur caching (CDN, reverse proxy) URL-based hone ki wajah se automatically version-aware hoti hai — do alag versions do alag cache entries ban jaate hain. Nuksaan: URL "resource identity" ko version se mix kar deta hai (REST purists ka argument — `/customers/42` conceptually same resource hai chahe version kuch bhi ho), aur client code me URL construction jagah-jagah hardcoded version string leke jaata hai.
+
+**2. Query string versioning**:
+
+```
+GET /api/customers/42?api-version=2.0
+```
+
+URL structure clean rehta hai (base path same), lekin caching thoda tricky ho sakta hai kyunki kuch proxies/CDNs by default query string ko cache key me include nahi karte — agar galat configure ho to client ko galat version ka cached response mil sakta hai.
+
+**3. Header versioning**:
+
+```
+GET /api/customers/42
+X-Api-Version: 2.0
+```
+
+URL bilkul clean rehta hai — pure REST semantics maintain hoti hain (`/customers/42` ek hi resource identity, version sirf metadata hai). Nuksaan: discoverability kam hoti hai — browser me directly test nahi kar sakte, header add karna padta hai (Postman/curl chahiye), aur documentation me explicitly bataana padta hai ki header set karo.
+
+**4. Media type (content negotiation) versioning**:
+
+```
+GET /api/customers/42
+Accept: application/json;version=2.0
+```
+
+Ye "purest" REST approach maana jaata hai — HTTP ke apne content-negotiation mechanism ka use karta hai, jo isi purpose ke liye bana tha. Lekin practically sabse kam adopt kiya jaata hai kyunki client tooling me friction sabse zyada hai, aur samajhna/document karna sabse mushkil.
+
+### `Asp.Versioning.Mvc` package — basics
+
+Microsoft ka apna `Microsoft.AspNet.WebApi.Versioning` deprecated ho gaya, community-maintained `Asp.Versioning.Mvc` (aur `Asp.Versioning.Http` minimal APIs ke liye) ab standard hai:
+
+```csharp
+builder.Services.AddApiVersioning(options =>
+{
+    options.DefaultApiVersion = new ApiVersion(1, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true;
+    options.ReportApiVersions = true; // response header me supported versions batata hai
+    options.ApiVersionReader = ApiVersionReader.Combine(
+        new UrlSegmentApiVersionReader(),
+        new HeaderApiVersionReader("X-Api-Version")
+    );
+}).AddMvc(options =>
+{
+    options.Conventions.Add(new VersionByNamespaceConvention()); // folder-based versioning
+});
+```
+
+```csharp
+[ApiVersion("1.0")]
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/[controller]")]
+public class CustomersController : ControllerBase
+{
+    [HttpGet("{id}")]
+    [MapToApiVersion("1.0")]
+    public IActionResult GetV1(int id) => Ok(new { id, name = "Legacy shape" });
+
+    [HttpGet("{id}")]
+    [MapToApiVersion("2.0")]
+    public IActionResult GetV2(int id) => Ok(new { id, fullName = "New shape", email = "..." });
+}
+```
+
+`ApiVersionReader.Combine` se multiple strategies ek saath support kar sakte ho — jaise URL segment primary ho lekin header fallback ke roop me bhi accept ho, backward compatibility ke liye.
+
+### Deprecation strategy
+
+Sirf naya version release karke purana turant hata dena clients ko break kar dega. Standard practice:
+
+1. Naya version release karo, `ReportApiVersions = true` se response headers me supported versions advertise karo
+2. Purane version pe `[Obsolete]`-style warning header add karo (`Sunset` HTTP header, RFC 8594, ek specific date ke saath) — clients ko proactively pata chalta hai
+3. Ek migration period do (typically 6-12 months, API ke usage pattern pe depend karta hai)
+4. Usage metrics track karo — jab purane version ka traffic negligible ho jaaye, tabhi hard-remove karo
+5. Breaking change ki jagah jahan possible ho, **additive** change karo (naya optional field add karna breaking nahi hai) — versioning sirf tab zaroori hai jab change genuinely breaking ho (field remove, type change, required field add, behavior semantics change)
+
+### Trade-off summary — kab kaunsa choose karo
+
+URL segment versioning most public-facing, high-traffic APIs ke liye default choice hai kyunki caching aur discoverability sabse important hoti hai. Internal/enterprise APIs jahan clients controlled hain (same organization ke consumers) header versioning zyada clean lagta hai kyunki URL semantics pure rehte hain. Query string kabhi-kabhi legacy systems ke saath backward-compat ke liye use hota hai jahan URL segment change breaking hota. Media type versioning practically bahut rarely production me dekha jaata hai bawajood "textbook correct" hone ke — client friction real-world adoption ko rok deta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["URL segment: highest discoverability, CDN/proxy caching just works, easy to test in a browser", "Header/media-type: keeps REST resource identity pure, no URL pollution"]}
+  cons={["URL segment: mixes version into resource identity, hardcoded version strings spread across client code", "Header/query string: weaker discoverability, caching needs explicit configuration to respect the version signal"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production .NET API">
+
+Ek partner-facing lending API ne URL segment versioning choose kiya (`/api/v1/`, `/api/v2/`) kyunki partners ke tools me API calls URLs hardcode hote the aur discoverability zaroori thi — partner engineers Postman me directly URL dekh ke samajh jaate the kaunsa version hit ho raha hai. v1 se v2 me eligibility calculation logic change hua (breaking, kyunki response me ek naya required field aaya), isliye v1 ko 6 mahine ke liye maintain kiya gaya saath me `Sunset` header jisme exact decommission date thi, aur v1 traffic weekly dashboard pe track kiya gaya jab tak wo zero ke close nahi pahunch gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Four common versioning strategies: URL segment, query string, header, media type (content negotiation)
+- `Asp.Versioning.Mvc` is the community-maintained successor to the deprecated `Microsoft.AspNet.WebApi.Versioning` package
+- Typical deprecation migration window for a public API: 6-12 months between new version release and old version removal
+- `Sunset` HTTP header (RFC 8594) communicates an exact decommission date to clients programmatically
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+The most common question is a direct comparison — "URL vs header versioning, which would you pick and why" — the strong answer ties the choice to caching and discoverability needs rather than declaring one universally correct. A frequent trap question is "is adding a new optional field to a response a breaking change" — the correct answer is no, and the interviewer is testing whether you understand versioning exists for breaking changes specifically, not every change. Interviewers in senior rounds also probe deprecation strategy — do you just delete the old version, or do you have a sunset plan with usage-based decommission timing.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har chhota change (naya optional field add karna) ke liye bhi naya API version bana dena — versioning sirf genuinely breaking changes ke liye zaroori hai, overuse se version sprawl aur maintenance burden badhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Purana version bina kisi deprecation notice ya migration window ke achanak hata dena — existing clients turant break ho jaate hain, koi warning nahi milta.
+
+</Mistake>
+
+<Mistake>
+
+Query string versioning use karte waqt CDN/proxy caching configuration ignore karna — agar cache key me query string include nahi hai, clients ko galat version ka stale cached response mil sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Version-specific logic ko controller ke andar hi if/else se handle karna instead of separate versioned action methods (`[MapToApiVersion]`) ya separate controllers — code quickly unmaintainable ho jaata hai jab teesra version aata hai.
+
+</Mistake>
+
+<Mistake>
+
+`ReportApiVersions` jaisi discoverability features skip kar dena — clients ko pata hi nahi chalta kaunse versions supported hain ya kaunsa deprecated hone wala hai, migration planning mushkil ho jaati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A[Client Request] --> B{Versioning Strategy}
+    B -->|URL Segment| C["/api/v2/customers/42"]
+    B -->|Query String| D["/api/customers/42?api-version=2.0"]
+    B -->|Header| E["X-Api-Version: 2.0"]
+    B -->|Media Type| F["Accept: application/json;version=2.0"]
+    C --> G[ApiVersionReader resolves version]
+    D --> G
+    E --> G
+    F --> G
+    G --> H{MapToApiVersion match}
+    H -->|v1| I[GetV1 action - legacy shape]
+    H -->|v2| J[GetV2 action - new shape]
+`}
+  caption="All four strategies funnel into the same ApiVersionReader resolution step, so an API can support multiple strategies simultaneously via ApiVersionReader.Combine for backward compatibility."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Four strategies: URL segment, query string, header, media type — each trades discoverability/caching against REST resource-identity purity
+- URL segment versioning is most common for public APIs — best caching and discoverability, but mixes version into the resource URL
+- Header/media-type versioning keeps the URL clean but reduces discoverability and needs explicit client tooling
+- `Asp.Versioning.Mvc` (and `Asp.Versioning.Http` for minimal APIs) is the current community-maintained package, replacing the deprecated Microsoft package
+- `[ApiVersion]` + `[MapToApiVersion]` route different action methods per version within the same or separate controllers
+- `ApiVersionReader.Combine(...)` lets multiple strategies work simultaneously for backward compatibility
+- Only genuinely breaking changes (removed field, changed type, new required field, changed semantics) need a new version — additive changes don't
+- A proper deprecation strategy uses the `Sunset` header, a defined migration window, and usage metrics before removing an old version
+
+</QuickRevision>

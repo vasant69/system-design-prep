@@ -1,0 +1,186 @@
+---
+slug: "transactions-and-acid-in-sql"
+title: "Transactions and ACID in SQL"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 8
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["normalization-and-schema-design"]
+tags: ["transactions", "acid", "isolation"]
+englishDefinition: "A database transaction is a group of one or more SQL statements executed as a single all-or-nothing unit of work, controlled with BEGIN, COMMIT, and ROLLBACK. ACID (Atomicity, Consistency, Isolation, Durability) is the set of guarantees a properly implemented transaction provides, and SQL's isolation levels let an application trade some isolation strictness for higher throughput."
+interviewFrequency: "very-high"
+companies: ["Oracle", "Amazon", "Microsoft"]
+---
+
+<SimpleDefinition>
+
+A database transaction is a group of one or more SQL statements executed as a single all-or-nothing unit of work, controlled with BEGIN, COMMIT, and ROLLBACK. ACID (Atomicity, Consistency, Isolation, Durability) is the set of guarantees a properly implemented transaction provides, and SQL's isolation levels let an application trade some isolation strictness for higher throughput.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ek classic example lete hain — money transfer, ek wallet app mein User A se User B ko 500 rupaye bhejna hai. Iske liye do steps chahiye: A ke balance se 500 minus karo, B ke balance mein 500 add karo. Yeh do steps ek transaction ke andar rakhne hi padenge, warna beech mein kuch fail ho jaaye (server crash, network drop) to paisa "gayab" ho sakta hai — A se kat gaya, B ko mila hi nahi.
+
+### BEGIN, COMMIT, ROLLBACK
+
+```sql
+BEGIN;
+
+UPDATE accounts SET balance = balance - 500 WHERE account_id = 'A';
+UPDATE accounts SET balance = balance + 500 WHERE account_id = 'B';
+
+COMMIT;
+```
+
+Agar dono `UPDATE` successfully chal jaayein, `COMMIT` sab kuch permanently save kar deta hai. Agar beech mein kuch galat ho (jaise doosra `UPDATE` fail ho gaya kyunki B ka account exist hi nahi karta), to application `ROLLBACK` call karti hai — dono updates undo ho jaate hain, jaise transaction hua hi nahi.
+
+```sql
+BEGIN;
+UPDATE accounts SET balance = balance - 500 WHERE account_id = 'A';
+-- kuch galat hua, B account invalid nikla
+ROLLBACK; -- pehla UPDATE bhi wapas undo ho gaya
+```
+
+### ACID — chaar guarantees, transfer example ke saath
+
+**Atomicity** — transaction ka har statement ek unit hai: ya sab apply honge, ya koi nahi. Transfer example mein, agar credit step fail ho jaaye to debit step bhi automatically undo ho jaana chahiye — partial transfer (sirf debit ho jaana) allowed nahi hai.
+
+**Consistency** — transaction database ko ek valid state se doosre valid state mein le jaata hai, saare constraints (foreign keys, check constraints, application rules) respect karte hue. Agar `accounts` table pe ek CHECK constraint hai ki `balance >= 0`, to transaction jo balance ko negative kar de, wo automatically reject ho jaayega — database kabhi invalid state mein nahi jaayega.
+
+**Isolation** — concurrent transactions ek doosre ko interfere nahi karti jaise ki wo galat tarike se interact kar rahi hon. Agar isi waqt do transfers chal rahe hon — A se B ko, aur C se A ko — dono ka result aisa hona chahiye jaise wo kisi order mein sequentially chale hon, chahe actually parallel chale hon.
+
+**Durability** — ek baar `COMMIT` ho jaaye, to change permanent hai, chahe turant ke baad database server crash ho jaaye. Yeh disk pe write-ahead log ke through guarantee hota hai, sirf in-memory nahi.
+
+### Isolation Levels — kaunsi anomaly kaun rokta hai
+
+Isolation ek spectrum hai, sirf on/off nahi. SQL standard chaar levels define karta hai, har ek stricter aur zyada anomalies prevent karta hai, lekin zyada locking/retry overhead ke saath:
+
+| Isolation Level | Dirty Read | Non-Repeatable Read | Phantom Read |
+|---|---|---|---|
+| Read Uncommitted | Possible | Possible | Possible |
+| Read Committed | Prevented | Possible | Possible |
+| Repeatable Read | Prevented | Prevented | Possible (DB-dependent) |
+| Serializable | Prevented | Prevented | Prevented |
+
+- **Read Uncommitted**: kisi doosre transaction ka uncommitted (abhi tak COMMIT na hua) data bhi read ho sakta hai — ek **dirty read**. Socho, transfer ka debit step ho gaya (uncommitted), koi doosra transaction A ka naya balance dekh leta hai, aur phir pehla transaction ROLLBACK ho jaata hai — doosre transaction ne ek aisi value dekhi jo kabhi actually exist hi nahi hui.
+- **Read Committed**: sirf committed data dikhega, dirty reads gone. Lekin ek hi transaction ke andar same row ko do baar padho to different values mil sakti hain agar beech mein koi aur transaction commit kar de — yeh **non-repeatable read**.
+- **Repeatable Read**: ek transaction ke andar ek row consistently same value dega. Lekin naye rows insert/delete hone se row **set** change ho sakta hai — yeh **phantom read**.
+- **Serializable**: strictest — behavior aisa jaise transactions ek-ek karke sequentially chal rahe hon. Saari teen anomalies prevented, lekin sabse zyada contention/retry cost.
+
+Practical reality: zyadatar production databases (PostgreSQL, MySQL) **default Read Committed** pe chalte hain, kyunki Serializable har jagah use karna throughput ko significantly hit karta hai. Balance-check-then-debit jaisi critical operation ke liye, application explicit row-level locking use karti hai (agla topic ka core), sirf isolation level pe depend nahi karti.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["ACID transactions guarantee correctness even under crashes and concurrency", "Stricter isolation levels eliminate more anomalies, easier to reason about"]}
+  cons={["Stricter isolation levels (Serializable) increase locking/retry overhead and reduce throughput", "Weaker levels (Read Committed) require the application to explicitly handle non-repeatable and phantom reads"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Oracle">
+
+Oracle-based core banking systems wrap every fund transfer in an explicit transaction with the debit and credit as a single atomic unit — if the credit leg fails for any reason (invalid destination account, constraint violation), the whole transaction rolls back so money is never left half-moved.
+
+</RealWorld>
+
+<RealWorld company="Amazon">
+
+Order-checkout flows on platforms like Amazon typically run "deduct inventory, create order record, charge payment" as one transaction (or a carefully coordinated equivalent) — if payment charging fails, the inventory deduction and order creation must not remain committed, otherwise stock would be reserved for an order that never actually happened.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>PostgreSQL and MySQL/InnoDB both commonly run at Read Committed or Repeatable Read by default in production, not Serializable</li>
+<li>Serializable isolation under high contention can see double-digit percentage transaction abort/retry rates on hot rows</li>
+<li>A committed transaction's durability typically relies on a write-ahead log flushed to disk in single-digit milliseconds</li>
+<li>Read Committed vs Serializable throughput difference in high-contention workloads: often 30-50%+ in favor of Read Committed</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewers frequently ask "explain ACID with an example" — a weak answer recites the four letters; a strong answer maps each one onto a concrete failure mode in the same money-transfer scenario (what if the process crashes mid-transfer, what if two transfers race, what if a constraint would be violated). An equally common follow-up is "what's the default isolation level and why doesn't the industry just use Serializable everywhere" — be ready to name the anomaly each level prevents and articulate the throughput trade-off.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Treating a multi-step operation (debit then credit) as two independent statements instead of wrapping them in a single transaction — leaves a window where a crash can cause a partial, incorrect state.
+
+</Mistake>
+
+<Mistake>
+
+Assuming the default isolation level (often Read Committed) prevents all race conditions — it only prevents dirty reads, not non-repeatable or phantom reads.
+
+</Mistake>
+
+<Mistake>
+
+Confusing Atomicity with Isolation — atomicity is about a single transaction's steps being all-or-nothing, isolation is about how concurrent transactions see each other's in-progress changes.
+
+</Mistake>
+
+<Mistake>
+
+Believing "just use Serializable everywhere" is a safe default answer in interviews — it ignores the real throughput cost under contention.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting that Durability requires a persisted write-ahead log, not just an in-memory commit — a crash immediately after commit must not lose the change.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant App
+    participant DB as Database
+
+    App->>DB: BEGIN
+    App->>DB: UPDATE accounts SET balance -= 500 WHERE id = A
+    App->>DB: UPDATE accounts SET balance += 500 WHERE id = B
+    alt Both updates succeed
+        App->>DB: COMMIT
+        Note over DB: Change is atomic and durable
+    else Any step fails
+        App->>DB: ROLLBACK
+        Note over DB: Both updates undone, no partial transfer
+    end
+`}
+  caption="A two-step money transfer wrapped in a transaction: either both balance changes apply, or neither does."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Transaction = BEGIN ... COMMIT/ROLLBACK, a single all-or-nothing unit of work</li>
+<li>Atomicity: all steps succeed or none do; Consistency: valid state to valid state, constraints always hold</li>
+<li>Isolation: concurrent transactions don't see each other's in-progress, uncommitted work in harmful ways</li>
+<li>Durability: once committed, survives a crash, guaranteed via a persisted write-ahead log</li>
+<li>Four isolation levels, each stricter: Read Uncommitted, Read Committed, Repeatable Read, Serializable</li>
+<li>Read Committed prevents dirty reads only; Repeatable Read adds non-repeatable read prevention; Serializable prevents all three anomalies including phantom reads</li>
+<li>Most production databases default to Read Committed for throughput — stricter isolation costs more under contention</li>
+</ul>
+
+</QuickRevision>

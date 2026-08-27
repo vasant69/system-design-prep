@@ -1,0 +1,205 @@
+---
+slug: "angular-services-and-dependency-injection"
+title: "Angular Services and Dependency Injection"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["directives-structural-and-attribute"]
+tags: ["angular", "frontend", "dependency-injection", "services"]
+englishDefinition: "Angular's dependency injection system lets classes declare the services they need through constructor parameters instead of creating them directly, with a hierarchical tree of injectors that determines whether a given service is a single app-wide singleton or a fresh instance scoped to a component subtree."
+interviewFrequency: "very-high"
+companies: ["Google", "Microsoft", "Amazon", "Infosys"]
+---
+
+<SimpleDefinition>
+
+Angular's dependency injection system lets classes declare the services they need through constructor parameters instead of creating them directly, with a hierarchical tree of injectors that determines whether a given service is a single app-wide singleton or a fresh instance scoped to a component subtree.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pehle topics me humne dekha ki services business logic ka ghar hote hain aur components thin rehte hain. Ab dekhte hain Angular ye services components tak kaise pahunchata hai — through **Dependency Injection (DI)**, jo Angular ka sabse foundational aur interview me sabse zyada poochha jaane waala concept hai.
+
+### @Injectable aur providedIn: 'root'
+
+Koi bhi class ko DI system me use karne ke liye `@Injectable` decorator chahiye:
+
+```typescript
+@Injectable({
+  providedIn: "root",
+})
+export class ProductService {
+  constructor(private http: HttpClient) {}
+
+  getProducts(): Observable<Product[]> {
+    return this.http.get<Product[]>("/api/products");
+  }
+}
+```
+
+`providedIn: "root"` ka matlab hai — is service ka **ek hi singleton instance** poore application me banega, aur Angular's build system isse **tree-shakeable** bhi bana deta hai (agar koi component isko use nahi karta, to final bundle me include hi nahi hoga). Ye modern Angular me recommended default approach hai.
+
+Component me use karna simple hai:
+
+```typescript
+@Component({ selector: "app-product-list", ... })
+export class ProductListComponent {
+  constructor(private productService: ProductService) {}
+}
+```
+
+Angular constructor parameter type dekh ke automatically `ProductService` ka instance provide kar deta hai — component ko khud `new ProductService()` likhne ki zaroorat nahi.
+
+### providedIn: 'root' vs component/module-level providing
+
+`providedIn: "root"` ke alawa, service ko explicitly kisi component ke `providers` array me bhi list kiya ja sakta hai:
+
+```typescript
+@Component({
+  selector: "app-checkout",
+  providers: [CartService],
+})
+export class CheckoutComponent {}
+```
+
+Ye do approach fundamentally different scoping create karte hain:
+
+- **Root-provided**: pura app ek hi instance share karta hai — global state ke liye sahi (jaise auth state, user session).
+- **Component-provided**: har baar jab wo component instantiate hota hai, ek **naya instance** banta hai, aur ye instance sirf us component aur uske children ko available hota hai. Jaise agar `CheckoutComponent` ko do baar render karo (jaise ek modal aur ek page dono me), do alag `CartService` instances milenge — isolated state.
+
+### Hierarchical injector tree
+
+Ye sabse important mental model hai: Angular ka DI system **component tree ke parallel ek injector tree** banata hai. Jab koi component apne constructor me ek service maangta hai, Angular yeh steps follow karta hai:
+
+1. Component ke apne injector me dekho (agar `providers` array me define hai)
+2. Nahi mila to parent component ke injector me dekho
+3. Ye chain upar tak chalti hai jab tak module-level ya root injector tak nahi pahunch jaate
+4. Root injector me bhi nahi mila (aur `providedIn: 'root'` nahi hai) to error: "NullInjectorError"
+
+Isse ek powerful pattern milta hai: agar ek feature (jaise checkout flow) apna khud ka isolated state chahta hai jo baaki app se completely alag ho, us feature ke top-level component me service ko provide karo — sab child components ko wahi instance milega, lekin baaki app ko nahi.
+
+### Injection tokens — non-class dependencies
+
+Constructor injection type ke through kaam karta hai, lekin har dependency ek class nahi hoti — jaise ek config object, ek string, ya ek primitive value. Iske liye **InjectionToken** use karte hain:
+
+```typescript
+import { InjectionToken } from "@angular/core";
+
+export const API_BASE_URL = new InjectionToken<string>("API_BASE_URL");
+```
+
+App configuration me provide karna:
+
+```typescript
+providers: [{ provide: API_BASE_URL, useValue: "https://api.example.com" }];
+```
+
+Component/service me inject karna:
+
+```typescript
+constructor(@Inject(API_BASE_URL) private baseUrl: string) {}
+```
+
+Ye pattern environment-specific config, feature flags, ya third-party library configuration inject karne ke liye standard tareeka hai — bina koi class banaye.
+
+### Singleton vs per-component instances — kab kya chaho
+
+- Global, app-wide shared state (auth, theme, notifications) → `providedIn: 'root'`
+- Feature-scoped state jo isolated hona chahiye har instance ke liye (jaise ek wizard/form flow ka draft state) → component-level `providers`
+- Testing ke liye bhi ye matter karta hai — component-level provided service ko test me easily ek mock se override kiya ja sakta hai bina global state affect kiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["providedIn: root gives tree-shakeable, app-wide singletons with minimal boilerplate", "Component-level providers give clean, isolated state per feature instance", "Injection tokens let you DI-manage non-class config values consistently"]}
+  cons={["Component-level providers are easy to forget, leading to accidental multiple instances of what should be a singleton", "Deep injector hierarchies can make it hard to trace which instance a component actually received", "Overusing InjectionToken for simple values adds indirection versus a plain constant"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Infosys">
+
+Ek multi-tenant SaaS product (jaisa Infosys ke liye banaya gaya enterprise B2B tool) me `AuthService` `providedIn: 'root'` hota hai — poore app me ek hi logged-in user ka state hona chahiye. Lekin ek multi-step "onboarding wizard" feature apna `WizardStateService` component-level pe provide karta hai `providers: [WizardStateService]` ke through — taaki agar user wizard ko band karke dobara khole, purani draft state automatically discard ho jaaye instead of leaking across sessions.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `providedIn: 'root'` has been the recommended default since Angular 6 (2018), replacing the older `NgModule providers` array pattern for most cases
+- A service provided at the root injector: exactly one instance for the lifetime of the application
+- A service provided in a component's `providers` array: one new instance per instantiation of that component
+- `NullInjectorError` is one of the most common Angular runtime errors reported by beginners — almost always a missing provider somewhere in the chain
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Explain dependency injection in Angular" is nearly universal — the strong answer covers both the mechanism (constructor-based injection, resolved via an injector tree) and the why (testability via mocking, decoupling, singleton management) rather than just defining the term. A very common follow-up scenario is "why would you provide a service at the component level instead of root" — the expected answer names instance isolation per component tree, with a concrete example like a form wizard or a modal needing fresh state each time. Expect a trickier one too: "what happens if a service isn't provided anywhere in the chain" — the correct answer is a runtime NullInjectorError, not a compile-time error, which tests whether the candidate has actually hit this in practice.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Service ko manually `new MyService()` se instantiate karna component ke andar instead of constructor injection — ye DI ke saare benefits (singleton management, easy mocking in tests, hierarchical scoping) ko bypass kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek service ko galti se component-level `providers` array me daal dena jab wo actually app-wide singleton hona chahiye tha (jaise auth state) — har component instantiation pe naya, disconnected instance milta hai, aur state "randomly reset" hoti dikhti hai debugging me.
+
+</Mistake>
+
+<Mistake>
+
+Non-class dependency (jaise config string ya object) ko inject karne ki koshish karna bina `InjectionToken` use kiye — TypeScript interfaces/primitives runtime pe exist nahi karte, isliye Angular unhe token ke roop me resolve nahi kar sakta bina explicit InjectionToken ke.
+
+</Mistake>
+
+<Mistake>
+
+Injector hierarchy ko ignore karke assume kar lena ki `providedIn: 'root'` service hamesha same instance dega — agar kahin beech me (module ya component level pe) wahi service dobara provide ho gayi ho, subtree ko ek alag instance milega, jo confusing bugs create karta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Root Injector - providedIn: root services] --> B[AppComponent Injector]
+    B --> C[FeatureModule Injector]
+    C --> D[CheckoutComponent Injector - providers: CartService]
+    D --> E[CheckoutFormComponent]
+    D --> F[CheckoutSummaryComponent]
+    E -.resolves CartService.-> D
+    F -.resolves CartService.-> D
+    E -.resolves AuthService not found locally, walks up.-> A
+`}
+  caption="A request for a service walks up the injector tree from the requesting component until it finds a provider — component-level providers create a new instance shared only by that subtree."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `@Injectable({ providedIn: 'root' })` = one tree-shakeable, app-wide singleton instance
+- Component-level `providers: [Service]` = a fresh instance scoped to that component and its children
+- DI resolution walks up the injector tree: component to parent to module to root
+- `NullInjectorError` at runtime = no provider found anywhere in the chain
+- `InjectionToken` lets you DI-inject non-class values (config, primitives, third-party objects)
+- Constructor injection (not manual `new`) is what enables easy test mocking and singleton control
+- Use root-provided services for app-wide state, component-provided for isolated per-instance state
+
+</QuickRevision>

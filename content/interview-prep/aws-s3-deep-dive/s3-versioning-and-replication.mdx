@@ -1,0 +1,160 @@
+---
+slug: "s3-versioning-and-replication"
+title: "S3 Versioning and Replication"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 4
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["s3-permissions-and-bucket-policies"]
+tags: ["aws", "s3", "versioning", "replication", "disaster recovery"]
+englishDefinition: "S3 Versioning keeps every write to an object as a distinct, retrievable version instead of overwriting data, turning a delete into a new delete-marker version rather than actual erasure. Cross-Region and Same-Region Replication asynchronously copy objects to another bucket for disaster recovery or compliance, but only for changes made after replication is enabled, not retroactively and not with a real-time guarantee."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 Versioning keeps every write to an object as a distinct, retrievable version instead of overwriting data, turning a delete into a new delete-marker version rather than actual erasure. Cross-Region and Same-Region Replication asynchronously copy objects to another bucket for disaster recovery or compliance, but only for changes made after replication is enabled, not retroactively and not with a real-time guarantee.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Default S3 behavior me agar same key pe dobara PUT karo, purana object **overwrite** ho jaata hai — purana data gone, sirf latest version accessible. **Versioning** ye behavior badal deta hai: enable karne ke baad har PUT (same key pe bhi) ek **naya version** banata hai, aur purana version bhi retrievable rehta hai apne unique **Version ID** ke saath.
+
+### Delete kaise kaam karta hai versioned bucket me
+
+Ye interview me sabse zyada confuse karne wala point hai. Versioned bucket me jab `DELETE` call karte ho **bina version ID specify kiye**, S3 object ko actually delete **nahi** karta — ye ek naya special version banata hai jise **delete marker** kehte hain. Delete marker ek zero-byte placeholder hai jo "current version" ban jaata hai, isliye normal `GET` (bina version ID ke) ab **404 Not Found** dega — object "logically deleted" dikhta hai — lekin saare purane versions still bucket me physically exist karte hain, storage cost bhi lagta rehta hai unka.
+
+Object ko **permanently** delete karna ho to do options hain: (1) specific version ID ke saath `DELETE` call karo — ye us exact version ko permanently hata deta hai (delete marker nahi banta iske liye, real delete hota hai). (2) delete marker ko khud delete karo (uska bhi apna version ID hota hai) — isse object "undelete" ho jaata hai, purana latest version wapas visible ho jaata hai. Ye "recovery from accidental delete" ka exact mechanism hai jo versioning ko itna valuable banata hai.
+
+### MFA Delete — extra protection layer
+
+**MFA Delete** ek optional bucket-level setting hai jo do sensitive operations ko extra-protect karta hai: version permanently delete karna, aur versioning ko khud suspend karna. In dono actions ke liye request me root account ka MFA device se generated code required hota hai — sirf IAM permissions kaafi nahi. Ye specifically un scenarios ke liye hai jaha koi compromised IAM credential bhi accidental ya malicious permanent-delete na kar sake.
+
+**Important limitation**: MFA Delete sirf bucket owner **root account** ke through configure ho sakti hai (CLI se, console se nahi), aur versioning ko **enabled se disabled** karna kabhi possible nahi hai — sirf **suspend** kar sakte ho (naye writes phir se non-versioned ho jaate hain, lekin purane versions rehte hain). Ye ek one-way door hai jo interview me aksar pucha jaata hai.
+
+### Replication — CRR aur SRR
+
+**Cross-Region Replication (CRR)** source bucket se ek doosre **region** ke bucket me objects ko asynchronously copy karta hai. Use cases: disaster recovery (region-level outage se protect), compliance (data residency requirement ki wajah se ek copy specific dusre region me rakhna), aur latency (global users ke liye unke nazdeek ke region me read replica).
+
+**Same-Region Replication (SRR)** same concept, lekin destination bucket **same region** me hota hai. Use cases: production aur test account ke beech automatic data sync, log aggregation (multiple source buckets se ek central bucket me), ya different storage class/ownership ke saath ek copy rakhna (jaise compliance ke liye alag AWS account me copy).
+
+### Replication ki teen critical limitations — sabse zyada asked interview point
+
+1. **Retroactive nahi hai** — replication enable karne se **pehle** ke existing objects automatically replicate nahi hote. Sirf enable-karne-ke-baad ke naye writes replicate hote hain. Purane objects ko replicate karwana ho to **S3 Batch Replication** (ek separate on-demand job) explicitly run karna padta hai.
+2. **Real-time guarantee nahi hai** — replication asynchronous hai, typically seconds me complete hota hai lekin AWS koi hard SLA nahi deta by default. Agar strict time-bound replication chahiye (jaise 15 minutes ke andar 99.99% objects), **S3 Replication Time Control (RTC)** extra-cost feature enable karna padta hai jo explicit SLA deta hai.
+3. **Versioning mandatory hai dono buckets pe** — replication kaam hi nahi karega agar source aur destination dono buckets pe versioning enabled na ho. Ye ek common setup mistake hai.
+
+Delete marker replication bhi configurable hai (default off) — agar enable karo to source pe delete-marker banne pe destination pe bhi delete marker replicate hota hai; agar off hai (default), source delete se destination object safe rehta hai — ye actually ek useful DR property hai (accidental delete source pe destination copy ko affect nahi karta, jab tak explicitly delete-marker-replication on na ho).
+
+</Hinglish>
+
+<Callout type="trap">
+
+Replication enable karne ke turant baad team assume kar leti hai ki poora bucket dusre region me copy ho gaya — actually sirf ab-se-hone-wale naye writes replicate honge. Existing terabytes of data replicate karwane ke liye alag se S3 Batch Replication job chalana padta hai, jo koi automatically nahi karta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek regulated fintech application apne document-storage bucket pe versioning enabled rakhta hai taaki accidental application-bug se overwrite/delete hone pe purane versions se recover ho sake — ek real incident me ek buggy deployment ne galat metadata ke saath sabhi objects overwrite kar diye the, aur team ne versioning se purane versions restore karke bina data-loss ke recover kiya. Same bucket pe Cross-Region Replication bhi hai (Mumbai se Singapore), disaster recovery requirement ke liye, RTC (Replication Time Control) enabled hai kyunki compliance ko explicit 15-minute replication SLA chahiye tha. Delete marker replication deliberately **off** rakha gaya hai — taaki agar Mumbai bucket me galti se kuch delete ho jaaye, Singapore ka copy safe rahe as an additional safety net.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Versioning states: Unversioned (default), Enabled, Suspended — Enabled to Unversioned direct transition is not possible, only Suspend
+- Delete without version ID on a versioned bucket: creates a delete marker, does not remove data
+- Delete with a specific version ID: permanent, unrecoverable removal of that version
+- MFA Delete: configurable only by the bucket owner root account, via CLI (not console)
+- Replication: asynchronous by default, typically completes within seconds but with no default SLA
+- S3 Replication Time Control (RTC): 99.99% of objects replicated within 15 minutes, extra cost, explicit SLA
+- Replication scope: only objects written after replication configuration is enabled; pre-existing objects need S3 Batch Replication
+- Both source and destination buckets must have versioning enabled for replication to function
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"How would you recover from an accidental overwrite or delete" is the natural setup question for versioning — the strong answer explains the delete-marker mechanism precisely (a new version, not real erasure) and how removing the delete marker restores access. A very common trap question: "if I enable Cross-Region Replication today, does my existing 10 TB of data get copied" — the correct answer is no, and naming S3 Batch Replication as the fix signals real operational experience. Expect a follow-up on replication's consistency guarantee — candidates who say "it's basically instant and guaranteed" without mentioning RTC as the actual SLA mechanism are giving an imprecise answer. The versioning Enabled-to-Unversioned question (it can only be Suspended, never fully reverted) is a good precision check.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Ye sochna ki versioned bucket pe `DELETE` call karne se object turant permanently gone ho jaata hai — actually ek delete marker banta hai, purana data still exist rehta hai (aur uska storage cost bhi lagta rehta hai) jab tak specific version delete na karo.
+
+</Mistake>
+
+<Mistake>
+
+Replication enable karke assume kar lena ki saara existing data automatically dusre region me copy ho gaya — sirf naye writes replicate hote hain, purane data ke liye S3 Batch Replication explicitly chalana padta hai.
+
+</Mistake>
+
+<Mistake>
+
+Replication ko real-time/synchronous guarantee samajhna aur us par time-critical failover logic build karna bina RTC (Replication Time Control) enable kiye — default replication ka koi hard SLA nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Source ya destination bucket pe versioning enable karna bhool jaana — replication silently fail ya configure hi nahi hoga kyunki dono buckets pe versioning mandatory prerequisite hai.
+
+</Mistake>
+
+<Mistake>
+
+Versioning ko "disable" karne ki koshish karna jab actual zaroorat sirf naye versions rokni thi — sahi operation Suspend hai, Enabled se poora Unversioned state me wapas jaana possible hi nahi hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Client
+    participant SourceBucket as Source Bucket (Versioned)
+    participant DestBucket as Destination Bucket (Versioned, other region)
+
+    Client->>SourceBucket: PUT object.txt (v1)
+    Client->>SourceBucket: PUT object.txt (v2, overwrite)
+    Note over SourceBucket: v1 still retrievable by Version ID
+    Client->>SourceBucket: DELETE object.txt (no version ID)
+    Note over SourceBucket: Creates delete marker as new "current" version
+    Note over SourceBucket: GET now returns 404, but v1 and v2 still exist
+    SourceBucket-->>DestBucket: Async replication of new writes only
+    Note over DestBucket: v1/v2 replicated if written after replication was enabled
+    Note over DestBucket: Delete marker replicated only if explicitly configured
+`}
+  caption="A delete on a versioned bucket adds a delete marker rather than erasing data, and replication only ever carries forward writes made after it was turned on."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Versioning keeps every write as a distinct version instead of overwriting; unversioned is the default
+- A DELETE without a version ID creates a delete marker (logical delete, object still exists); DELETE with a specific version ID is permanent
+- Removing the delete marker restores the previous version — the core "undo accidental delete" mechanism
+- Versioning can only be Suspended, never reverted from Enabled straight back to Unversioned
+- MFA Delete requires root-account CLI configuration and protects permanent-delete and versioning-suspend actions
+- CRR replicates across regions (DR, compliance, latency); SRR replicates within the same region (sync, log aggregation, ownership separation)
+- Replication is not retroactive (use S3 Batch Replication for pre-existing objects) and has no default real-time SLA (use Replication Time Control for one)
+- Both source and destination buckets must have versioning enabled for replication to work at all
+
+</QuickRevision>

@@ -1,0 +1,222 @@
+---
+slug: "github-actions-basics"
+title: "GitHub Actions Basics: Workflow YAML, Triggers, Secrets, Runners"
+section: "interview-prep"
+module: "github-commands"
+order: 11
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["github-pull-request-workflow"]
+tags: ["github-actions", "ci-cd", "yaml", "automation", "devops"]
+englishDefinition: "GitHub Actions is GitHub's built-in CI/CD platform where workflows are defined as YAML files under .github/workflows/, each describing what event triggers it (on), the jobs it runs, and the ordered steps within each job, with support for encrypted secrets and a choice between GitHub-hosted or self-hosted runners for execution."
+interviewFrequency: "very-high"
+companies: ["GitHub", "Microsoft", "Infosys"]
+---
+
+<SimpleDefinition>
+
+GitHub Actions is GitHub's built-in CI/CD platform where workflows are defined as YAML files under .github/workflows/, each describing what event triggers it (on), the jobs it runs, and the ordered steps within each job, with support for encrypted secrets and a choice between GitHub-hosted or self-hosted runners for execution.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+GitHub Actions ka core idea: repo me `.github/workflows/` folder ke andar YAML files daalo, aur GitHub khud specified events par unhe execute kar deta hai -- koi separate CI server setup nahi chahiye, sab GitHub ke andar hi hai.
+
+### Workflow YAML structure
+
+Har workflow file teen main sections follow karti hai: **on** (kab trigger ho), **jobs** (kya-kya kaam ho, parallel ya sequential), aur har job ke andar **steps** (ordered list of actions/commands):
+
+```yaml
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+```
+
+`uses:` ek pre-built reusable action reference karta hai (GitHub Marketplace se, jaise `actions/checkout@v4`), jabki `run:` ek raw shell command chalata hai directly. `runs-on:` decide karta hai kis machine type pe job chalega.
+
+### Common triggers
+
+- **`push`** -- specific branch(es) pe naya commit push hone par (jaise `main` pe merge hone ke baad build/deploy).
+- **`pull_request`** -- naya PR khulne ya update hone par (CI checks -- lint, test, build -- PR merge hone se pehle).
+- **`workflow_dispatch`** -- manual trigger, GitHub UI ("Run workflow" button) ya API se koi bhi authorized person kabhi bhi chala sakta hai. Useful hai deploy jaisi actions ke liye jo manually control karni ho.
+- **`schedule`** -- cron syntax se time-based trigger, jaise raat 2 baje daily backup job:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 2 * * *"
+```
+
+Ek workflow me multiple triggers combine ho sakte hain -- upar wala example `push` aur `pull_request` dono use karta hai.
+
+### A simple CI example (checkout + install + test)
+
+Sabse common pattern har language me roughly ye teen steps follow karta hai: source code checkout karo, dependencies install karo, tests run karo. Node/JS ke liye jaisa upar dikhaya, .NET ke liye equivalent hota:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: actions/setup-dotnet@v4
+  with:
+    dotnet-version: "8.0.x"
+- run: dotnet restore
+- run: dotnet test
+```
+
+Pattern universal hai chahe language kuch bhi ho -- setup runtime, restore/install deps, run tests -- fail hote hi PR pe red cross dikhta hai, branch protection is check ko block kar sakti hai merge se pehle.
+
+### Secrets usage in workflows
+
+Sensitive values (API keys, deploy tokens, database passwords) kabhi bhi YAML me plaintext likhte nahi -- repo Settings > Secrets and variables > Actions me store karte hain, aur workflow me `secrets` context se access karte hain:
+
+```yaml
+- name: Deploy to production
+  run: ./deploy.sh
+  env:
+    DEPLOY_TOKEN: $secrets.DEPLOY_TOKEN
+```
+
+(In actual GitHub Actions syntax, secrets are referenced using the double-brace expression syntax shown in GitHub's own docs -- always look it up in a real workflow file rather than typing it from memory, since it involves special characters.)
+
+Secrets automatically **masked** ho jaate hain logs me -- agar accidentally `echo $DEPLOY_TOKEN` bhi kar do, output me `***` dikhega, actual value nahi. Fork se aane wale PRs ke liye secrets by default **available nahi hote** security reason se (untrusted code ko production secrets tak access nahi milna chahiye) -- ye ek common gotcha hai jab open-source maintainers pehli baar external PR pe CI fail hote dekhte hain.
+
+### Self-hosted vs GitHub-hosted runners
+
+**GitHub-hosted runners** -- GitHub khud ephemeral VM spin up karta hai (Ubuntu, Windows, macOS options), job chalate hi machine fresh state me hoti hai, job khatam hote hi destroy ho jaati hai. Zero maintenance, lekin limited resources (CPU/RAM) aur monthly minutes quota (free tier me limited, paid plans me zyada).
+
+**Self-hosted runners** -- aap khud ek machine (on-prem server, cloud VM, ya container) ko GitHub se register karte ho as a runner. Fayda: custom hardware (GPU jobs, bade builds), internal network resources tak access (jaise private database ya internal artifact repository), aur unlimited minutes (aap apna hardware use kar rahe ho). Nuksan: aapko khud machine maintain karni padti hai (updates, security patches), aur agar fork-based PR par self-hosted runner chal jaaye without proper isolation, security risk hai kyunki untrusted code aapke internal network-connected machine pe chal raha hota hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Self-hosted runners ko fork-based pull requests ke saath directly enable karna ek real security risk hai -- untrusted external code aapke internal-network-connected machine par execute ho sakta hai. GitHub ye default se restrict karta hai; explicitly override karne se pehle isolation strategy socho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="GitHub">
+
+GitHub's own repos use a standard three-stage workflow pattern -- lint on every push, full test suite on every pull_request, and a deploy job gated behind workflow_dispatch so production releases stay a deliberate, manually-triggered action rather than automatic on every merge.
+
+</RealWorld>
+
+<RealWorld company="Infosys">
+
+Enterprise teams working with client on-premise systems often use self-hosted runners specifically because their build/test steps need access to an internal VPN-only database or artifact server that GitHub-hosted (public cloud) runners simply cannot reach.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Workflow files live under exactly one path convention: `.github/workflows/*.yml`</li>
+<li>Free-tier GitHub-hosted runner minutes are limited per month, then billed per additional minute</li>
+<li>Cron schedule triggers use standard 5-field cron syntax (minute hour day month weekday)</li>
+<li>Secrets referenced in logs are automatically masked, replaced with asterisks</li>
+<li>Fork-originated pull_request events do not get repository secrets by default -- a deliberate security boundary</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"push aur pull_request trigger me kab kaunsa use karoge?" -- strong answer: push trigger tab use hota hai jab branch pe naya commit land ho chuka ho (deploy/build steps), pull_request trigger PR ke lifecycle se juda hai (lint/test checks jo merge se pehle pass hone chahiye) -- dono ek hi workflow me combine bhi ho sakte hain alag jobs ke liye. "GitHub-hosted aur self-hosted runner me kab kaunsa choose karoge?" -- strong answer: GitHub-hosted zero-maintenance hai aur zyadatar standard CI ke liye sufficient hai; self-hosted tab chahiye jab custom hardware chahiye ho (GPU), internal-network resources access karne hon, ya minutes quota ek concern ho -- lekin security isolation ka trade-off samajhna zaroori hai especially fork PRs ke saath. Ek common gotcha question: "external contributor ka PR CI me deploy secret access kyun nahi kar pa raha?" -- strong answer: fork-based PRs ko by default secrets expose nahi hote, security boundary hai untrusted code ko production credentials se door rakhne ke liye.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Secrets ko plaintext YAML me hardcode karna instead of repo secrets store use karne ke -- ye credential leak ka direct risk hai, especially agar repo public hai ya history kabhi accidentally expose ho.
+
+</Mistake>
+
+<Mistake>
+
+Expect karna ki fork se aaya PR automatically repo secrets access kar payega -- GitHub deliberately ye block karta hai security ke liye, CI fail hone ka ye ek common confusing reason hota hai first-time maintainers ke liye.
+
+</Mistake>
+
+<Mistake>
+
+Self-hosted runner ko carelessly fork-based external PRs ke liye enable kar dena -- untrusted code internal-network-connected machine par chal sakta hai, real security exposure create karta hai.
+
+</Mistake>
+
+<Mistake>
+
+`workflow_dispatch` jaisa manual-only trigger na use karke deploy step ko har `push` pe automatically chala dena -- production deploy ek deliberate action honi chahiye, accidental push se trigger nahi honi chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`.github/workflows/` ke bahar ya galat naming se YAML file rakhna -- GitHub sirf is exact path ke andar `.yml`/`.yaml` files ko workflow ke roop me recognize karta hai, kahin aur rakhi file silently ignore ho jaati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Event happens: push / pull_request / schedule / workflow_dispatch"] --> B["GitHub matches event against on: triggers in workflow files"]
+    B --> C["Job scheduled on chosen runner: GitHub-hosted or self-hosted"]
+    C --> D["Step 1: actions/checkout"]
+    D --> E["Step 2: setup runtime (node/dotnet/etc)"]
+    E --> F["Step 3: install dependencies"]
+    F --> G["Step 4: run tests"]
+    G --> H{"All steps succeed?"}
+    H -->|Yes| I["Green check on commit/PR"]
+    H -->|No| J["Red cross -- branch protection can block merge"]
+`}
+  caption="Every workflow run is a linear chain of steps inside a job, on a runner chosen by runs-on, gated at the start by which event triggered it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Workflow files live at `.github/workflows/*.yml`, structured as on / jobs / steps</li>
+<li>`uses:` runs a reusable pre-built action; `run:` runs a raw shell command</li>
+<li>Common triggers: push, pull_request, workflow_dispatch (manual), schedule (cron)</li>
+<li>Standard CI pattern: checkout -> setup runtime -> install/restore deps -> run tests</li>
+<li>Secrets are stored in repo Settings, referenced via the secrets context, auto-masked in logs</li>
+<li>Fork-originated pull_request events do not receive repository secrets by default</li>
+<li>GitHub-hosted runners: zero maintenance, ephemeral, limited minutes/resources</li>
+<li>Self-hosted runners: custom hardware and internal-network access, but you own maintenance and isolation risk</li>
+</ul>
+
+</QuickRevision>

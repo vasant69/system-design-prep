@@ -1,0 +1,225 @@
+---
+slug: "sql-injection-and-parameterized-queries"
+title: "SQL Injection and Parameterized Queries"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 12
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["triggers-and-views"]
+tags: ["sql", "security", "injection", "parameterized-queries"]
+englishDefinition: "SQL injection is an attack where untrusted input is concatenated directly into a SQL query string, letting an attacker alter the query's logic or execute arbitrary SQL. Parameterized queries (prepared statements) prevent this by sending user input separately from the query structure, so input is always treated as data, never as executable SQL."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Amazon", "TCS"]
+---
+
+<SimpleDefinition>
+
+SQL injection is an attack where untrusted input is concatenated directly into a SQL query string, letting an attacker alter the query's logic or execute arbitrary SQL. Parameterized queries (prepared statements) prevent this by sending user input separately from the query structure, so input is always treated as data, never as executable SQL.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+SQL injection interview mein sabse zyada poocha jaane wala security topic hai, kyunki concept simple hai lekin real-world impact bahut severe hota hai — poora database dump ho sakta hai, ya authentication completely bypass ho sakti hai. Chalo asli mechanism se samajhte hain, sirf definition se nahi.
+
+### Vulnerable query ka concrete example
+
+Socho ek blogging platform ka login endpoint hai, jo naive tareeke se query banata hai string concatenation se:
+
+```sql
+SELECT * FROM users
+WHERE username = 'INPUT_USERNAME' AND password = 'INPUT_PASSWORD';
+```
+
+Application code (pseudocode, vulnerable version):
+
+```
+query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'"
+```
+
+Agar attacker username field mein yeh daale:
+
+```
+' OR '1'='1
+```
+
+To final query ban jaata hai:
+
+```sql
+SELECT * FROM users WHERE username = '' OR '1'='1' AND password = '';
+```
+
+`'1'='1'` hamesha true hota hai, isliye yeh `WHERE` clause practically har row match kar leta hai — attacker bina password jaane hi login kar sakta hai, aksar system ka first row (jo aksar admin hota hai) return ho jaata hai. Yeh sirf ek chhota example hai — asli attacks mein `UNION SELECT` use karke attacker poori doosri tables (jaise `credit_cards` ya `payments`) ka data bhi extract kar sakta hai:
+
+```sql
+' UNION SELECT card_number, cvv, expiry FROM payments --
+```
+
+Yahan `--` baaki original query ko comment kar deta hai, taaki syntax valid rahe.
+
+### Root cause: data aur code ka mix ho jaana
+
+Asli problem yeh nahi hai ki attacker ne "special characters" use kiye — asli problem yeh hai ki application query ki **structure** (SQL keywords, clauses) aur **data** (user input) ko ek hi string mein mix kar raha hai. Database ko pata hi nahi chal pata ki `'1'='1'` user ne type kiya tha ya query ka legitimate part tha.
+
+### Escaping input kyun kaafi nahi hai
+
+Bahut se log sochte hain ki input ko "escape" karna (jaise single quotes ko `\'` mein convert karna) fix hai. Yeh partial fix hai lekin fragile hai:
+
+- Har database ka escaping syntax alag hota hai, aur agar ek bhi edge case (encoding, nested quotes, unicode tricks) miss ho jaaye, bypass ho sakta hai.
+- Developer ko har jagah manually yaad rakhna padta hai escape karna — ek bhi jagah bhool gaye to poora system vulnerable.
+- Kuch attacks (jaise numeric fields mein injection, ya second-order injection jahan data pehle safely store hoti hai lekin baad mein unsafe tareeke se reuse hoti hai) escaping se bilkul bhi cover nahi hote.
+
+### Real fix: parameterized queries / prepared statements
+
+Parameterized query mein query ka structure aur data completely alag bheje jaate hain database ko:
+
+```sql
+SELECT * FROM users WHERE username = ? AND password = ?;
+```
+
+Aur phir application `?` placeholders ke against actual values bind karta hai, ek separate step mein:
+
+```
+statement = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?")
+statement.execute([username, password])
+```
+
+Database yahan `?` ki jagah value ko **kabhi bhi SQL code ki tarah parse nahi karta** — chahe attacker `' OR '1'='1` bhi bheje, woh sirf ek literal string value ki tarah treat hota hai, jo obviously kisi username se match nahi karega. Yeh fundamentally different guarantee hai escaping se — yeh syntax-level separation hai, bug-prone manual sanitization nahi.
+
+### ORM protection — lekin blindly trust mat karo
+
+Modern ORMs (Object-Relational Mappers) jaise Entity Framework, Hibernate, ya Sequelize, by default parameterized queries generate karte hain jab tum unka standard query API use karte ho:
+
+```
+// Safe — ORM automatically parameterizes
+users.Where(u => u.Username == inputUsername)
+```
+
+Lekin ORMs mein bhi ek escape hatch hota hai raw SQL likhne ka (jaise `FromSqlRaw` ya `db.raw()`), aur agar developer wahan bhi string concatenation kare, injection wapas possible ho jaata hai:
+
+```
+// Still vulnerable, even inside an ORM
+db.raw("SELECT * FROM users WHERE username = '" + input + "'")
+```
+
+Isliye "hum ORM use karte hain, hum safe hain" ek dangerous assumption hai — safety query construction ke tareeke se aati hai, tool se nahi.
+
+### Defense in depth: least-privilege database accounts
+
+Parameterized queries primary defense hain, lekin production systems mein ek aur layer honi chahiye — agar kisi tarah injection ho bhi jaaye (zero-day bug, misconfigured legacy code), toh damage limit ho. Iske liye application ka database account **least privilege** follow kare:
+
+- Application user ko sirf woh tables/operations milne chahiye jo woh actually use karta hai — jaise ek read-heavy reporting service ko `DROP TABLE` ya `DELETE` permission bilkul nahi honi chahiye.
+- Sensitive tables (jaise `payments`, `admin_users`) alag schema/permission boundary mein rakho.
+- Database-level auditing on karo taaki anomalous query patterns (jaise ek app account se achanak `UNION SELECT` queries aana) detect ho sakein.
+
+Yeh defense-in-depth hai — parameterized queries se attack ruk jaana chahiye, lekin least privilege ensure karta hai ki agar kabhi wall toot bhi jaaye, blast radius chhota rahe.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Hum input escape karte hain" is not the same guarantee as parameterized queries. Escaping is a manual, error-prone workaround; parameterized queries are a structural guarantee that user input can never be interpreted as SQL syntax, regardless of what characters it contains.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+A common finding in security reviews of legacy .NET applications is raw ADO.NET code that concatenates user input directly into SQL strings for "quick" admin tools or internal dashboards — code paths that were never expected to face untrusted input but eventually did once exposed via an API. The standard remediation is migrating to parameterized `SqlCommand` calls or Entity Framework's LINQ query syntax, both of which parameterize by default.
+
+</RealWorld>
+
+<RealWorld company="TCS">
+
+In enterprise application audits, one of the most frequently flagged issues is a login or search feature built early in a project with string-concatenated SQL, before a proper ORM was adopted, and never revisited. These older endpoints are consistently the highest-risk targets in penetration tests because they predate the team's security review process.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>SQL injection has remained in or near the top of the OWASP Top 10 web application risks for over a decade</li>
+<li>A single successful UNION-based injection can exfiltrate an entire table in one request, versus needing thousands of legitimate queries</li>
+<li>Parameterized queries add effectively zero runtime overhead compared to string-concatenated queries — there is no performance excuse to skip them</li>
+<li>Least-privilege database accounts can reduce breach impact from full database compromise to a single table or a read-only leak</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A frequent interview question is "walk me through how SQL injection actually works" followed by "how do you prevent it." A strong answer demonstrates the actual mechanism with a concrete malicious input example (not just "attackers inject bad SQL"), correctly identifies parameterized queries/prepared statements as the real fix rather than "escaping" or "input validation" alone, and mentions defense in depth — specifically least-privilege database accounts and not trusting an ORM blindly if raw SQL escape hatches are used. Interviewers often follow up with "what if you must build a dynamic query, like a search filter with optional fields" — the strong answer is to parameterize each optional value while still safely composing the WHERE clause structure in code (never by concatenating the values themselves).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Believing that escaping special characters (quotes, semicolons) is an equivalent substitute for parameterized queries — it is a manual, incomplete workaround, not a structural fix.
+
+</Mistake>
+
+<Mistake>
+
+Assuming "we use an ORM" automatically means the application is safe, while ignoring raw-SQL escape hatches in that same ORM where developers still concatenate strings.
+
+</Mistake>
+
+<Mistake>
+
+Only validating input format (like checking a field "looks like" a number) instead of using parameterized queries, which is a much weaker and bypassable defense.
+
+</Mistake>
+
+<Mistake>
+
+Running the application's database account with full admin privileges, so a successful injection anywhere in the app can read or modify any table.
+
+</Mistake>
+
+<Mistake>
+
+Forgetting about second-order injection, where unsafe input is stored safely first (via a parameterized insert) but later reused unsafely in a different, string-concatenated query.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["User input: ' OR '1'='1"] --> B{How is the query built?}
+    B -- "String concatenation" --> C["Input becomes part of SQL syntax"]
+    C --> D["Query logic altered: authentication bypassed or data leaked"]
+    B -- "Parameterized query / prepared statement" --> E["Input sent separately, bound as a literal value"]
+    E --> F["Database treats input as data only, never as SQL syntax"]
+    F --> G["Attack input just fails to match, no bypass"]
+`}
+  caption="The same malicious input produces completely different outcomes depending on whether the query mixes data with SQL structure or keeps them separate."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>SQL injection happens when untrusted input is concatenated directly into a SQL query string</li>
+<li>Classic example: username input `' OR '1'='1` turns a WHERE clause into an always-true condition</li>
+<li>UNION-based injection can exfiltrate data from unrelated tables in a single request</li>
+<li>Escaping input is a partial, error-prone workaround — not a structural fix</li>
+<li>Parameterized queries/prepared statements send data separately from query structure, so input can never be parsed as SQL</li>
+<li>ORMs parameterize by default, but raw-SQL escape hatches inside an ORM can reintroduce the vulnerability</li>
+<li>Least-privilege database accounts are defense in depth — they limit blast radius if injection ever succeeds</li>
+<li>Watch for second-order injection where safely-stored data is later reused unsafely</li>
+</ul>
+
+</QuickRevision>

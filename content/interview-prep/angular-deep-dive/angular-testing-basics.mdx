@@ -1,0 +1,225 @@
+---
+slug: "angular-testing-basics"
+title: "Angular Testing Basics"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 15
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["angular-performance-optimization"]
+tags: ["angular", "frontend", "testing", "jasmine", "karma", "testbed"]
+englishDefinition: "Angular testing is built around TestBed, a utility that configures an isolated Angular testing module so components, services, and pipes can be instantiated and exercised in unit tests, typically written with the Jasmine assertion framework and executed by the Karma test runner, with strategic mocking of dependencies to keep tests fast and focused."
+interviewFrequency: "high"
+companies: ["Google", "Microsoft", "Infosys", "TCS"]
+---
+
+<SimpleDefinition>
+
+Angular testing is built around TestBed, a utility that configures an isolated Angular testing module so components, services, and pipes can be instantiated and exercised in unit tests, typically written with the Jasmine assertion framework and executed by the Karma test runner, with strategic mocking of dependencies to keep tests fast and focused.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular apps me testing ek first-class citizen hai — jab bhi `ng generate component` chalate ho, ek `.spec.ts` file automatically bhi ban jaati hai. Iska poora ecosystem teen cheezon pe khada hai: **Jasmine** (test likhne ka syntax/assertions), **Karma** (browser me tests actually run karne ka runner), aur **TestBed** (Angular-specific setup utility).
+
+### Jasmine basics — `describe`/`it`/`expect`
+
+Jasmine me tests `describe` blocks (ek group/suite) ke andar `it` blocks (individual test cases) hote hain, aur `expect()` se assertions likhte hain:
+
+```typescript
+describe("PriceCalculator", () => {
+  it("should apply 10% discount correctly", () => {
+    const result = calculateDiscountedPrice(100, 10);
+    expect(result).toBe(90);
+  });
+
+  it("should return original price when discount is zero", () => {
+    const result = calculateDiscountedPrice(100, 0);
+    expect(result).toBe(100);
+  });
+});
+```
+
+`beforeEach()` har `it` se pehle chalta hai — common setup code (jaise object create karna) yahan daalte hain taaki repeat na karna pade.
+
+### TestBed — Angular ka isolated testing module
+
+Plain functions test karna easy hai, lekin ek Angular **component** test karne ke liye uska dependency injection context, template compilation, sab kuch chahiye hota hai. `TestBed.configureTestingModule()` ek chhota, isolated Angular module create karta hai sirf test ke liye:
+
+```typescript
+describe("UserCardComponent", () => {
+  let component: UserCardComponent;
+  let fixture: ComponentFixture<UserCardComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [UserCardComponent], // standalone component
+      providers: [{ provide: UserService, useValue: mockUserService }],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(UserCardComponent);
+    component = fixture.componentInstance;
+  });
+
+  it("should display the user name", () => {
+    component.user = { id: "1", name: "Asha" };
+    fixture.detectChanges();
+
+    const el: HTMLElement = fixture.nativeElement;
+    expect(el.querySelector("h3")?.textContent).toContain("Asha");
+  });
+});
+```
+
+### `ComponentFixture` aur `detectChanges()`
+
+`TestBed.createComponent()` se ek `ComponentFixture` milta hai — ye component instance, uska rendered DOM (`fixture.nativeElement`), aur test-control utilities ka wrapper hai. Important cheez: **Angular test me automatically change detection nahi chalati** — jab tak tum explicitly `fixture.detectChanges()` call nahi karte, template me bindings update nahi hoti. Ye ek bahut common confusion hai — test me component property set karne ke baad agar DOM check karo bina `detectChanges()` call kiye, purana (ya empty) DOM hi milega.
+
+### Services ko mock karna — do common tareeke
+
+**1. Jasmine spies** — real method ko replace karke uska behavior control karte hain:
+
+```typescript
+const userServiceSpy = jasmine.createSpyObj("UserService", ["getUser"]);
+userServiceSpy.getUser.and.returnValue(of({ id: "1", name: "Asha" }));
+
+TestBed.configureTestingModule({
+  providers: [{ provide: UserService, useValue: userServiceSpy }],
+});
+```
+
+**2. TestBed overrides** — pehle se configured providers ko test-specific version se replace karna:
+
+```typescript
+TestBed.overrideProvider(UserService, { useValue: mockUserService });
+```
+
+Dono ka goal same hai — component ko test karte waqt uski real dependency (jo shayad HTTP call karti ho) ko ek fake, predictable version se replace karna, taaki test **fast** ho aur **network pe depend na kare**.
+
+### Shallow vs Deep testing — trade-off
+
+- **Shallow testing**: child components ko `NO_ERRORS_SCHEMA` ya stub components se replace karte hain, sirf parent component ka apna logic test karte hain. Fast, focused, lekin parent-child integration (jaise `@Input`/`@Output` sahi se wire hue hain ya nahi) miss ho sakta hai.
+- **Deep testing**: real child components ke saath poora tree render karte hain. Zyada realistic, integration bugs pakadta hai, lekin **slower** hota hai aur setup zyada complex (sabhi children ki dependencies bhi provide karni padti hain).
+
+Real projects me common practice: components ke apne logic ke liye shallow unit tests likho (fast feedback), aur critical user flows ke liye alag se ek chhota sa set of deeper integration ya end-to-end tests rakho — sab kuch deep test karna maintenance cost bahut badha deta hai.
+
+### Services ka testing — aksar sabse simple
+
+Pure logic wali services (jisme koi DOM nahi hai) test karna sabse simple hota hai — `TestBed` optional bhi ho sakta hai agar service ki dependencies simple hain:
+
+```typescript
+describe("CartService", () => {
+  it("should add item to cart", () => {
+    const service = new CartService();
+    service.addItem({ id: "1", price: 100 });
+    expect(service.items.length).toBe(1);
+  });
+});
+```
+
+</Hinglish>
+
+<Callout type="warning">
+
+`fixture.detectChanges()` call karna bhool jaana sabse common Angular testing mistake hai — component property set karne ke baad agar tum test me DOM check kar rahe ho, lekin `detectChanges()` nahi call kiya, to tumhe purana ya khaali DOM milega aur test confusingly fail hoga jabki logic sahi hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Infosys">
+
+Enterprise Angular projects me (jahan client delivery ke liye code quality gates hote hain), CI pipeline me `ng test --code-coverage` chalana standard hai — ek minimum coverage threshold (jaise 80%) enforce hoti hai before merge allow hota hai. Teams aksar service-layer logic ke liye deep unit test coverage rakhti hain (kyunki business rules yahan hote hain) aur component-layer ke liye shallow tests, jisse test suite fast rehta hai even jab hundreds of components ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- ng generate component auto-creates a matching .spec.ts file by default
+- fixture.detectChanges() must be called explicitly - Angular test environment does not auto-run change detection
+- A typical enterprise Angular project targets 70-80%+ unit test code coverage as a CI gate
+- jasmine.createSpyObj can mock an entire service interface in a single line, listing only the methods actually used in the test
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Why doesn't my component test show updated DOM content after I set a property?" is a very common practical question - the expected answer names fixture.detectChanges() directly. "How do you test a component with an HTTP-calling service dependency?" tests whether the candidate knows to mock the service (via TestBed provider override or a Jasmine spy) rather than letting real HTTP calls happen in a unit test, which would make tests slow and flaky. Interviewers also probe shallow-vs-deep testing trade-offs to see if the candidate can reason about test suite speed versus integration confidence, not just recite syntax.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Component property set karne ke baad `fixture.detectChanges()` call karna bhool jaana - DOM assertion purane/empty state pe fail hoti hai jabki actual component logic sahi hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Unit test me real service (jo actual HTTP call karti hai) ko mock kiye bina use karna - test slow, network-dependent, aur flaky ho jaata hai; production API down hone pe bhi test fail ho sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har component ke liye poora deep tree render karna by default, chahe zaroorat ho ya na ho - test suite unnecessarily slow ho jaata hai aur unrelated child component changes se parent tests bhi break ho sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+Test me sirf "component successfully create hota hai" jaisa trivial assertion likh kar chhod dena (`expect(component).toBeTruthy()` hi sirf test) - ye real coverage nahi deta, actual behavior/logic test nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+`beforeEach` me heavy, duplicate setup likhna instead of shared helper functions - tests maintain karna mushkil ho jaata hai jab setup change karna pade sab jagah.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Test
+    participant TestBed
+    participant Fixture
+    participant Component
+    Test->>TestBed: configureTestingModule(imports, providers with mocks)
+    TestBed->>Fixture: createComponent(Component)
+    Fixture->>Component: componentInstance
+    Test->>Component: set input properties directly
+    Test->>Fixture: detectChanges()
+    Fixture->>Component: runs change detection, updates DOM
+    Test->>Fixture: query nativeElement / DebugElement
+    Fixture-->>Test: rendered DOM content
+    Test->>Test: expect(...).toBe(...)
+`}
+  caption="The typical Angular component test flow - configure an isolated module with mocked dependencies, create a fixture, set inputs, force change detection, then assert on the rendered DOM."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Stack: Jasmine (syntax/assertions), Karma (test runner), TestBed (Angular test module setup)
+- describe groups tests, it defines a single test case, expect makes assertions
+- TestBed.configureTestingModule() builds an isolated module just for the test
+- fixture.detectChanges() must be called explicitly - change detection does not run automatically in tests
+- Mock dependencies with jasmine.createSpyObj or TestBed.overrideProvider - never let unit tests hit real HTTP
+- Shallow testing: stub child components, fast, focused on the component's own logic
+- Deep testing: real child tree, catches integration bugs, but slower and heavier to set up
+- ng generate auto-creates .spec.ts files; CI pipelines commonly gate merges on a coverage threshold
+
+</QuickRevision>

@@ -1,0 +1,236 @@
+---
+slug: "dependency-injection-in-web-api"
+title: "Dependency Injection in Web API: Lifetimes, Captive Dependencies"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["action-results-and-status-codes"]
+tags: ["dotnet", "aspnetcore", "webapi", "dependencyinjection", "servicelifetime"]
+englishDefinition: "ASP.NET Core's built-in dependency injection container resolves controller constructor parameters automatically per request, with every registered service given one of three lifetimes -- Singleton (one instance for the application's lifetime), Scoped (one instance per HTTP request), or Transient (a new instance every time it is requested) -- and mismatching these lifetimes, most commonly injecting a Scoped or Transient service into a Singleton, creates a captive dependency where a short-lived service is wrongly held alive for the application's entire lifetime."
+interviewFrequency: "very-high"
+companies: ["Microsoft", "Infosys", "TCS", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+ASP.NET Core's built-in dependency injection container resolves controller constructor parameters automatically per request, with every registered service given one of three lifetimes -- Singleton (one instance for the application's lifetime), Scoped (one instance per HTTP request), or Transient (a new instance every time it is requested) -- and mismatching these lifetimes, most commonly injecting a Scoped or Transient service into a Singleton, creates a captive dependency where a short-lived service is wrongly held alive for the application's entire lifetime.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+ASP.NET Core me DI (Dependency Injection) container **built-in** hai — koi third-party library (Autofac, Ninject) zaroori nahi hai basic scenarios ke liye. Controller ko dependency chahiye to bas constructor me parameter add karo, container automatically resolve karke inject kar deta hai. Interview me ye topic almost hamesha aata hai kyunki lifetime mismatches ek genuinely common production bug ka source hain.
+
+### Constructor injection — basic pattern
+
+```csharp
+public class OrdersController : ControllerBase
+{
+    private readonly IOrderService _orderService;
+    private readonly ILogger<OrdersController> _logger;
+
+    public OrdersController(IOrderService orderService, ILogger<OrdersController> logger)
+    {
+        _orderService = orderService;
+        _logger = logger;
+    }
+
+    [HttpGet("{id:int}")]
+    public ActionResult<Order> GetById(int id) => _orderService.GetById(id) is { } order
+        ? order
+        : NotFound();
+}
+```
+
+Registration `Program.cs` me:
+
+```csharp
+builder.Services.AddScoped<IOrderService, OrderService>();
+```
+
+Request aane pe framework container se `IOrderService` resolve karta hai, uska concrete implementation (`OrderService`) instantiate karta hai (agar already available na ho current scope me), aur controller constructor me pass kar deta hai — sab automatic, manual `new OrderService()` kahin nahi likhna padta.
+
+### Teen lifetimes — exact meaning
+
+**Transient** — har baar jab service request ki jaati hai, **naya instance** milta hai, chahe same HTTP request ke andar ho ya alag. Halke, stateless, cheap-to-create services ke liye — jinme koi shared state nahi hona chahiye.
+
+```csharp
+builder.Services.AddTransient<IEmailFormatter, EmailFormatter>();
+```
+
+**Scoped** — ek HTTP request ke andar **ek hi instance** — us request ke andar jahan bhi ye service inject ho, sab same instance milta hai. Naya request aaye to naya instance banta hai. **Yehi lifetime hai jo `DbContext` ke liye standard hai** — poore request ke duration me same DbContext instance use hoti hai (change tracking consistency ke liye), aur request khatam hote hi dispose ho jaati hai.
+
+```csharp
+builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddDbContext<AppDbContext>(options => ...); // internally Scoped hi register hota hai
+```
+
+**Singleton** — **poore application lifetime** me ek hi instance, pehli baar resolve hone pe (ya explicitly `Program.cs` me instance provide karke) banta hai aur app shutdown tak wahi reuse hota hai. Configuration objects, caching services, ya truly stateless/thread-safe shared resources ke liye.
+
+```csharp
+builder.Services.AddSingleton<ICacheService, InMemoryCacheService>();
+```
+
+### Captive dependency — asli production bug
+
+Ye interview ka sabse sharp question hai: **"Singleton service ke andar Scoped service inject karo to kya hoga?"**
+
+```csharp
+public class MyCacheService : ICacheService // registered as Singleton
+{
+    private readonly AppDbContext _dbContext; // Scoped -- PROBLEM
+
+    public MyCacheService(AppDbContext dbContext)
+    {
+        _dbContext = dbContext; // Singleton is capturing a Scoped instance permanently
+    }
+}
+```
+
+`ICacheService` singleton hai, pehli baar resolve hote waqt `AppDbContext` ka jo instance mila wahi **hamesha ke liye capture** ho jaata hai constructor field me — ye ab kabhi refresh nahi hoga, jabki `DbContext` design hi is tarah hua hai ki wo per-request short-lived rahe. Result: sab requests ek hi purani, potentially disposed `DbContext` instance share karte hain — data staleness, thread-safety issues (DbContext thread-safe nahi hai, aur ab multiple concurrent requests isi ek instance ko simultaneously use karenge), aur agar underlying connection dispose ho chuki hai to `ObjectDisposedException`.
+
+Isi wajah se ise **captive dependency** kehte hain — short-lived service ko ek long-lived service "capture" kar leti hai, uski lifetime ko forcefully extend kar deti hai. **ASP.NET Core by default is scenario ko detect karke exception throw karta hai** (`InvalidOperationException: Cannot consume scoped service from singleton`) — validation `ServiceProviderOptions.ValidateScopes = true` se enabled hoti hai, jo Development environment me default on hoti hai. Ye ek safety net hai, lekin bug ka root cause samajhna zyada zaroori hai interview ke liye.
+
+**Sahi fix**: Singleton ke andar Scoped service directly inject mat karo. Uske bajaye `IServiceScopeFactory` inject karo aur jab zaroorat ho tabhi ek naya scope explicitly create karo:
+
+```csharp
+public class MyBackgroundWorker // Singleton
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public MyBackgroundWorker(IServiceScopeFactory scopeFactory) => _scopeFactory = scopeFactory;
+
+    public async Task DoWorkAsync()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        // yahan dbContext use karo, scope dispose hote hi properly cleaned up
+    }
+}
+```
+
+### Transient ko Singleton me inject karna — subtler problem
+
+Ye exception nahi throw karta (validation isse allow karta hai), lekin phir bhi galat ho sakta hai: agar Transient service **stateful** hai aur assumption thi ki har use pe fresh instance milega, lekin Singleton ne usse constructor me hold kar liya, to effectively wo Transient bhi "singleton jaisa" behave karega — sirf ek baar banega, kabhi refresh nahi hoga. Rule of thumb: **lifetime hamesha "sabse chhoti" dependency follow karni chahiye** — agar koi dependency chain me kahin bhi Scoped hai, poori chain ko Scoped hi treat karo, Singleton mat banao.
+
+### Registration order matters — IServiceCollection extension pattern
+
+Bade projects me `Program.cs` chhota rakhne ke liye services ko extension methods me group karte hain:
+
+```csharp
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    {
+        services.AddScoped<IOrderService, OrderService>();
+        services.AddScoped<IPaymentService, PaymentService>();
+        return services;
+    }
+}
+
+// Program.cs
+builder.Services.AddApplicationServices();
+```
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Cannot consume scoped service from singleton" exception sirf Development environment me by default throw hoti hai (`ValidateScopes = true` default Development host me) — Production build me agar validation explicitly enable na ho, to yehi bug silently, bina exception ke, staleness/thread-safety issues create kar sakta hai bina turant crash kiye. Isliye lifetime mismatches ko sirf "exception aayegi to pata chal jaayega" maan kar chhodna risky hai — sahi tareeka hai lifetimes consciously design karna.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+`AddDbContext<T>()` extension method internally `DbContext` ko **Scoped** lifetime ke saath register karta hai by default — ye deliberate design choice hai kyunki ek HTTP request ke andar consistent change tracking chahiye (same entities ka same tracked state), lekin requests ke beech fresh connection/state chahiye taaki koi request doosri request ka stale data na dekhe. Ye pattern itna standard hai ki interview me "DbContext ka default lifetime kya hai aur kyun?" almost guaranteed question hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Three DI lifetimes: Singleton (app lifetime), Scoped (per HTTP request), Transient (every resolution)
+- DbContext registered via AddDbContext&lt;T&gt;() defaults to Scoped
+- ValidateScopes = true is the default in the Development environment host, catching captive dependencies at startup/first-resolve
+- Captive dependency = a longer-lived service holding a reference to a shorter-lived one, extending its effective lifetime incorrectly
+- Safe fix for a Singleton needing scoped data: inject IServiceScopeFactory and create a scope on demand, not the scoped service directly
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Singleton ke andar Scoped service directly inject karo to kya hoga?" — strong answer: ye captive dependency bug create karta hai — Singleton ke first resolution pe jo Scoped instance milega, wahi permanently capture ho jaayega poori application lifetime ke liye, jabki us service ka design hi per-request-fresh rehne ka tha (jaise DbContext). ASP.NET Core Development environment me by default is scenario pe startup/resolve time hi exception throw kar deta hai (ValidateScopes). "Isse sahi tareeke se kaise fix karoge?" — IServiceScopeFactory inject karke on-demand scope create karo, seedha Scoped dependency inject mat karo. "DbContext ka default lifetime kya hai?" — Scoped, taaki ek request ke andar consistent change tracking mile lekin requests ke beech state leak na ho. Ek follow-up trap: "Transient ko Singleton me inject karna safe hai?" — exception nahi aayegi, lekin agar Transient stateful design hua tha to wo effectively singleton-jaisa freeze ho jaayega, jo subtle bug create kar sakta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Singleton service ke constructor me directly Scoped service (jaise `DbContext`) inject karna — captive dependency create karta hai, poori application lifetime ke liye ek hi stale instance capture ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Har service ko "safe side" pe reh kar Singleton bana dena performance ke naam pe — agar us service ki koi dependency Scoped hai (jaise DbContext use karta ho), to lifetime chain break ho jaati hai aur bug guaranteed hai.
+
+</Mistake>
+
+<Mistake>
+
+Production environment me `ValidateScopes` validation ke bina deploy kar dena aur assume karna ki lifetime mismatches "exception se pakde jaayenge" — Development me hi default enabled hoti hai, Production me explicit setup ke bina silently wrong behavior ho sakta hai bina crash kiye.
+
+</Mistake>
+
+<Mistake>
+
+Stateful service ko Transient bana dena aur phir assume karna ki wo hamesha safe rahega chahe koi Singleton usse capture kar le — lifetime hamesha chain ki "sabse chhoti" dependency ke hisaab se design karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Background worker/hosted service (jo khud Singleton-jaisa long-running hota hai) me directly Scoped service inject karne ki koshish karna instead of `IServiceScopeFactory` use karke explicitly scope banana.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["HTTP Request arrives"] --> B["Container creates a new Scope for this request"]
+    B --> C["Scoped services (e.g. DbContext, IOrderService) instantiated once per this scope"]
+    B --> D["Transient services: new instance every single resolution"]
+    B --> E["Singleton services: reused from application startup, shared across ALL requests"]
+    E -->|Bad: injects Scoped directly| F["Captive dependency -- Scoped instance frozen for app lifetime"]
+    E -->|Good: injects IServiceScopeFactory| G["New scope created on demand, Scoped service resolved fresh, then disposed"]
+    C --> H["Request completes -- scope disposed, Scoped instances cleaned up"]
+`}
+  caption="A Singleton outlives every request, so it must never hold a Scoped service directly -- it should create its own short-lived scope via IServiceScopeFactory whenever it needs scoped data."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Three lifetimes: Singleton (app-wide, one instance forever), Scoped (one per HTTP request), Transient (new every resolution)
+- DbContext registered via AddDbContext defaults to Scoped -- consistent change tracking within a request, fresh state across requests
+- Captive dependency = a longer-lived service capturing a shorter-lived one, wrongly extending its lifetime
+- Classic captive dependency: injecting a Scoped service (like DbContext) directly into a Singleton's constructor
+- ASP.NET Core's Development host validates this by default (ValidateScopes = true) and throws at resolution time
+- Fix: inject IServiceScopeFactory into the Singleton and create a scope on demand, don't inject the Scoped service directly
+- Rule of thumb: a service's effective lifetime should match the shortest-lived dependency anywhere in its chain
+- Transient injected into Singleton doesn't throw, but can silently behave like a frozen singleton if it was meant to be stateful-per-use
+
+</QuickRevision>

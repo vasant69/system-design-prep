@@ -1,0 +1,155 @@
+---
+slug: "lambda-triggers-and-event-sources"
+title: "Lambda Triggers and Event Sources"
+section: "interview-prep"
+module: "aws-lambda-deep-dive"
+order: 2
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["lambda-core-concepts"]
+tags: ["aws", "lambda", "serverless", "triggers", "events"]
+englishDefinition: "Lambda functions are invoked by event sources that fall into three categories - synchronous services that wait for a response, asynchronous services that hand off an event and move on, and poll-based sources where the Lambda service itself continuously polls a queue or stream for new records."
+interviewFrequency: "very-high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+Lambda functions are invoked by event sources that fall into three categories - synchronous services that wait for a response, asynchronous services that hand off an event and move on, and poll-based sources where the Lambda service itself continuously polls a queue or stream for new records.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne dekha ki Lambda purely event-driven hai. Ab dekhte hain **kaun se events** aur **kaise invoke hote hain** — kyunki invocation type Lambda ke retry behavior, error handling, aur design decisions ko directly affect karta hai.
+
+### Synchronous invocation
+
+Yaha caller **response ka wait karta hai**. Sabse common example: **API Gateway** (REST API ya HTTP API dono) — client request bhejta hai, API Gateway Lambda ko synchronously call karta hai, Lambda ka return value seedha HTTP response ban jaata hai. Agar Lambda fail ho jaaye, error caller ko turant milta hai — **koi automatic retry nahi hoti** is invocation type me, retry logic caller ki responsibility hai. Application Load Balancer (ALB) bhi isi tarah synchronous trigger hai. Example: ek `POST /orders` API endpoint jo API Gateway ke through Lambda invoke karta hai, order create karta hai, aur turant `201 Created` response bhejta hai.
+
+### Asynchronous invocation
+
+Yaha caller sirf event ko Lambda service ke **internal queue** me daal deta hai aur turant aage badh jaata hai — caller ko success/failure ka pata nahi chalta us waqt. **S3 events** (ObjectCreated, ObjectRemoved), **SNS** notifications, aur **EventBridge** (scheduled rules + event bus rules) is category me aate hain. Lambda service khud **2 automatic retries** karti hai agar function fail ho (with exponential backoff), aur agar tab bhi fail ho to **Dead Letter Queue (DLQ)** ya **on-failure destination** (SQS/SNS/Lambda/EventBridge) pe bhej sakti hai — configure karna zaroori hai warna failed event silently drop ho jaata hai. Example: S3 bucket me file upload hone pe (`ObjectCreated:Put`) Lambda automatically trigger hoke thumbnail generate karta hai — uploader ko thumbnail complete hone ka wait nahi karna padta.
+
+**EventBridge** ka dohra use hai: (1) **scheduled invocation** — cron-jaisi rule (`rate(5 minutes)` ya `cron(0 12 * * ? *)`) se periodic Lambda run, jaise raat 2 baje daily report generate karna; (2) **event bus routing** — kisi AWS service (ya custom application) se emit hue event ko pattern-match karke specific Lambda tak route karna, jaise "jab EC2 instance state change ho to notify karo."
+
+### Poll-based invocation (Event Source Mapping)
+
+Yaha Lambda service khud ek background poller chalati hai jo source ko continuously check karta hai — ye "push" nahi "pull" model hai. **SQS** aur **DynamoDB Streams** dono is category me aate hain (Kinesis bhi, lekin ye do sabse common hain). SQS ke case me Lambda service queue ko poll karti hai, messages ko batch me leke function invoke karti hai — agar processing fail ho to message **visibility timeout** khatam hone ke baad wapas queue me visible ho jaata hai, aur `maxReceiveCount` cross hone ke baad DLQ me chala jaata hai. DynamoDB Streams me shard-based reading hoti hai — table me har insert/update/delete ek stream record banata hai, Lambda un records ko order me process karta hai. Example: ek order-processing SQS queue jisme naye orders aate hain, Lambda unhe batch me poll karke payment process karta hai — agar payment gateway down ho, message queue me wapas chala jaata hai aur automatically retry hota hai.
+
+### Ek jagah pe teeno ka comparison
+
+| Category | Examples | Retry behavior | Caller waits? |
+|---|---|---|---|
+| Synchronous | API Gateway, ALB | Caller's responsibility | Yes |
+| Asynchronous | S3, SNS, EventBridge | 2 automatic Lambda retries + DLQ/destination | No |
+| Poll-based | SQS, DynamoDB Streams | Source's own retry semantics (visibility timeout, DLQ) | No (background poller) |
+
+### Kyun ye distinction interview me matter karta hai
+
+Design karte waqt sabse common galti: async ya poll-based trigger ke liye **idempotent** code na likhna. At-least-once delivery guarantee ka matlab hai same event **do baar** process ho sakta hai — chahe Lambda ki 2 retries ho ya SQS ka redelivery. Agar handler "charge customer's card" jaisa non-idempotent operation kare bina duplicate-check ke, real financial bug ban sakta hai. Isliye event se ek unique identifier nikal ke (jaise SQS message ID, ya business-level order ID) DynamoDB conditional-write se duplicate detect karna standard pattern hai.
+
+Dusra important angle: SQS-triggered Lambda me agar ek single message repeatedly fail ho (bug hai, poison pill), aur DLQ configure nahi hai, to wo message baar baar retry hoke queue block kar sakta hai (batch processing me ek bad message poori batch ko fail kara sakta hai agar partial batch response na ho). DynamoDB Streams me bhi similar "poison pill" problem hota hai — by default ek failing record processing ko **block** kar deta hai jab tak retry succeed na ho ya record expire na ho, isliye `BisectBatchOnFunctionError` aur `MaximumRetryAttempts` jaisi settings production me configure karni chahiye.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Synchronous: turant response, simple mental model, error caller ko turant pata chalta hai", "Async/poll-based: caller decouple hota hai, spiky load absorb karte hain, built-in retry milta hai"]}
+  cons={["Synchronous: caller Lambda ki latency se directly bound hota hai, koi buffer nahi", "Async/poll-based: eventual consistency, debugging harder (fire-and-forget), idempotency handle karna extra responsibility ban jaati hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek e-commerce backend teen trigger types ek saath use karta hai: order placement API Gateway ke through **synchronous** Lambda hit karta hai jo turant order-confirmation response deta hai; order confirm hone ke baad ek **asynchronous** EventBridge event emit hota hai jisse alag Lambda invoice PDF generate karta hai (customer ko wait nahi karana); aur payment processing ek **SQS queue** se **poll-based** trigger hota hai taaki payment gateway ke temporary downtime me messages queue me safely wait kar sakein aur automatically retry ho jaayein bina customer-facing latency badhaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Asynchronous invocation: 2 automatic retries by default, configurable max event age up to 6 hours</li>
+<li>SQS default visibility timeout: 30 seconds (should be set to at least 6x function timeout)</li>
+<li>EventBridge scheduled rule minimum interval: 1 minute (rate expressions) or standard cron granularity</li>
+<li>SQS event source mapping default batch size: 10 messages (configurable up to 10,000 for standard queues)</li>
+<li>DynamoDB Streams retention: 24 hours of change data available for Lambda to consume</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common interview format is "categorize these five AWS services as sync/async/poll-based for Lambda" — the strong answer doesn't just categorize but explains *why* the retry behavior differs for each category. Another frequent probe: "what happens if this Lambda fails when triggered by SQS vs by S3" — testing whether you know visibility-timeout-based redelivery versus the 2-automatic-retries-then-DLQ pattern are genuinely different mechanisms, not the same thing with different names. Idempotency comes up almost every time async or poll-based triggers are discussed — be ready to describe a concrete dedup pattern (unique ID + conditional write), not just say "make it idempotent."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Async ya poll-based trigger ke liye non-idempotent handler likhna — retries aur at-least-once delivery ki wajah se same event do baar process hoke duplicate side-effects (double charge, duplicate email) create kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+SQS visibility timeout ko function timeout se kam ya barabar set karna — processing complete hone se pehle message dubara visible ho jaata hai aur doosra worker usi message ko parallel process karne lagta hai.
+
+</Mistake>
+
+<Mistake>
+
+Async invocation ke liye DLQ ya on-failure destination configure na karna — 2 retries fail hone ke baad event silently drop ho jaata hai, koi trace nahi milta ki kya hua.
+
+</Mistake>
+
+<Mistake>
+
+Ye samajhna ki asynchronous invocation ka matlab "Lambda background me chal raha hai lekin kabhi bhi retry nahi hoga" — actually async invocations ki apni khud ki automatic retry policy hoti hai jo synchronous se bilkul alag hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Sync["Synchronous"]
+        A1[API Gateway / ALB] -->|waits for response| L1[Lambda]
+    end
+    subgraph Async["Asynchronous"]
+        A2[S3 / SNS / EventBridge] -->|fire and forget| Q2[Internal Event Queue]
+        Q2 -->|2 automatic retries| L2[Lambda]
+        L2 -->|all retries failed| DLQ[DLQ / Failure Destination]
+    end
+    subgraph Poll["Poll-based"]
+        A3[SQS / DynamoDB Streams] -->|Lambda service polls| P3[Event Source Mapping]
+        P3 -->|batch invoke| L3[Lambda]
+        L3 -->|failure| A3
+    end
+`}
+  caption="Each invocation category has its own retry mechanism - synchronous puts retry logic on the caller, asynchronous relies on Lambda's built-in 2 retries plus a DLQ, and poll-based relies on the source's own redelivery semantics."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Synchronous: API Gateway, ALB - caller waits, caller owns retry logic</li>
+<li>Asynchronous: S3, SNS, EventBridge - fire and forget, Lambda auto-retries twice, needs a DLQ/destination configured</li>
+<li>Poll-based: SQS, DynamoDB Streams - Lambda service itself polls the source via an Event Source Mapping, batches records</li>
+<li>EventBridge does double duty: scheduled (cron-like) invocations and event-bus pattern-matched routing</li>
+<li>Idempotency is mandatory for async and poll-based triggers because at-least-once delivery is the norm, not the exception</li>
+<li>SQS visibility timeout should be set to roughly 6x the function timeout to avoid duplicate concurrent processing</li>
+<li>DynamoDB Streams can block on a poison-pill record by default - BisectBatchOnFunctionError and MaximumRetryAttempts guard against this</li>
+</ul>
+
+</QuickRevision>

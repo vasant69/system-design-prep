@@ -1,0 +1,215 @@
+---
+slug: "aggregate-functions-and-group-by"
+title: "Aggregate Functions and GROUP BY"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 3
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["joins-deep-dive"]
+tags: ["sql", "aggregate", "group-by", "having"]
+englishDefinition: "Aggregate functions like COUNT, SUM, AVG, MIN, and MAX compute a single summary value across a set of rows. GROUP BY partitions rows into groups before aggregation is applied, and HAVING filters those groups after aggregation, unlike WHERE which filters individual rows before aggregation."
+interviewFrequency: "very-high"
+companies: ["Amazon", "Microsoft", "TCS"]
+---
+
+<SimpleDefinition>
+
+Aggregate functions like COUNT, SUM, AVG, MIN, and MAX compute a single summary value across a set of rows. GROUP BY partitions rows into groups before aggregation is applied, and HAVING filters those groups after aggregation, unlike WHERE which filters individual rows before aggregation.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Business reporting ka almost har query aggregation involve karti hai — "total kitna", "average kya", "kitne count". SQL ke five core aggregate functions har database mein available hain: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`. Inko akela bhi use kar sakte ho (poori table ka ek summary number), ya `GROUP BY` ke saath (har group ka alag summary).
+
+### Aggregate functions bina GROUP BY ke
+
+Bina `GROUP BY` ke, aggregate function poori table (ya `WHERE` se filtered rows) ko ek single group maan leta hai aur ek hi row return karta hai.
+
+```sql
+SELECT COUNT(*) AS total_orders, SUM(amount) AS total_revenue, AVG(amount) AS avg_order_value
+FROM orders
+WHERE status = 'delivered';
+```
+
+Yeh query ek hi row return karegi — poore `delivered` orders ka total count, total revenue, aur average order value.
+
+### GROUP BY — rows ko groups mein partition karna
+
+`GROUP BY` rows ko ek ya zyada columns ki based value pe groups mein todta hai, aur har group ke liye aggregate function alag se calculate hota hai. E-commerce example: "har product category ka total revenue is month."
+
+```sql
+SELECT category, SUM(amount) AS total_revenue, COUNT(*) AS order_count
+FROM orders
+WHERE order_date >= '2026-08-01'
+GROUP BY category;
+```
+
+Yahan database pehle sab rows ko `category` ke hisaab se groups mein baant deta hai (Electronics group, Clothing group, Books group...), phir har group ke andar `SUM(amount)` aur `COUNT(*)` alag-alag calculate karta hai. Result mein har unique `category` ke liye ek row aayegi.
+
+### HAVING vs WHERE — yeh fundamental difference hai
+
+Yeh sabse common interview trap hai: `WHERE` rows ko filter karta hai **aggregation se pehle**, aur `HAVING` groups ko filter karta hai **aggregation ke baad**. Isliye `HAVING` mein aggregate functions use kar sakte ho (`HAVING SUM(amount) > 10000`), lekin `WHERE` mein nahi (`WHERE SUM(amount) > 10000` error dega).
+
+```sql
+-- WHERE: individual rows filter karo aggregation se pehle
+-- HAVING: groups filter karo aggregation ke baad
+SELECT category, SUM(amount) AS total_revenue
+FROM orders
+WHERE status = 'delivered'
+GROUP BY category
+HAVING SUM(amount) > 100000;
+```
+
+Yahan process: pehle `WHERE status = 'delivered'` se rows filter hoti hain (individual row level), phir bache hue rows `category` ke hisaab se group hote hain, phir har group ka `SUM(amount)` calculate hota hai, aur last mein `HAVING` un groups ko filter karta hai jinka total revenue 100000 se zyada hai. Ek ride-hailing example: "sirf un drivers ko dikhao jinhone is month 50 se zyada rides complete ki."
+
+```sql
+SELECT driver_id, COUNT(*) AS rides_completed
+FROM rides
+WHERE status = 'completed' AND ride_date >= '2026-08-01'
+GROUP BY driver_id
+HAVING COUNT(*) > 50;
+```
+
+### Non-aggregated column gotcha
+
+Yeh ek bahut common mistake hai: `SELECT` list mein ek aisa column daal dena jo na to aggregate function ke andar hai, na `GROUP BY` mein hai.
+
+```sql
+-- BUG: customer_name na aggregate hai na GROUP BY mein
+SELECT customer_id, customer_name, SUM(amount)
+FROM orders
+GROUP BY customer_id;
+```
+
+Strict SQL mode (Postgres, aur MySQL ka `ONLY_FULL_GROUP_BY` mode) mein yeh query directly error degi: "column customer_name must appear in the GROUP BY clause or be used in an aggregate function." Lekin MySQL ke loose/legacy mode mein yeh query silently chal jaati hai aur `customer_name` ke liye ek **arbitrary** row ka value return karti hai — jo ki agar ek `customer_id` ke multiple `customer_name` values ho (data quality issue) to galat, unpredictable results de sakta hai. Yeh production reporting ke liye especially dangerous hai — number toh sahi dikhega lekin label galat ho sakta hai.
+
+Sahi fix: ya to `customer_name` ko bhi `GROUP BY` mein daalo (agar har `customer_id` ke liye ek hi `customer_name` guaranteed hai), ya use `MAX(customer_name)`/`MIN(customer_name)` jaise aggregate mein wrap karo agar tumhe explicitly "iska koi ek representative value chalega" bolna hai.
+
+```sql
+-- Fix 1: dono columns GROUP BY mein (agar 1:1 relationship hai)
+SELECT customer_id, customer_name, SUM(amount)
+FROM orders
+GROUP BY customer_id, customer_name;
+```
+
+### COUNT(*) vs COUNT(column)
+
+`COUNT(*)` saari rows count karta hai, chahe koi column `NULL` ho ya na ho. `COUNT(column_name)` sirf un rows ko count karta hai jahan woh column `NULL` nahi hai. Yeh difference tab critical ban jaata hai jab tumhe "kitne customers ne apna phone number diya hai" jaisa question answer karna ho — wahan `COUNT(phone_number)` use hoga, `COUNT(*)` nahi.
+
+```sql
+SELECT COUNT(*) AS total_customers, COUNT(phone_number) AS customers_with_phone
+FROM customers;
+```
+
+### GROUP BY multiple columns
+
+Ek se zyada columns pe bhi group kar sakte ho — jaise "har category ke, har month ka revenue."
+
+```sql
+SELECT category, EXTRACT(MONTH FROM order_date) AS month, SUM(amount) AS revenue
+FROM orders
+GROUP BY category, EXTRACT(MONTH FROM order_date);
+```
+
+</Hinglish>
+
+<Callout type="trap">
+
+`WHERE` mein aggregate function use nahi kar sakte (`WHERE SUM(amount) > 100` error dega) kyunki `WHERE` aggregation se pehle chalta hai — jab `WHERE` evaluate ho raha hota hai tab tak koi aggregation hui hi nahi hoti. Iske liye `HAVING` use karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Amazon">
+
+Seller dashboard pe "is month har product category ka total sales aur order count" jaisi query typically `orders` ko `category` pe `GROUP BY` karti hai, sirf date range wale rows pe `WHERE` filter lagakar. Agar `HAVING` bina samjhe `WHERE` ki jagah use kar liya jaaye (aggregate function ko WHERE mein daalne ki koshish), query error dega — yeh ek bahut common junior-developer mistake hai jo interview mein bhi poocha jaata hai.
+
+</RealWorld>
+
+<RealWorld company="Microsoft">
+
+Internal analytics dashboards mein "sirf un features ko dikhao jinka usage count is week 1000 se zyada hai" jaisi queries `GROUP BY feature_id HAVING COUNT(*) > 1000` pattern follow karti hain — HAVING ka classic use-case, groups ko unke aggregate value ke basis pe filter karna.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>WHERE filters rows before grouping; HAVING filters groups after aggregation — different execution stages entirely</li>
+<li>A non-aggregated column outside GROUP BY silently returns an arbitrary value in MySQL's legacy mode, but errors in strict/Postgres mode</li>
+<li>COUNT(*) counts all rows including NULLs; COUNT(column) skips NULL values in that column</li>
+<li>Grouping on a high-cardinality column (e.g. a UUID) can produce as many groups as there are rows — effectively no aggregation benefit</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A very common prompt: "Write a query to find categories with total revenue above X" — this directly tests whether the candidate reaches for HAVING instead of trying (incorrectly) to put an aggregate in WHERE. Model answer shape: filter individual rows first with WHERE if needed, GROUP BY the dimension, then use HAVING with the aggregate condition. Mentioning the non-aggregated-column-in-SELECT gotcha unprompted is a strong signal of real production experience with reporting queries.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Aggregate function ko WHERE clause mein use karne ki koshish karna (jaise WHERE SUM(amount) > 100) — yeh error deta hai, HAVING use karna chahiye.
+
+</Mistake>
+
+<Mistake>
+
+SELECT list mein ek non-aggregated, non-grouped column daal dena — strict mode mein error, loose mode mein silently arbitrary/unreliable value.
+
+</Mistake>
+
+<Mistake>
+
+COUNT(*) aur COUNT(column) ko interchangeable samajhna — COUNT(column) NULL values ko skip karta hai, COUNT(*) nahi.
+
+</Mistake>
+
+<Mistake>
+
+WHERE aur HAVING dono ko same purpose ke liye use karna, unnecessary confusion create karna — WHERE row-level filter ke liye, HAVING group-level filter ke liye reserved rakho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Raw rows in orders table"] --> B["WHERE: filter individual rows<br/>(before aggregation)"]
+    B --> C["GROUP BY: partition rows into groups<br/>(e.g. by category)"]
+    C --> D["Aggregate functions run per group<br/>(SUM, COUNT, AVG, MIN, MAX)"]
+    D --> E["HAVING: filter groups<br/>(after aggregation)"]
+    E --> F["Final result: one row per surviving group"]
+`}
+  caption="WHERE filters rows before grouping; HAVING filters the resulting groups after aggregate functions have already run."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>COUNT, SUM, AVG, MIN, MAX collapse multiple rows into one summary value</li>
+<li>GROUP BY partitions rows into groups; aggregates then compute per group</li>
+<li>WHERE filters rows before aggregation; HAVING filters groups after aggregation</li>
+<li>Aggregate functions cannot be used in WHERE, only in HAVING or SELECT</li>
+<li>Every non-aggregated SELECT column must appear in GROUP BY, or results become unreliable</li>
+<li>COUNT(*) counts all rows including NULLs; COUNT(column) excludes NULLs in that column</li>
+<li>Can GROUP BY multiple columns for multi-dimensional summaries (e.g. category + month)</li>
+</ul>
+
+</QuickRevision>

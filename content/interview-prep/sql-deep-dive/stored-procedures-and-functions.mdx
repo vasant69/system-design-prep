@@ -1,0 +1,191 @@
+---
+slug: "stored-procedures-and-functions"
+title: "Stored Procedures and Functions"
+section: "interview-prep"
+module: "sql-deep-dive"
+order: 10
+difficulty: "advanced"
+readingTime: 12
+prerequisites: ["locking-and-deadlocks"]
+tags: ["stored-procedures", "functions", "database-design"]
+englishDefinition: "A stored procedure is a named, precompiled block of SQL and procedural logic stored inside the database that can be invoked to perform an action, including data modification, while a function is a similar construct that must return a value and is typically restricted from side effects so it can be used inside a query expression. Both move logic into the database layer, trading application-level simplicity for reduced network round-trips and centralized business rules."
+interviewFrequency: "medium"
+companies: ["Oracle", "Microsoft", "TCS"]
+---
+
+<SimpleDefinition>
+
+A stored procedure is a named, precompiled block of SQL and procedural logic stored inside the database that can be invoked to perform an action, including data modification, while a function is a similar construct that must return a value and is typically restricted from side effects so it can be used inside a query expression. Both move logic into the database layer, trading application-level simplicity for reduced network round-trips and centralized business rules.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Socho ek ride-hailing app hai jahan "ride complete karo" ek multi-step operation hai: ride status update karo, driver ko available mark karo, fare calculate karo, wallet se payment deduct karo, aur ek receipt row insert karo. Yeh sab application code se 5 separate SQL statements bhej ke bhi ho sakta hai, ya ek stored procedure ke andar bhi.
+
+### Stored Procedure vs Function — core difference
+
+**Stored Procedure**: ek named block jo actions perform karta hai — data modify kar sakta hai (`INSERT`/`UPDATE`/`DELETE`), transaction control (`COMMIT`/`ROLLBACK`) khud handle kar sakta hai, aur zaroori nahi ki value return kare (though kuch databases mein OUT parameters se return kar sakta hai).
+
+```sql
+CREATE PROCEDURE complete_ride(IN p_ride_id INT)
+BEGIN
+    UPDATE rides SET status = 'completed' WHERE ride_id = p_ride_id;
+    UPDATE drivers SET status = 'available'
+        WHERE driver_id = (SELECT driver_id FROM rides WHERE ride_id = p_ride_id);
+    INSERT INTO receipts (ride_id, amount, created_at)
+        VALUES (p_ride_id, calculate_fare(p_ride_id), NOW());
+END;
+```
+
+Call karte waqt: `CALL complete_ride(101);`
+
+**Function**: ek named block jo hamesha ek value **return karta hai**, aur typically side-effect-free hona expect kiya jaata hai (data modify nahi karta) taaki usko safely ek query expression ke andar use kiya ja sake — jaise `SELECT` list mein ya `WHERE` clause mein.
+
+```sql
+CREATE FUNCTION calculate_fare(p_ride_id INT) RETURNS DECIMAL(10,2)
+BEGIN
+    DECLARE v_distance DECIMAL(10,2);
+    SELECT distance_km INTO v_distance FROM rides WHERE ride_id = p_ride_id;
+    RETURN v_distance * 12.5; -- per-km rate
+END;
+```
+
+Use: `SELECT ride_id, calculate_fare(ride_id) FROM rides WHERE status = 'completed';`
+
+Yeh distinction interview mein zyada poocha jaata hai: **function ko query ke andar embed kar sakte ho, procedure ko nahi** — procedure independently `CALL` hota hai, apna khud ka statement hai.
+
+### Pros — kyun use kare
+
+- **Performance / reduced network round-trips** — agar 5 statements alag-alag application se database ko bhejne pade, to 5 network round-trips lagte hain (especially costly agar app aur database alag machines/regions mein hain). Ek stored procedure call mein sab kuch database ke andar hi execute hota hai — sirf 1 round-trip.
+- **Centralized logic** — agar 3 different services (web app, mobile app, batch job) sab "ride complete karo" operation perform karte hain, to logic ek jagah (procedure) mein rakhne se sabko consistent behavior milta hai, chahe kisi bhi client se call ho.
+- **Precompiled** — database procedure ko compile/plan karke rakhta hai, isliye repeated calls fast execute hote hain bina har baar naya query plan banaye.
+
+### Cons — kyun avoid kare
+
+- **Business logic app aur DB ke beech split ho jaata hai** — ek engineer jo poora "ride complete" flow samajhna chahta hai, usko ab do jagah dekhna padega: application code aur database procedure. Yeh mental overhead aur onboarding friction badhata hai.
+- **Version control aur testing harder hai** — application code Git mein hota hai, CI/CD pipeline se test hota hai naturally. Stored procedures database ke andar live karte hain — unko properly version control mein track karna, unit test likhna, aur migration ke through deploy karna extra tooling aur discipline maangta hai jo teams aksar skip kar dete hain.
+- **Vendor lock-in** — stored procedure syntax database-specific hai (Oracle ka PL/SQL, SQL Server ka T-SQL, PostgreSQL ka PL/pgSQL sab alag hain). Agar kal database switch karna pade, application code (jo generic SQL/ORM use karta hai) migrate karna easier hai, lekin heavy stored-procedure logic ko rewrite karna bahut costly ho sakta hai.
+- **Scaling application-tier horizontally easier hai** — agar business logic application layer mein hai, to extra app servers spin up karna simple hai. Agar heavy logic database ke andar hai, to database hi bottleneck ban jaata hai kyunki wahi compute-heavy kaam kar raha hai, aur database ko horizontally scale karna app servers se harder hai.
+
+### Kab use kare, kab na kare
+
+Stored procedures/functions sahi choice hain jab:
+- Operation bahut latency-sensitive hai aur network round-trip cost genuinely matter karta hai (jaise high-frequency trading, ya bahut fine-grained batch operations).
+- Multiple heterogeneous clients (different languages/services) same critical logic share karte hain aur consistency guarantee chahiye at the data layer.
+- Simple, well-contained data validation/transformation (jaise `calculate_fare` jaisa pure function) jo rarely change hoti hai.
+
+Application layer mein logic rakhna better hai jab:
+- Business logic frequently change hoti hai — application code deploy karna (CI/CD, code review, rollback) stored procedure migration se generally easier aur safer hai.
+- Team ko testability, readability, aur modern tooling (unit tests, type safety, IDE support) chahiye — application languages mein yeh sab stronger hai SQL procedural languages se.
+- Multi-database ya cloud-portability ek concern hai.
+
+Practical middle ground jo zyadatar modern teams follow karte hain: simple, stable, performance-critical data operations (jaise atomic balance updates with row locking) database ke paas rakho — lekin overall business orchestration aur logic jo change hoti rehti hai, application layer mein rakho.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Fewer network round-trips — multiple statements execute as one database call", "Centralized logic guarantees consistent behavior across every client that touches the data", "Precompiled execution plans speed up repeated calls"]}
+  cons={["Business logic splits across app and database, harder for one engineer to trace end-to-end", "Harder to version control, unit test, and deploy through standard CI/CD compared to application code", "Database-specific syntax creates vendor lock-in and makes future migrations costly"]}
+/>
+
+## Real World Example
+
+<RealWorld company="Oracle">
+
+Oracle-heavy enterprise systems (common in large TCS/Infosys-delivered projects) historically pushed a lot of business logic into PL/SQL stored procedures for performance and centralization — but many of these same organizations later found that logic hard to test and slow to change, and newer systems have shifted more logic back into the application layer, keeping only performance-critical, stable operations in the database.
+
+</RealWorld>
+
+<RealWorld company="Microsoft">
+
+SQL Server-based systems commonly use functions for reusable, side-effect-free calculations (like a tax or fare calculation) that need to appear inside SELECT queries and reports, while keeping multi-step business workflows in the application layer where they're easier to test and evolve.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Replacing 5 separate application-to-database round-trips with a single stored procedure call can cut operation latency significantly when app and database are in different network zones, sometimes by tens of milliseconds per saved round-trip</li>
+<li>Precompiled stored procedure execution plans can be noticeably faster on repeated calls compared to re-parsing ad-hoc SQL from the application each time</li>
+<li>Teams that heavily adopt stored procedures often report meaningfully slower feature iteration speed due to weaker tooling around versioning and testing</li>
+<li>Migrating a database vendor with heavy stored-procedure logic can take many times longer than migrating an equivalent application-layer codebase</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+A common interview question is "would you put this business logic in a stored procedure or in the application" — a weak answer picks one side unconditionally. A strong answer names the concrete trade-off (round-trip savings and consistency versus testability and vendor lock-in) and gives a rule of thumb: stable, performance-critical, narrowly-scoped data operations can live in the database, while logic that changes often or needs strong tooling belongs in the application layer. Being able to state the procedure-vs-function distinction precisely (function must return a value and is usable inside a query expression, procedure is called standalone and can modify data freely) is also frequently checked directly.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Confusing stored procedures and functions — a function must return a value and is meant to be embedded in a query expression, a procedure is invoked standalone with CALL and doesn't need to return anything.
+
+</Mistake>
+
+<Mistake>
+
+Pushing all business logic into stored procedures purely for the performance win, without weighing the testing and version-control cost — this has burned real enterprise teams that later struggled to safely change that logic.
+
+</Mistake>
+
+<Mistake>
+
+Writing a function with side effects (like an INSERT) and being surprised it can't be safely used inside a SELECT expression the way a pure function can.
+
+</Mistake>
+
+<Mistake>
+
+Ignoring vendor lock-in when adopting heavy database-specific procedural syntax — a future database migration becomes far more expensive than it needed to be.
+
+</Mistake>
+
+<Mistake>
+
+Assuming stored procedures are always faster — for logic that's called rarely or that's not network-round-trip-bound, the added operational complexity may not be worth any modest performance gain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Application: complete_ride(101)"] -->|Without stored procedure| B["5 separate SQL statements, 5 network round-trips"]
+    A -->|With stored procedure| C["CALL complete_ride(101), 1 network round-trip"]
+    C --> D["Update ride status"]
+    C --> E["Update driver availability"]
+    C --> F["Calculate fare via function"]
+    C --> G["Insert receipt"]
+    D & E & F & G --> H["All executed inside the database, single transaction"]
+`}
+  caption="A multi-step operation as five app-driven round-trips versus one stored procedure call that executes the same steps inside the database."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Stored procedure: named block that performs actions, can modify data, called standalone with CALL</li>
+<li>Function: named block that must return a value, typically side-effect-free, usable inside a query expression</li>
+<li>Pros: fewer network round-trips, centralized logic across multiple clients, precompiled execution plans</li>
+<li>Cons: business logic splits across app and DB, harder to version-control and test, database-specific syntax creates vendor lock-in</li>
+<li>Keep stable, performance-critical, narrow data operations in the database; keep frequently-changing business logic in the application layer</li>
+<li>Application-tier scaling is generally easier than pushing heavy compute into the database tier</li>
+<li>Don't default to stored procedures purely for performance without weighing testability and lock-in cost</li>
+</ul>
+
+</QuickRevision>

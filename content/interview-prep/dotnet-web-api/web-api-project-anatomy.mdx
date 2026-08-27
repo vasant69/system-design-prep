@@ -1,0 +1,175 @@
+---
+slug: "web-api-project-anatomy"
+title: "Web API Project Anatomy: Program.cs and the Minimal Hosting Model"
+section: "interview-prep"
+module: "dotnet-web-api"
+order: 1
+difficulty: "beginner"
+readingTime: 11
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "webapi", "hosting", "programcs"]
+englishDefinition: "The ASP.NET Core minimal hosting model, introduced in .NET 6, collapses Program.cs and Startup.cs into one top-level-statements file where WebApplicationBuilder configures services (dependency injection registrations) and WebApplication configures the HTTP request pipeline (middleware), with appsettings.json plus environment-specific appsettings.{Environment}.json files supplying layered configuration."
+interviewFrequency: "high"
+companies: ["Microsoft", "Infosys", "TCS", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+The ASP.NET Core minimal hosting model, introduced in .NET 6, collapses Program.cs and Startup.cs into one top-level-statements file where WebApplicationBuilder configures services (dependency injection registrations) and WebApplication configures the HTTP request pipeline (middleware), with appsettings.json plus environment-specific `appsettings.{Environment}.json` files supplying layered configuration.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Purane .NET (Core 3.1, .NET 5) me har Web API project me do files hoti thi — `Program.cs` jo bas `CreateHostBuilder` call karke `Startup.cs` ko point karta tha, aur `Startup.cs` jisme `ConfigureServices(IServiceCollection)` aur `Configure(IApplicationBuilder)` do separate methods hote the. .NET 6 se ye **minimal hosting model** aaya — dono files ek `Program.cs` me merge ho gayi, aur `class Program` / `Main` method ka boilerplate bhi top-level statements ki wajah se hat gaya. Interview me ye poocha jaata hai: "Startup.cs kahan gaya?" — jawab: nahi gaya, uska kaam ab `Program.cs` ke andar hi builder aur app object pe directly hota hai.
+
+### WebApplicationBuilder — services configure karne ka jagah
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Yahan DI container me services register hoti hain — ye purane ConfigureServices ki jagah hai
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+```
+
+`WebApplication.CreateBuilder(args)` internally kaafi kuch setup kar deta hai — configuration sources (appsettings.json, environment variables, command-line args, user secrets in Development), default logging providers (Console, Debug, EventSource), aur Kestrel web server. `builder.Services` ek `IServiceCollection` hai — yahan tak app **build** nahi hua, sirf registrations ho rahi hain. `builder.Configuration` yahin available hai taaki service registration ke time configuration values (jaise connection string) use kiye ja sakein.
+
+### WebApplication — pipeline configure karne ka jagah
+
+```csharp
+var app = builder.Build(); // Ab DI container ready hai, WebApplication object mila
+
+// Yahan middleware pipeline banta hai — ye purane Configure(IApplicationBuilder) ki jagah hai
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+```
+
+`builder.Build()` call hone ke baad DI container **frozen** ho jaata hai — is point ke baad `builder.Services.Add...()` call karna galat hai (build ho chuka object services accept nahi karega compile time pe hi, kyunki `builder` variable ab out of scope treated hota hai typical top-level flow me). `app.Use...()` calls middleware pipeline banate hain — order genuinely matter karta hai, jo neeche discuss hota hai.
+
+### Do alag concerns — services vs pipeline
+
+Ye distinction interview me bahut clean answer expect karta hai: **`builder.Services`** DI container me "kya available hai" register karta hai (dependency injection ke liye) — controllers khud, DbContext, custom services, authentication schemes. **`app.Use...()`** batata hai "har incoming HTTP request kis order me kin steps se guzarta hai" — ye middleware pipeline hai. Ek service register hona (`AddAuthentication`) aur usse pipeline me actually activate karna (`UseAuthentication`) — dono alag steps hain, ek bhool jaana common real bug hai (service registered hai lekin middleware add nahi kiya, to authentication silently kaam hi nahi karta).
+
+### appsettings.json vs `appsettings.{Environment}.json`
+
+Configuration **layered** hoti hai — baad wala source pehle wale ko override karta hai:
+
+1. `appsettings.json` — base configuration, sabhi environments ke liye common defaults
+2. `appsettings.{Environment}.json` file (jaise `appsettings.Development.json`, `appsettings.Production.json`) — environment-specific overrides, `ASPNETCORE_ENVIRONMENT` environment variable ke value se decide hota hai kaunsa load hoga
+3. Environment variables
+4. Command-line arguments (highest priority)
+
+`ASPNETCORE_ENVIRONMENT=Development` set hai to `appsettings.Development.json` ki values `appsettings.json` ki corresponding values ko override kar degi (sirf jo keys present hain unhe — poora file replace nahi hota, per-key merge hota hai). Production me typically connection strings, log levels waise environment variable ya secret store se aate hain, `appsettings.json` me sensitive data commit nahi karte.
+
+### Kestrel aur reverse proxy
+
+`WebApplication` internally Kestrel web server use karta hai — cross-platform, fast, lekin production me usually **IIS ya Nginx ke peeche reverse proxy** ke roop me chalta hai (`app.UseForwardedHeaders()` jaisi setup ke saath) taaki TLS termination, static file serving jaisi cheezein reverse proxy handle kare aur Kestrel sirf app logic pe focus kare.
+
+</Hinglish>
+
+<Callout type="tip">
+
+`builder.Build()` ke baad `builder` object frozen ho jaata hai — agar koi service add karna reh gaya to error sirf runtime pe pata chalega jab wo service resolve karne ki koshish hogi (jaise "Unable to resolve service for type X"), compile time pe nahi. Isliye sab `AddXxx()` calls `Build()` se pehle hi likho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Infosys">
+
+Ek typical enterprise .NET 8 Web API project me `Program.cs` structured tarike se likha jaata hai: sabse pehle configuration-dependent services (`AddDbContext` with connection string from `builder.Configuration`), phir cross-cutting services (`AddAuthentication`, `AddAuthorization`, custom `AddScoped` registrations via extension methods jaise `builder.Services.AddApplicationServices()` taaki `Program.cs` chhota rahe), phir `builder.Build()`, phir pipeline middleware order me (`UseExceptionHandler` sabse upar, phir `UseHttpsRedirection`, `UseAuthentication`, `UseAuthorization`, `MapControllers`). `appsettings.Development.json` me local SQL Server connection string hoti hai, `appsettings.Production.json` me sirf placeholder ya empty rehta hai kyunki actual value Azure App Service ke Configuration blade se environment variable ke roop me inject hoti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Minimal hosting model introduced: .NET 6 (November 2021)
+- Configuration precedence (highest to lowest, later overrides earlier for same key): command-line args, then environment variables, then `appsettings.{Environment}.json`, then appsettings.json
+- `ASPNETCORE_ENVIRONMENT` default value if unset: "Production"
+- Common environment names: Development, Staging, Production (case-insensitive but conventionally PascalCase)
+- Kestrel default HTTP port in dev: 5000-5299 range (varies per project template); HTTPS: 7000-7299 range
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Startup.cs .NET 6+ me kahan gaya?" ye almost guaranteed opener hai — weak answer "hata diya gaya" bolta hai, strong answer explain karta hai ki functionality merge ho gayi `Program.cs` me: `ConfigureServices` ka equivalent `builder.Services`, aur `Configure` ka equivalent `app.Use...()` calls, top-level statements ki wajah se class/Main boilerplate bhi implicit ho gaya. Ek follow-up: "agar koi service `builder.Build()` ke baad register karna chahe to kya hoga?" — answer: `builder` object build ho chuka container ke against hai, us point ke baad naya service add karne ka koi supported tareeka nahi hai standard flow me — sab registrations `Build()` se pehle honi chahiye. Teesra common question: "appsettings.json aur appsettings.Development.json dono me same key ho to kaunsa jeetega?" — answer: environment-specific file jeetegi kyunki wo baad me load hoti hai configuration provider chain me, aur ye per-key merge hai, poori file override nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Service register karna bhool jaana lekin usse `UseXxx()` middleware me use karne ki koshish karna (ya ulta) — jaise `AddAuthentication` bina `UseAuthentication` ke, jisse authentication configured dikhta hai lekin pipeline me actually kabhi run hi nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+Sensitive connection strings ya API keys `appsettings.json` me hardcode karke commit kar dena — ye source control me permanently reh jaata hai, chahe baad me hata bhi do. Production secrets environment variables ya Secret Manager/Key Vault se aane chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`builder.Build()` ke baad services register karne ki koshish karna — ye pattern hi galat hai, sab `AddXxx()` calls `Build()` call se pehle hone chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`ASPNETCORE_ENVIRONMENT` set na karna aur assume karna ki app "Development" mode me chal raha hai — default `Production` hota hai jab variable set nahi hai, jisse local testing me detailed error pages jaise Development-only features silently disable reh sakte hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["WebApplication.CreateBuilder(args)"] --> B["builder.Services.AddXxx() -- DI registrations"]
+    B --> C["builder.Configuration -- appsettings.json + appsettings.Environment.json + env vars"]
+    C --> D["builder.Build() -- container frozen, WebApplication object created"]
+    D --> E["app.UseXxx() -- middleware pipeline in order"]
+    E --> F["app.MapControllers() -- routes wired"]
+    F --> G["app.Run() -- Kestrel starts listening"]
+`}
+  caption="Everything before Build() configures the DI container (what services exist); everything after configures the HTTP pipeline (how requests flow through those services)."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- .NET 6+ minimal hosting model merges Program.cs and Startup.cs into one file with top-level statements
+- `builder.Services` = DI container registrations (was `ConfigureServices`); `app.Use...()` = middleware pipeline (was `Configure`)
+- `builder.Build()` freezes the container — no service registrations after this point
+- Configuration precedence: command-line args, then environment variables, then `appsettings.{Environment}.json`, then appsettings.json
+- `ASPNETCORE_ENVIRONMENT` defaults to "Production" when unset
+- Registering a service does not automatically activate its middleware — `AddAuthentication` still needs `UseAuthentication`
+- Never commit real secrets into appsettings.json — use environment variables or a secret store
+- Kestrel is the built-in server, typically run behind a reverse proxy (IIS/Nginx) in production
+
+</QuickRevision>

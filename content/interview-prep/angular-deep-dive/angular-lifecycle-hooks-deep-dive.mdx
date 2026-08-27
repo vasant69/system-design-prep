@@ -1,0 +1,225 @@
+---
+slug: "angular-lifecycle-hooks-deep-dive"
+title: "Angular Lifecycle Hooks Deep Dive"
+section: "interview-prep"
+module: "angular-deep-dive"
+order: 12
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["change-detection-and-zonejs"]
+tags: ["angular", "frontend", "lifecycle-hooks", "ngoninit", "ngondestroy"]
+englishDefinition: "Angular lifecycle hooks are a fixed sequence of methods a component or directive can implement to run code at specific moments of its existence, from creation and property binding through change detection cycles to destruction, letting developers initialize state, react to input changes, work with the rendered DOM, and clean up resources safely."
+interviewFrequency: "very-high"
+companies: ["Google", "Microsoft", "Infosys", "TCS"]
+---
+
+<SimpleDefinition>
+
+Angular lifecycle hooks are a fixed sequence of methods a component or directive can implement to run code at specific moments of its existence, from creation and property binding through change detection cycles to destruction, letting developers initialize state, react to input changes, work with the rendered DOM, and clean up resources safely.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular component ka ek **predictable life** hota hai — birth se leke death tak, aur us pure journey me Angular specific moments pe apna interface method call karta hai. Agar tumne wo interface (jaise `OnInit`, `OnDestroy`) implement kiya hai, to Angular tumhara method call karega. Ye "hooks" tumhe framework ke internal lifecycle me controlled tareeke se plug-in karne dete hain.
+
+### Poora order — kya pehle, kya baad me
+
+Ek component jab pehli baar create hota hai to hooks is exact order me chalte hain:
+
+1. **`ngOnChanges`** — sabse pehle, aur har baar jab koi `@Input` property change hoti hai. Constructor ke baad, `ngOnInit` se pehle. Agar component ke koi bound inputs nahi hain, ye kabhi call hi nahi hota.
+2. **`ngOnInit`** — pehle `ngOnChanges` ke baad, ek hi baar. Ye wahi jagah hai jahan initial data-fetching, subscriptions setup karna chahiye — constructor me nahi.
+3. **`ngDoCheck`** — har change detection cycle me chalta hai, `ngOnChanges` ke baad bhi (agar wo trigger hua ho). Custom change-detection logic ke liye hai.
+4. **`ngAfterContentInit`** — jab `<ng-content>` ke through projected content initialize ho jaata hai — ek hi baar.
+5. **`ngAfterContentChecked`** — projected content check hone ke baad, har cycle me.
+6. **`ngAfterViewInit`** — jab component ka apna view (aur child components ke views) fully initialize ho jaate hain — ek hi baar. **Yahi pehli jagah hai jahan `@ViewChild` safely access kar sakte ho.**
+7. **`ngAfterViewChecked`** — view check hone ke baad, har cycle me.
+8. **`ngOnDestroy`** — component destroy hone se theek pehle, ek hi baar. Cleanup ke liye.
+
+```typescript
+export class ProfileComponent implements OnChanges, OnInit, DoCheck, AfterViewInit, OnDestroy {
+  @Input() userId!: string;
+  @ViewChild("nameInput") nameInput!: ElementRef;
+
+  ngOnChanges(changes: SimpleChanges) {
+    console.log("input changed:", changes["userId"]);
+  }
+  ngOnInit() {
+    // fetch initial data yahan
+  }
+  ngDoCheck() {
+    // custom dirty-check yahan, careful — har cycle me chalta hai
+  }
+  ngAfterViewInit() {
+    // ViewChild ab safe hai access karna
+    this.nameInput.nativeElement.focus();
+  }
+  ngOnDestroy() {
+    // cleanup yahan
+  }
+}
+```
+
+### Sabse common pitfall — `ViewChild` ko time se pehle access karna
+
+`@ViewChild` decorator template ke ek DOM element ya child component ka reference deta hai, lekin ye reference `ngAfterViewInit` se pehle **`undefined`** hota hai. `constructor` ya `ngOnInit` me `this.nameInput` access karna sabse common runtime bug hai jo naye Angular developers karte hain — view abhi render hi nahi hua hota us waqt tak. Interview me ye ek classic gotcha question hai: "why is my ViewChild undefined in ngOnInit?"
+
+### `ngDoCheck` me heavy kaam — ek performance trap
+
+`ngDoCheck` **har single change detection cycle** me chalta hai — chahe koi actual change ho ya na ho. Isme koi bhi expensive operation (deep object comparison, API call, heavy computation) daalna poore app ko slow kar dega, kyunki ye baar-baar, bahut frequently trigger hota hai. Agar custom change detection chahiye, to lightweight checks hi rakho (jaise ek primitive value compare karna), aur agar possible ho to `OnPush` change detection strategy ke saath combine karo taaki cycles hi kam trigger hon.
+
+### `ngOnDestroy` — cleanup ka akela mauka
+
+Jab component DOM se remove hota hai (route navigate ho gaya, `*ngIf` false ho gaya), Angular `ngOnDestroy` call karta hai. Ye **akela guaranteed mauka** hai resources release karne ka:
+
+```typescript
+export class DashboardComponent implements OnInit, OnDestroy {
+  private sub?: Subscription;
+  private intervalId?: ReturnType<typeof setInterval>;
+
+  ngOnInit() {
+    this.sub = this.dataService.stream$.subscribe(data => this.handle(data));
+    this.intervalId = setInterval(() => this.poll(), 5000);
+  }
+
+  ngOnDestroy() {
+    this.sub?.unsubscribe();
+    clearInterval(this.intervalId);
+  }
+}
+```
+
+Agar `unsubscribe` nahi karte, to **memory leak** hota hai — component destroy ho chuka hai lekin uska subscription callback still zinda hai, references hold kiye hue, aur agar wo `this.someProperty` update karta rehta hai to console me weird errors bhi aa sakte hain. `setInterval`/`setTimeout` bhi isi tarah clear karne padte hain, warna wo function reference forever chalta rahega.
+
+### `takeUntil` pattern — multiple subscriptions ke liye
+
+Jab ek component me bahut saare subscriptions hon, har ek ko manually track karke unsubscribe karna boilerplate-heavy hota hai. Standard pattern hai ek `Subject` banake `takeUntil` operator use karna:
+
+```typescript
+export class ReportComponent implements OnInit, OnDestroy {
+  private destroy$ = new Subject<void>();
+
+  ngOnInit() {
+    this.stream1$.pipe(takeUntil(this.destroy$)).subscribe(...);
+    this.stream2$.pipe(takeUntil(this.destroy$)).subscribe(...);
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+}
+```
+
+Ek `ngOnDestroy` sab subscriptions cleanup kar deta hai, chahe count kitna bhi ho.
+
+### Directives ka bhi apna lifecycle hota hai
+
+Ye hooks sirf components ke liye nahi hain — attribute directives bhi `OnInit`/`OnDestroy` implement kar sakte hain, same rules apply hoti hain.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`ngOnChanges` sirf `@Input`-bound properties ke liye fire hota hai, aur wo bhi sirf reference change hone pe (agar tumne array/object ke andar ka value mutate kiya, reference same rakhte hue, to `ngOnChanges` fire nahi hoga). Ye ek common confusion hai jab data "update" ho raha hai but hook trigger nahi ho raha.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Microsoft">
+
+Enterprise Angular apps me (jaise internal admin dashboards), `ngOnDestroy` cleanup missing hona ek bahut common production bug hai — SPA me user baar-baar routes ke beech navigate karta hai bina full page reload ke, to agar har navigation pe ek chhota subscription leak ho raha hai, kuch ghanton ke session ke baad browser tab kaafi memory consume karne lagta hai aur UI sluggish ho jaata hai. Isliye code review checklists me `ngOnInit` me subscribe hone wale har jagah `ngOnDestroy` me corresponding cleanup dhoondhna standard practice hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 8 lifecycle hooks total: ngOnChanges, ngOnInit, ngDoCheck, ngAfterContentInit, ngAfterContentChecked, ngAfterViewInit, ngAfterViewChecked, ngOnDestroy
+- ngOnChanges, ngDoCheck, ngAfterContentChecked, ngAfterViewChecked run on every change detection cycle — potentially dozens of times per second during heavy interaction
+- ngOnInit, ngAfterContentInit, ngAfterViewInit, ngOnDestroy run exactly once per component instance
+- ViewChild references become safely accessible starting only from ngAfterViewInit onward
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"Explain the order of Angular lifecycle hooks" is asked almost every mid-to-senior Angular interview — a strong answer states the order fluently and explains WHY ngOnChanges comes before ngOnInit (inputs must be set before init logic runs). A very common follow-up: "why would ViewChild be undefined?" — the expected answer names ngAfterViewInit specifically, not just "later". Another frequent probe: "how do you avoid memory leaks in Angular?" — the strong answer mentions both manual unsubscribe in ngOnDestroy and the takeUntil pattern for scale, and ideally mentions the async pipe as an alternative that auto-unsubscribes without needing ngOnDestroy at all.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`@ViewChild` ko constructor ya `ngOnInit` me access karna — dono jagah view abhi render nahi hua hota, isliye reference `undefined` milta hai. Sahi jagah `ngAfterViewInit` hai.
+
+</Mistake>
+
+<Mistake>
+
+`ngDoCheck` ke andar expensive operations (deep comparison, API calls) daalna — ye hook har change detection cycle me chalta hai, isse poori app slow ho sakti hai.
+
+</Mistake>
+
+<Mistake>
+
+`ngOnInit` me subscribe karke `ngOnDestroy` me unsubscribe bhool jaana — sabse common memory leak source Angular apps me, especially route-heavy SPAs me.
+
+</Mistake>
+
+<Mistake>
+
+Constructor me HTTP calls ya heavy initialization karna instead of `ngOnInit` — constructor sirf dependency injection ke liye hona chahiye, business logic ke liye nahi. Agar constructor me kaam kiya to `@Input` values abhi set nahi hui hoti.
+
+</Mistake>
+
+<Mistake>
+
+Ye assume karna ki `ngOnChanges` object/array ke internal mutation pe bhi fire hoga — sirf reference change pe fire hota hai, deep mutation pe nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Angular
+    participant Component
+    Angular->>Component: constructor()
+    Angular->>Component: ngOnChanges() [if inputs bound]
+    Angular->>Component: ngOnInit()
+    loop every change detection cycle
+        Angular->>Component: ngDoCheck()
+        Angular->>Component: ngAfterContentChecked()
+        Angular->>Component: ngAfterViewChecked()
+    end
+    Angular->>Component: ngAfterContentInit() [once]
+    Angular->>Component: ngAfterViewInit() [once]
+    Note over Component: ViewChild safe from here
+    Angular->>Component: ngOnDestroy() [on removal]
+`}
+  caption="The exact call order of Angular lifecycle hooks — note ngOnInit runs once early, while ngDoCheck/AfterContentChecked/AfterViewChecked repeat on every change detection cycle."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Full order: ngOnChanges to ngOnInit to ngDoCheck to ngAfterContentInit to ngAfterContentChecked to ngAfterViewInit to ngAfterViewChecked to ngOnDestroy
+- ngOnChanges only fires for `@Input`-bound properties, and only on reference change, not deep mutation
+- ngOnInit is the right place for initial data fetch/subscribe — never the constructor
+- ViewChild is undefined until ngAfterViewInit — a very common interview gotcha
+- ngDoCheck runs every change detection cycle — never put expensive logic there
+- ngOnDestroy is the only guaranteed cleanup point — unsubscribe, clearInterval, clearTimeout here
+- takeUntil(destroy$) pattern simplifies cleanup when a component has many subscriptions
+- Async pipe auto-unsubscribes, avoiding manual ngOnDestroy cleanup for that specific subscription
+
+</QuickRevision>

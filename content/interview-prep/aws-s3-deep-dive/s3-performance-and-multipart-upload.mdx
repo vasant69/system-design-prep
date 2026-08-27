@@ -1,0 +1,194 @@
+---
+slug: "s3-performance-and-multipart-upload"
+title: "S3 Performance and Multipart Upload"
+section: "interview-prep"
+module: "aws-s3-deep-dive"
+order: 7
+difficulty: "advanced"
+readingTime: 13
+prerequisites: ["s3-presigned-urls-and-secure-access"]
+tags: ["aws", "s3", "performance", "multipart-upload"]
+englishDefinition: "S3 request throughput scales per partitioned prefix rather than per bucket at 3,500 write and 5,500 read requests per second, with unlimited prefixes available for horizontal scaling; large objects should use multipart upload for parallel, resumable transfer, and Transfer Acceleration can speed up long-distance uploads by routing them through CloudFront's edge network."
+interviewFrequency: "high"
+companies: ["Amazon"]
+---
+
+<SimpleDefinition>
+
+S3 request throughput scales per partitioned prefix rather than per bucket at 3,500 write and 5,500 read requests per second, with unlimited prefixes available for horizontal scaling; large objects should use multipart upload for parallel, resumable transfer, and Transfer Acceleration can speed up long-distance uploads by routing them through CloudFront's edge network.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+### Request rate limits — per-prefix scaling
+
+S3 ki throughput limit **bucket-level nahi**, **partitioned prefix-level** hai: **3,500** PUT/COPY/POST/DELETE requests per second aur **5,500** GET/HEAD requests per second, **har prefix ke liye**. Prefix yahan S3 ka internal partition hai — jaisa traffic pattern dekh kar S3 automatically bucket ko internally split karta hai. Ek bucket me prefixes ki koi upper limit nahi hai, isliye theoretically throughput linearly scale kar sakti hai — 20 alag-alag high-traffic prefixes = 70,000 writes/sec aur 110,000 reads/sec combined.
+
+Practical implication: agar keys sequential hain (`orders/2026-08-27T10:15:00-4521.json` type timestamp-prefixed), sab ek hi partition me cluster ho jaate hain aur us single partition ki 3,500/sec limit hit ho jaati hai chahe bucket-wide bahut zyada headroom ho. Fix: key ke **shuru me** high-cardinality segment daalo — jaise ek hash prefix (`4f2a/orders/2026-08-27T...`) taaki S3 traffic ko multiple partitions me automatically spread kar sake. Naya partition split hone me time lagta hai (typically 30-60 minutes ka gradual ramp) — isliye naye high-traffic prefix par turant 20,000 req/sec daaloge to shuru me `503 SlowDown` milega; traffic ko gradually ramp karna chahiye.
+
+### Bottleneck kahan hai — bandwidth vs request rate
+
+Do alag tarah ke bottlenecks hote hain aur fix alag hai:
+
+- **Bahut saare chhote objects** — bottleneck request **rate** hai, bandwidth nahi. Fix: prefixes distribute karo.
+- **Bade objects** — bottleneck **bandwidth** hai. Single TCP connection typically **~85-100 MB/s** tak hi jaati hai. Fix: parallel connections ya multipart parallel upload/download.
+
+### Multipart upload — mechanism
+
+Bade files (100 MB se upar recommended, 5 GB se upar S3 me mandatory kyunki single PUT ki hard limit hi 5 GB hai) ke liye multipart upload teen steps me chalta hai:
+
+1. `CreateMultipartUpload` — S3 se ek `UploadId` milta hai, ye poore upload session ko identify karta hai
+2. `UploadPart × N` — file ko parts me todkar (min 5 MiB per part, last part chhota ho sakta hai, max 10,000 parts) har part ko **parallel** upload kiya ja sakta hai, har part apna ETag return karta hai
+3. `CompleteMultipartUpload` — saare part numbers aur unke ETags S3 ko bhejo, S3 unhe assemble karke ek single object banata hai; ya `AbortMultipartUpload` agar cancel karna ho
+
+```python
+import boto3
+
+s3 = boto3.client("s3")
+bucket, key = "jmfs-archives", "reports/2026-q2-full.csv"
+
+mpu = s3.create_multipart_upload(Bucket=bucket, Key=key)
+upload_id = mpu["UploadId"]
+
+parts = []
+with open("2026-q2-full.csv", "rb") as f:
+    part_number = 1
+    while chunk := f.read(10 * 1024 * 1024):  # 10 MiB parts
+        resp = s3.upload_part(
+            Bucket=bucket, Key=key, UploadId=upload_id,
+            PartNumber=part_number, Body=chunk,
+        )
+        parts.append({"PartNumber": part_number, "ETag": resp["ETag"]})
+        part_number += 1
+
+s3.complete_multipart_upload(
+    Bucket=bucket, Key=key, UploadId=upload_id,
+    MultipartUpload={"Parts": parts},
+)
+```
+
+**Fayde**: parallel upload (parts simultaneously bhej sakte ho, total time drastically kam), resumability (network beech me toota to sirf failed part dobara bhejo, poora file nahi), streaming (total size pata na ho tab bhi start ho sakta hai), pause/resume (initiate karne ke baad koi hard expiry nahi jab tak explicitly abort na karo). Chhote files ke liye single `PutObject` hi simpler aur sufficient hai — multipart ka overhead (3 extra API calls minimum) chhoti file ke liye waste hai.
+
+**Sabse expensive hidden gotcha:** agar `CompleteMultipartUpload` ya `AbortMultipartUpload` kabhi call hi nahi hua (client crash, network drop beech me), to **incomplete upload ke parts S3 me storage consume karte rehte hain** aur ye normal `ListObjects` me **dikhte hi nahi** — invisible cost jo silently accumulate hota hai. Isliye har production bucket par day-1 se lifecycle rule lagana chahiye: `AbortIncompleteMultipartUpload` after 7 days.
+
+### Transfer Acceleration — edge locations for upload
+
+**S3 Transfer Acceleration** CloudFront ke globally-distributed edge locations use karta hai lekin **upload direction** me — user apne nearest edge location se connect karta hai (jo geographically close hota hai, isliye latency kam), phir data AWS ke optimized private backbone network se S3 tak travel karta hai instead of public internet ke unpredictable routing se. Endpoint format alag hota hai: `bucket-name.s3-accelerate.amazonaws.com`.
+
+Extra cost hai (~$0.04/GB), aur AWS sirf tab charge karta hai jab acceleration **actually** measurably faster prove ho — agar user already region ke close hai to accelerate se koi fayda nahi milega, sirf extra cost. Enable karne se pehle AWS ka speed comparison tool use karke apne actual users ke locations se test karna chahiye. Ye long-distance, cross-continent uploads ke liye best fit hai — jaise India-based users US-region bucket me upload kar rahe hain.
+
+**CloudFront vs Transfer Acceleration** — do alag use cases: CloudFront **download/read** ke liye hai, caching karta hai, repeated access pe bahut effective. Transfer Acceleration **upload/write** ke liye hai, kabhi cache nahi karta, sirf network path optimize karta hai. Ek doosre ka substitute nahi hain.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Multipart upload: parallel parts se drastically faster transfer, resumable on failure, works for objects up to 5 TB", "Transfer Acceleration: reduces upload latency for geographically distant users without any client-side complexity"]}
+  cons={["Multipart upload: extra API call overhead unsuitable for small objects, and incomplete uploads silently bill storage forever without a lifecycle rule", "Transfer Acceleration: extra per-GB cost, and provides no benefit (or even net negative) for users already near the bucket's region"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A Production AWS Project">
+
+Ek daily batch-export pipeline monthly transaction reports (each 2-4 GB CSV) S3 me upload karta tha ek single `PutObject` call se — koi bhi network glitch beech me poora upload restart karwa deta tha, aur bade files pe ye kaafi baar hota tha. Migration multipart upload me hui, 25 MB fixed part size ke saath, `boto3`'s `TransferConfig` use karke jo automatically threshold-based decide karta hai kab multipart use karna hai. Result: average upload time 40% kam hua (parallel parts) aur failure-recovery time minutes se seconds tak aa gaya (sirf failed part retry). Ek separate incident me team ne notice kiya ki S3 storage bill mahine-dar-mahine unexpectedly badh raha tha — root cause nikla ki koi ek batch job crash ho raha tha `CompleteMultipartUpload` se pehle, aur wo incomplete parts kabhi delete nahi ho rahe the kyunki koi `AbortIncompleteMultipartUpload` lifecycle rule set hi nahi thi. Rule add karne ke baad turant ~200 GB ka accumulated invisible storage recover hua.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+<ul>
+<li>Request rate: 3,500 PUT/COPY/POST/DELETE per second per partitioned prefix; 5,500 GET/HEAD per second per partitioned prefix</li>
+<li>Prefixes per bucket: unlimited — throughput scales linearly by distributing keys across them</li>
+<li>Partition split time: automatic but not instant, roughly 30-60 minutes</li>
+<li>Single TCP connection practical throughput: ~85-100 MB/s</li>
+<li>Multipart: part size range 5 MiB to 5 GiB (last part can be smaller), max 10,000 parts, max object size 5 TB</li>
+<li>Single PutObject hard limit: 5 GB — multipart is mandatory above this</li>
+<li>Recommended multipart threshold: objects larger than 100 MB</li>
+<li>Transfer Acceleration extra cost: roughly $0.04/GB, billed only when measurably faster than direct upload</li>
+</ul>
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"A bucket needs to handle 50,000 write requests per second — design it" is a direct test of whether the candidate knows the limit is per-prefix, not per-bucket. The strong answer names 3,500 writes/sec per partitioned prefix, explains prefixes are unlimited so keys should be distributed with a high-cardinality leading segment, and flags that partition splitting is gradual (30-60 minutes) so traffic into a brand-new prefix should ramp up rather than spike immediately. A second common question, "why use multipart upload for large files," expects resumability and parallelism as the two pillars, plus the often-missed detail that incomplete multipart uploads bill storage silently and never appear in a normal object listing — the fix (a lifecycle rule) is itself frequently asked as a follow-up. Transfer Acceleration questions test whether the candidate blindly enables it or actually checks if the user base is geographically distant enough to benefit — AWS's own speed-test tool is the correct answer, not "just turn it on."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Designing S3 keys with a sequential, timestamp-leading prefix (`logs/2026-08-27T...`) for a high-throughput workload — all writes land in one partition and throttle at 3,500/sec even though the bucket has far more aggregate capacity available. Distribute with a high-cardinality prefix segment instead.
+
+</Mistake>
+
+<Mistake>
+
+Never setting an `AbortIncompleteMultipartUpload` lifecycle rule — failed or abandoned multipart uploads keep billing storage indefinitely and are invisible in a standard object listing, making the leak easy to miss until the bill spikes.
+
+</Mistake>
+
+<Mistake>
+
+Using multipart upload for small objects (a few MB) — the minimum three API calls (create, upload part, complete) add latency and complexity that a single `PutObject` handles more simply and just as reliably.
+
+</Mistake>
+
+<Mistake>
+
+Enabling Transfer Acceleration without testing whether it actually helps — for users already close to the bucket's region it adds cost with zero or even negative latency benefit; AWS's speed-comparison tool should be run first against real user locations.
+
+</Mistake>
+
+<Mistake>
+
+Sending a sudden burst of traffic (e.g. 20,000 req/sec) into a freshly created prefix and expecting immediate full throughput — partition splitting takes tens of minutes to propagate, so an unramped burst returns `503 SlowDown` errors during that window.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A[Large file to upload] --> B{Size > 100 MB?}
+    B -->|No| C[Single PutObject call]
+    B -->|Yes| D[CreateMultipartUpload]
+    D --> E[UploadId returned]
+    E --> F[Split file into parts, 5 MiB+ each]
+    F --> G[UploadPart in parallel, each returns ETag]
+    G --> H{All parts succeeded?}
+    H -->|Yes| I[CompleteMultipartUpload with part list]
+    H -->|Some failed| J[Retry only the failed parts]
+    J --> H
+    I --> K[S3 assembles final object]
+    H -->|Client crashes / abandoned| L[Orphaned parts keep billing storage]
+    L --> M[AbortIncompleteMultipartUpload lifecycle rule cleans up after N days]
+`}
+  caption="Multipart upload's resumability comes from retrying only failed parts, not the whole file — but an upload that never completes or aborts leaves orphaned parts billing silently unless a lifecycle rule cleans them up."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+<ul>
+<li>Rate limits are per partitioned prefix (3,500 writes/sec, 5,500 reads/sec), not per bucket — prefixes are unlimited, distribute high-cardinality prefixes to scale</li>
+<li>Partition splitting is automatic but takes roughly 30-60 minutes — ramp traffic into new prefixes gradually to avoid 503 SlowDown</li>
+<li>Small-object workloads bottleneck on request rate; large-object workloads bottleneck on per-connection bandwidth (~85-100 MB/s)</li>
+<li>Multipart upload: CreateMultipartUpload, parallel UploadPart calls, then CompleteMultipartUpload (or AbortMultipartUpload)</li>
+<li>Multipart is recommended above 100 MB and mandatory above 5 GB (single PutObject's hard limit); max 10,000 parts, 5 TB object size</li>
+<li>Always pair multipart uploads with an AbortIncompleteMultipartUpload lifecycle rule — orphaned parts bill storage silently and don't appear in listings</li>
+<li>Transfer Acceleration speeds up long-distance uploads via CloudFront edge locations, and AWS only bills it when actually faster than direct upload</li>
+<li>CloudFront is for downloads/caching, Transfer Acceleration is for uploads — they solve different directions of the same latency problem</li>
+</ul>
+
+</QuickRevision>
