@@ -1,0 +1,325 @@
+---
+slug: "transactions-in-ef-core"
+title: "Transactions in EF Core: Implicit, Explicit, and TransactionScope"
+section: "code-flow"
+module: "data-access-efcore"
+order: 8
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["swap-repository-to-ef-core", "async-await-end-to-end-and-why", "related-entities-department-and-relationships"]
+tags: ["dotnet", "ef-core", "transactions", "acid", "isolation-levels", "employee-management"]
+englishDefinition: "A transaction groups several database writes so they all commit or all roll back, keeping data consistent. EF Core wraps a single SaveChangesAsync call in one implicit transaction automatically; when you need multiple SaveChangesAsync calls or a mix of EF work and raw commands to be atomic, you open an explicit transaction with Database.BeginTransactionAsync, commit it on success, and roll back on any exception. TransactionScope offers an ambient alternative that can span multiple contexts or connections but needs TransactionScopeAsyncFlowOption.Enabled to work with async code and can escalate to a distributed transaction."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+A transaction groups several database writes so they all commit or all roll back, keeping data consistent. EF Core wraps a single `SaveChangesAsync` call in one implicit transaction automatically; when you need multiple `SaveChangesAsync` calls or a mix of EF work and raw commands to be atomic, you open an explicit transaction with `Database.BeginTransactionAsync`, commit it on success, and roll back on any exception. `TransactionScope` offers an ambient alternative that can span multiple contexts or connections but needs `TransactionScopeAsyncFlowOption.Enabled` to work with async code and can escalate to a distributed transaction.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+BFSI me "aadha kaam ho gaya" sabse khatarnak state hai. Employee ka department transfer ho gaya lekin audit log nahi bana — ab compliance ke paas ek change hai jiska koi trail nahi. Ya paisa ek account se nikla lekin doosre me nahi pahuncha. Transactions wahi guarantee dete hain: **sab ya kuch nahi** (atomicity). Is topic me hum dekhenge EF Core kab apne aap transaction deta hai, kab tumhe khud lena padta hai, aur `TransactionScope` ka async wala trap.
+
+### What is it — transaction aur ACID
+
+Ek **transaction** database operations ka ek group hai jo ek single unit ki tarah behave karta hai. Uske chaar guarantees (ACID):
+
+- **Atomicity** — saare statements commit honge ya koi nahi. Beech me crash hua to sab undo.
+- **Consistency** — transaction ke baad DB ek valid state me hoga (constraints, FKs satisfied).
+- **Isolation** — ek chalti transaction doosri chalti transaction ka aadha kaam nahi dekhti (level pe depend karta hai).
+- **Durability** — commit ho gaya to power chali jaaye tab bhi data safe (disk pe likha).
+
+SQL Server har statement ko by default apni chhoti transaction me chalata hai (autocommit). Multi-statement atomicity chahiye to explicit `BEGIN TRAN ... COMMIT` chahiye.
+
+### Why do we need it — iske bina kya tootega
+
+Hamara concrete scenario: **employee ko naye department me transfer karo AUR ek `EmployeeAuditLog` row likho** — dono, ya koi nahi.
+
+Bina transaction ke code aisa dikhta:
+
+```csharp
+employee.DepartmentId = newDepartmentId;
+await _db.SaveChangesAsync(ct);          // (1) transfer committed
+
+_db.AuditLogs.Add(new EmployeeAuditLog { /* ... */ });
+await _db.SaveChangesAsync(ct);          // (2) audit committed
+```
+
+Agar step (1) ke baad, step (2) se pehle process crash ho jaaye, ya `SaveChangesAsync` (2) constraint violation se fail ho jaaye — transfer ho chuka hai, audit nahi. DB ab inconsistent hai aur compliance report galat. BFSI audit me ye ek finding hai.
+
+Transaction ke saath: dono `SaveChangesAsync` ek `BeginTransaction`/`Commit` ke andar. (2) fail hua to `Rollback` (1) ko bhi undo kar deta hai.
+
+### How does it work — teen levels
+
+**Level 1 — implicit (tum kuch nahi karte).** Ek `SaveChangesAsync` call ke andar jitne bhi `INSERT`/`UPDATE`/`DELETE` hain (chahe 1 ho ya 50), EF Core unhe **ek transaction** me wrap karta hai. Ek statement fail hua to poora `SaveChangesAsync` throw karta hai aur DB me kuch nahi badalta. To agar tumhara poora atomic kaam **ek** `SaveChangesAsync` me ho jaata hai, tumhe explicit transaction ki zaroorat hi nahi.
+
+**Level 2 — explicit `BeginTransactionAsync`.** Jab atomic unit ek `SaveChangesAsync` se bada ho:
+
+- Multiple `SaveChangesAsync` calls jo saath commit hone chahiye (jaise humein `employee.Id` chahiye pehle save ke baad, phir uske saath audit likhna).
+- EF `SaveChangesAsync` + ek raw SQL command (`ExecuteSqlAsync`, ek stored proc) jo saath commit hon.
+- Ek loop me batch processing jahan tum periodically `SaveChanges` karte ho par chahte ho poora batch atomic ho.
+
+**Level 3 — `TransactionScope` (ambient).** Ek `using` block jiske andar jo bhi DB kaam ho (ek ya zyada `DbContext`, ADO.NET, dusri libraries) wo automatically ek transaction me enlist ho jaata hai — tumhe explicitly transaction pass nahi karna padta. Powerful, lekin async ke saath ek gotcha hai (neeche).
+
+### Show it in our project — explicit transaction
+
+Nayi entity `Models/EmployeeAuditLog.cs`:
+
+```csharp
+public class EmployeeAuditLog
+{
+    public int Id { get; set; }
+    public int EmployeeId { get; set; }
+    public string Action { get; set; } = default!;      // e.g. "DepartmentTransfer"
+    public string OldValue { get; set; } = default!;
+    public string NewValue { get; set; } = default!;
+    public string ChangedBy { get; set; } = default!;
+    public DateTime ChangedAtUtc { get; set; }
+}
+```
+
+`AppDbContext` me `public DbSet<EmployeeAuditLog> AuditLogs => Set<EmployeeAuditLog>();`, phir migration.
+
+Ab service me transfer operation, explicit transaction ke saath:
+
+```csharp
+public async Task TransferDepartmentAsync(
+    int employeeId, int newDepartmentId, string changedBy, CancellationToken ct)
+{
+    var employee = await _db.Employees.FindAsync(new object?[] { employeeId }, ct)
+        ?? throw new NotFoundException($"Employee {employeeId} not found");
+
+    var oldDepartmentId = employee.DepartmentId;
+
+    await using var tx = await _db.Database.BeginTransactionAsync(ct);
+    try
+    {
+        employee.DepartmentId = newDepartmentId;
+        await _db.SaveChangesAsync(ct);
+
+        _db.AuditLogs.Add(new EmployeeAuditLog
+        {
+            EmployeeId = employeeId,
+            Action = "DepartmentTransfer",
+            OldValue = oldDepartmentId.ToString(),
+            NewValue = newDepartmentId.ToString(),
+            ChangedBy = changedBy,
+            ChangedAtUtc = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync(ct);
+
+        await tx.CommitAsync(ct);
+    }
+    catch
+    {
+        await tx.RollbackAsync(ct);
+        throw;
+    }
+}
+```
+
+### Code explained line by line
+
+- `await using var tx = await _db.Database.BeginTransactionAsync(ct)` — EF Core ke underlying `DbConnection` par ek real `BEGIN TRANSACTION` chalata hai aur ek `IDbContextTransaction` object deta hai. `await using` isliye ki `IDbContextTransaction` `IAsyncDisposable` hai — block khatam hote hi wo dispose hoga (agar commit nahi hua to dispose implicitly rollback karta hai).
+- `_db.Database` — `DatabaseFacade`, jahan se low-level DB operations milte hain: `BeginTransactionAsync`, `ExecuteSqlAsync`, `CanConnectAsync`, `MigrateAsync`.
+- Pehla `await _db.SaveChangesAsync(ct)` — `employee.DepartmentId` ka `UPDATE`. Kyunki transaction already open hai, EF **apna implicit transaction nahi banata** — is `UPDATE` ko current `tx` me chalata hai. Commit abhi nahi hua.
+- `_db.AuditLogs.Add(...)` + doosra `SaveChangesAsync(ct)` — audit row ka `INSERT`, usi `tx` me.
+- `await tx.CommitAsync(ct)` — **ab** SQL Server ko `COMMIT` bhejta hai. Is line se pehle, koi bhi doosri connection ye changes nahi dekh sakti (isolation). Is line ke baad dono changes durable.
+- `catch { await tx.RollbackAsync(ct); throw; }` — koi bhi exception (constraint violation, timeout, cancellation) — `ROLLBACK` dono changes ko undo karta hai, phir `throw` se exception upar jaata hai taaki controller/global handler use `500`/`409` me convert kare. `throw;` (bare) original stack trace preserve karta hai; `throw ex;` mat likho.
+- Agar tum `catch` bhool jao lekin `await using` rakho — dispose bina commit ke rollback kar dega, lekin exception phir bhi propagate hoga. `catch` explicit rollback isliye ki intent clear rahe aur cancellation par bhi rollback ho.
+
+**Ek DbContext, ek connection — enough hai.** Kyunki dono `SaveChangesAsync` ek hi `AppDbContext` (ek connection) par hain, ye ek local transaction hai — koi distributed transaction, koi MSDTC nahi.
+
+### TransactionScope — ambient alternative aur async gotcha
+
+`TransactionScope` ka faayda: code ko transaction ka pata nahi hona chahiye. Scope ke andar jo bhi `SaveChanges` ya SQL command chale wo apne aap enlist ho jaata hai.
+
+```csharp
+using var scope = new TransactionScope(
+    TransactionScopeOption.Required,
+    new TransactionOptions { IsolationLevel = IsolationLevel.ReadCommitted },
+    TransactionScopeAsyncFlowOption.Enabled);   // <-- async ke liye ZAROORI
+
+await _repo.TransferAsync(employeeId, newDepartmentId, ct);
+await _auditRepo.AddAsync(auditLog, ct);
+
+scope.Complete();   // ye call nahi hui to dispose par rollback
+```
+
+**Gotcha:** `TransactionScope` ka ambient transaction thread-local storage me rehta hai. `await` ke baad continuation ek doosre thread pe resume ho sakta hai — aur tab ambient transaction "kho" jaata hai, tumhare `await` ke baad wale statements transaction ke bahar chal jaate hain (silently!). Isse rokne ke liye constructor me `TransactionScopeAsyncFlowOption.Enabled` **dena hi hai** — ye ambient transaction ko async continuations ke across flow karta hai. Ye ek line bhoolna ek classic production bug hai: local pe (kam concurrency, same thread) theek chalta hai, load pe transaction split ho jaata hai.
+
+**Doosra risk — escalation.** Agar `TransactionScope` ke andar do alag connections khulti hain (do `DbContext`, ya do databases), to SQL Server local transaction ko **distributed transaction** me escalate kar deta hai (MSDTC coordinator). Ye slow hai, extra infra chahiye, aur Linux / cloud me aksar available hi nahi. `.NET` me limited distributed-transaction support wapas aaya hai lekin generally avoid karo — ek transaction, ek connection.
+
+### explicit `BeginTransactionAsync` vs `TransactionScope` — kab kya
+
+| | `BeginTransactionAsync` | `TransactionScope` |
+| --- | --- | --- |
+| Scope | Ek `DbContext` / connection | Ambient — multiple contexts, ADO.NET, libraries |
+| Async | Native, `ct` support | Needs `TransactionScopeAsyncFlowOption.Enabled` |
+| Escalation risk | Nahi (single connection) | Haan, agar 2+ connections |
+| Explicitness | Transaction object visible, pass karna padta hai | Invisible — code ko pata nahi |
+| Recommended default | **Haan** — single DB ke liye | Sirf jab genuinely multiple resources atomically chahiye |
+
+Rule of thumb: single database, single `DbContext` — **`BeginTransactionAsync`**. `TransactionScope` sirf tab jab tumhe do genuinely alag resources (do DBs, ya DB + message outbox in a different store) ko ek unit me bind karna ho, aur tab bhi pehle "kya main ise ek DB me la sakta hoon (outbox pattern)" socho.
+
+### Isolation levels — ek paragraph
+
+SQL Server ka default `READ COMMITTED` hai: tum commit ho chuka data hi padhte ho, lekin ek transaction ke do reads ke beech doosri transaction commit kar de to tumhe alag values dikh sakti hain (non-repeatable read). `REPEATABLE READ` un rows ko lock karta hai jo tumne padhi. `SERIALIZABLE` sabse strict — range locks, phantom reads bhi rokta hai, par concurrency sabse kam. `SNAPSHOT` (row-versioning) readers ko writers block nahi karne deta — BFSI read-heavy reporting me useful. `BeginTransactionAsync(IsolationLevel.Serializable, ct)` se level set karo. Zyada isolation = zyada correctness, kam throughput, zyada deadlock risk — default `READ COMMITTED` chhodo jab tak koi specific anomaly (jaise "check-then-act" race) na ho.
+
+### Where is it used in day-to-day development
+
+- Multi-entity writes jahan partial success illegal hai: order + order-lines, transfer + audit, user + role assignment.
+- "Check then act" — balance check phir debit; `SERIALIZABLE` ya application lock ke saath transaction me.
+- Batch import — 10,000 rows, ya sab aayen ya koi nahi.
+- EF + stored procedure mix — dono ek transaction me.
+- Retry logic ke saath — `EnableRetryOnFailure` on karke user transaction ho to `Database.CreateExecutionStrategy()` wrapper chahiye.
+
+### When to use / when NOT
+
+- **Explicit transaction chahiye** jab atomic unit `>` ek `SaveChangesAsync`, ya EF + raw SQL mix.
+- **NAHI chahiye** jab poora kaam ek `SaveChangesAsync` me fit ho jaata hai — EF already atomic. Bevajah `BeginTransaction` lagana lock hold time badhata hai aur deadlock chance.
+- **`TransactionScope` NAHI** single DB ke liye — overkill aur async trap. **Distributed transaction (MSDTC) NAHI** — outbox / saga pattern socho.
+
+### Failure scenario
+
+Ek team ne `TransferDepartmentAsync` me `TransactionScope` use kiya lekin `TransactionScopeAsyncFlowOption.Enabled` nahi diya. Unit test (sync-ish, single thread) pass. UAT bhi theek. Production pe 50 concurrent transfers — kuch requests me `await SaveChangesAsync` ke baad wala audit `INSERT` ambient transaction ke bahar chala gaya, alag auto-commit transaction me. Result: transfer rollback hua (kisi aur wajah se) par audit row reh gayi — "phantom" audit entries. Debugging me 3 din. Fix ek enum parameter tha. Isliy BFSI code review me `new TransactionScope(` dikhte hi pehla sawaal: "async flow enabled hai?".
+
+</Hinglish>
+
+<Callout type="trap">
+
+`TransactionScope` ko async code ke saath use kar rahe ho to constructor me `TransactionScopeAsyncFlowOption.Enabled` **dena hi hai**. Bina uske ambient transaction `await` ke paar flow nahi karta — tumhare `await` ke baad wale writes chup-chaap transaction ke bahar commit ho jaate hain. Single DB ke liye `BeginTransactionAsync` prefer karo — ye trap hi nahi hai.
+
+</Callout>
+
+<Tradeoff
+  pros={["Atomicity — multi-entity / multi-SaveChanges writes sab ya kuch nahi", "Rollback on any exception, cancellation included, via await using + catch", "BeginTransactionAsync single connection — koi MSDTC, koi distributed overhead", "Isolation level per-transaction set kar sakte ho jahan anomaly ka risk ho"]}
+  cons={["Explicit transaction = lamba lock hold = zyada deadlock/blocking risk", "TransactionScope async flow option bhoolna ek silent production bug", "Multiple connections TransactionScope me = distributed escalation (MSDTC, cloud me aksar nahi)", "EnableRetryOnFailure ke saath user transaction ke liye execution strategy wrapper chahiye"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ke disbursement service me "loan approve" ek `SaveChangesAsync` me loan status update karta tha aur ek doosre me ledger entry likhta tha, bina transaction. Ek din ledger table pe ek check constraint add hua; kuch approvals me ledger `INSERT` fail hua lekin loan already "Approved" tha. Do din me ~40 loans "approved but no ledger entry" state me the — reconciliation nightmare. Fix: dono `SaveChangesAsync` ko `await using var tx = await db.Database.BeginTransactionAsync()` me wrap kiya, `CommitAsync` end me, `catch` me `RollbackAsync`. Ab ya dono, ya koi nahi.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking-adjacent onboarding API me developers ne har service method me "safety ke liye" `BeginTransaction` laga diya tha — un methods me bhi jinme ek hi `SaveChangesAsync` tha. Load test me heavy blocking aur intermittent deadlocks. Review me pata chala 80% transactions bewajah the — EF already ek `SaveChanges` ko atomic banata hai. Team ne rule banaya: `BeginTransaction` sirf tab jab do+ `SaveChangesAsync` ya EF + raw SQL ek unit me hon; warna nahi. Deadlock rate gir gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 1 `SaveChangesAsync` call = 1 implicit transaction, however many INSERT/UPDATE/DELETE it contains
+- Explicit transaction needed only when the atomic unit spans 2+ `SaveChangesAsync` calls or EF + raw SQL
+- SQL Server default isolation = `READ COMMITTED`; options: `REPEATABLE READ`, `SERIALIZABLE`, `SNAPSHOT`, `READ UNCOMMITTED`
+- `TransactionScope` + async needs exactly 1 extra enum: `TransactionScopeAsyncFlowOption.Enabled`
+- 2+ open connections inside one `TransactionScope` can escalate to a distributed (MSDTC) transaction
+- `await using` on the transaction = automatic rollback if `CommitAsync` was never called
+- With `EnableRetryOnFailure`, wrap a manual transaction in `db.Database.CreateExecutionStrategy().ExecuteAsync(...)`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "EF Core me transaction kaise handle karte ho?" Strong answer: "Ek `SaveChangesAsync` already ek implicit transaction hai, to single-call atomic kaam ke liye kuch nahi chahiye. Multi-`SaveChanges` ya EF + raw SQL atomic chahiye to `await using var tx = await db.Database.BeginTransactionAsync(ct)`, phir kaam, phir `await tx.CommitAsync(ct)`, aur `catch` me `await tx.RollbackAsync(ct); throw;`. Single database ke liye main `TransactionScope` avoid karta hoon — usme async flow option ka trap hai aur multiple connections pe distributed escalation. Isolation default `READ COMMITTED` chhodta hoon jab tak koi specific race na ho." Follow-ups: "`TransactionScope` ka async gotcha kya hai?", "distributed transaction kab?", "`SERIALIZABLE` kab use karoge?", "retry policy ke saath transaction?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har service method me `BeginTransaction` lagana, un me bhi jinme ek hi `SaveChangesAsync` hai. EF wo call already atomic banata hai — extra transaction sirf lock hold time aur deadlock risk badhata hai.
+
+</Mistake>
+
+<Mistake>
+
+`TransactionScope` async code ke saath bina `TransactionScopeAsyncFlowOption.Enabled` ke use karna. `await` ke baad ambient transaction kho jaata hai aur baad ke writes transaction ke bahar commit ho jaate hain — silent inconsistency.
+
+</Mistake>
+
+<Mistake>
+
+`catch` block me `await tx.RollbackAsync()` karke `throw;` bhool jaana (ya `throw ex;` likhna). Exception swallow ho gaya to caller ko lagta hai sab theek; `throw ex;` original stack trace uda deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek transaction ke andar do alag `DbContext` instances (do connections) use karna aur ye maan lena ki wo ek local transaction hai. Wo distributed transaction me escalate ho sakta hai — Linux/cloud me MSDTC available hi nahi, runtime error.
+
+</Mistake>
+
+<Mistake>
+
+`EnableRetryOnFailure` on hai aur manual `BeginTransactionAsync` use kar rahe ho bina execution strategy ke. EF exception phenkta hai: retrying execution strategy user-initiated transaction ke saTH directly kaam nahi karta — `CreateExecutionStrategy().ExecuteAsync(...)` me poora transaction wrap karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant S as EmployeeService
+    participant D as AppDbContext
+    participant DB as SQL Server
+    S->>D: await BeginTransactionAsync(ct)
+    D->>DB: BEGIN TRANSACTION
+    S->>D: employee.DepartmentId = new; SaveChangesAsync
+    D->>DB: UPDATE Employees ... (not committed)
+    S->>D: AuditLogs.Add(...); SaveChangesAsync
+    D->>DB: INSERT EmployeeAuditLog ... (not committed)
+    alt no exception
+        S->>D: await tx.CommitAsync(ct)
+        D->>DB: COMMIT  (both writes durable)
+    else exception thrown
+        S->>D: await tx.RollbackAsync(ct)
+        D->>DB: ROLLBACK  (both writes undone)
+    end
+`}
+  caption="Both SaveChangesAsync calls run inside one BeginTransaction; nothing is durable until CommitAsync, and any exception triggers RollbackAsync so the transfer and the audit row are all-or-nothing."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- One `SaveChangesAsync` = one implicit transaction already — no explicit transaction needed for single-call atomic work.
+- Use explicit `await using var tx = await _db.Database.BeginTransactionAsync(ct)` when the atomic unit spans multiple `SaveChangesAsync` calls or EF + raw SQL.
+- Pattern: open, do the work, `await tx.CommitAsync(ct)` on success; `catch { await tx.RollbackAsync(ct); throw; }` — bare `throw`, not `throw ex`.
+- `await using` gives automatic rollback if `CommitAsync` is never reached; the explicit `catch` also covers cancellation.
+- Once a transaction is open EF does not add its own implicit one — every `SaveChangesAsync` joins the open transaction.
+- Single `DbContext` / connection = local transaction, no MSDTC. Two connections in one `TransactionScope` can escalate to a distributed transaction.
+- `TransactionScope` + async MUST pass `TransactionScopeAsyncFlowOption.Enabled`, or the ambient transaction is lost after `await`.
+- Prefer `BeginTransactionAsync` over `TransactionScope` for a single database; reach for `TransactionScope` only for genuinely multi-resource atomicity.
+- Isolation: default `READ COMMITTED`; raise to `SERIALIZABLE` only for check-then-act races, accepting lower throughput and more deadlocks.
+- With `EnableRetryOnFailure`, wrap the whole transaction in `db.Database.CreateExecutionStrategy().ExecuteAsync(...)`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeAuditLog` entity + `DbSet<EmployeeAuditLog> AuditLogs` add karo aur migration chalao. `TransferDepartmentAsync` me `await using var tx = await _db.Database.BeginTransactionAsync(ct)` wrap karke do `SaveChangesAsync` (transfer + audit) aur `CommitAsync` lagao.
+
+**Medium:** `catch` branch add karo jo `RollbackAsync` + `throw` kare. Phir jaan-boojh kar audit `INSERT` ko fail karwao (`ChangedBy` ko `null` chhod do jab column `NOT NULL` ho) aur SQL Server me confirm karo ki `Employees.DepartmentId` bhi wapas purani value pe hai — transfer rollback ho gaya. Combine with the async topic: `CancellationToken` transfer ke beech trip karwa ke dekho rollback hota hai.
+
+**Bada (large):** Do versions banao — ek `BeginTransactionAsync` se, ek `TransactionScope` se (dono flavours, `AsyncFlowOption.Enabled` ke saath aur bina). Ek chhota load test (50 concurrent transfers) chalao aur "orphan audit rows" count karo jab `AsyncFlowOption` missing ho. Phir `EnableRetryOnFailure` on karke `BeginTransactionAsync` version ko `CreateExecutionStrategy().ExecuteAsync(...)` me wrap karke retry-safe banao. Findings ek short note me likho.
+
+</Callout>

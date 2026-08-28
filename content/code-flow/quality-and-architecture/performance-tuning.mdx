@@ -1,0 +1,354 @@
+---
+slug: "performance-tuning"
+title: "Performance Tuning the API: Measure First, Then Fix"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 6
+difficulty: "advanced"
+readingTime: 21
+prerequisites: ["linq-queries-for-data-access", "async-await-end-to-end-and-why", "pagination-filtering-sorting", "calling-external-apis-with-httpclientfactory"]
+tags: ["dotnet", "aspnet-core", "performance", "ef-core", "caching", "benchmarking", "profiling", "employee-management"]
+englishDefinition: "Performance tuning is a measured, evidence-driven pass over an API where you profile with tools like dotnet-trace, dotnet-counters, BenchmarkDotNet and a load tester, find the actual bottleneck, apply one targeted fix, and re-measure. For EmployeeManagement.Api the common levers are EF Core query shaping (AsNoTracking, projection, AsSplitQuery, compiled queries, DbContext pooling, right indexes, keyset pagination), async all the way, HttpClient reuse, caching reference data, response compression, and output caching."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Performance tuning is a measured, evidence-driven pass over an API where you profile with tools like `dotnet-trace`, `dotnet-counters`, BenchmarkDotNet and a load tester, find the actual bottleneck, apply one targeted fix, and re-measure. For `EmployeeManagement.Api` the common levers are EF Core query shaping (`AsNoTracking`, projection, `AsSplitQuery`, compiled queries, `DbContext` pooling, right indexes, keyset pagination), async all the way, `HttpClient` reuse, caching reference data, response compression, and output caching.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne `EmployeeManagement.Api` feature-complete bana liya hai. Ye topic ek alag kism ka kaam hai — koi naya feature nahi, balki **jo hai use tez karna**, aur woh bhi **naap-naap ke**. Sabse important line pehle: **"Measure first, don't guess."** Bina profiler chalaye kiya gaya optimization aksar galat jagah pe hota hai aur code ganda kar deta hai.
+
+### What is it — plain definition
+
+Performance tuning ek loop hai: **measure -> find the biggest bottleneck -> apply one fix -> measure again**. "Measure" ka matlab hai profiler, counters, benchmark, ya load test se **numbers** nikalna — "mujhe lagta hai ye slow hai" nahi. Har request ka time kuch hisso me banta hai: middleware, authentication, DB query, business logic, aur response serialization. Tuning ka kaam hai pata karna in me se kaunsa hissa sabse mehnga hai, aur sirf usko theek karna.
+
+### Why do we need it — bina iske kya hota hai
+
+Bina measurement ke do problem hoti hain:
+
+1. **Galat jagah optimize** — koi 2 din LINQ query ko `for` loop me convert karta hai jabki asli 400ms ek external PAN API call me ja raha tha. Effort waste, aur ab code padhna mushkil.
+2. **Premature optimization** — har jagah caching, har method pe `Span<T>`, custom object pools — code complex, bugs zyada, aur measurable fayda zero kyunki woh path kabhi hot hi nahi tha.
+
+Concrete failure scenario (a real story shape): ek team ka `GET /api/employees` endpoint 1.2 second le raha tha. "Zaroor DB slow hai" maan kar unhone SQL Server ko bada instance diya, indexes add kiye — 1.1 second. Phir `dotnet-trace` chalaya to pata chala 900ms **JSON serialization** me ja raha tha, kyunki har `Employee` ke saath poora `Department` object aur uske 200 employees (circular navigation) serialize ho rahe the. Fix ek `Select` projection tha jo sirf zaroori 5 fields deta — 1.2s se 80ms. "Obvious fix" (DB) galat tha; measurement ne asli culprit dikhaya.
+
+### How does it work — the request cost breakdown
+
+Ek request ka lifecycle, aur har stage pe ek tuning lever:
+
+1. **Middleware pipeline** — HTTPS redirect, routing, CORS. Yahan lever: **response compression** aur **output caching** (anonymous GETs ke liye).
+2. **Authentication / authorization** — JWT signature verify, claims load. Lever: token validation cache, `[AllowAnonymous]` jahan sach me public hai.
+3. **DB query (EF Core)** — aksar sabse bada hissa. Levers: `AsNoTracking`, projection with `Select`, N+1 fix, `AsSplitQuery`, compiled queries, `DbContextPool`, indexes, keyset pagination.
+4. **Business logic** — calculations, external calls. Levers: `IHttpClientFactory` reuse, cache reference data, async I/O.
+5. **Response serialization** — object graph ko JSON banana. Levers: small DTOs (no over-fetch), `System.Text.Json` source generation, avoid circular navigation properties.
+
+### Show it in our project — EF Core levers
+
+**`AsNoTracking()` for reads.** Default me EF Core har entity ka snapshot rakhta hai taaki `SaveChanges` pe change detect kar sake. Read-only endpoint ko iski zaroorat nahi:
+
+```csharp
+// EfEmployeeRepository
+public async Task<List<EmployeeListItemDto>> GetAllAsync(CancellationToken ct) =>
+    await _db.Employees
+        .AsNoTracking()
+        .Select(e => new EmployeeListItemDto(
+            e.Id, e.FullName, e.Email, e.Department.Name, e.IsActive))
+        .ToListAsync(ct);
+```
+
+- `AsNoTracking()` — change tracking off; kam memory, kam CPU, thoda faster. Sirf tab use karo jab entity update nahi karni.
+- `.Select(e => new EmployeeListItemDto(...))` — **projection**. `Include(e => e.Department)` poora `Department` row laata; `Select` sirf `Department.Name` column laata. SQL me `SELECT` list chhoti, network payload chhota, serialization sasta. Ye N+1 se bhi bachata hai kyunki EF ek `JOIN` banata hai.
+
+**Avoid N+1 (recap).** Ye galat hai:
+
+```csharp
+var employees = await _db.Employees.ToListAsync(ct);
+foreach (var e in employees)
+    e.DepartmentName = (await _db.Departments.FindAsync(e.DepartmentId)).Name; // 1 + N queries
+```
+
+100 employees = 101 SQL round-trips. Fix: ek `Select` projection ya ek `Include` jo `JOIN` bane.
+
+**`AsSplitQuery()` for multiple collections.** Jab ek query me do ya zyada collection `Include` hon (`Employee.Documents` + `Employee.SalaryHistory`), single SQL ek cartesian explosion banata hai (rows multiply). `AsSplitQuery()` EF ko bolta hai har collection ke liye alag SQL bhejo:
+
+```csharp
+var employee = await _db.Employees
+    .Include(e => e.Documents)
+    .Include(e => e.SalaryHistory)
+    .AsSplitQuery()
+    .FirstOrDefaultAsync(e => e.Id == id, ct);
+```
+
+Trade-off: multiple round-trips vs ek bloated result set. Ek chhoti collection ke liye single query theek; do badi collections ke liye split.
+
+**Compiled queries.** Jo query bahut baar chalti hai (hot path), uska LINQ-to-SQL translation har baar dobara hota hai. `EF.CompileAsyncQuery` ek baar translate karke cache kar deta hai:
+
+```csharp
+private static readonly Func<AppDbContext, int, Task<Employee?>> _getById =
+    EF.CompileAsyncQuery((AppDbContext db, int id) =>
+        db.Employees.FirstOrDefault(e => e.Id == id));
+
+public Task<Employee?> GetByIdAsync(int id) => _getById(_db, id);
+```
+
+Fayda micro hai (query planning overhead bachta hai), sirf sabse hot query pe lagao.
+
+**`DbContext` pooling.** Har request pe naya `AppDbContext` banana (internal state reset karna) thoda mehnga hai. `AddDbContextPool` context instances ko reuse karta hai:
+
+```csharp
+builder.Services.AddDbContextPool<AppDbContext>(o =>
+    o.UseSqlServer(cs), poolSize: 128);
+```
+
+Caveat: `DbContext` me apna custom mutable state mat rakho — pool use reset nahi karega.
+
+**Right indexes.** Jo columns tum `WHERE` / `ORDER BY` me use karte ho, unpe index hona chahiye. Humare filter/sort columns: `Email` (unique lookup), `DepartmentId` (filter), `IsActive` (filter), `DateOfJoining` (sort). Migration me:
+
+```csharp
+modelBuilder.Entity<Employee>()
+    .HasIndex(e => e.Email).IsUnique();
+modelBuilder.Entity<Employee>()
+    .HasIndex(e => new { e.DepartmentId, e.IsActive });
+```
+
+**Keyset pagination for deep pages.** `Skip(10000).Take(20)` ke saath DB pehle 10020 rows read karta hai phir 10000 phenk deta hai — page jitna deep, utna slow. Keyset ("seek") pagination last-seen key se aage padhta hai:
+
+```csharp
+// instead of .Skip(page*size).Take(size)
+var pageItems = await _db.Employees
+    .AsNoTracking()
+    .Where(e => e.Id > lastSeenId)
+    .OrderBy(e => e.Id)
+    .Take(size)
+    .ToListAsync(ct);
+```
+
+Constant time har page pe, kyunki index seek karta hai. Trade-off: "page 500 pe jump" nahi ho sakta, sirf next/prev.
+
+### App-level levers
+
+**Async all the way.** Ek `async` method ke andar `.Result` ya `.Wait()` thread block karta hai aur thread-pool starvation + deadlock risk deta hai. Controller se repository tak har I/O method `async Task` ho aur `await` ho. Ye throughput badhata hai (thread free rehte hain), latency nahi.
+
+**`IHttpClientFactory` reuse.** `new HttpClient()` har call pe socket exhaustion deta hai. Factory handlers ko pool karta hai:
+
+```csharp
+builder.Services.AddHttpClient<IPanVerificationClient, PanVerificationClient>(c =>
+    c.BaseAddress = new Uri("https://pan-api.bank.internal"));
+```
+
+**Cache reference data.** `Department` list roz me ek-do baar badalti hai par har employee create pe read hoti hai. Simplest: `IMemoryCache`.
+
+```csharp
+public async Task<List<Department>> GetDepartmentsAsync(CancellationToken ct)
+{
+    return (await _cache.GetOrCreateAsync("departments", async entry =>
+    {
+        entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
+        return await _db.Departments.AsNoTracking().ToListAsync(ct);
+    }))!;
+}
+```
+
+Production approach + trade-off: `IMemoryCache` per-instance hai — 3 API instances = 3 copies, aur ek instance pe invalidate karo to baaki stale. Multi-instance ke liye **Redis** (`IDistributedCache`) — shared, invalidation ek jagah, par network hop aur serialization cost. Rule: single instance ya truly static data -> `IMemoryCache`; multi-instance + needs coordinated invalidation -> Redis.
+
+**Response compression.** JSON text 60-80% compress hota hai. Bandwidth-bound clients (mobile) ke liye bada fark:
+
+```csharp
+builder.Services.AddResponseCompression(o =>
+{
+    o.EnableForHttps = true;
+    o.Providers.Add<BrotliCompressionProvider>();
+    o.Providers.Add<GzipCompressionProvider>();
+});
+// app.UseResponseCompression();  early in the pipeline
+```
+
+Brotli chhota output deta hai par CPU zyada; Gzip fallback. Trade-off: CPU vs bytes-on-wire.
+
+**Output caching for anonymous GETs.** `.NET 8` ka `AddOutputCache` poori response ko server pe cache karta hai — agla same request DB tak jaata hi nahi:
+
+```csharp
+builder.Services.AddOutputCache();
+// [OutputCache(Duration = 30)] on the action, ya
+app.MapControllers().CacheOutput();
+```
+
+Sirf **anonymous, non-personalized** GETs pe — warna ek user ka data dusre ko dikh sakta hai.
+
+**`System.Text.Json` source generation.** Reflection-based serialization pehli baar metadata build karta hai. Source gen compile-time pe serializer code generate karta hai — faster startup aur throughput, AOT-friendly:
+
+```csharp
+[JsonSerializable(typeof(List<EmployeeListItemDto>))]
+[JsonSerializable(typeof(EmployeeDto))]
+internal partial class ApiJsonContext : JsonSerializerContext { }
+
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.TypeInfoResolverChain.Insert(0, ApiJsonContext.Default));
+```
+
+**Server GC.** Web apps ke liye Server GC (multiple heaps, background collection) throughput ke liye behtar; Workstation GC low-memory desktop ke liye. `.csproj`:
+
+```xml
+<PropertyGroup>
+  <ServerGarbageCollection>true</ServerGarbageCollection>
+</PropertyGroup>
+```
+
+`ASP.NET Core` ka default already Server GC hai container me — confirm karo, disable mat karo galti se.
+
+### How to measure — the tools
+
+- **`dotnet-counters`** — live counters: requests/sec, GC pauses, thread-pool queue length, working set. `dotnet-counters monitor --process-id <pid>`. Pehla step: "kahan dard hai" ka mota andaza.
+- **`dotnet-trace`** — sampling profiler; ek `.nettrace` file deta hai jo Visual Studio ya PerfView me kholte ho. CPU flame-graph me dikhta hai kaunsa method time kha raha hai — serialization, EF, ya tumhaara code.
+- **BenchmarkDotNet** — ek chhote method ke do implementations ka precise comparison (mean, allocations, p95). "Manual mapping vs AutoMapper" jaise micro-decisions ke liye.
+- **Load testing (k6 / NBomber)** — realistic concurrent load daal kar p50/p95/p99 latency aur throughput naapo. **NBomber** C# me likha jaata hai (test project me), **k6** ek alag JS-scripted tool. Isse "10 users pe theek, 500 pe girta hai" pata chalta hai.
+- **EF Core logging** — `LogTo(Console.WriteLine, LogLevel.Information)` ya `EnableSensitiveDataLogging` (sirf dev) se generated SQL aur uska time dikhta hai. Slow query yahin pakadti hai.
+- **OpenTelemetry / Application Insights** — production me distributed traces: ek request ka waqt kahan-kahan gaya (DB span, HTTP span, serialization). "Measure first" ka production version.
+
+### The workflow
+
+1. Load test se baseline lo (p95 latency, throughput).
+2. `dotnet-trace` ya App Insights se **sabse bada single contributor** dhoondho.
+3. **Ek** targeted fix karo (projection add karo, index banao, cache lagao).
+4. Dobara load test — improvement confirm karo, regression check karo.
+5. Repeat jab tak p95 target ke andar na aa jaaye. Phir **ruk jao** — aur optimization bina naye data ke over-engineering hai.
+
+### When to tune / when NOT to
+
+- **Tune** jab load test me p95 SLA cross kar raha ho, jab traces ek clear bottleneck dikhayein, jab ek endpoint measurably hot ho.
+- **Don't** internal tool jiske 20 users hain; ek endpoint jo din me 5 baar chalta hai; koi bhi change jiska "before" number tumne naapa hi nahi. Readability > micro-optimization jab tak profiler kuch aur na bole.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Har "optimization" se pehle ek before-number likho aur baad me after-number. Agar tum fark nahi naap sakte, tumne performance improve nahi kiya — tumne bas code badal diya aur risk add kiya.
+
+</Callout>
+
+<Tradeoff
+  pros={["Measured tuning se p95/p99 latency aur throughput me bada, real improvement", "EF Core levers (projection, AsNoTracking, indexes) aksar 10x diye bina architecture badle", "Caching aur output caching read-heavy APIs pe DB load kaafi giraate hain", "Profiler-driven approach effort ko sahi bottleneck pe focus karta hai"]}
+  cons={["Bina measurement ke tuning galat jagah pe hota hai — waqt waste, code ganda", "Caching se staleness aur invalidation bugs; distributed cache pe network + serialization cost", "Compiled queries / source-gen / object pools se code complexity badhti hai micro gain ke liye", "AsNoTracking galti se update path pe lag jaaye to changes silently save nahi hote"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ka `GET /api/applications` dashboard endpoint peak pe 2.5s p95 de raha tha. Team ka pehla instinct tha "SQL Server upgrade karo". Ek engineer ne pehle `dotnet-trace` chalaya aur flame-graph me dekha ki 1.8s `Include`-heavy query ke result ko serialize karne me ja raha tha — har application ke saath poora `Applicant`, `Documents`, aur `AuditTrail` graph aa raha tha, jabki dashboard ko sirf 6 fields chahiye the. Ek `Select` projection DTO ne response 2.5s se 140ms kar diya, aur DB instance same raha. "Obvious fix" pure guess tha.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR API me har `POST /api/employees` 300ms extra le raha tha kyunki service har call pe `Departments` table poora read karti thi validation ke liye. `Department` list mahine me shayad ek baar badalti thi. Team ne `IMemoryCache` ke saath 15-minute expiry lagayi — create latency 300ms giri. Baad me jab API 4 instances pe scale hui, ek instance pe department add karne pe baaki 3 stale ho gaye; unhone `IDistributedCache` (Redis) pe shift kiya with a pub/sub invalidation message. Pehle simplest (`IMemoryCache`), phir jab multi-instance problem aayi tab production approach.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `AsNoTracking()` read queries pe typically 10-30% CPU/memory bachata hai badi result sets pe
+- `Skip(n).Take(m)` deep pages pe linear slow hota hai; keyset pagination har page pe roughly constant
+- JSON text response compression se roughly 60-80% chhoti ho jaati hai (Brotli usually Gzip se behtar ratio, zyada CPU)
+- `new HttpClient()` per-call = socket exhaustion; `IHttpClientFactory` handlers ~2 minute reuse karta hai by default
+- Load test metrics jo maayne rakhte hain: p50, p95, p99 latency aur requests/sec — average latency alone misleading hai
+- `AddDbContextPool` ka default `poolSize` 1024; pooling context allocation overhead bachata hai, query time nahi
+- Tuning loop: measure -> one fix -> measure. Bina "before" number ke koi change merge mat karo
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Ek API endpoint slow hai — tum kya karoge?" Weak answer turant fixes list karna hai ("caching laga doonga, index add kardoonga"). Strong answer process batata hai: "Pehle measure — load test se p95 baseline, phir `dotnet-trace` ya Application Insights se sabse bada contributor dhoondhta hoon: DB query, serialization, external call, ya GC. Phir ek targeted fix — agar EF query hai to `AsNoTracking` + `Select` projection + right index, agar deep pagination hai to keyset, agar reference data hai to cache. Fix ke baad dobara load test se confirm. Ek baar me ek change, warna pata nahi chalega kisne help kiya." Follow-ups: "N+1 kya hai aur kaise pakadoge?" (EF SQL logging), "`AsNoTracking` kab nahi?" (update path), "`IMemoryCache` vs Redis?" (single vs multi-instance + invalidation), "compression ka trade-off?" (CPU vs bytes). Ek real story — "hum sabne socha DB slow hai, trace ne dikhaya serialization tha" — turant senior signal deta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Profiler chalaye bina optimize karna. "Zaroor DB slow hai" maan kar indexes aur bade instances pe din laga dena jab asli time serialization ya ek external call me ja raha tha. Har tuning se pehle `dotnet-trace` / App Insights se bottleneck confirm karo.
+
+</Mistake>
+
+<Mistake>
+
+`AsNoTracking()` ko blindly har jagah laga dena — including un queries pe jinke result ko baad me update karke `SaveChanges` karna hai. Tracking off hone se EF change detect nahi karta, aur update silently persist nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+`Skip().Take()` se deep pagination karna aur wonder karna ki page 800 slow kyun hai. DB pehle saari skipped rows read karta hai. High page numbers ke liye keyset (seek) pagination use karo.
+
+</Mistake>
+
+<Mistake>
+
+Har `GET` pe output caching ya `IMemoryCache` laga dena — including authenticated, per-user responses. Ek user ka cached data dusre user ko serve ho jaata hai. Output caching sirf anonymous, non-personalized GETs pe.
+
+</Mistake>
+
+<Mistake>
+
+Multiple badi collections ek query me `Include` karke `AsSplitQuery` na lagana — result set cartesian explode karta hai (rows multiply), aur "DB slow hai" lagta hai jabki asli me query shape galat hai.
+
+</Mistake>
+
+<Mistake>
+
+`new HttpClient()` har external call pe banana. `IHttpClientFactory` (ya typed client) use na karne se socket exhaustion aur DNS staleness aata hai, jo load ke niche intermittent failures dikhata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    REQ["Incoming request"] --> MW["Middleware<br/>lever: response compression, output cache"]
+    MW --> AUTH["Auth (JWT verify)<br/>lever: AllowAnonymous where public"]
+    AUTH --> QRY["EF Core query<br/>lever: AsNoTracking, Select projection, index, keyset, AsSplitQuery"]
+    QRY --> LOGIC["Business logic + external calls<br/>lever: IHttpClientFactory, cache reference data, async I/O"]
+    LOGIC --> SER["Serialize response<br/>lever: small DTOs, System.Text.Json source-gen"]
+    SER --> RESP["Response out"]
+`}
+  caption="Each stage of a request has its own tuning lever — profile first to learn which stage is actually the bottleneck, then pull only that lever."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- The loop: measure -> find the single biggest bottleneck -> one targeted fix -> measure again -> stop when p95 meets SLA. Never optimize without a before-number.
+- Tools: `dotnet-counters` (live counters), `dotnet-trace` (CPU flame-graph), BenchmarkDotNet (micro comparisons), k6 / NBomber (load test p50/p95/p99), EF Core SQL logging (slow queries), OpenTelemetry / Application Insights (production traces).
+- EF Core reads: `AsNoTracking()` (not on update paths), `Select` projection instead of `Include`-everything, fix N+1, `AsSplitQuery()` for multiple collections, `EF.CompileAsyncQuery` for the hottest query, `AddDbContextPool`.
+- Indexes on every column you filter or sort by — for us `Email`, `DepartmentId`, `IsActive`, `DateOfJoining`. Deep pages: keyset (seek) pagination, not `Skip().Take()`.
+- App: async all the way (no `.Result`/`.Wait()`), `IHttpClientFactory` for reuse, cache reference data with `IMemoryCache` (single instance) or Redis `IDistributedCache` (multi-instance + coordinated invalidation).
+- HTTP: `AddResponseCompression` (Brotli/Gzip, CPU vs bytes), `AddOutputCache` for anonymous non-personalized GETs only, `System.Text.Json` source generation, Server GC (already the ASP.NET Core default in containers).
+- Trade-offs: caching brings staleness/invalidation bugs; compiled queries and source-gen add complexity for small gains; wrong `AsNoTracking` silently drops updates.
+- Story to remember: everyone assumed the DB was slow; the trace showed serialization of an over-fetched object graph — a `Select` projection cut 1.2s to 80ms.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EfEmployeeRepository.GetAllAsync` me `AsNoTracking()` add karo aur `Include(e => e.Department)` ko ek `Select(e => new EmployeeListItemDto(...))` projection se replace karo jo sirf 5 fields laata hai. EF Core SQL logging on karke pehle-baad ka `SELECT` compare karo.
+
+**Medium:** `GET /api/employees` pe offset pagination (`Skip().Take()`) ko keyset pagination (`Where(e => e.Id > lastSeenId).OrderBy(e => e.Id).Take(size)`) me convert karo aur `Employee` pe `DepartmentId, IsActive` ka composite index migration add karo. Phir k6 ya NBomber se 100 concurrent users ka load test likho jo page 1 aur page 400 dono hit kare, aur p95 latency before/after note karo.
+
+**Bada (large):** Poore `EmployeeManagement.Api` pe ek measured tuning pass: (1) NBomber load test se baseline p50/p95/p99 lo; (2) `dotnet-trace` chala kar sabse bade contributor identify karo; (3) us stage ka lever lagao — response compression + output caching anonymous GETs pe, `IMemoryCache` for `Department` reference data, `System.Text.Json` source-gen context, aur `AddDbContextPool`; (4) har change ke baad load test dobara chala kar improvement/regression document karo ek chhote markdown report me. Rule: ek waqt me ek change, aur bina before-number ke koi change nahi.
+
+</Callout>

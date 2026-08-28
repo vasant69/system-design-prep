@@ -1,0 +1,317 @@
+---
+slug: "swap-repository-to-ef-core"
+title: "Swapping the Repository to EF Core, Line by Line"
+section: "code-flow"
+module: "data-access-efcore"
+order: 4
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["ef-core-dbcontext-and-dbset", "connection-strings-and-appsettings", "migrations-code-first", "the-repository-pattern"]
+tags: ["dotnet", "ef-core", "repository-pattern", "dbcontext", "dependency-injection", "employee-management"]
+englishDefinition: "Swapping the repository to EF Core means writing an EfEmployeeRepository that implements the existing IEmployeeRepository contract using AppDbContext instead of an in-memory list: queries go through DbSet with ToListAsync and FindAsync or FirstOrDefaultAsync, writes call Add or Remove to stage changes and then SaveChangesAsync to flush them to SQL Server in one transaction. Because the interface is unchanged, only one registration line in Program.cs changes and the service and controller are not touched at all."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Swapping the repository to EF Core means writing an `EfEmployeeRepository` that implements the existing `IEmployeeRepository` contract using `AppDbContext` instead of an in-memory list: queries go through `DbSet` with `ToListAsync` and `FindAsync` or `FirstOrDefaultAsync`, writes call `Add` or `Remove` to stage changes and then `SaveChangesAsync` to flush them to SQL Server in one transaction. Because the interface is unchanged, only one registration line in `Program.cs` changes and the service and controller are not touched at all.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Module 3 me humne `IEmployeeRepository` interface banaya tha aur uske peeche `InMemoryEmployeeRepository` jo ek `static List<Employee>` wrap karta tha. Tab humne bola tha: "module 4 me isko `EfEmployeeRepository` se replace karenge aur Service ki ek line nahi badlegi." Ab wo moment aa gaya hai. `AppDbContext` ready hai, connection string wire ho chuki hai, migration se `Employees` table ban chuki hai. Bas ek nayi class likhni hai jo `List` ke bajaye `DbContext` use kare.
+
+### What is it — interface wahi, implementation nayi
+
+`IEmployeeRepository` ek **contract** hai — "employee laane aur save karne ke ye methods honge." Contract ye nahi kehta ki data kahan rehta hai. `InMemoryEmployeeRepository` ne kaha "RAM me ek list me." `EfEmployeeRepository` kehta hai "SQL Server me, EF Core ke through." Dono same interface implement karte hain, isliye jo bhi code interface par depend karta hai (`EmployeeService`) usse farak nahi padta — usko sirf `IEmployeeRepository` dikhta hai, uske peeche kya hai wo DI container decide karta hai.
+
+Yahi **Dependency Inversion** ka practical payoff hai: high-level policy (Service ki business logic) low-level detail (kaunsa database) par depend nahi karti — dono ek abstraction (interface) par depend karti hain.
+
+### Why do we need it — in-memory list ka problem
+
+`static List<Employee>` ke saath teen cheezein tootti hain:
+
+- **Data volatile hai** — app restart, deploy, ya crash — sab employees gaye. BFSI me ye acceptable nahi.
+- **Multi-instance pe alag-alag data** — do server instances chal rahe hain to dono ke paas apni alag list hai; ek pe add kiya employee doosre pe dikhta hi nahi.
+- **Koi query power nahi** — filtering, paging, sorting, joins sab haath se LINQ-on-list likhna padta hai aur poori list memory me leke.
+
+Ek asli database (SQL Server) ye teeno solve karta hai — durable storage, shared state, aur SQL ka query engine. EF Core wo bridge hai jo `Employee` object ko us database se jodta hai bina humein raw SQL likhwaaye.
+
+### How does it work — Add tracks, SaveChanges writes
+
+EF Core ka mental model do steps ka hai:
+
+1. **Staging (in-memory)** — `_db.Employees.Add(employee)` ya `_db.Employees.Remove(employee)` sirf change tracker ko batate hain "is object ko `Added` / `Deleted` maano." **Abhi database me kuch nahi gaya.** Koi `INSERT`, koi `DELETE` nahi.
+2. **Flush** — `await _db.SaveChangesAsync()` par EF Core saare tracked changes ko dekhta hai, unke liye `INSERT` / `UPDATE` / `DELETE` SQL banata hai, **ek implicit transaction** me sab bhejta hai. Agar ek statement fail hua to poora rollback.
+
+Query side: `await _db.Employees.ToListAsync()` LINQ ko `SELECT` SQL me translate karta hai, rows ko `Employee` objects me materialize karta hai. `await _db.Employees.FindAsync(id)` primary key se ek row laata hai — aur pehle change tracker me dekhta hai (agar wo entity already loaded hai to DB hit hi nahi hoti).
+
+### Show it in our project — EfEmployeeRepository
+
+`Repositories/EfEmployeeRepository.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using EmployeeManagement.Api.Data;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Repositories;
+
+public class EfEmployeeRepository : IEmployeeRepository
+{
+    private readonly AppDbContext _db;
+
+    public EfEmployeeRepository(AppDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<IReadOnlyList<Employee>> GetAllAsync(CancellationToken ct = default)
+    {
+        return await _db.Employees
+            .AsNoTracking()
+            .OrderBy(e => e.Id)
+            .ToListAsync(ct);
+    }
+
+    public async Task<Employee?> GetByIdAsync(int id, CancellationToken ct = default)
+    {
+        return await _db.Employees.FindAsync(new object?[] { id }, ct);
+    }
+
+    public async Task<bool> EmailExistsAsync(string email, CancellationToken ct = default)
+    {
+        return await _db.Employees
+            .AnyAsync(e => e.Email == email, ct);
+    }
+
+    public async Task<Employee> AddAsync(Employee employee, CancellationToken ct = default)
+    {
+        _db.Employees.Add(employee);
+        await _db.SaveChangesAsync(ct);
+        return employee;
+    }
+
+    public async Task UpdateAsync(Employee employee, CancellationToken ct = default)
+    {
+        _db.Employees.Update(employee);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task RemoveAsync(int id, CancellationToken ct = default)
+    {
+        var existing = await _db.Employees.FindAsync(new object?[] { id }, ct);
+        if (existing is null) return;
+
+        _db.Employees.Remove(existing);
+        await _db.SaveChangesAsync(ct);
+    }
+}
+```
+
+Aur `Program.cs` me **sirf ek line** badalti hai:
+
+```csharp
+// pehle:
+// builder.Services.AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>();
+
+// ab:
+builder.Services.AddScoped<IEmployeeRepository, EfEmployeeRepository>();
+```
+
+`EmployeeService`, `EmployeesController`, DTOs, mapping — **kuch nahi chhua**. Yahi interface ka reward hai jo humne module 3 me pay kiya.
+
+### Code explained line by line
+
+- `public class EfEmployeeRepository : IEmployeeRepository` — same contract implement kar rahe hain jo `InMemoryEmployeeRepository` karta tha. Compiler enforce karega ki saare interface methods yahan hon.
+- `private readonly AppDbContext _db;` + constructor — **constructor injection**. Hum `new AppDbContext()` khud nahi karte; DI container `AddDbContext` ki registration dekh kar ek scoped instance yahan inject karta hai. `readonly` matlab ye instance is object ki life me nahi badlega.
+- `AppDbContext` **scoped** hai — ek HTTP request jitna jeeta hai. Repository bhi scoped hai. Isliye ek request ke andar repository, service, sab ek hi `AppDbContext` instance share karte hain — ek unit of work.
+- `_db.Employees.AsNoTracking()` — GET-all read-only hai, hume change tracker ki zaroorat nahi. `AsNoTracking()` EF ko batata hai "in objects ko yaad mat rakho" — thoda tez, kam memory. Jahan hume object edit karke `SaveChanges` karna ho wahan `AsNoTracking()` **nahi** lagate.
+- `.OrderBy(e => e.Id)` — SQL me `ORDER BY Id`. Bina explicit order ke SQL Server row order guarantee nahi karta.
+- `.ToListAsync(ct)` — yahan query DB pe jaati hai (deferred execution: `Where`/`OrderBy` sirf query banate hain, `ToListAsync` use chalata hai). `ct` cancellation token pass kar rahe hain taaki client bhaag jaaye to query cancel ho.
+- `_db.Employees.FindAsync(new object?[] { id }, ct)` — primary key lookup. `FindAsync` ka special behaviour: pehle **change tracker** (already-loaded entities) me dekhta hai, wahan mila to DB hit nahi karta. `FirstOrDefaultAsync(e => e.Id == id, ct)` hamesha DB pe jaata hai — jab tumhe `Include` chahiye ya PK ke alawa koi condition, tab `FirstOrDefaultAsync` use karo.
+- `AnyAsync(e => e.Email == email, ct)` — `SELECT CASE WHEN EXISTS(...)` — sirf ek boolean, poori row nahi. Duplicate email check ke liye ye `ToListAsync().Any()` se bahut behtar hai (wo saari rows le aata).
+- `_db.Employees.Add(employee)` — **sirf staging**. Employee ab `Added` state me hai, DB me nahi.
+- `await _db.SaveChangesAsync(ct)` — **yahan asli `INSERT` jaata hai**, ek transaction me. Iske baad `employee.Id` bhar jaata hai (SQL Server `IDENTITY` se generated value EF wapas padh leta hai).
+- `_db.Employees.Update(employee)` — poore entity ko `Modified` mark karta hai (saare columns `UPDATE` me jaate hain). Agar tumne entity ko tracking ke saath load kiya hota aur property badli hoti, to `Update` ki zaroorat hi nahi — `SaveChangesAsync` khud detect kar leta. `Update` un cases ke liye hai jab entity disconnected hai (DTO se bana, ya `AsNoTracking` se aaya).
+- `RemoveAsync` me pehle `FindAsync` — EF ko delete karne ke liye ek tracked entity chahiye. `Remove` use `Deleted` mark karta hai, `SaveChangesAsync` `DELETE` bhejta hai.
+
+### Seed data — HasData ya ek seeder
+
+Empty table pe test karna mushkil hai. Do saaf tarike:
+
+**1. `HasData` in `OnModelCreating`** — seed data migration ka hissa ban jaata hai:
+
+```csharp
+modelBuilder.Entity<Department>().HasData(
+    new Department { Id = 1, Name = "Retail Lending", CostCentre = "CC-101" },
+    new Department { Id = 2, Name = "Compliance", CostCentre = "CC-102" }
+);
+```
+
+`HasData` ko fixed primary keys chahiye (`Id = 1`), aur ye `dotnet ef migrations add SeedDepartments` me `InsertData` calls generate karta hai. Reference data (departments, roles, document types) ke liye best.
+
+**2. Ek runtime seeder** — `Program.cs` me startup pe, sirf development me:
+
+```csharp
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    if (!await db.Employees.AnyAsync())
+    {
+        db.Employees.Add(new Employee { FullName = "Asha Rao", Email = "asha@corp.test", /* ... */ });
+        await db.SaveChangesAsync();
+    }
+}
+```
+
+Bulk / test data ke liye theek, lekin production me is block ko kabhi mat chhodo.
+
+### Where is it used in day-to-day development
+
+- Har naye entity ke saath ek `EfXxxRepository` (ya ek generic base). Pattern wahi: inject `AppDbContext`, `DbSet` pe query, `SaveChangesAsync` pe write.
+- Storage badalne pe (SQL Server se Postgres) — repository ki ek-do lines badalti hain, Service/Controller nahi.
+- Unit test me `EmployeeService` ko ek 15-line fake `IEmployeeRepository` deke test karte hain — asli DB ke bina.
+- Integration test me `EfEmployeeRepository` ko SQLite in-memory ya Testcontainers SQL Server ke against chalate hain.
+
+### When to use / when NOT
+
+- **Use a repository over EF Core** jab tum storage swap-ability chahte ho, ya Service ko DB ke bina test karna chahte ho, ya team ko ek consistent data-access surface deni hai.
+- **Skip it** chhote apps me jahan storage kabhi nahi badlega aur tum `DbContext` ke against directly test karne me comfortable ho — tab `Service -> AppDbContext` bhi theek hai. Ek **generic `IRepository<T>` jo `IQueryable` leak karta hai** — usse bacho, wo abstraction dega bhi nahi aur EF detail bahar bhi phailayega.
+
+### Failure scenario
+
+Agar `EfEmployeeRepository` me tumne `AddAsync` me `_db.Employees.Add(employee)` likha lekin `SaveChangesAsync` **call karna bhool gaye** — API `201 Created` return karega (kyunki service ko exception nahi mila), lekin database me row hai hi nahi. Agli request pe employee gayab. `Add` sirf tracks; jab tak `SaveChangesAsync` nahi, disk pe kuch nahi likha. Ye ek classic silent bug hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`_db.Employees.Add(...)` ke baad `SaveChangesAsync()` call karna mat bhoolo — `Add`/`Remove` sirf change tracker me entry karte hain, actual `INSERT`/`DELETE` `SaveChangesAsync` par jaata hai. Bina uske API success dikhaayega par DB khaali rahega.
+
+</Callout>
+
+<Tradeoff
+  pros={["Storage swap ek line — Service aur Controller untouched", "Service DB ke bina test hota hai (fake IEmployeeRepository)", "Data-access ek jagah — queries, AsNoTracking, includes sab repository me", "SaveChangesAsync ek transaction — ek unit ke saare writes atomic"]}
+  cons={["Ek aur layer aur file har entity ke liye", "IQueryable interface ke peeche chhup jaata hai — composability kho sakti hai", "Naya dev ko trace karna padta hai: controller -> service -> interface -> impl", "Generic repository galat kiya to dono duniya ka bura"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ne apna employee/agent management module in-memory list se shuru kiya tha — demo ke liye. Jab pehla real client aaya, unhe bas `InMemoryEmployeeRepository` ki jagah `EfEmployeeRepository` banani padi aur `Program.cs` ki ek line badalni padi. `AgentService` (300+ lines business logic) me ek bhi change nahi. Yahi wajah thi ki interface abstraction "over-engineering" nahi lagi — payoff din bhar me mil gaya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking-adjacent project me har entity ke liye alag `EfXxxRepository` classes ban gayi thin — 40+ files, sab me same `ToListAsync` / `SaveChangesAsync` boilerplate. Team ne ek `EfRepository<T>` base class banayi jo common CRUD deti hai, aur specific repositories (`EfEmployeeRepository`) sirf entity-specific queries (`GetActiveByDepartmentAsync`) add karti hain. Contract abhi bhi specific interface (`IEmployeeRepository`) hai — sirf implementation code share hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 1 line change in `Program.cs` to swap in-memory to EF Core — service and controller: 0 changes
+- 2 steps for every write: `Add`/`Remove` (stage), then `SaveChangesAsync` (flush in one transaction)
+- `AsNoTracking()` read-only queries — roughly 10-30% less memory and time on large result sets
+- `FindAsync` checks the change tracker first; a tracked entity means 0 DB round-trips
+- `AnyAsync` for existence checks — returns 1 boolean, not N rows
+- `AppDbContext` lifetime = scoped = 1 HTTP request; repository is scoped too, they share one context
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "You have a repository over an in-memory list. How do you move to a real database with EF Core?" Strong 20-second answer: "Interface `IEmployeeRepository` unchanged rehta hai. Main ek `EfEmployeeRepository` likhta hoon jo `AppDbContext` inject karti hai; queries `DbSet` pe `ToListAsync`/`FindAsync`/`AnyAsync` se, writes `Add`/`Remove` se stage hote hain aur `SaveChangesAsync` se ek transaction me flush hote hain. `Program.cs` me sirf registration line badalti hai — `AddScoped<IEmployeeRepository, EfEmployeeRepository>()`. Service aur controller ko chhua tak nahi — yahi Dependency Inversion ka payoff hai." Follow-ups jo aate hain: "`Add` ke baad DB me kab likha jaata hai?" (`SaveChangesAsync` par, ek implicit transaction), "`FindAsync` vs `FirstOrDefaultAsync`?", "`AsNoTracking` kab?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`_db.Employees.Add(employee)` karke `SaveChangesAsync()` call nahi karna. `Add` sirf change tracker me stage karta hai — actual `INSERT` `SaveChangesAsync` par jaata hai. Bina uske API success dikhaayega par row DB me nahi hogi.
+
+</Mistake>
+
+<Mistake>
+
+`AsNoTracking()` un queries pe lagana jinke result ko tum edit karke `SaveChanges` karna chahte ho. No-tracking entity ke changes EF detect nahi karta — `SaveChanges` chup-chaap kuch nahi karega. `AsNoTracking()` sirf pure reads pe.
+
+</Mistake>
+
+<Mistake>
+
+Interface me EF-specific type leak karna — `IQueryable<Employee> Query()` ya `DbSet<Employee>` return karna. Ab `InMemoryEmployeeRepository` (aur test fakes) is contract ko honestly implement nahi kar sakte, aur swap-ability khatm.
+
+</Mistake>
+
+<Mistake>
+
+`AppDbContext` ko `new` karke banana repository ke andar (`new AppDbContext()`). Tab options/connection string configure hi nahi hote aur DI ka scoped lifetime break ho jaata hai. Hamesha constructor injection se lo.
+
+</Mistake>
+
+<Mistake>
+
+Har repository method ke andar `try/catch` laga kar `SaveChangesAsync` ke exception ko swallow kar dena aur `false` return karna. Caller (service) ko pata hi nahi chalta save fail hua. Data-layer exceptions upar jaane do; global exception handler unko `500` me convert karega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant S as EmployeeService
+    participant R as EfEmployeeRepository
+    participant D as AppDbContext
+    participant DB as SQL Server
+    S->>R: AddAsync(employee, ct)
+    R->>D: _db.Employees.Add(employee)
+    Note over D: entity marked Added<br/>(change tracker only, no SQL yet)
+    R->>D: await SaveChangesAsync(ct)
+    D->>DB: BEGIN TRAN; INSERT INTO Employees ...; COMMIT
+    DB-->>D: new Id (IDENTITY)
+    D-->>R: 1 row written
+    R-->>S: employee (Id populated)
+`}
+  caption="Add only stages the entity in the change tracker; SaveChangesAsync is the single call that writes to SQL Server, inside one implicit transaction."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `EfEmployeeRepository : IEmployeeRepository` — same contract, `AppDbContext` inside instead of a `List`. Only `Program.cs` registration changes; service and controller untouched.
+- Reads: `ToListAsync` (list), `FindAsync(id)` (PK lookup, checks tracker first), `FirstOrDefaultAsync(pred)` (any condition / needs `Include`), `AnyAsync(pred)` (existence, returns a boolean).
+- `AsNoTracking()` on read-only queries — faster, less memory; never on entities you will edit and save.
+- Writes are two steps: `Add` / `Remove` stage the change in the tracker; `SaveChangesAsync` flushes all staged changes to SQL Server in one implicit transaction.
+- After `SaveChangesAsync` on an insert, the entity's `Id` is populated from SQL Server `IDENTITY`.
+- `Update(entity)` marks the whole entity `Modified` — needed only for disconnected entities; a tracked-and-edited entity is saved automatically.
+- Seed data: `HasData` in `OnModelCreating` for reference data (goes into a migration), or a dev-only startup seeder for bulk test data.
+- Forgetting `SaveChangesAsync` is a silent bug — API reports success, DB stays empty.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Repositories/EfEmployeeRepository.cs` banao jo `IEmployeeRepository` implement kare using `AppDbContext`. `GetAllAsync` ko `AsNoTracking().OrderBy(e => e.Id).ToListAsync(ct)` se implement karo. `Program.cs` me registration line ko `EfEmployeeRepository` par switch karo aur Swagger se `GET /api/employees` test karo.
+
+**Medium:** `AddAsync` aur `RemoveAsync` implement karke `POST` + `DELETE` end to end test karo — SQL Server me row aati/jaati dekho (SSMS ya `dotnet ef` se). Phir jaan-boojh kar `AddAsync` se `SaveChangesAsync` line hata do aur dekho API `201` deta hai par row DB me nahi — wapas add karo. Combine with the migrations topic: naye seed department ke liye ek `HasData` migration banao.
+
+**Bada (large):** `IEmployeeRepository` ke against `EmployeeService` ka ek unit test suite likho ek in-memory fake se (koi EF nahi), aur alag se `EfEmployeeRepository` ka integration test SQLite in-memory ya Testcontainers SQL Server ke against. Prove karo ki dono implementations same contract ko satisfy karti hain aur `EmployeeService` ki ek line dono cases me same hai.
+
+</Callout>

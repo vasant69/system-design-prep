@@ -1,0 +1,362 @@
+---
+slug: "health-checks-and-deployment-overview"
+title: "Health Checks & Deployment Overview, Line by Line"
+section: "code-flow"
+module: "deployment"
+order: 4
+difficulty: "intermediate"
+readingTime: 20
+prerequisites: ["docker-compose-with-sql-server", "dockerizing-the-api", "production-configuration-and-environments"]
+tags: ["dotnet", "aspnet-core", "web-api", "health-checks", "ci-cd", "github-actions", "kubernetes", "observability", "deployment", "employee-management"]
+englishDefinition: "Wiring ASP.NET Core health checks into EmployeeManagement.Api — AddHealthChecks with a database check, a cache check and a custom IHealthCheck, split into a liveness endpoint and a tag-filtered readiness endpoint with a JSON response writer — and how orchestrators use them; then a tour of the full deployment path: a GitHub Actions CI/CD pipeline, the main hosting options and when each fits, zero-downtime deploy strategies, and production observability."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Wiring ASP.NET Core health checks into `EmployeeManagement.Api` — `AddHealthChecks` with a database check, a cache check and a custom `IHealthCheck`, split into a liveness endpoint and a tag-filtered readiness endpoint with a JSON response writer — and how orchestrators use them; then a tour of the full deployment path: a GitHub Actions CI/CD pipeline, the main hosting options and when each fits, zero-downtime deploy strategies, and production observability.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne `EmployeeManagement.Api` ko container me pack kiya aur Compose se local stack chalaya. Production me ek aur sawaal aata hai: deploy platform ko kaise pata chale ki tumhari app **zinda** hai aur **traffic lene ke liye taiyaar** hai? Ye kaam **health checks** karte hain. Is topic ka pehla half health checks hai; doosra half ek zoom-out — commit se live traffic tak ka pura raasta.
+
+### What is it — health check kya hai
+
+Ek **health check** ek chhota HTTP endpoint hai (jaise `/health/ready`) jo bata deta hai ki app abhi kaam kar sakti hai ya nahi. Response ka **status code** matter karta hai: `200` matlab healthy, `503` matlab unhealthy. Body optional detail deta hai (kaunsa dependency down hai).
+
+ASP.NET Core me ek built-in health checks framework hai. Tum `builder.Services.AddHealthChecks()` se check register karte ho, phir `app.MapHealthChecks("/path")` se ek endpoint expose karte ho. Har check ek `IHealthCheck` implementation hai jo `Healthy`, `Degraded`, ya `Unhealthy` return karta hai.
+
+Do alag concepts hain, aur inhe alag rakhna zaroori hai:
+
+- **Liveness** — "kya process zinda hai?" Agar nahi, ise **restart** karna chahiye. Ye check koi external dependency touch **nahi** karta.
+- **Readiness** — "kya app ab request handle kar sakti hai?" Isme DB, cache, downstream API — sab check hote hain. Agar not ready, orchestrator ise **traffic se hata** deta hai (restart nahi karta).
+
+### Why do we need it — bina health checks ke kya tootega
+
+Bina readiness check ke, deploy ka moment khatarnaak hai. Naya container start hua, orchestrator ne turant traffic bhej diya — lekin app abhi DB connection pool warm kar rahi thi, migrations lagi thi, config load ho raha tha. Pehli 50 requests `500` deti hain. User ko error dikhta hai, aur deploy "successful" mark hota hai.
+
+Bina liveness check ke, ek deadlocked ya OOM-thrashing process **chalta dikhta hai** (port khula hai) par kisi request ka jawaab nahi deta. Koi use restart nahi karta kyunki koi puchh nahi raha "tum theek ho?".
+
+Failure scenario: ek team ka readiness endpoint sirf `return Ok()` karta tha — koi actual dependency check nahi. Ek raat DB failover hua, app 90 second tak DB se connect nahi kar paayi, par `/health/ready` `200` deta raha. Load balancer traffic bhejta raha, har request `500`. Agar readiness `AddDbContextCheck` use karta, endpoint `503` deta, LB us instance ko nikaal deta, aur baaki healthy instances load sambhal lete.
+
+### How does it work — register, map, probe
+
+1. `AddHealthChecks()` ek `HealthCheckService` DI me register karta hai aur uspe checks chain hote hain (`.AddDbContextCheck`, `.AddRedis`, `.AddCheck<T>`).
+2. Har check ko ek **name** aur optional **tags** milte hain (`"ready"`, `"live"`).
+3. `MapHealthChecks("/health/ready", options)` ek endpoint banata hai. `options.Predicate` decide karta hai **kaunse checks** is endpoint pe chalein (tag se filter). `options.ResponseWriter` response ka format decide karta hai.
+4. Request aane par `HealthCheckService` selected checks ko (default me parallel) run karta hai, unke results ko ek `HealthReport` me aggregate karta hai. Sabse kharab status jeetta hai: ek bhi `Unhealthy` = overall `Unhealthy` = `503`.
+5. Orchestrator (Kubernetes, ECS, App Service, ya LB) is endpoint ko **periodically poll** karta hai — har few seconds — aur uske jawaab pe action leta hai.
+
+### Show it in our project
+
+**Step 1 — register checks in `Program.cs`:**
+
+```csharp
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<AppDbContext>(
+        name: "sql-server",
+        tags: new[] { "ready" })
+    .AddRedis(
+        builder.Configuration.GetConnectionString("Redis")!,
+        name: "redis",
+        tags: new[] { "ready" })
+    .AddCheck<PanVerificationHealthCheck>(
+        name: "pan-verification-api",
+        failureStatus: HealthStatus.Degraded,
+        tags: new[] { "ready" });
+```
+
+**Step 2 — a custom check for the external PAN API:**
+
+```csharp
+public sealed class PanVerificationHealthCheck : IHealthCheck
+{
+    private readonly IHttpClientFactory _factory;
+
+    public PanVerificationHealthCheck(IHttpClientFactory factory)
+        => _factory = factory;
+
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var client = _factory.CreateClient("pan");
+            using var res = await client.GetAsync("health", cancellationToken);
+
+            return res.IsSuccessStatusCode
+                ? HealthCheckResult.Healthy("PAN API reachable")
+                : HealthCheckResult.Degraded($"PAN API status {(int)res.StatusCode}");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("PAN API unreachable", ex);
+        }
+    }
+}
+```
+
+**Step 3 — map two endpoints with a JSON writer:**
+
+```csharp
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false          // run no checks; 200 just means "process is up"
+});
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = WriteHealthJson
+});
+
+static Task WriteHealthJson(HttpContext context, HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+
+    var payload = new
+    {
+        status = report.Status.ToString(),
+        durationMs = report.TotalDuration.TotalMilliseconds,
+        checks = report.Entries.Select(e => new
+        {
+            name = e.Key,
+            status = e.Value.Status.ToString(),
+            description = e.Value.Description,
+            durationMs = e.Value.Duration.TotalMilliseconds
+        })
+    };
+
+    return context.Response.WriteAsJsonAsync(payload);
+}
+```
+
+### Code explained line by line
+
+- `AddDbContextCheck<AppDbContext>(...)` — `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore` package se aata hai. Ye `AppDbContext` pe ek lightweight query (`CanConnectAsync`) chalata hai. Backtick isliye ki `AddDbContextCheck<AppDbContext>` me angle brackets hain.
+- `tags: new[] { "ready" }` — is check ko `ready` group me daalta hai. `/health/ready` isi tag se filter karega; `/health/live` ise skip karega.
+- `.AddRedis(...)` — `AspNetCore.HealthChecks.Redis` (community `AspNetCore.Diagnostics.HealthChecks` set) se. Redis pe `PING` maarta hai. `!` null-forgiving operator — hum jaante hain config me `Redis` connection string hai (aur `ValidateOnStart` isse enforce karta hai).
+- `.AddCheck<PanVerificationHealthCheck>(..., failureStatus: HealthStatus.Degraded, ...)` — hamara custom check register karta hai. `failureStatus: Degraded` matlab agar ye check `Unhealthy` **na bhi** return kare par framework ko decide karna pade, default failure `Degraded` hai — kyunki PAN API down hone se poori app down nahi hoti, sirf ek feature.
+- `IHealthCheck.CheckHealthAsync` — ek hi method interface. `HealthCheckResult.Healthy / Degraded / Unhealthy` — teen factory methods, optional description aur exception ke saath.
+- `Predicate = _ => false` on `/health/live` — koi check nahi chalta. Endpoint ka `200` sirf itna sabit karta hai ki Kestrel request-response kar pa raha hai — yani process deadlocked nahi. Liveness ko DB pe depend **nahi** karna chahiye: DB down hone par app restart karna DB ko theek nahi karta, sirf ek restart storm banata hai.
+- `Predicate = check => check.Tags.Contains("ready")` on `/health/ready` — sirf `ready`-tagged checks. DB + Redis + PAN API sab yahan.
+- `ResponseWriter = WriteHealthJson` — default writer sirf `"Healthy"` plain text deta hai. Custom writer har check ka naam, status, duration JSON me deta hai — dashboards aur debugging ke liye. `WriteAsJsonAsync` `System.Text.Json` use karta hai.
+- Aggregation rule: ek `Unhealthy` -> overall `503`. Sab `Healthy`/`Degraded` -> `200` (degraded bhi `200` hota hai by default, kyunki app abhi serve kar sakti hai).
+
+### Orchestrators ise kaise use karte hain
+
+- **Kubernetes** har pod pe do probes rakhta hai: `livenessProbe` -> `/health/live` (fail -> pod restart), `readinessProbe` -> `/health/ready` (fail -> pod ko Service endpoints se remove, traffic band, restart nahi). `startupProbe` bhi hota hai slow-boot apps ke liye.
+- **AWS ECS / ALB** target group ka health check path `/health/ready` pe set hota hai; unhealthy target ko LB rotation se nikaal deta hai.
+- **Azure App Service / Container Apps** me "Health check path" ek setting hai — instance unhealthy hua to naye instance pe swap.
+- Deploy ke dauraan: naya instance tabhi "live" count me aata hai jab uska readiness pass ho — isi se zero-downtime possible hota hai.
+
+### Deployment Overview — commit se live traffic tak
+
+#### CI/CD with GitHub Actions
+
+Ek typical pipeline: **restore -> build -> test -> publish -> image build+push -> deploy**.
+
+```yaml
+name: deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger trx
+      - run: dotnet publish EmployeeManagement.Api -c Release -o out
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: |
+          IMAGE=ghcr.io/acme/emp-api:${{ github.sha }}
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: deploy
+        run: |
+          az containerapp update -n emp-api -g rg-emp \
+            --image ghcr.io/acme/emp-api:${{ github.sha }}
+```
+
+Key ideas: image tag = **commit SHA** (immutable, traceable), tests deploy se pehle gate karte hain, aur secrets pipeline ke secret store (`secrets.*`) se aate hain — kabhi YAML me plain nahi.
+
+#### Hosting options — kab kaunsa
+
+- **Azure App Service** — PaaS, container ya zip deploy. Sabse kam ops: TLS, autoscale, slots built-in. Fit: standard web APIs, chhoti-medium teams jinhe Kubernetes nahi chahiye.
+- **Azure Container Apps** — serverless containers, Kubernetes ke bina (KEDA autoscale, scale-to-zero, built-in Dapr). Fit: microservices, event-driven, spiky load, "Kubernetes power without Kubernetes ops".
+- **AWS ECS / Fargate** — managed containers, no node management (Fargate). Deep AWS integration (ALB, IAM, Secrets Manager). Fit: AWS shops jinhe containers chahiye par full Kubernetes nahi.
+- **VM + systemd** — framework-dependent publish, ek `.service` unit, Nginx reverse proxy. Fit: ek-do services, legacy environment, ya team ka Docker experience zero. Sabse zyada manual (patching, TLS, scaling khud).
+- **Kubernetes (AKS / EKS / self-managed)** — maximum control aur portability, rich ecosystem (Helm, operators, service mesh). Fit: bade estates, many services, dedicated platform team. Sabse zyada complexity — sirf tab jab scale isse justify kare.
+
+#### Zero-downtime deploys
+
+- **Rolling update** — ek-ek karke purane instances replace, naya instance readiness pass hone par hi traffic. Default in k8s / Container Apps / App Service (multi-instance).
+- **Blue-green** — poora naya environment (green) khada karo, smoke test, phir LB ko green pe flip. Instant rollback (wapas blue pe). Costlier (2x capacity briefly).
+- **Connection draining** — instance ko rotation se nikalne ke baad in-flight requests ko finish hone ka time do (`SIGTERM` -> graceful shutdown -> LB deregister delay). Isi liye Dockerfile me exec-form `ENTRYPOINT` zaroori tha.
+- **EF migrations with expand/contract** — schema change ko backward-compatible steps me todo: pehle **expand** (naya nullable column add karo, dono code versions kaam karein), deploy naya code, phir **contract** (purana column drop) ek baad ke release me. Kabhi ek hi deploy me "column rename" mat karo — rolling update ke dauraan purana aur naya code dono live hote hain.
+
+#### Production observability
+
+- **Structured logs** — `Serilog` se JSON logs ek central sink pe (Seq, ELK/Elasticsearch, Loki, Application Insights). Har log line me `TraceId`, `EmployeeId`, `CorrelationId` — text grep nahi, queryable fields.
+- **Metrics** — request rate, error rate, p95/p99 latency, DB pool usage. `.NET` built-in `System.Diagnostics.Metrics` / OpenTelemetry se Prometheus ya Azure Monitor pe.
+- **Distributed tracing** — OpenTelemetry se har request ka span tree (API -> DB -> PAN API), Jaeger / Tempo / App Insights me. "Ye request 3 second kyun lagi" ka jawaab.
+- **Alerting** — SLO-based: "error rate over 1% for 5 min" ya "readiness failing on more than 1 instance" -> PagerDuty / Opsgenie. Alert on symptoms (user pain), not every blip.
+
+### When to use / when NOT to
+
+- Health checks: **har production service** me — non-negotiable. Chhoti internal tool jo ek hi VM pe chalti hai aur koi orchestrator nahi — tab bhi `/health/ready` rakhna monitoring ke liye useful, par liveness/readiness split optional.
+- Blue-green: **use** jab rollback speed critical hai (BFSI payment paths) ya migration risky hai. **Mat karo** har chhote service ke liye — 2x infra cost aur pipeline complexity; rolling update kaafi hai.
+- Kubernetes: **mat chuno** default ke roop me. 1-5 services ke liye App Service / Container Apps / ECS kam ops me wahi kaam karte hain.
+
+### Pros and cons
+
+Health checks ke pros: self-healing (bad instance auto-removed/restarted), safe deploys (readiness gate), clear signal for on-call. Cons: galat check design (liveness me DB dalna) restart storm bana sakta hai; heavy checks khud load add karte hain (isliye light queries, caching, timeouts). Deployment automation ke pros: repeatable, fast rollback, auditable. Cons: pipeline khud ek system hai jise maintain karna padta hai, aur over-engineering (blue-green + service mesh for 2 services) team ko dheema karta hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Liveness check ko **kabhi** DB / cache / downstream par depend mat karao. DB down hone par liveness fail -> orchestrator app ko restart karta hai -> restart se DB theek nahi hota -> crash-loop, aur jab DB wapas aata hai to saare instances ek saath restart me. Liveness = "process responsive?"; readiness = "dependencies OK?".
+
+</Callout>
+
+<Tradeoff pros={["Rolling update: no extra capacity, simple, default on most platforms", "Blue-green: instant rollback, full smoke test before flip, migration safety"]} cons={["Rolling update: brief mixed-version window (needs backward-compatible changes), slower full rollout", "Blue-green: ~2x capacity during cutover, more pipeline and infra plumbing"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-origination API Azure Container Apps pe chalti thi. Shuru me readiness endpoint sirf `Results.Ok()` return karta tha. Ek deploy ke dauraan naya revision boot hua par Redis connection string galat thi; app start ho gayi, readiness `200` deta raha, Container Apps ne traffic naye revision pe shift kar diya, aur har "resume application" call `500` de rahi thi kyunki draft state Redis me tha. Fix: readiness me `AddRedis` + `AddDbContextCheck<AppDbContext>` tags ke saath, aur liveness alag `/health/live` jo kuch check nahi karta. Agli baar galat Redis config par naya revision readiness fail kar gaya, traffic shift **hua hi nahi**, aur alert on-call ko 40 second me mil gaya — koi user impact nahi.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke API platform pe har service ko mandatory `/health/live` aur `/health/ready` expose karna padta tha, aur AKS manifests me dono probes wired hone ka check CI gate tha. Deploy strategy risky migrations ke liye blue-green thi: naya "green" deployment, automated smoke suite (including a real `/health/ready` assertion), phir Istio virtual service ka weight 0 se 100 par shift. EF changes hamesha expand/contract me — ek release column add karta (nullable), agla use populate + code switch karta, teesra purana column drop karta. Rolling window me kabhi bhi purana aur naya pod ek saath DB se baat kar sakte the, isliye "ek hi step me breaking schema change" strictly banned tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Health endpoint status: `200` = Healthy or Degraded, `503` = Unhealthy (one Unhealthy check makes the whole report Unhealthy)
+- Kubernetes default probe cadence: `periodSeconds: 10`, `failureThreshold: 3` — roughly 30s of failing before action
+- Liveness fail -> pod restart; readiness fail -> pod removed from Service endpoints (no restart)
+- Image tag = commit SHA — immutable and traceable back to the exact source
+- `dotnet test` runs in CI before publish — a red test blocks the deploy
+- Expand/contract = at least 2 releases for a breaking schema change (never rename a column in one deploy)
+- Blue-green needs ~2x capacity briefly during cutover; rolling update needs ~1x plus one extra instance
+- Alert on SLO symptoms (error rate over 1% for 5 min), not on every transient spike
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "Difference between liveness and readiness?" Strong 20-second answer: "Liveness answers 'is the process responsive' — if it fails, the orchestrator restarts the pod, and it must not touch external dependencies. Readiness answers 'can this instance serve requests right now' — it checks the DB, cache, downstream APIs, and if it fails the instance is pulled out of the load balancer without a restart. In ASP.NET Core I register checks with `AddHealthChecks().AddDbContextCheck<AppDbContext>()` and tag them, then map `/health/live` with a predicate of no checks and `/health/ready` filtered to the `ready` tag, with a JSON response writer." Follow-ups: "Why not put the DB check in liveness?" (restart storm), "How do you do a zero-downtime schema change?" (expand/contract across releases).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Readiness endpoint ko `return Ok()` bana dena bina kisi real dependency check ke. DB / cache down hone par bhi endpoint `200` deta hai, LB traffic bhejta rehta hai, har request `500`. Kam se kam `AddDbContextCheck<AppDbContext>` lagao.
+
+</Mistake>
+
+<Mistake>
+
+Liveness check me DB ya downstream API daal dena. Dependency ke down hone par app restart hoti hai (jo help nahi karta) aur crash-loop banti hai. Liveness bilkul dependency-free rakho.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi deploy me breaking schema change — column rename ya `NOT NULL` add without default. Rolling update ke dauraan purana code abhi live hota hai aur wo naye schema pe crash karega. Expand/contract me todo.
+
+</Mistake>
+
+<Mistake>
+
+Image ko `:latest` tag se deploy karna. Kaunsa commit live hai pata nahi chalta, rollback ambiguous, aur cache ki wajah se node purani `latest` chala sakta hai. Tag = commit SHA.
+
+</Mistake>
+
+<Mistake>
+
+Secrets ko GitHub Actions YAML me plain text likhna ya `echo` karna. Pipeline logs, forks, PR runs sab expose karte hain. `secrets.*` context aur `::add-mask::` use karo, deploy creds ko OIDC / short-lived tokens se.
+
+</Mistake>
+
+<Mistake>
+
+Health checks me bhaari queries (`COUNT(*)` on a big table, multiple downstream calls without timeout). Har probe har few seconds chalta hai — heavy check khud ek load source ban jaata hai aur timeout par false-unhealthy deta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    G["git push to main"] --> CI["CI: restore, build, test, publish"]
+    CI --> IMG["docker build + push (tag = commit SHA)"]
+    IMG --> REG["container registry"]
+    REG --> DEP["deploy: rolling update"]
+    DEP --> RP["/health/ready probe passes"]
+    RP -->|"200"| LT["load balancer sends live traffic"]
+    RP -->|"503"| HOLD["instance held out, deploy does not shift traffic"]
+`}
+  caption="Tests gate the build, the image is tagged by commit SHA, and the readiness probe is the last gate before an instance receives live traffic."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Liveness (`/health/live`) = "is the process responsive?" — fail means restart, and it must not check external dependencies. Readiness (`/health/ready`) = "can it serve now?" — checks DB/cache/downstream, fail means pulled from the load balancer, no restart.
+- `AddHealthChecks().AddDbContextCheck<AppDbContext>().AddRedis(...).AddCheck<PanVerificationHealthCheck>()` — register with `name` and `tags`; `MapHealthChecks` uses `Predicate` to filter by tag and `ResponseWriter` for JSON output.
+- Aggregation: one `Unhealthy` -> `503`; all `Healthy`/`Degraded` -> `200`.
+- Orchestrators poll these: k8s `livenessProbe`/`readinessProbe`, ECS/ALB target health, App Service health-check path. Readiness passing is what makes zero-downtime deploys possible.
+- CI/CD (GitHub Actions): restore -> build -> test -> publish -> docker build+push -> deploy. Image tag = commit SHA. Tests gate the deploy. Secrets from the pipeline secret store, never in YAML.
+- Hosting fit: App Service (least ops, standard APIs), Container Apps (serverless containers, spiky/event-driven), ECS/Fargate (AWS container shops), VM + systemd (1-2 services, no Docker culture), Kubernetes (large multi-service estates with a platform team).
+- Zero-downtime: rolling update (default, needs backward-compatible changes), blue-green (instant rollback, ~2x capacity), connection draining (graceful `SIGTERM` + deregister delay), EF migrations via expand/contract across releases.
+- Observability: structured JSON logs to Seq/ELK, metrics (rate/errors/p95-p99), OpenTelemetry tracing, SLO-based alerting on symptoms.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.Api` me `AddHealthChecks().AddDbContextCheck<AppDbContext>(tags: new[] { "ready" })` wire karo aur do endpoints map karo: `/health/live` with `Predicate = _ => false`, `/health/ready` with `Predicate = c => c.Tags.Contains("ready")`. `docker compose up` ke baad `curl localhost:8080/health/ready` chalao aur DB container band karke dubara curl karke `503` dekho.
+
+**Medium:** Ek custom `PanVerificationHealthCheck : IHealthCheck` likho jo `IHttpClientFactory` se PAN API ke `health` route ko hit kare, `Degraded` return kare non-2xx par, `Unhealthy` on exception. Ise `failureStatus: HealthStatus.Degraded` ke saath register karo aur ek JSON `ResponseWriter` add karo jo har check ka naam + status + duration deta hai. Verify karo ki PAN API unreachable hone par `/health/ready` phir bhi `200` deta hai (Degraded) par JSON me `pan-verification-api: Degraded` dikhta hai.
+
+**Bada (large):** Ek end-to-end deploy path banao: (1) ek GitHub Actions workflow (`restore -> build -> test -> publish -> docker build+push` with image tag = `github.sha`). (2) Ek `docker-compose.deploy.yml` ya Kubernetes `Deployment` + `Service` manifest jisme `livenessProbe` -> `/health/live` aur `readinessProbe` -> `/health/ready` wired hon, `readiness` fail hone par rolling update ruk jaaye. (3) Ek chhoti EF schema change ko expand/contract me karo — release 1 nullable column add kare, release 2 populate + code switch, release 3 purana column drop — aur likho ki har step rolling update me safe kyun hai. (4) Serilog se JSON structured logging add karo with `TraceId` enrichment aur ek `RUNBOOK.md` likho: health endpoints, alert thresholds, rollback steps.
+
+</Callout>

@@ -1,0 +1,389 @@
+---
+slug: "api-security-hardening"
+title: "API Security Hardening: HTTPS, CORS, Rate Limiting & Headers, Line by Line"
+section: "code-flow"
+module: "security"
+order: 5
+difficulty: "advanced"
+readingTime: 22
+prerequisites: ["authentication-vs-authorization", "jwt-end-to-end", "authorize-roles-policies-claims", "password-hashing-and-user-store"]
+tags: ["dotnet", "aspnet-core", "web-api", "security", "hardening", "cors", "rate-limiting", "owasp", "employee-management"]
+englishDefinition: "API security hardening is the deliberate pass over a working service that closes the gaps authentication alone does not: enforcing HTTPS with HSTS, configuring CORS with an explicit named policy, adding rate limiting to bound resource consumption, emitting protective response headers, capping request sizes, hiding verbose errors and the server banner in production, keeping input bound to DTOs, parameterising all SQL, and managing secrets and dependencies. It is best understood as applying the OWASP API Security Top 10 to the choices already made in the codebase."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+API security hardening is the deliberate pass over a working service that closes the gaps authentication alone does not: enforcing HTTPS with HSTS, configuring CORS with an explicit named policy, adding rate limiting to bound resource consumption, emitting protective response headers, capping request sizes, hiding verbose errors and the server banner in production, keeping input bound to DTOs, parameterising all SQL, and managing secrets and dependencies. It is best understood as applying the OWASP API Security Top 10 to the choices already made in the codebase.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak `EmployeeManagement.Api` me identity (JWT), permissions (roles/policies), aur password store aa gaye hain. Lekin ek secure API sirf "login laga diya" se nahi banti. Is topic me hum ek **hardening pass** karenge — poore service ke upar ek checklist chala kar chhote-chhote holes band karenge jo alag se koi ek feature nahi, par milke bada difference banate hain.
+
+### What is it — hardening ka matlab
+
+Hardening ka matlab hai ek working system ka **attack surface** kam karna: jo cheezein by default thodi loose ya thodi zyada permissive hain unhe explicitly tight karna. Naya feature nahi add hota; jo hai use safe defaults pe laaya jaata hai. .NET me iska bada hissa `Program.cs` ki middleware pipeline aur kuch config flags me hota hai.
+
+### Why do we need it — bina iske kya tootega
+
+- **Bina HTTPS/HSTS:** token aur passwords plain network pe — ek coffee-shop Wi-Fi pe koi bhi sniff kar le.
+- **Bina CORS policy (ya galat CORS):** ya to legit frontend block ho jaata hai, ya `AllowAnyOrigin` se koi bhi malicious site browser me tumhari API call kar leti hai.
+- **Bina rate limiting:** ek script `POST /api/auth/login` ko crore baar hit karke brute-force ya DoS kar deta hai; ek buggy client tumhara DB gira deta hai.
+- **Bina security headers:** browser content-type sniff karke ek uploaded file ko script maan sakta hai; tumhari API ek iframe me chhup kar clickjack ho sakti hai.
+- **Verbose errors on in prod:** stack trace, connection string, table names — sab attacker ko free recon.
+
+Concrete failure scenario: ek team ne `app.UseCors(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod())` laga diya "taaki CORS ka jhanjhat khatam ho". Cookie-based auth wala ek internal admin tool usi origin-less policy pe chala, aur ek phishing page ne victim ke browser se `DELETE /api/employees` fire kar diya — browser ne request bheji kyunki server ne har origin allow kiya tha. Ek "convenience" line ne CSRF-style hole khol diya.
+
+### How does it work — checkpoint by checkpoint
+
+Har incoming request ek pipeline se guzarti hai. Hardening ka kaam hai us pipeline me sahi checkpoints, sahi order me lagana.
+
+#### 1. HTTPS + HSTS
+
+```csharp
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();               // Strict-Transport-Security header
+}
+app.UseHttpsRedirection();       // http -> https 307/308 redirect
+```
+
+- `UseHttpsRedirection` — koi bhi `http://` request ko `https://` pe redirect karta hai.
+- `UseHsts` — response me `Strict-Transport-Security` header add karta hai (default `max-age` 30 din). Iske baad browser us domain pe **kabhi** plain HTTP try nahi karta — pehli redirect wali window bhi band ho jaati hai. Dev me mat lagao warna `localhost` browser me HTTPS pe pin ho jaata hai.
+
+#### 2. CORS — properly
+
+CORS ek **browser** mechanism hai: ye decide karta hai ki origin A ka JavaScript origin B ki API se response padh sakta hai ya nahi. Server bas headers bhej kar batata hai "kaunse origins allowed hain".
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("frontend", policy =>
+        policy
+            .WithOrigins("https://hr.example.com", "https://admin.example.com")
+            .WithMethods("GET", "POST", "PUT", "DELETE")
+            .WithHeaders("Authorization", "Content-Type")
+            .AllowCredentials());
+});
+
+// pipeline me, UseRouting ke baad, UseAuthentication ke pehle
+app.UseCors("frontend");
+```
+
+- **Named policy** (`"frontend"`) — ek jagah defined, `app.UseCors("frontend")` se applied. Anonymous inline policy avoid karo.
+- `WithOrigins(...)` — **exact** origins list. Koi wildcard nahi.
+- `WithMethods` / `WithHeaders` — sirf jo chahiye. `AllowAnyHeader()` / `AllowAnyMethod()` lazy hai.
+- `AllowCredentials()` — tab jab browser cookie ya `Authorization` bhejta hai cross-origin.
+- **`AllowAnyOrigin()` + `AllowCredentials()` ek saath INVALID hai** — CORS spec isse mana karta hai aur ASP.NET Core runtime exception phenkta hai. Wildcard origin ke saath credentials ka matlab "kisi bhi site ko authenticated request karne do" — spec jaan-boojh kar ise rokta hai. Agar credentials chahiye to origins explicitly list karo.
+
+#### 3. Rate limiting (.NET 8 built-in)
+
+```csharp
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // default: har authenticated user ya IP ke liye sliding window
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        var key = ctx.User.Identity?.Name
+                  ?? ctx.Connection.RemoteIpAddress?.ToString()
+                  ?? "anon";
+
+        return RateLimitPartition.GetSlidingWindowLimiter(key, _ =>
+            new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            });
+    });
+
+    // login pe sakht limit — brute-force ke liye
+    options.AddFixedWindowLimiter("auth", o =>
+    {
+        o.PermitLimit = 5;
+        o.Window = TimeSpan.FromMinutes(1);
+        o.QueueLimit = 0;
+    });
+});
+
+app.UseRateLimiter();
+```
+
+Aur `AuthController` pe:
+
+```csharp
+[EnableRateLimiting("auth")]
+[HttpPost("login")]
+public async Task<ActionResult<LoginResponse>> Login(LoginRequest request) { /* ... */ }
+```
+
+- **Fixed window** — "1 minute me 5" — simple, par window boundary pe burst (0:59 pe 5 + 1:00 pe 5).
+- **Sliding window** — window ko segments me todta hai, boundary burst kam.
+- **Token bucket** — steady refill rate + burst capacity; smooth traffic shaping ke liye best.
+- **Concurrency** — ek time pe kitni requests in-flight; slow endpoints ke liye.
+- **Partition key** — per-IP ya per-user. `ctx.User.Identity?.Name` se authenticated user, warna `RemoteIpAddress`. Behind a proxy? `ForwardedHeaders` middleware pehle laga kar real client IP nikaalo, warna sab requests ek hi proxy IP partition me gir kar ek doosre ko throttle karengi.
+- Limit cross hone pe client ko **429 Too Many Requests** milta hai (ideally `Retry-After` header ke saath).
+
+#### 4. Security headers via middleware
+
+```csharp
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    await next();
+});
+```
+
+- `X-Content-Type-Options: nosniff` — browser ko `Content-Type` header maan-ne pe majboor karta hai, guess nahi karne deta. Ek user-uploaded file ko script maan lene wala attack rok deta hai.
+- `X-Frame-Options: DENY` (ya CSP `frame-ancestors 'none'`) — page kisi iframe me embed nahi ho sakta -> clickjacking gone. Pure JSON API ke liye kam relevant, par ek defence-in-depth default.
+- `Referrer-Policy: no-referrer` — outbound links pe `Referer` header me tumhara URL (jisme kabhi id/token ho sakta hai) leak nahi hota.
+- `Content-Security-Policy` — ek JSON API ke liye `default-src 'none'` chalta hai kyunki wo koi HTML render nahi karti; agar Swagger UI serve ho rahi hai to uske liye alag relaxed CSP chahiye ya Swagger ko prod me band karo.
+
+Note: production libraries jaise `NetEscapades.AspNetCore.SecurityHeaders` yahi cheezein ek clean policy builder ke saath deti hain — manual middleware theek hai, library cleaner.
+
+#### 5. Request size limits
+
+```csharp
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 2_000_000); // 2 MB global
+
+// ek specific endpoint pe override
+[RequestSizeLimit(500_000)]
+[HttpPost]
+public Task<ActionResult<EmployeeDto>> Create(CreateEmployeeRequest req) { /* ... */ }
+
+// multipart upload ke liye
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 10_000_000);
+```
+
+Bina limit ke ek attacker 2 GB JSON bhej kar memory/disk bhar sakta hai. KYC document upload wale endpoint pe alag, thoda bada limit + content-type whitelist.
+
+#### 6. Verbose errors aur server banner prod me band
+
+```csharp
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+else
+{
+    app.UseExceptionHandler("/error");   // ProblemDetails, no stack trace
+}
+
+builder.WebHost.ConfigureKestrel(o => o.AddServerHeader = false); // "Server: Kestrel" hataao
+```
+
+- Dev me `UseDeveloperExceptionPage` (default) stack trace deta hai — helpful, par prod me wahi attacker ko internal paths, package versions, SQL de deta hai.
+- Prod me `UseExceptionHandler` ek generic `ProblemDetails` JSON deta hai — `traceId` client ko, poora detail sirf logs me.
+- `AddServerHeader = false` — `Server:` response header hata deta hai taaki version-specific exploits target karna thoda mushkil ho (security-by-obscurity, par muft).
+- Swagger prod me band ya `[Authorize]` ke peeche — apni poori API ka contract public mat karo.
+
+#### 7. Mass assignment recap — DTOs
+
+Entity ko kabhi request body me bind mat karao. Agar `[HttpPut]` seedha `Employee` leta hai, to client `IsActive`, `Salary`, ya ek nav property JSON me bhej kar over-post kar sakta hai. Har write pe ek **DTO** jisme sirf allowed fields hain, phir server-side map. (Ye humne `crud-in-memory` module me kiya tha — hardening pass me confirm karo koi entity accidentally exposed nahi.)
+
+#### 8. SQL injection — EF parameterizes, `FromSqlRaw` par savdhaan
+
+EF Core ki LINQ queries **automatically parameterized** hoti hain — `Where(e => e.Email == input)` ek `@p0` parameter banata hai, string concat nahi. Danger sirf raw SQL me hai:
+
+```csharp
+// KHATARNAAK — string interpolation seedha FromSqlRaw me
+var rows = db.Employees
+    .FromSqlRaw($"SELECT * FROM Employees WHERE Email = '{email}'");
+
+// SAHI — parameterized
+var rows = db.Employees
+    .FromSqlInterpolated($"SELECT * FROM Employees WHERE Email = {email}");
+// ya
+var rows = db.Employees
+    .FromSqlRaw("SELECT * FROM Employees WHERE Email = @email",
+        new SqlParameter("@email", email));
+```
+
+`FromSqlInterpolated` interpolation ko `SqlParameter`s me convert karta hai — dikhta interpolation jaisa hai par safe hai. `FromSqlRaw` ke andar `$"...{x}..."` likhna hi bug hai.
+
+#### 9. Secrets management recap
+
+Connection strings, JWT secret, external API keys — kabhi `appsettings.json` me commit nahi. Dev me `dotnet user-secrets`, prod me environment variables ya ek vault (Azure Key Vault, AWS Secrets Manager). Config binding same rehta hai (`IOptions<JwtOptions>`); sirf source badalta hai.
+
+#### 10. Dependency scanning
+
+```bash
+dotnet list package --vulnerable --include-transitive
+```
+
+CI me chalao; GitHub Dependabot ya `dotnet outdated` se known-CVE packages catch karo. Ek pura category of breaches sirf purani vulnerable library se aata hai.
+
+### OWASP API Security Top 10 — hamare course pe mapped
+
+- **API1 Broken Object Level Authorization** — "sirf apna record" resource-based check (`authorize-roles-policies-claims`, Part 3).
+- **API2 Broken Authentication** — JWT validation params + password hashing + generic errors + lockout.
+- **API3 Broken Object Property Level Authorization** — DTOs (mass assignment + excessive data exposure dono).
+- **API4 Unrestricted Resource Consumption** — rate limiting + request size limits + pagination.
+- **API5 Broken Function Level Authorization** — `[Authorize(Roles=...)]` / policies har write verb pe.
+- **API6 Unrestricted Access to Sensitive Business Flows** — login/register/OTP jaise flows pe sakht rate limit.
+- **API7 Server Side Request Forgery** — PAN-verification jaisi external call me user-supplied URL kabhi trust mat karo (`IHttpClientFactory` topic).
+- **API8 Security Misconfiguration** — HSTS, headers, verbose errors off, server header off, CORS tight.
+- **API9 Improper Inventory Management** — API versioning + Swagger prod me band/authenticated.
+- **API10 Unsafe Consumption of APIs** — external API ka response bhi validate karo, blindly deserialize/trust mat karo.
+
+### Where is it used in day-to-day development
+
+- Har prod release se pehle ek "security checklist" PR — headers, CORS origins, rate limits, secrets in vault.
+- Pentest / VAPT report aane ke baad findings ka bulk isi list se close hota hai.
+- New environment provisioning: staging vs prod ke alag CORS origins aur alag rate limits config-driven.
+- Incident response: "kis endpoint pe throttle nahi tha", "kaunsa header missing tha" — post-mortem action items.
+
+### When to use / when NOT to use
+
+- **Har public-facing API** pe ye poori list. Internal-only service (private VNet, mTLS, no browser) pe CORS aur kuch browser headers kam relevant, par rate limiting, secrets, SQL safety, size limits phir bhi lagte hain.
+- **Over-tightening se bacho:** CSP `default-src 'none'` ek JSON API pe theek hai par Swagger/GraphQL playground tod dega — us route ke liye alag policy. Rate limits itne kam mat rakho ki legit batch client 429 khaaye — measure karo.
+- Rate limiter ko auth se pehle rakho jab tum unauthenticated abuse (login brute-force) rokna chahte ho; per-user fairness chahiye to auth ke baad ek doosra limiter.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`AllowAnyOrigin()` aur `AllowCredentials()` ek hi CORS policy me — ye **invalid** hai, CORS spec isse mana karta hai aur ASP.NET Core runtime pe exception deta hai. Credentials ke saath origins **explicitly** list karo.
+
+</Callout>
+
+<Tradeoff
+  pros={["Attack surface systematically ghatata hai — ek checklist, poore service pe", "Zyaadatar config/middleware me hai — application logic barely touch hoti hai", "OWASP API Top 10 se direct mapping — audit aur compliance conversations aasan", "Rate limiting + size limits accidental self-DoS (buggy client) bhi rokte hain"]}
+  cons={["Galat order ya galat value se legit traffic tootta hai (CORS block, jhoote 429)", "Behind-proxy setups me real client IP nikaalna extra kaam (ForwardedHeaders), warna partitions galat", "CSP/headers ko har hosted UI (Swagger) ke liye tune karna padta hai", "Ye ek pass nahi, ongoing kaam — dependencies aur origins badalte rehte hain"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek loan API pe `POST /api/otp/send` par koi rate limit nahi tha. Ek attacker ne ek victim ke number pe 40,000 OTP SMS bhijwa diye ek raat me — "SMS bombing" — aur SMS bill ek din me 3 lakh rupaye aa gaya (OWASP API6 + API4). Fix ek `[EnableRateLimiting("otp")]` fixed-window limiter tha: per-number 3 per 10 minute, per-IP 10 per hour. Ek attribute ne ek recurring incident band kar diya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking API ka VAPT report 14 findings ke saath aaya, jinme se 9 pure "security misconfiguration" the (OWASP API8): missing HSTS, `Server: Kestrel` header exposed, prod me developer exception page on, Swagger publicly open, `X-Content-Type-Options` missing, aur CORS `AllowAnyOrigin`. Sab 9 ek hi 60-line `Program.cs` diff aur do config keys me close ho gaye. Client ne uske baad ek reusable "hardening middleware package" bana kar sab .NET services me standardize kar diya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- HSTS default `max-age`: **30 days** (`UseHsts`); prod-only, dev me kabhi nahi
+- `AllowAnyOrigin()` + `AllowCredentials()` = **runtime exception**, spec-forbidden combo
+- Rate limit exceeded -> **429 Too Many Requests** (`RejectionStatusCode`), ideally `Retry-After` ke saath
+- .NET 8 built-in limiter algorithms: **fixed window, sliding window, token bucket, concurrency** — 4
+- Kestrel default max request body: **~30 MB** (`MaxRequestBodySize`) — write endpoints pe aksar 1-2 MB tak ghatate hain
+- OWASP API Security Top 10 — **10** categories; hamare course me sabhi kisi na kisi topic se cover
+- `dotnet list package --vulnerable --include-transitive` — CI me har build pe chalao
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common opener: "Aapne ek Web API build ki — production pe le jaane se pehle security ke liye kya-kya karoge?" Strong answer ek ordered list hai: "HTTPS + HSTS enforce; CORS ek named policy se explicit origins/methods/headers pe, `AllowAnyOrigin` credentials ke saath kabhi nahi; .NET 8 rate limiter per-IP aur per-user partition ke saath, login pe sakht; security headers (`nosniff`, `X-Frame-Options`/CSP, `Referrer-Policy`) middleware se; request size limits; prod me verbose errors aur `Server` header off, Swagger band ya authenticated; input DTOs pe bound (mass assignment); saara SQL parameterized, `FromSqlRaw` me interpolation nahi; secrets vault/env se, `appsettings` me nahi; CI me dependency vulnerability scan." Phir isse OWASP API Top 10 se map kar do — interviewer ko dikhta hai ki tum ad-hoc nahi, framework se soch rahe ho. Follow-ups: "CORS actually kaam kaise karta hai", "rate limiter behind a load balancer", "CSP ek JSON API pe kya hona chahiye".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`app.UseCors(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod())` "CORS ka jhanjhat khatam karne ke liye". Ye har website ko browser me tumhari API call karne deta hai. Named policy me explicit origins list karo; credentials chahiye to wildcard origin allowed hi nahi.
+
+</Mistake>
+
+<Mistake>
+
+Rate limiter ko `app.UseRateLimiter()` se pipeline me add karna bhool jaana (sirf `AddRateLimiter` kar dena), ya use `UseRouting` se pehle rakhna. Register + Use dono chahiye, aur sahi order me warna limiter chalta hi nahi.
+
+</Mistake>
+
+<Mistake>
+
+Behind a reverse proxy / load balancer chalte hue per-IP partition `RemoteIpAddress` pe karna bina `ForwardedHeaders` middleware ke. Tab har request ka source proxy ka IP hota hai — saare users ek partition me, ek legit user baaki sabko throttle kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Prod me developer exception page ya default detailed errors on chhod dena. Stack trace, file paths, SQL, package versions — sab attacker ko recon deta hai. Prod me `UseExceptionHandler` + generic `ProblemDetails` + `traceId`, detail sirf logs me.
+
+</Mistake>
+
+<Mistake>
+
+`FromSqlRaw($"... WHERE x = '{userInput}'")` likhna. String interpolation seedha raw SQL me = SQL injection. `FromSqlInterpolated` ya explicit `SqlParameter` use karo; EF ki normal LINQ already parameterized hai.
+
+</Mistake>
+
+<Mistake>
+
+Hardening ko "ek baar ka kaam" maan lena. CORS origins, rate limits, aur dependencies badalte rehte hain; ek naya vulnerable NuGet package ya ek naya frontend origin poori mehnat undo kar sakta hai. Ye ek recurring checklist hai, ek PR nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Incoming HTTPS request"] --> B["HSTS + HttpsRedirection"]
+    B --> C["UseRouting: match endpoint"]
+    C --> D["UseCors: origin allowed?"]
+    D -- "no" --> X["blocked by browser"]
+    D -- "yes" --> E["UseRateLimiter: within limit?"]
+    E -- "no" --> Y["429 Too Many Requests"]
+    E -- "yes" --> F["UseAuthentication + UseAuthorization"]
+    F -- "fail" --> Z["401 / 403"]
+    F -- "pass" --> G["Model validation: DTO valid?"]
+    G -- "no" --> W["400 ProblemDetails"]
+    G -- "yes" --> H["Controller action + parameterized EF query"]
+`}
+  caption="Each hardening control is a checkpoint in the pipeline, in order: transport, CORS, rate limit, auth, validation, then the handler with safe data access."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Hardening = ek deliberate checklist pass over a working API to shrink attack surface — mostly middleware + config, not new features.
+- **HTTPS + HSTS**: `UseHttpsRedirection` always, `UseHsts` prod-only (dev me localhost pin ho jaata hai).
+- **CORS**: named policy, `WithOrigins` (exact), `WithMethods`/`WithHeaders` (minimal), `AllowCredentials` only with explicit origins. `AllowAnyOrigin()` + `AllowCredentials()` = invalid, throws.
+- **Rate limiting** (.NET 8 `AddRateLimiter` + `UseRateLimiter`): fixed / sliding / token-bucket / concurrency; partition per-IP or per-user; exceed -> 429. Strict limiter on `login`/`register`/OTP.
+- **Security headers** via middleware: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` / CSP `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'` for a pure JSON API.
+- **Request size limits**: Kestrel `MaxRequestBodySize`, `[RequestSizeLimit]` per endpoint, `FormOptions.MultipartBodyLengthLimit` for uploads.
+- **Prod misconfig**: no developer exception page (use `UseExceptionHandler` + `ProblemDetails`), `AddServerHeader = false`, Swagger disabled or authenticated.
+- **Input + data**: DTOs stop mass assignment; EF LINQ is parameterized; danger is `FromSqlRaw` with string interpolation — use `FromSqlInterpolated` or `SqlParameter`.
+- **Secrets**: `user-secrets` in dev, env vars / vault in prod, never in committed `appsettings`. **Dependencies**: `dotnet list package --vulnerable` in CI + Dependabot.
+- Map every control to the **OWASP API Security Top 10** — it turns an ad-hoc list into an auditable framework.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Program.cs` me security-headers middleware add karo (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, ek basic CSP), `AddServerHeader = false` set karo, aur prod branch me `UseHsts` + `UseExceptionHandler("/error")` daalo (dev me nahi). Swagger ko `if (app.Environment.IsDevelopment())` ke andar rakho. `curl -I` se headers verify karo aur confirm karo `Server` header gaya.
+
+**Medium:** `password-hashing-and-user-store` topic se jodo — .NET 8 rate limiter add karo: ek global sliding-window limiter per-user/per-IP partition ke saath (100/min), aur ek `"auth"` fixed-window limiter (5/min) jo `[EnableRateLimiting("auth")]` se `login` aur `register` pe lage. Ek loop script se 6 login attempts bhej kar 6th pe 429 confirm karo, aur `Retry-After` header add karo.
+
+**Bada (large):** Poora hardening pass `EmployeeManagement.Api` pe: (1) named CORS policy config-driven origins ke saath (`appsettings` -> `Cors:AllowedOrigins`); (2) Kestrel + per-endpoint request size limits, KYC upload endpoint pe alag limit + content-type whitelist; (3) ek `FromSqlRaw` search method jaan-boojh kar vulnerable likho phir usse `FromSqlInterpolated` se fix karo aur ek test se dono behaviour dikhao; (4) `dotnet list package --vulnerable` ko ek CI step banao; (5) ek `SECURITY.md` / checklist jisme har control OWASP API Top 10 ke ek item se mapped ho. Ek integration-test suite likho jo assert kare: HTTP -> HTTPS redirect, disallowed origin blocked, oversized body -> 413, unauthenticated protected route -> 401, aur rate-limit breach -> 429.
+
+</Callout>

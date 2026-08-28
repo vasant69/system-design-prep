@@ -1,0 +1,508 @@
+---
+slug: "integration-testing-with-webapplicationfactory"
+title: "Integration Testing the API with WebApplicationFactory"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 3
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["unit-testing-the-service-layer", "jwt-end-to-end", "authorize-roles-policies-claims", "ef-core-dbcontext-and-dbset"]
+tags: ["dotnet", "aspnet-core", "integration-testing", "webapplicationfactory", "xunit", "sqlite", "testcontainers", "testing", "employee-management"]
+englishDefinition: "An integration test boots the whole ASP.NET Core application in memory and sends real HTTP requests through the actual middleware, routing, model binding, filters, controllers, service layer, and EF Core. For our EmployeeManagement.Api this is done with Microsoft.AspNetCore.Mvc.Testing's WebApplicationFactory of Program, with the SQL Server DbContext swapped for SQLite in-memory or a Testcontainers SQL Server, so full CRUD flows and auth rules are asserted end to end without deploying anything."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+An integration test boots the whole ASP.NET Core application in memory and sends real HTTP requests through the actual middleware, routing, model binding, filters, controllers, service layer, and EF Core. For our `EmployeeManagement.Api` this is done with `Microsoft.AspNetCore.Mvc.Testing`'s `WebApplicationFactory<Program>`, with the SQL Server `DbContext` swapped for SQLite in-memory or a Testcontainers SQL Server, so full CRUD flows and auth rules are asserted end to end without deploying anything.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne `EmployeeService` ke business rules mocks ke saath isolate test kiye — fast, par sirf ek class. Ab hum ek layer upar jaate hain: **poori API ko in-memory chala kar asli HTTP request bhejna** aur poora pipeline — middleware, auth, routing, model binding, controller, service, EF Core — ek saath verify karna.
+
+### What is it — plain definition
+
+Integration test woh test hai jo **kai components ko ek saath, real wiring ke saath** chalata hai. Yahan "kai components" ka matlab hai poora ASP.NET Core app. `Microsoft.AspNetCore.Mvc.Testing` package ek class deta hai — `WebApplicationFactory<TEntryPoint>` — jo tumhare `Program.cs` ko utha kar app ko **memory me host** kar deta hai (koi Kestrel port nahi khulta, koi network socket nahi). Us factory se `CreateClient()` maango aur tumhe ek `HttpClient` milta hai jo seedha in-memory pipeline ko hit karta hai. `await client.PostAsync("/api/employees", body)` likhoge — request asli middleware se guzregi, asli `EmployeesController` chalega, asli EF Core query banegi.
+
+Do cheezein sirf test ke liye badli jaati hain:
+
+1. **Database** — production SQL Server ki jagah SQLite in-memory ya ek disposable Testcontainers SQL Server.
+2. **Auth ka bahari hissa** — asli identity provider ki jagah ya to ek test `AuthenticationHandler`, ya wahi signing key se mint kiya gaya real JWT.
+
+Baaki sab kuch asli chalta hai — yahi is test ki value hai.
+
+### Why do we need it — bina iske kya chhoot jaata hai
+
+Unit test kabhi ye nahi pakadta:
+
+- **Routing galat** — `[HttpGet("{id}")]` ki jagah `[HttpGet("id")]` likh diya. Service test green, par asli request `404` deti hai.
+- **Model binding / validation filter** — `[ApiController]` galat body pe `400` de raha hai ya nahi, `ProblemDetails` ka shape kya hai.
+- **Middleware order** — `UseAuthentication` `UseAuthorization` ke baad rakh diya, to `[Authorize]` chup-chaap skip ho jaata hai. Sirf ek request bhejne pe pata chalta hai.
+- **EF Core mapping / migration** — LINQ query asli SQL me translate hoti hai ya `The LINQ expression could not be translated` phenkti hai. In-memory mock ye kabhi nahi dikhata.
+- **DI misconfiguration** — ek service `AddScoped` ki jagah reh gayi, ya `IPanVerificationClient` register hi nahi hua — app boot pe hi phcatega.
+- **Serialization** — `decimal Salary` JSON me kaise aata hai, `DateOnly` ka format kya hai, `PascalCase` ya `camelCase`.
+
+Concrete failure scenario: humne `EmployeesController.GetById` pe `[Authorize(Roles = "HR,Admin")]` lagaya. Unit test me controller ka method direct call hota hai — attribute chalta hi nahi, test green. Production me ek `Viewer`-role user `GET /api/employees/5` maarta hai aur `500` aata hai kyunki authorization ke saath ek null-claim bug tha. Ek integration test jo `Viewer` token ke saath request bhej kar `403 Forbidden` expect karta, ye din bhar pehle pakad leta.
+
+### How does it work — mechanism, step by step
+
+1. `WebApplicationFactory<Program>` `Program.cs` ka `CreateHostBuilder`-equivalent uthata hai. Iske liye `Program` class **public aur accessible** honi chahiye — top-level statements wali `Program.cs` me compiler ek `internal` `Program` banata hai, isliye ek line add karni padti hai: `public partial class Program { }`.
+2. Factory `ConfigureWebHost` ke through host ko customize karne ka hook deta hai. Yahan hum `ConfigureTestServices(...)` me DbContext registration hata kar test wala daalte hain.
+3. `factory.CreateClient()` ek `HttpClient` deta hai jiska handler network par nahi jaata — woh in-memory `TestServer` ke `HttpContext` pipeline ko directly invoke karta hai. `BaseAddress` `http://localhost` set hota hai, redirects auto-follow hote hain.
+4. Test `client.GetAsync` / `PostAsJsonAsync` call karta hai, `response.StatusCode` aur `await response.Content.ReadFromJsonAsync<EmployeeDto>()` assert karta hai.
+5. Har test ke pehle DB seed hoti hai, baad me reset — taaki tests ek doosre pe depend na karein.
+
+### Show it in our project — the test project
+
+```bash
+dotnet new xunit -n EmployeeManagement.IntegrationTests
+dotnet sln add EmployeeManagement.IntegrationTests/EmployeeManagement.IntegrationTests.csproj
+dotnet add EmployeeManagement.IntegrationTests reference EmployeeManagement.Api/EmployeeManagement.Api.csproj
+dotnet add EmployeeManagement.IntegrationTests package Microsoft.AspNetCore.Mvc.Testing
+dotnet add EmployeeManagement.IntegrationTests package Microsoft.EntityFrameworkCore.Sqlite
+dotnet add EmployeeManagement.IntegrationTests package FluentAssertions
+```
+
+Pehle `Program.cs` ke bilkul neeche ek line — warna `WebApplicationFactory<Program>` compile nahi hoga:
+
+```csharp
+// Program.cs (last line)
+public partial class Program { }
+```
+
+Ab ek custom factory jo DB swap karti hai:
+
+```csharp
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
+
+public class EmployeeApiFactory : WebApplicationFactory<Program>
+{
+    private SqliteConnection _connection = default!;
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureServices(services =>
+        {
+            // 1. remove the real SQL Server registration
+            var descriptor = services.SingleOrDefault(
+                d => d.ServiceType == typeof(DbContextOptions<AppDbContext>));
+            if (descriptor is not null)
+                services.Remove(descriptor);
+
+            // 2. add SQLite in-memory, kept open for the factory's lifetime
+            _connection = new SqliteConnection("DataSource=:memory:");
+            _connection.Open();
+
+            services.AddDbContext<AppDbContext>(options =>
+                options.UseSqlite(_connection));
+
+            // 3. create schema once
+            using var scope = services.BuildServiceProvider().CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Database.EnsureCreated();
+        });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        _connection?.Dispose();
+    }
+}
+```
+
+Fake auth handler — har request ko ek known user + role deta hai:
+
+```csharp
+public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public const string Scheme = "Test";
+    public static string Role = "HR";   // test set karta hai
+
+    public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, UrlEncoder encoder)
+        : base(options, logger, encoder) { }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.Name, "test.user"),
+            new Claim(ClaimTypes.NameIdentifier, "1"),
+            new Claim(ClaimTypes.Role, Role),
+        };
+        var identity = new ClaimsIdentity(claims, Scheme);
+        var ticket = new AuthenticationTicket(
+            new ClaimsPrincipal(identity), Scheme);
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+}
+```
+
+Factory me is scheme ko default banao (sirf test project me):
+
+```csharp
+services.AddAuthentication(TestAuthHandler.Scheme)
+    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+        TestAuthHandler.Scheme, _ => { });
+```
+
+Ab ek full CRUD test class:
+
+```csharp
+public class EmployeesEndpointTests : IClassFixture<EmployeeApiFactory>, IAsyncLifetime
+{
+    private readonly EmployeeApiFactory _factory;
+    private readonly HttpClient _client;
+
+    public EmployeesEndpointTests(EmployeeApiFactory factory)
+    {
+        _factory = factory;
+        _client = factory.CreateClient();
+    }
+
+    public async Task InitializeAsync()   // per-test seed + reset
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Employees.RemoveRange(db.Employees);
+        db.Departments.RemoveRange(db.Departments);
+        db.Departments.Add(new Department { Id = 1, Name = "Retail Banking", CostCentre = "CC-100" });
+        db.Employees.Add(new Employee
+        {
+            Id = 1, FullName = "Asha Rao", Email = "asha@bank.com",
+            DepartmentId = 1, Salary = 900000m, PanNumber = "ABCDE1234F", IsActive = true
+        });
+        await db.SaveChangesAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [Fact]
+    public async Task Get_List_ReturnsSeededEmployee()
+    {
+        var response = await _client.GetAsync("/api/employees");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<List<EmployeeDto>>();
+        body.Should().ContainSingle(e => e.Email == "asha@bank.com");
+    }
+
+    [Fact]
+    public async Task GetById_UnknownId_Returns404()
+    {
+        var response = await _client.GetAsync("/api/employees/999");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Post_ValidEmployee_Returns201AndLocation()
+    {
+        var request = new CreateEmployeeRequest
+        {
+            FullName = "Ravi Kumar", Email = "ravi@bank.com",
+            DepartmentId = 1, Salary = 750000m, PanNumber = "PQRSX6789L"
+        };
+
+        var response = await _client.PostAsJsonAsync("/api/employees", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.Location.Should().NotBeNull();
+        var created = await response.Content.ReadFromJsonAsync<EmployeeDto>();
+        created!.Email.Should().Be("ravi@bank.com");
+        created.Id.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Post_DuplicateEmail_Returns400()
+    {
+        var request = new CreateEmployeeRequest
+        {
+            FullName = "Copy", Email = "asha@bank.com",   // already seeded
+            DepartmentId = 1, Salary = 500000m, PanNumber = "ZZZZZ0000Z"
+        };
+
+        var response = await _client.PostAsJsonAsync("/api/employees", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Put_ExistingEmployee_Returns204AndPersists()
+    {
+        var update = new UpdateEmployeeRequest { FullName = "Asha R.", Salary = 1000000m };
+
+        var response = await _client.PutAsJsonAsync("/api/employees/1", update);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var check = await _client.GetFromJsonAsync<EmployeeDto>("/api/employees/1");
+        check!.FullName.Should().Be("Asha R.");
+    }
+
+    [Fact]
+    public async Task Delete_ActiveEmployee_Returns409()
+    {
+        var response = await _client.DeleteAsync("/api/employees/1");
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+}
+```
+
+Aur ek alag class jahan auth deliberately fail karwaate hain:
+
+```csharp
+public class EmployeesAuthTests : IClassFixture<EmployeeApiFactory>
+{
+    private readonly EmployeeApiFactory _factory;
+    public EmployeesAuthTests(EmployeeApiFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task Get_WithoutToken_Returns401()
+    {
+        // factory jisme test auth scheme register hi nahi
+        var anonymousFactory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+                services.AddAuthentication("NoAuth")
+                        .AddScheme<AuthenticationSchemeOptions, FailingAuthHandler>("NoAuth", _ => { })));
+
+        var client = anonymousFactory.CreateClient();
+        var response = await client.GetAsync("/api/employees");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Delete_AsViewerRole_Returns403()
+    {
+        TestAuthHandler.Role = "Viewer";
+        var client = _factory.CreateClient();
+
+        var response = await client.DeleteAsync("/api/employees/1");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        TestAuthHandler.Role = "HR";   // reset
+    }
+}
+```
+
+### Code explained line by line
+
+- `WebApplicationFactory<Program>` — generic parameter batata hai kaunse assembly ka `Program` boot karna hai. Isliye `public partial class Program { }` zaroori — top-level `Program.cs` ka generated class `internal` hota hai.
+- `ConfigureWebHost` / `ConfigureServices` — real `Program.cs` ki service registrations **pehle** chalti hain, phir ye override; isliye yahan hum `services.Remove(descriptor)` se SQL Server wali `DbContextOptions<AppDbContext>` nikaal kar SQLite daalte hain. `ConfigureTestServices` isse bhi baad me chalta hai — auth override ke liye behtar.
+- `new SqliteConnection("DataSource=:memory:")` + `.Open()` — SQLite in-memory DB **tab tak zinda** rehti hai jab tak connection khula hai. Isliye connection ko factory field me rakhte hain, har `DbContext` instance pe naya nahi banate — warna schema gayab.
+- `db.Database.EnsureCreated()` — migrations run kiye bina model se schema banata hai. Fast, par migrations ki correctness test nahi karta (uske liye `db.Database.Migrate()` chahiye, jo SQLite pe kabhi fail ho sakta hai agar migration SQL Server-specific ho).
+- `IClassFixture<EmployeeApiFactory>` — xUnit ek hi factory instance poori test class ke saare tests me share karta hai (boot mehnga hai, ek baar karo). `CollectionFixture` multiple classes me share ke liye.
+- `IAsyncLifetime.InitializeAsync` — har `[Fact]` ke pehle chalta hai; yahan hum tables clear karke fresh seed daalte hain. Isse tests order-independent ban jaate hain.
+- `PostAsJsonAsync` / `ReadFromJsonAsync<T>` — `System.Net.Http.Json` ke extension methods; `System.Text.Json` se serialize/deserialize, wahi settings jo app use karta hai.
+- `response.Headers.Location` — `201 Created` ke saath `CreatedAtAction` `Location` header set karta hai; ise assert karna REST-correctness ka signal hai.
+- `_factory.WithWebHostBuilder(...)` — base factory se ek **naya configured factory** banata hai bina original ko chhue; alag auth setup wale test ke liye.
+- `TestAuthHandler.Role` static — quick hack; production-grade setup me ise `AsyncLocal` ya request header se padhna behtar, par chhoti suite me chalta hai.
+
+### Real SQL Server via Testcontainers — jab SQLite kaafi nahi
+
+SQLite aur SQL Server 100% same nahi: `rowversion`/`timestamp`, computed columns, `MERGE`, case-sensitive collation, `DATEDIFF`, sequences, JSON functions — inme fark hai. Agar tumhari queries in features pe depend karti hain, SQLite green dega par production red.
+
+Tab **Testcontainers** use karo — ek NuGet package jo test ke dauraan ek asli SQL Server Docker container start karta hai:
+
+```csharp
+using Testcontainers.MsSql;
+
+public class EmployeeApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
+{
+    private readonly MsSqlContainer _sql = new MsSqlBuilder()
+        .WithImage("mcr.microsoft.com/mssql/server:2022-latest")
+        .Build();
+
+    public async Task InitializeAsync()
+    {
+        await _sql.StartAsync();
+    }
+
+    public new async Task DisposeAsync() => await _sql.DisposeAsync();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureServices(services =>
+        {
+            var descriptor = services.Single(
+                d => d.ServiceType == typeof(DbContextOptions<AppDbContext>));
+            services.Remove(descriptor);
+            services.AddDbContext<AppDbContext>(o =>
+                o.UseSqlServer(_sql.GetConnectionString()));
+
+            using var scope = services.BuildServiceProvider().CreateScope();
+            scope.ServiceProvider.GetRequiredService<AppDbContext>()
+                 .Database.Migrate();   // asli migrations, asli SQL Server
+        });
+    }
+}
+```
+
+Trade-off saaf hai: SQLite in-memory suite 2-3 second me chal jaati hai, koi Docker chahiye nahi, laptop pe aur CI dono jagah bina setup ke. Testcontainers har suite run pe container pull/start karta hai (pehli baar image download ~1.5 GB, phir har run 5-15 second boot), Docker daemon chahiye, par **asli** provider — migrations, SQL translation, collation sab sach.
+
+Practical rule: **default SQLite in-memory**, aur sirf woh test classes Testcontainers pe rakho jo SQL Server-specific behaviour (rowversion concurrency, raw SQL, full-text) touch karti hain.
+
+### Unit vs integration vs the test pyramid
+
+- **Unit test** — ek class, dependencies mocked, koi I/O. Milliseconds. Yahan business rules, calculators, validators.
+- **Integration test** — asli app, asli DB (SQLite/Testcontainers), asli HTTP. Sub-second se kuch second. Yahan routing, auth, model binding, EF translation, DI wiring, serialization, full CRUD happy + sad paths.
+- **End-to-end test** — deployed environment, asli browser/client, asli external services. Minutes. Sirf critical user journeys.
+
+**Test pyramid**: roughly 70% unit, 20% integration, 10% end-to-end. Bahut zyada integration tests = slow suite jo developers locally chalate hi nahi. Bahut kam = wiring bugs production me milte hain. `EmployeeManagement.Api` ke liye: har endpoint ka ek happy path + ek key sad path integration me, aur saare business rule permutations unit me.
+
+### Where is it used in day-to-day development
+
+- **Naya endpoint add karna** — PR me ek integration test expected: "request bheji, `201` mila, DB me row bani, `Location` sahi hai".
+- **Auth change** — jab bhi `[Authorize]` policy badle, ek `401`/`403` test add hota hai; ye sabse aasani se toot-ne wali cheez hai.
+- **EF Core upgrade / query refactor** — integration suite hi pakadti hai ki koi LINQ ab translate nahi hota.
+- **CI gate** — `dotnet test` unit + integration dono chalata hai; SQLite wali fast, Testcontainers wali ek alag "nightly" ya "on-merge" stage me.
+- **Regression capture** — production bug aaya, pehle ek failing integration test likho jo asli request se reproduce kare, phir fix.
+
+### Pros and cons
+
+Fayde: real pipeline — routing, filters, middleware order, DI, model binding, EF translation, serialization sab ek test me cover; refactor ke waqt bada safety net; auth aur status-code contract lock ho jaata hai.
+
+Nuksan: unit test se 10-100x slow; SQLite provider fark se false green/red; auth ko fake karna real token flow ko skip kar deta hai; flaky ho sakte hain agar shared state reset na ho; DB seed/reset boilerplate har suite me.
+
+### When to use / when NOT to use
+
+- **Use** har endpoint ke happy path + ek-do critical sad path (404, 400, 401, 403, 409) ke liye; auth policies ke liye; complex LINQ queries jo asli SQL me translate honi chahiye.
+- **Don't** har business rule permutation ke liye (wo unit me sasti); trivial get`/health` type endpoints ke liye 5 tests; jab tumhaara CI Docker support nahi karta aur query SQL Server-specific hai (tab SQLite ka green jhootha ho sakta hai — us case me clearly document karo).
+
+</Hinglish>
+
+<Callout type="warning">
+
+`Program.cs` me `public partial class Program { }` add karna mat bhoolo. Iske bina `WebApplicationFactory<Program>` compile hoga hi nahi — error confusing hota hai ("`Program` is inaccessible due to its protection level"), aur log ghante `TEntryPoint` dhoondhte hain.
+
+</Callout>
+
+<Tradeoff
+  pros={["Real pipeline: routing, middleware order, filters, DI, model binding, EF translation, JSON — sab ek test me", "Auth aur HTTP status-code contract lock ho jaata hai (401/403/404/409)", "Refactor aur EF Core upgrade ke waqt bada regression net", "Deploy kiye bina full CRUD flow verify"]}
+  cons={["Unit test se 10-100x slow; poori suite locally kam chalti hai", "SQLite provider SQL Server se drift karta hai — false green/red possible", "Fake auth handler asli token/identity-provider flow skip kar deta hai", "Shared state reset na ho to flaky; har suite me seed/reset boilerplate"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ke onboarding API me `POST /api/applicants` pe `[Authorize(Policy = "KycOfficer")]` tha. Ek policy refactor ke baad claim ka naam `role` se `roles` ho gaya aur policy silently sabko allow karne lagi — 3 din tak koi bhi authenticated user dusre applicant ka KYC data padh sakta tha. Iske baad har protected endpoint ke liye do integration tests mandate hue: ek correct-role pe `200`, ek wrong-role pe `403`. `WebApplicationFactory` ke saath ye 12 tests 4 second me chalte the aur agla aisa regression merge se pehle hi ruk gaya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR project ki poori test suite SQLite in-memory pe thi aur hari rehti thi. Production SQL Server pe deploy hote hi ek report endpoint `500` dene laga — query me `EF.Functions.DateDiffDay` tha jo SQLite translate nahi karta tha par silently client-side evaluate ho gaya tha test me. Team ne un 4 report endpoints ke tests Testcontainers SQL Server pe shift kiye (baaki 200 tests SQLite pe hi rahe), aur "nightly" CI stage me asli SQL Server ke against poori suite chalayi. Fast feedback aur real-provider confidence dono mil gaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `WebApplicationFactory` app ko in-memory host karti hai — koi TCP port, koi Kestrel socket nahi
+- SQLite in-memory integration suite: typically 2-4 seconds for ~30-50 endpoint tests
+- Testcontainers SQL Server: first run pulls a roughly 1.5 GB image; later runs boot in 5-15 seconds
+- Test pyramid: roughly 70% unit, 20% integration, 10% end-to-end
+- `Program.cs` me 1 line — `public partial class Program { }` — factory ko chahiye
+- HTTP contract assert karo: `200`, `201` + `Location`, `204`, `400`, `401`, `403`, `404`, `409`
+- `IClassFixture<T>` = ek factory instance poori class me share; `IAsyncLifetime` = per-test seed/reset
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common senior question: "How do you test an ASP.NET Core API end to end without deploying?" Strong answer: "`Microsoft.AspNetCore.Mvc.Testing` ka `WebApplicationFactory<Program>` app ko in-memory boot karta hai; `CreateClient()` ek `HttpClient` deta hai jo asli middleware, routing, controllers aur EF Core se guzarta hai. `ConfigureWebHost` me main SQL Server `DbContextOptions` registration hata kar SQLite in-memory daalta hoon, ya SQL Server-specific queries ke liye Testcontainers. Auth ke liye ek test `AuthenticationHandler` jo known role deta hai, plus ek `403` test wrong role ke saath. Har endpoint ka happy path aur key sad paths — `404`, `400`, `401`, `409` — assert karta hoon." Follow-ups: "SQLite vs Testcontainers trade-off?", "`Program` public partial kyun chahiye?", "integration test kab nahi likhna?", "test kaise isolate karte ho — seed/reset kahan?". Bonus signal: khud se bol dena "business rule permutations unit me, wiring aur contract integration me — test pyramid follow karta hoon".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`Program.cs` me `public partial class Program { }` add na karna. Top-level statements wala `Program` `internal` hota hai, `WebApplicationFactory<Program>` compile hi nahi karta — error message `Program` ke protection level ke baare me hota hai, `WebApplicationFactory` ke nahi.
+
+</Mistake>
+
+<Mistake>
+
+SQLite in-memory connection ko har `DbContext` instance ke saath naya banana. In-memory DB connection band hote hi wipe ho jaati hai — schema aur seed gayab, tests `no such table` se fail. Ek connection factory ki lifetime tak khula rakho.
+
+</Mistake>
+
+<Mistake>
+
+Tests ke beech DB reset na karna. Ek test ka insert dusre me leak karta hai, tests order-dependent ban jaate hain, aur CI pe randomly fail hote hain. `IAsyncLifetime.InitializeAsync` me tables clear karke fresh seed daalo.
+
+</Mistake>
+
+<Mistake>
+
+`[Authorize]` wale endpoints ko `AllowAnonymous` test factory se test karke maan lena ki auth theek hai. Auth ko fake karna theek hai, par kam se kam ek `401` (no token) aur ek `403` (wrong role) test zaroor rakho — yahi sabse zyada toot-ne wali cheez hai.
+
+</Mistake>
+
+<Mistake>
+
+SQLite ka green dekh kar SQL Server pe bhi confident ho jaana. `rowversion`, computed columns, `DATEDIFF`, case-sensitive collation, raw SQL — inpe SQLite alag behave karta hai. In features ko touch karne wale tests Testcontainers ya real SQL Server pe chalao.
+
+</Mistake>
+
+<Mistake>
+
+Har business rule ka permutation integration test me likhna — 5 PAN format cases, 4 salary boundaries, sab HTTP ke through. Suite slow ho jaati hai aur locally koi nahi chalata. Permutations unit me, ek representative flow integration me.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    T["xUnit test: client.PostAsJsonAsync('/api/employees', body)"] --> WAF["WebApplicationFactory of Program (in-memory host)"]
+    WAF --> MW["Real middleware: auth, routing, model binding, filters"]
+    MW --> C["Real EmployeesController -> EmployeeService"]
+    C --> EF["Real EF Core -> swapped DbContext"]
+    EF --> DB["Test DB: SQLite in-memory / Testcontainers SQL Server"]
+    DB --> R["HttpResponse: status code + JSON DTO -> assert"]
+`}
+  caption="Only the DB (and the outer edge of auth) is swapped; every other layer runs for real, so routing, middleware order, DI wiring, EF translation and serialization are all under test."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Integration test = poori app in-memory boot, asli HTTP request, asli middleware/routing/controller/service/EF — sirf DB aur auth ka bahari hissa swapped.
+- `Microsoft.AspNetCore.Mvc.Testing` + `WebApplicationFactory<Program>` + `factory.CreateClient()`; `Program.cs` me `public partial class Program { }` mandatory.
+- DB swap: `ConfigureWebHost` me `DbContextOptions<AppDbContext>` descriptor `Remove` karo, phir SQLite in-memory (`UseSqlite`, connection khula rakho) ya Testcontainers `MsSqlContainer` (`Database.Migrate()`).
+- SQLite in-memory: fast (seconds), no Docker, but drifts from SQL Server (`rowversion`, `DATEDIFF`, collation, raw SQL). Testcontainers: real provider, but Docker + slower boot. Default SQLite, Testcontainers only for SQL Server-specific queries.
+- Auth: test `AuthenticationHandler` that returns a known user + role; add a `401` (no token) and `403` (wrong role) test.
+- Per-test isolation: `IClassFixture<T>` shares one factory; `IAsyncLifetime.InitializeAsync` clears tables and re-seeds before each test.
+- Assert full CRUD contract: `200`, `201` + `Location`, `204`, plus `400`/`401`/`403`/`404`/`409`; deserialize with `ReadFromJsonAsync<T>`.
+- Test pyramid: roughly 70% unit, 20% integration, 10% end-to-end. Business rule permutations go in unit tests; wiring, routing, auth and EF translation go here.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.IntegrationTests` project banao, `Microsoft.AspNetCore.Mvc.Testing` add karo, `Program.cs` me `public partial class Program { }` daalo, aur ek test likho: `GET /api/employees` pe `200 OK` aur JSON array wapas aata hai (default `WebApplicationFactory`, abhi koi DB swap nahi).
+
+**Medium:** Ek `EmployeeApiFactory : WebApplicationFactory<Program>` banao jo SQL Server `DbContextOptions<AppDbContext>` registration hata kar SQLite in-memory daale aur `EnsureCreated()` kare. `IAsyncLifetime` se ek department + ek employee seed karo. Full CRUD ke 6 tests likho: list `200`, get-by-id `200` aur unknown `404`, POST `201` + `Location`, PUT `204` + persisted check, DELETE-active `409`.
+
+**Bada (large):** Auth add karo — ek `TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>` jo configurable role deta hai, factory me default scheme banao. `[Authorize(Roles = "HR,Admin")]` wale endpoints ke liye tests: `HR` token pe `200`, `Viewer` token pe `403`, `WithWebHostBuilder` se banaye anonymous client pe `401`. Phir ek report endpoint jo `EF.Functions.DateDiffDay` use karta hai uske liye ek alag test class Testcontainers `MsSqlContainer` pe chala kar dikhao ki SQLite pe wahi query kaise behave karti hai — trade-off ko code me document karo.
+
+</Callout>

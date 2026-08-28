@@ -1,0 +1,315 @@
+---
+slug: "docker-compose-with-sql-server"
+title: "Docker Compose with SQL Server, Line by Line"
+section: "code-flow"
+module: "deployment"
+order: 3
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["dockerizing-the-api", "production-configuration-and-environments", "restructuring-into-clean-architecture"]
+tags: ["dotnet", "aspnet-core", "web-api", "docker", "docker-compose", "sql-server", "ef-core", "deployment", "employee-management"]
+englishDefinition: "Running EmployeeManagement.Api and its SQL Server database together as a local stack with a docker-compose.yml: an api service built from the Dockerfile and a db service from the official mssql/server:2022 image, a named volume so data survives restarts, a healthcheck on the database, depends_on with condition service_healthy so the API waits, service-name DNS (Server=db) on the default bridge network, and a chosen strategy for applying EF Core migrations against the container database."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Running `EmployeeManagement.Api` and its SQL Server database together as a local stack with a `docker-compose.yml`: an `api` service built from the Dockerfile and a `db` service from the official `mssql/server:2022` image, a named volume so data survives restarts, a healthcheck on the database, `depends_on` with `condition: service_healthy` so the API waits, service-name DNS (`Server=db`) on the default bridge network, and a chosen strategy for applying EF Core migrations against the container database.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne `EmployeeManagement.Api` ki ek clean multi-stage image banai. Lekin API akeli chal nahi sakti — usse SQL Server chahiye. Ab tak local pe hum SQL Server alag se install karke ya ek alag `docker run` se chalate the, aur connection string haath se manage karte the. **Docker Compose** isi dard ko khatam karta hai: ek file me poora stack — API + database + network + volumes — describe karo, ek command se sab uth jaaye, ek command se sab gir jaaye.
+
+### What is it — Compose ka matlab
+
+`docker-compose.yml` ek **declarative** file hai jo ek ya zyada containers (yahan Compose unhe "services" bolta hai) ko ek group ke roop me describe karti hai — kaunsi image, kaunse ports, kaunse environment variables, kaunse volumes, aur kaun kis pe depend karta hai. `docker compose up` poore group ko start karta hai, `docker compose down` sab band karta hai.
+
+Compose khud ek **default network** bhi banata hai (ek bridge network jiska naam project folder se aata hai) aur usme har service ko join kar deta hai. Isi network par har service dusre ko **apne service name se** DNS ke through dhoondh sakta hai — isliye API ke connection string me `Server=db` likhna kaafi hai, koi IP nahi.
+
+### Why do we need it — bina Compose ke kya tootega
+
+Bina Compose ke local setup me teen dard hote hain, teenon real:
+
+1. **Ordering.** SQL Server container ko ready hone me 20-40 second lagte hain. Agar API pehle uth gayi aur DB abhi accept nahi kar raha, EF Core startup pe `SqlException: connection refused` de kar crash karti hai. Har baar retry karna, timing pe depend karna — flaky.
+2. **Networking.** Do alag `docker run` containers by default ek dusre ko naam se nahi dekh paate. `localhost` bhi kaam nahi karta kyunki container ke andar `localhost` matlab wahi container. IP haath se nikalna aur connection string me daalna har restart pe todta hai.
+3. **Reproducibility.** Naya team member `git clone` karke `docker compose up` chalaye aur exactly wahi stack mile — same SQL Server version, same seed data path. "Mere machine pe SQL 2019 hai, tumhare pe 2022" wale bugs khatam.
+
+Failure scenario: ek team ne `depends_on: [db]` to likha, par bina `condition: service_healthy`. Plain `depends_on` sirf itna guarantee karta hai ki `db` **container start** ho chuka — ye nahi ki SQL Server **process andar ready** hai. CI pipeline me `docker compose up` ke baad integration tests turant chale, DB abhi warm-up me tha, aur pehla test hamesha random fail hota tha. Fix: `db` pe ek healthcheck + `condition: service_healthy`.
+
+### How does it work — up se ready tak
+
+1. `docker compose up --build` chalne par Compose pehle `api` service ke liye Dockerfile build karta hai (`build: .`) aur `db` ke liye `mssql/server:2022` image pull karta hai.
+2. Compose ek default bridge network banata hai aur dono services usme join karta hai. Named volume `mssql-data` create hota hai agar pehle se nahi hai.
+3. `db` container start hota hai. Compose har `interval` par uska **healthcheck command** chalata hai (ek `sqlcmd` query). Jab tak wo command non-zero return karta hai, service `starting` state me hai.
+4. Kyunki `api` ne `depends_on: db: condition: service_healthy` declare kiya hai, Compose `api` ko tab tak **start hi nahi karta** jab tak `db` ka healthcheck `healthy` na ho jaaye.
+5. `db` healthy hote hi `api` start hota hai. Uska connection string `Server=db,1433` us bridge network par `db` container ko resolve karta hai. Migrations apply hoti hain (strategy neeche), phir API requests sunne lagti hai.
+
+### Show it in our project
+
+Repo root pe `docker-compose.yml` (Dockerfile ke saath):
+
+```yaml
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Your_strong_Pass1"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -Q \"SELECT 1\" -b",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Development"
+      ASPNETCORE_HTTP_PORTS: "8080"
+      ConnectionStrings__Default: "Server=db,1433;Database=EmployeeDb;User Id=sa;Password=Your_strong_Pass1;TrustServerCertificate=True"
+    ports:
+      - "8080:8080"
+
+volumes:
+  mssql-data:
+```
+
+Start the whole stack:
+
+```bash
+docker compose up --build
+```
+
+Tear it down, keeping data:
+
+```bash
+docker compose down
+```
+
+Tear it down and delete the database volume too (fresh start):
+
+```bash
+docker compose down -v
+```
+
+### Code explained line by line
+
+- `image: mcr.microsoft.com/mssql/server:2022-latest` — official Microsoft SQL Server 2022 image. `2022-latest` ek moving tag hai; production me specific patch tag ya SHA digest pin karo, local ke liye theek hai.
+- `ACCEPT_EULA: "Y"` — mandatory. Iske bina SQL Server container start hi nahi hoga (license acceptance). String `"Y"` me quotes isliye ki YAML ise boolean na samajh le.
+- `MSSQL_SA_PASSWORD` — `sa` user ka password. SQL Server ki apni strength policy hai: kam se kam 8 char, uppercase + lowercase + digit/symbol. Weak password pe container boot par silently exit ho jaata hai — logs me `Password validation failed`.
+- `MSSQL_PID: "Developer"` — free Developer edition (full features, non-production). `Express` bhi option hai (10 GB DB limit).
+- `ports: - "1433:1433"` — host ka `1433` container ke `1433` pe map. Isse tum host se SSMS / Azure Data Studio se bhi connect kar sakte ho debugging ke liye. Sirf inter-container communication chahiye to ye line hata bhi sakte ho.
+- `volumes: - mssql-data:/var/opt/mssql` — **named volume**. SQL Server apna saara data (`.mdf`, `.ldf`, system databases) `/var/opt/mssql` me rakhta hai. Ise ek Docker-managed volume pe map karne se container delete hone par bhi data bacha rehta hai. Bina volume ke, `docker compose down` = poora database gaya.
+- `healthcheck.test` — `CMD-SHELL` form me ek command jo shell ke through chalta hai. `sqlcmd ... -Q "SELECT 1" -b` DB se ek trivial query maarta hai; `-b` matlab error par non-zero exit code. `2022` image me tools path `/opt/mssql-tools18/bin/sqlcmd` hai (purane images me `/opt/mssql-tools/`), aur `-C` chahiye kyunki tool ab by default server certificate trust nahi karta.
+- `$${MSSQL_SA_PASSWORD}` me **double dollar** — Compose khud `$VAR` ko apni variable substitution samajhta hai; `$$` likhne se ek literal `$` container ke andar jaata hai taaki shell environment variable expand kare, Compose nahi.
+- `interval: 10s` har 10 second pe check. `retries: 10` — lagatar 10 fail hone par `unhealthy`. `start_period: 30s` — pehle 30 second ke fail count nahi hote (SQL Server warm-up ke liye grace).
+- `api.build: .` — is service ki image repo root ke `Dockerfile` se banti hai (pichhla topic). `image:` ki jagah `build:`.
+- `depends_on.db.condition: service_healthy` — Compose `api` container ko tab tak create/start nahi karta jab tak `db` ka healthcheck pass na ho. Plain list-form `depends_on: [db]` sirf start-order deta hai, readiness nahi.
+- `ConnectionStrings__Default` — double underscore nested key (`ConnectionStrings:Default`). `Server=db,1433` me `db` wahi service name hai — Compose network ka DNS ise `db` container ke IP pe resolve karta hai. `TrustServerCertificate=True` local ke liye theek (self-signed cert); production me proper cert.
+- `volumes: mssql-data:` (top level) — named volume ko **declare** karta hai. Bina is block ke Compose error deta hai ki undefined volume reference hai.
+
+### EF Core migrations ko container DB pe kaise apply karein
+
+Ye asli decision hai. Teen approach, teenon production me dikhte hain:
+
+**1. Startup migrator — `db.Database.MigrateAsync()` on boot.** `Program.cs` me, sirf dev/local ke liye guarded:
+
+```csharp
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
+```
+
+- Pros: zero extra tooling, `docker compose up` ke baad DB apne aap current schema pe. Local aur demo ke liye perfect.
+- Cons: production me **khatarnaak**. Do API replicas ek saath boot honge to dono migration lena chahenge — race, ya ek lock leke doosra timeout. App ko `CREATE TABLE` / `ALTER` ki DB permission chahiye (least-privilege violation). Migration slow hui to health probe fail, orchestrator restart, phir se try — crash loop. Isliye `IsDevelopment()` guard.
+
+**2. Migration bundle — `dotnet ef migrations bundle`.** Ek self-contained executable jo sirf migrations apply karta hai:
+
+```bash
+dotnet ef migrations bundle \
+  --project EmployeeManagement.Infrastructure \
+  --startup-project EmployeeManagement.Api \
+  --configuration Release \
+  -o efbundle
+```
+
+```bash
+./efbundle --connection "Server=db,1433;Database=EmployeeDb;User Id=migrator;Password=...;TrustServerCertificate=True"
+```
+
+- Pros: deploy pipeline ka ek **alag step**, app boot se decoupled. Ek hi baar chalta hai (parallel replicas ka issue nahi). App runtime user ko sirf DML permission, migrator user ko DDL. Rollback plan clear.
+- Cons: pipeline me ek extra artifact + step. `dotnet ef` design-time tooling chahiye build agent pe.
+
+**3. Init container.** Compose / Kubernetes me ek chhota container jo **API se pehle** chalta hai, migrations lagata hai, exit karta hai; tabhi API start hota hai. Compose me ise ek `migrator` service se model karte hain jise API `depends_on: condition: service_completed_successfully` se wait karta hai.
+
+- Pros: migration API image se alag, orchestrator-native ordering, ek hi jagah run.
+- Cons: ek aur service/manifest, aur Compose me `service_completed_successfully` ke liye thoda plumbing.
+
+Rule of thumb: **local/dev me startup migrator** (guarded), **staging/production me migration bundle as a pipeline step** (ya init container agar Kubernetes hai). App code ko kabhi production DB ka schema-owner mat banao.
+
+### Where is it used in day-to-day development
+
+- Naya laptop, naya joinee: `git clone` + `docker compose up` = poora working stack, koi "SQL Server install karo" doc nahi.
+- Integration tests CI me: pipeline `docker compose up -d db`, tests, `docker compose down -v` — har run fresh DB.
+- Feature branch pe alag DB chahiye: `docker compose -p feature-x up` — alag project name, alag network aur volume.
+- Ek naya dependency add karna (Redis, RabbitMQ): compose file me ek aur service, sab already networked.
+
+### When to use / when NOT to
+
+- **Use** Compose local dev, demos, integration-test stacks, aur chhote single-host deployments ke liye.
+- **Mat use** karo multi-node production orchestration ke liye — wahan Kubernetes / ECS / Container Apps chahiye (health-checks topic me covered). Compose ka `depends_on`, healthcheck, restart policy single host tak seemit hai.
+- Production database ko **kabhi** ephemeral Compose service mat banao — managed SQL (Azure SQL, RDS) ya ek properly-backed-up dedicated instance use karo; Compose me DB sirf dev convenience hai.
+
+### Pros and cons
+
+Pros: ek file me poora stack, ek command up/down, service-name DNS se networking free, named volume se data persistence, healthcheck + `service_healthy` se ordering solve. Cons: single host only, production-grade nahi (no rolling update, no autoscale), `mssql` image ~1.5 GB pehli baar pull, aur agar volume ka data corrupt/stale ho gaya to `down -v` karke fresh start karna padta hai (dev me acceptable).
+
+</Hinglish>
+
+<Callout type="warning">
+
+`depends_on: [db]` (plain list) sirf **start order** deta hai — ye guarantee nahi ki SQL Server accept kar raha hai. Readiness ke liye `db` pe healthcheck lagao aur `api` me `depends_on: db: condition: service_healthy` likho. Warna API boot par `connection refused` se crash karega.
+
+</Callout>
+
+<Tradeoff pros={["Startup migrator (db.Database.MigrateAsync on boot): zero extra tooling, DB always current after compose up — perfect for local/dev", "Migration bundle / init container: decoupled from app boot, runs once (no replica race), least-privilege (app user has no DDL rights), clean rollback"]} cons={["Startup migrator: dangerous in prod — replica race, app needs schema-owner permissions, slow migration triggers health-probe crash loop", "Migration bundle / init container: an extra pipeline artifact and step, needs dotnet ef tooling or an extra manifest"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Onboarding team ka pehla `docker-compose.yml` startup migrator use karta tha — `IsDevelopment()` guard ke bina. Local pe theek chal raha tha. Phir staging pe do API replicas deploy hue: dono boot par `MigrateAsync()` chala, ek ne migration history table pe lock liya, doosra 30 second baad timeout hua aur crash-looped. Health probe fail hone se orchestrator ne dono replicas ko baar-baar restart kiya. Fix do part me: `MigrateAsync()` ke aage `if (app.Environment.IsDevelopment())`, aur pipeline me `dotnet ef migrations bundle` ka ek dedicated "db-migrate" step jo deploy se pehle ek baar chalta hai, ek alag `migrator` SQL login se jiske paas hi DDL permission hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke integration-test suite me har PR pe pipeline `docker compose up -d` se API + SQL Server 2022 uthata, `condition: service_healthy` ki wajah se tests tabhi shuru hote jab DB genuinely ready hota, phir `docker compose down -v` se sab wipe. `mssql-data` volume deliberately named tha taaki developer local pe `down` (bina `-v`) karke seed data bachaa sake, par CI hamesha `-v` deta tha clean slate ke liye. Ye pattern "works on my machine" DB-version bugs ko poori tarah khatam kar gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- SQL Server 2022 container warm-up: typically 20-40 seconds before it accepts connections — `start_period: 30s` covers it
+- `mcr.microsoft.com/mssql/server:2022-latest` image: ~1.5 GB on first pull
+- `MSSQL_SA_PASSWORD` policy: min 8 chars, at least 3 of upper/lower/digit/symbol — weak password = container exits on boot
+- SQL Server default port `1433`; SQL data lives in `/var/opt/mssql` inside the container
+- `sqlcmd` path in the 2022 image: `/opt/mssql-tools18/bin/sqlcmd` (older images used `/opt/mssql-tools/`), and it needs `-C` to trust the self-signed cert
+- `docker compose down` keeps named volumes; `docker compose down -v` deletes them (the database)
+- `$$` in a compose file = one literal `$` passed to the container shell (escapes Compose's own variable substitution)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common intermediate question: "How do you run your API and SQL Server together locally?" Strong 20-second answer: "A `docker-compose.yml` with two services — `api` built from the Dockerfile and `db` from `mcr.microsoft.com/mssql/server:2022-latest` with `ACCEPT_EULA=Y` and `MSSQL_SA_PASSWORD`. The database has a `sqlcmd`-based healthcheck, and the API declares `depends_on` with `condition: service_healthy` so it only starts once SQL Server actually accepts connections. The connection string uses `Server=db` — Compose's default network resolves the service name over DNS. A named volume on `/var/opt/mssql` keeps the data across restarts." Follow-up almost always: "How do migrations get applied?" — answer with the three options and say startup `MigrateAsync()` guarded for dev, migration bundle as a pipeline step for prod.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`depends_on: [db]` likhna aur maan lena ki API ab wait karegi. Plain `depends_on` sirf container **start order** deta hai, SQL Server ki readiness nahi. Healthcheck + `condition: service_healthy` chahiye, warna API boot par `connection refused`.
+
+</Mistake>
+
+<Mistake>
+
+Named volume na dena. Bina `volumes: - mssql-data:/var/opt/mssql` ke, `docker compose down` ya container recreate hone par poora database chala jaata hai — har baar migrations aur seed data dobara.
+
+</Mistake>
+
+<Mistake>
+
+Connection string me `Server=localhost` ya `Server=127.0.0.1` likhna. Container ke andar `localhost` matlab wahi container, DB nahi. Compose network par service name — `Server=db` — use karo.
+
+</Mistake>
+
+<Mistake>
+
+`ACCEPT_EULA` set na karna ya weak `MSSQL_SA_PASSWORD` dena. Dono cases me `db` container chup-chaap exit ho jaata hai; API phir `service_healthy` ka wait karti reh jaati hai. `docker compose logs db` me `Password validation failed` / EULA message dikhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Production me `db.Database.MigrateAsync()` ko app startup pe bina guard chalana. Replica race, app ko DDL permission chahiye, aur slow migration health-probe crash loop banati hai. Dev me guarded, prod me migration bundle / init container.
+
+</Mistake>
+
+<Mistake>
+
+`mssql/server:2022-latest` image me purana `sqlcmd` path (`/opt/mssql-tools/bin/sqlcmd`) ya bina `-C` flag ke healthcheck likhna — command hamesha fail, service kabhi `healthy` nahi hoti, API kabhi start nahi hoti.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    DEV["docker compose up --build"] --> BUILD["build api image (Dockerfile) + pull mssql:2022"]
+    BUILD --> DB["db service starts"]
+    DB --> HC["healthcheck: sqlcmd SELECT 1 every 10s"]
+    HC -->|"healthy"| API["api service starts"]
+    DB --> VOL["named volume mssql-data -> /var/opt/mssql"]
+    API -->|"Server=db,1433 over compose network"| DB
+    API -->|"MigrateAsync() on startup (dev only)"| DB
+`}
+  caption="One command brings up both services on a shared network; the API waits for the db healthcheck, talks to it by service name, and the named volume keeps the data across restarts."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `docker-compose.yml` describes the whole local stack: `api` (`build: .`) + `db` (`mcr.microsoft.com/mssql/server:2022-latest`). `docker compose up --build` starts it, `down` stops it, `down -v` also deletes the DB volume.
+- `db` needs `ACCEPT_EULA: "Y"` and a policy-compliant `MSSQL_SA_PASSWORD`; a weak password makes the container exit on boot.
+- Named volume `mssql-data:/var/opt/mssql` persists the database across restarts — without it, `down` wipes everything.
+- Healthcheck runs `sqlcmd -Q "SELECT 1"` (path `/opt/mssql-tools18/bin/sqlcmd`, needs `-C`); `start_period: 30s` gives SQL Server warm-up grace.
+- `api` uses `depends_on: db: condition: service_healthy` so it only starts once SQL Server actually accepts connections — plain `depends_on` gives start-order only.
+- Connection string uses `Server=db,1433` — Compose's default bridge network resolves the service name via DNS; never `localhost` inside a container.
+- Migrations: startup `db.Database.MigrateAsync()` guarded by `IsDevelopment()` for local; `dotnet ef migrations bundle` as a separate pipeline step (or an init container) for staging/prod, with a least-privilege migrator login.
+- `$$` in a compose value escapes Compose's own `$` substitution so the container shell sees a literal `$`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement` repo root pe ek `docker-compose.yml` likho jismein sirf `db` service ho (`mssql/server:2022-latest`, `ACCEPT_EULA`, `MSSQL_SA_PASSWORD`, `1433:1433`, named volume). `docker compose up -d db` chala kar `docker compose logs db` me "SQL Server is now ready" dhoondho, phir SSMS / Azure Data Studio se `localhost,1433` pe `sa` se connect karke confirm karo.
+
+**Medium:** Ab `api` service add karo (`build: .`, `depends_on: db: condition: service_healthy`, `ConnectionStrings__Default` with `Server=db`). `db` pe `sqlcmd` healthcheck lagao. `docker compose up --build` chala kar `docker compose ps` me dekho ki `api` tabhi `Up` hua jab `db` `healthy` hua. `Program.cs` me `IsDevelopment()`-guarded `MigrateAsync()` add karke confirm karo ki `EmployeeDb` container me ban gaya aur `Employees` table maujood hai.
+
+**Bada (large):** Migrations ko app boot se decouple karo: (1) `dotnet ef migrations bundle` se ek `efbundle` executable banao. (2) Compose me ek `migrator` service add karo jo bundle chalata hai aur exit karta hai; `api` me `depends_on: migrator: condition: service_completed_successfully`. (3) Ek alag `migrator` SQL login banao jiske paas DDL permission hai, aur `api` ka connection string ek `app_user` login use kare jiske paas sirf DML. (4) `docker compose down -v && docker compose up --build` se pura flow verify karo — migrator pehle, phir API. (5) Ek chhota `README` section likho jo teenon migration strategies (startup / bundle / init container) aur "kab kaunsi" summarize kare.
+
+</Callout>

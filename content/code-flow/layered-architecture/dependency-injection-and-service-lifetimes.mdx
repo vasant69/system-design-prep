@@ -1,0 +1,313 @@
+---
+slug: "dependency-injection-and-service-lifetimes"
+title: "Dependency Injection & Service Lifetimes, Line by Line"
+section: "code-flow"
+module: "layered-architecture"
+order: 5
+difficulty: "intermediate"
+readingTime: 19
+prerequisites: ["the-repository-pattern", "extract-the-service-layer", "interfaces-and-why-they-exist"]
+tags: ["dotnet", "aspnet-core", "web-api", "dependency-injection", "service-lifetimes", "scoped", "singleton", "transient", "employee-management"]
+englishDefinition: "The ASP.NET Core dependency injection container is a registry that maps a service type to how one instance of it is created, and hands those instances to any class that asks for them through its constructor. Each registration has a lifetime — Transient (a new instance every time), Scoped (one instance per HTTP request), or Singleton (one instance for the whole application) — and mixing them wrongly, such as injecting a Scoped service into a Singleton, captures the shorter-lived object and causes stale data or thread-safety bugs."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+The ASP.NET Core dependency injection container is a registry that maps a service type to how one instance of it is created, and hands those instances to any class that asks for them through its constructor. Each registration has a lifetime — Transient (a new instance every time), Scoped (one instance per HTTP request), or Singleton (one instance for the whole application) — and mixing them wrongly, such as injecting a Scoped service into a Singleton, captures the shorter-lived object and causes stale data or thread-safety bugs.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle do topics me humne `EmployeesController` me `IEmployeeService` inject kiya aur `EmployeeService` me `IEmployeeRepository`. Har baar `Program.cs` me ek line likhni padi — `builder.Services.AddScoped<...>()` — warna runtime pe "Unable to resolve service" error. Is topic me hum us line ke andar jhaankte hain: **DI container kya hai, resolution kaise hota hai, aur `AddScoped` / `AddSingleton` / `AddTransient` me exactly kya farak hai** — hamare project ke concrete classes ke saath. Aakhir me ek asli production bug — captive dependency — aur uska fix.
+
+### What is it — DI container kya hai
+
+DI container ek **object factory + registry** hai. Do hisse:
+
+1. **`IServiceCollection`** — ek list jisme tum registrations daalte ho (`Program.cs` me, `app.Build()` se pehle). Har entry batati hai: "is type ke liye (`IEmployeeService`), aisi class banao (`EmployeeService`), aur itni der zinda rakho (lifetime)".
+2. **`IServiceProvider`** — `app.Build()` ke waqt list se banta hai. Ye actual instances create karta hai jab koi maangta hai, dependency graph resolve karta hai, aur lifetime rules enforce karta hai.
+
+Tum khud kabhi `new EmployeeService(new InMemoryEmployeeRepository())` nahi likhte. Tum constructor me `IEmployeeService` maangte ho, container poora graph bana ke de deta hai. Isko **Inversion of Control** kehte hain — object banane ka control tumse container ke paas chala gaya.
+
+### Why do we need it — iske bina kya tootega
+
+Bina container ke har class ko apni dependencies khud `new` karni padti. `EmployeesController` `new EmployeeService(new InMemoryEmployeeRepository(new SqlConnection(...)))` — poora graph haath se. Ek dependency add hui to har call site badalna pada. Test me fake inject karna impossible — `new` hardcoded hai. Aur lifetime manage karna (ek `DbContext` per request, ek `HttpClient` shared) khud karna padta.
+
+Concrete failure: bina DI ke tum har action me `new EmployeeService()` karte ho. `EmployeeService` ke andar `new InMemoryEmployeeRepository()`. Ab `InMemoryEmployeeRepository` ki `static List` to shared hai, par jis din wo EF Core ka `DbContext` wrap karega, har action ek naya `DbContext` bina dispose kiye chhod dega — connection pool khatam, app 30 minute me down.
+
+### How does it work — resolution step by step
+
+Ek request aati hai `GET /api/employees`:
+
+1. Framework ek **scope** banata hai — ek chhota container jo sirf is request ke liye jeeta hai.
+2. Framework scope se `EmployeesController` maangta hai.
+3. Container `EmployeesController` ka constructor dekhta hai: `EmployeesController(IEmployeeService service)`.
+4. `IEmployeeService` ki registration dhoondta hai — `AddScoped<IEmployeeService, EmployeeService>()`. "Scoped" — is scope me pehle se instance hai? Nahi. `EmployeeService` banao.
+5. `EmployeeService` ka constructor: `EmployeeService(IEmployeeRepository repo)`. `IEmployeeRepository` ki registration dhoondo — `AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>()`. Is scope me instance hai? Nahi. Banao.
+6. `InMemoryEmployeeRepository` ka constructor parameter-less. Ban gaya. Scope me cache ho gaya.
+7. `EmployeeService` ko repo mil gaya, ban gaya, scope me cache.
+8. `EmployeesController` ko service mil gaya, ban gaya.
+9. Action chalti hai, response jaata hai.
+10. Scope **dispose** hota hai. Is scope me bane sabhi `IDisposable` Scoped/Transient instances ka `Dispose()` call hota hai (EF Core me `DbContext` yahi close hota hai).
+
+Agli request = **naya scope**, naye Scoped instances. Purane chale gaye.
+
+### The three lifetimes — hamare project ke saath
+
+**`AddScoped` — ek instance per HTTP request.** Us request ke andar jitni baar bhi `IEmployeeService` maango, **wahi ek** instance milta hai. Request khatam, instance chala gaya.
+
+- `IEmployeeService -> EmployeeService` — **Scoped**. Ek request ka kaam ek instance karta hai; koi cross-request state nahi.
+- `IEmployeeRepository -> InMemoryEmployeeRepository` — **Scoped**. Aaj `static List` isko technically stateless bana deti hai, par module 4 me ye `DbContext` wrap karega, aur `DbContext` **hamesha Scoped** hota hai (thread-safe nahi, per-request use hota hai). Isliye repo abhi se Scoped — swap ke din kuch na badle.
+
+**`AddSingleton` — poore app me ek hi instance.** App start pe (ya pehli maang pe) banta hai, app band hone tak zinda. Har request, har thread wahi share karta hai — isliye **thread-safe ya immutable** hona chahiye.
+
+- Ek `ISystemClock` / `IDateTimeProvider` helper (jo `DateTime.UtcNow` wrap karta hai taaki tests time control kar sakein) — **Singleton**. Stateless, koi dependency nahi, banane me cost nahi, aur sab jagah wahi chahiye.
+- App configuration (`IConfiguration`, `IOptions<T>`) framework already Singleton register karta hai.
+
+**`AddTransient` — har baar naya instance.** Jab bhi koi maange, ek fresh object. Ek hi resolve ke andar do jagah maanga to do alag instances.
+
+- Ek stateless mapper `IEmployeeMapper` (jo `Employee <-> EmployeeResponseDto` convert karta hai, koi field nahi rakhta) — **Transient**. Banane me kuch nahi lagta, state nahi hai, cache karne ka koi fayda nahi. (Agar tum AutoMapper ka `IMapper` use karo to wo Singleton register hota hai — uska config immutable hai.)
+
+Default choice: **request/DB touch karne wali har cheez Scoped**. Stateless chhota helper Transient. Shared immutable/thread-safe cheez Singleton.
+
+### Show it in our project — Program.cs
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+builder.Services.AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>();
+builder.Services.AddScoped<IEmployeeService, EmployeeService>();
+builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
+builder.Services.AddTransient<IEmployeeMapper, EmployeeMapper>();
+
+var app = builder.Build();
+```
+
+### One line, token by token
+
+```csharp
+builder.Services.AddScoped<IEmployeeService, EmployeeService>();
+```
+
+- `builder` — `WebApplicationBuilder`, jo `WebApplication.CreateBuilder(args)` se aaya. App banane ke saare knobs isi pe hain.
+- `.Services` — `IServiceCollection`. Yahi woh registration list hai. Sab `Add...` calls isi pe lagti hain.
+- `.AddScoped` — ek extension method jo `IServiceCollection` pe define hai. Iska matlab: lifetime = **Scoped**. `AddSingleton` / `AddTransient` bhi bilkul isi shape ke, sirf lifetime badalti hai.
+- `<IEmployeeService, EmployeeService>` — do generic type arguments. Pehla = **service type** (the key — jo tum constructor me maangoge). Doosra = **implementation type** (jo container actually `new` karega). Pehla interface, doosra concrete class.
+- `()` — koi factory lambda nahi de rahe, container khud `new EmployeeService(...)` karega aur uske constructor parameters bhi resolve karega.
+- `;` — call `IServiceCollection` wapas return karti hai, isliye chain bhi kar sakte the: `builder.Services.AddScoped<...>().AddScoped<...>()`.
+
+### The captive dependency trap — asli bug
+
+Maan lo ek `AuditLogger` chahiye jo har change ko record kare, aur usme employee ka current data bhi chahiye — to usne `IEmployeeRepository` inject kar liya. Aur "audit logger to ek hi hona chahiye na" soch ke **Singleton** register kar diya:
+
+```csharp
+public class AuditLogger : IAuditLogger
+{
+    private readonly IEmployeeRepository _repo;   // Scoped, injected into a Singleton
+
+    public AuditLogger(IEmployeeRepository repo) => _repo = repo;
+
+    public void Record(int employeeId, string action)
+    {
+        var employee = _repo.GetById(employeeId);
+        // ... write audit row ...
+    }
+}
+```
+
+```csharp
+builder.Services.AddSingleton<IAuditLogger, AuditLogger>();   // <-- bug
+```
+
+Kya galat hai: `AuditLogger` **ek baar** banta hai aur poore app ki zindagi zinda rehta hai. Uske andar `_repo` bhi **ek baar** set hota hai — aur wahi ek repository instance ab **hamesha** ke liye "captive" ho gaya, chahe uski registration Scoped ho. Do problem:
+
+1. **Stale/leaked scope.** Jo `DbContext` (module 4) us repo ke andar tha wo pehli request ke saath dispose hona chahiye tha — ab wo Singleton ke through zinda hai, ek disposed ya bahut purana context.
+2. **Thread-safety.** `DbContext` (aur bahut se Scoped services) **thread-safe nahi**. Ab 50 concurrent requests ek hi captive repo/context ko hit kar rahe hain — random `InvalidOperationException: A second operation was started on this context instance before a previous operation completed`, aur kabhi-kabhi corrupt data.
+
+**.NET isko pakadta hai** — Development me app scope-validation ke saath build hota hai, aur startup pe hi throw karta hai:
+
+```text
+System.AggregateException: Some services are not able to be constructed
+ ---> InvalidOperationException: Cannot consume scoped service
+ 'IEmployeeRepository' from singleton 'IAuditLogger'.
+```
+
+(Ye check `builder.Host` ka `ServiceProviderOptions.ValidateScopes`/`ValidateOnBuild` hai — Development me default on. Production me koi isse off kar de to bug silently ship ho jaata hai.)
+
+### The fix — IServiceScopeFactory
+
+Singleton ko Scoped dependency chahiye to wo use **constructor me nahi**, **kaam ke waqt ek naya scope bana ke** leta hai:
+
+```csharp
+public class AuditLogger : IAuditLogger
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public AuditLogger(IServiceScopeFactory scopeFactory) => _scopeFactory = scopeFactory;
+
+    public void Record(int employeeId, string action)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IEmployeeRepository>();
+
+        var employee = repo.GetById(employeeId);
+        // ... write audit row ...
+    }   // scope yahan dispose — repo aur uska DbContext bhi
+}
+```
+
+- `IServiceScopeFactory` **Singleton** hai (framework register karta hai) — isliye ise Singleton me inject karna safe hai.
+- `CreateScope()` ek fresh scope deta hai, bilkul waisa jaisa framework har HTTP request pe banata hai.
+- `GetRequiredService<IEmployeeRepository>()` us scope se ek Scoped repo resolve karta hai — apna fresh `DbContext` ke saath.
+- `using` ki wajah se method khatam hote hi scope dispose, repo/context clean.
+- Ab har `Record` call ka apna short-lived scope hai — koi capture nahi, koi cross-thread sharing nahi.
+
+### When to use / when NOT to use each lifetime
+
+- **Scoped** — default. Repository, service, `DbContext`, koi bhi cheez jo ek request ke data/user se juddi ho. Agar doubt ho, Scoped.
+- **Singleton** — sirf stateless ya thread-safe/immutable cheezein: config, in-memory cache wrapper, `IHttpClientFactory`-managed clients, ek clock/id-generator helper. Kabhi bhi Singleton me Scoped inject **mat** karo (constructor se) — `IServiceScopeFactory` use karo.
+- **Transient** — chhote stateless helpers jinka state nahi hota aur jinhe cache karne ka fayda nahi. Dhyaan: ek Transient ko Singleton me inject karoge to wo bhi effectively captive ho jaata hai (Singleton ke saath zinda). Aur bahut heavy cheez Transient banana allocation churn hai.
+
+Ek line ka rule: **Scoped by default; Singleton sirf jab shared aur safe; Transient sirf jab sasta aur stateless.**
+
+### Failure scenario — ulta case
+
+Kisi ne `EmployeeService` ko `AddSingleton<IEmployeeService, EmployeeService>()` register kar diya (soch: "ek hi service, tez rahega"). `EmployeeService` `IEmployeeRepository` (Scoped) leta hai. Development me app **startup pe hi** crash: "Cannot consume scoped service 'IEmployeeRepository' from singleton 'IEmployeeService'". Agar koi `ValidateScopes` off karke prod me deploy kar de — pehli request ka repo/`DbContext` poore app ke liye captive, aur load pe "second operation started on this context" wale random `500`s jinhe reproduce karna bhayanak hai. Fix: `EmployeeService` wapas `AddScoped`.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Singleton me kabhi bhi Scoped service constructor se mat lo. Development scope-validation ise startup pe pakadta hai — us error ko "temporarily" bypass mat karo. Sahi jawaab hamesha `IServiceScopeFactory` se per-operation scope banana hai.
+
+</Callout>
+
+<Tradeoff
+  pros={["DI se classes apni dependencies nahi banati — testable (fake inject), loosely coupled, lifetime container manage karta hai", "Scoped default se har request ka apna clean DbContext/state — no cross-request leak", "Singleton se sacchi shared cheezein (config, cache, clock) ek hi baar banti hain"]}
+  cons={["Lifetime galat chuna to bugs subtle hote hain — captive dependency, stale data, thread-safety crashes under load", "Bahut saari registrations Program.cs ko lamba bana deti hain (modular extension methods se manage karo)", "Constructor injection over-use se ek class ke 8-10 dependencies — wo ek design smell hai, DI ka nahi"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending API me ek `RateCache` service tha jo interest-rate table memory me rakhta tha, aur performance ke liye **Singleton** tha. Kisi ne usme `IRateRepository` (Scoped, EF Core-backed) constructor se inject kar diya taaki cache khud refresh kar sake. Local pe kaam kar gaya (single request), par staging me load test pe random `DbContext` concurrency crashes aaye. Root cause captive dependency tha. Fix: `RateCache` ne `IServiceScopeFactory` liya aur refresh ke waqt ek chhota scope banaya. Uske baad team ne CI me `ValidateOnBuild` + `ValidateScopes` mandatory kar diya taaki aisa dobara startup pe hi pakda jaaye.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking service me har module ka apna `AddXyzModule(this IServiceCollection)` extension method tha, aur review checklist me ek line thi: "koi bhi `AddSingleton` jiska constructor kisi interface ko leta ho — justify karo". Reason — ek captive `DbContext` production incident ban chuka tha jisme ek reconciliation Singleton ne pehli request ka context poore din pakde rakha, aur aadhe transactions ek hi context pe queue hoke timeout ho gaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 lifetimes: Transient (har maang pe naya), Scoped (1 per HTTP request), Singleton (1 per app)
+- `DbContext` (module 4) hamesha Scoped — thread-safe nahi
+- Development me `ValidateScopes` + `ValidateOnBuild` default **on** — captive dependency startup pe throw
+- `IServiceScopeFactory` khud Singleton hai — isliye Singleton me safely inject hota hai
+- 1 scope per request; scope dispose pe uske sabhi `IDisposable` Scoped/Transient instances dispose
+- Rule of thumb: request/DB = Scoped; shared + safe = Singleton; sasta + stateless = Transient
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Scoped, Singleton aur Transient me kya farak hai, aur ASP.NET Core me default kya lete ho?" Strong 20-second jawaab: "Transient har injection pe naya instance deta hai, Scoped ek HTTP request ke andar ek instance reuse karta hai, Singleton poore app me ek. Repository aur service Scoped rakhte hain kyunki wo request-bound hote hain aur `DbContext` thread-safe nahi hai — wo bhi Scoped. Config ya ek stateless clock helper Singleton, chhota stateless mapper Transient." Guaranteed follow-up: "Scoped ko Singleton me inject karoge to kya hoga?" — "Captive dependency: Singleton us Scoped instance ko hamesha ke liye pakad leta hai, stale data aur thread-safety crashes aate hain. .NET Development me isko startup pe scope-validation se pakadta hai. Fix hai Singleton me `IServiceScopeFactory` inject karna aur kaam ke waqt `CreateScope()` se ek fresh scope banana." Agar tum "captive dependency" naam se bol dete ho aur `IServiceScopeFactory` fix bata dete ho, interviewer ko clear signal milta hai ki tumne ye jhela hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Scoped service (repository, `DbContext`-backed anything) ko Singleton ke constructor me inject karna. Ye captive dependency hai — Singleton us instance ko app ki poori zindagi pakad leta hai, jisse stale data aur thread-safety crashes aate hain. Singleton me Scoped chahiye to `IServiceScopeFactory.CreateScope()` use karo.
+
+</Mistake>
+
+<Mistake>
+
+"Performance ke liye" har cheez Singleton bana dena. Scoped/Transient banane ki cost normally negligible hai; galat Singleton ki cost ek hard-to-reproduce production bug hai. Singleton sirf genuinely shared + thread-safe cheez ke liye.
+
+</Mistake>
+
+<Mistake>
+
+`EmployeeService` ya repository ko `AddTransient` register karna "safe default" soch ke. Ek request ke andar do jagah inject hua to do alag instances milte hain — agar unme koi per-request state (jaise `DbContext` change tracker) hai to wo split ho jaata hai. Request-bound cheez Scoped honi chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`Program.cs` me `AddScoped<IEmployeeService, EmployeeService>()` line bhoolna aur phir pehli request pe "Unable to resolve service for type 'IEmployeeService' while attempting to activate 'EmployeesController'" pe atakna. Interface banao to uski registration bhi karo.
+
+</Mistake>
+
+<Mistake>
+
+Development me scope-validation error (`Cannot consume scoped service ... from singleton`) ko `ValidateScopes = false` se dabaa dena taaki app chal jaaye. Ye error asli bug bata raha hai — lifetime theek karo, validation nahi.
+
+</Mistake>
+
+<Mistake>
+
+Singleton ke andar mutable state (ek `List`, `Dictionary`) bina lock/concurrent-collection ke rakhna. Poore app me ek instance = saare threads wahi state share kar rahe hain. Singleton state ya immutable ho ya `ConcurrentDictionary` jaisa thread-safe.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Request 1 aati hai"] --> B["Framework ek scope banata hai"]
+    B --> C["EmployeesController resolve"]
+    C --> D["EmployeeService (Scoped)<br/>is scope me ek baar bana"]
+    D --> E["InMemoryEmployeeRepository (Scoped)<br/>is scope me ek baar bana"]
+    C --> F["IDateTimeProvider (Singleton)<br/>root se reuse, banaya nahi"]
+    E --> G["Response bheja -> scope dispose<br/>Scoped/Transient IDisposables dispose"]
+    G --> H["Request 2 = naya scope, naye Scoped instances"]
+`}
+  caption="Scoped instances are created once per request scope and disposed when it ends; the Singleton is shared across every scope. Injecting the Scoped repository into a Singleton would trap it past step G."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- DI container = `IServiceCollection` (registrations in `Program.cs`) built into `IServiceProvider` (creates instances, resolves the graph, enforces lifetimes); tum `new` nahi likhte, constructor me maangte ho
+- Resolution: request -> scope banta hai -> container constructor params dekh ke graph banata hai -> Scoped instances scope me cache -> request end pe scope dispose
+- **Transient** = har injection pe naya; **Scoped** = 1 per HTTP request; **Singleton** = 1 per app (thread-safe/immutable hona chahiye)
+- Hamare project: `IEmployeeRepository` + `IEmployeeService` = Scoped; `IDateTimeProvider` = Singleton; stateless `IEmployeeMapper` = Transient; `DbContext` (module 4) hamesha Scoped
+- `AddScoped<IEmployeeService, EmployeeService>()` — `.Services` = registration list, `AddScoped` = lifetime, first generic = service type (key), second = implementation
+- Captive dependency: Scoped ko Singleton constructor me inject karna — Singleton use hamesha ke liye pakad leta hai -> stale data + thread-safety crashes; Development scope-validation startup pe pakadta hai
+- Fix: Singleton me `IServiceScopeFactory` inject karo, kaam ke waqt `using var scope = _scopeFactory.CreateScope()` phir `scope.ServiceProvider.GetRequiredService<...>()`
+- Rule: request/DB = Scoped (default); shared + safe = Singleton; sasta + stateless = Transient
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Program.cs` me chaaron registrations likho: `IEmployeeRepository` aur `IEmployeeService` Scoped, `IDateTimeProvider` Singleton, `IEmployeeMapper` Transient. Ek `IDateTimeProvider` (`DateTime UtcNow { get; }`) + `SystemDateTimeProvider` banao aur `EmployeeService` me inject karke `DateOfJoining` default set karne me use karo. App run karke confirm karo sab resolve ho raha hai.
+
+**Medium:** `EmployeeService` (ya repository) ki registration ko jaan-boojh ke `AddSingleton` kar do aur app start karo — Development me startup error "Cannot consume scoped service ... from singleton" dekho. Error message padho, phir wapas `AddScoped` karo. Uske baad ek chhota diagnostic endpoint `GET /api/diag/lifetimes` banao jo same interface ko do baar inject/resolve karke instance hashcode compare kare aur Scoped vs Transient ka farak print kare (Transient ke do alag hashcode, Scoped ke same).
+
+**Bada (large):** Ek `IAuditLogger` + `AuditLogger` banao jise employee create/update/delete pe call karna hai aur jise `IEmployeeRepository` se current data chahiye. Ise pehle **galat tareeke se** Singleton register karke `IEmployeeRepository` constructor me inject karo — startup error confirm karo. Phir sahi karo: `AuditLogger` me `IServiceScopeFactory` inject karo, `Record(...)` ke andar `using var scope = _scopeFactory.CreateScope()` se fresh repo lo. `EmployeeService` ke `Create`/`Update`/`Delete` me `_auditLogger.Record(...)` call add karo. Verify: app startup clean, aur ek chhote load test (`Parallel.ForEach` se 100 create calls) me koi concurrency exception nahi.
+
+</Callout>

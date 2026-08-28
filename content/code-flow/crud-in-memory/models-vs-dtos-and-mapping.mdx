@@ -1,0 +1,384 @@
+---
+slug: "models-vs-dtos-and-mapping"
+title: "Models vs DTOs, and Mapping Between Them"
+section: "code-flow"
+module: "crud-in-memory"
+order: 6
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["post-endpoint-and-status-codes", "put-and-delete-endpoints", "the-employee-model"]
+tags: ["dotnet", "aspnet-core", "web-api", "dto", "automapper", "mapping", "over-posting", "employee-management"]
+englishDefinition: "A DTO (Data Transfer Object) is a purpose-built shape for one direction of one endpoint's HTTP contract, kept separate from the database entity. Binding or returning the entity directly exposes the app to over-posting, couples the public API to the storage schema, and leaks internal fields, so each endpoint takes a request DTO and returns a response DTO, with an explicit mapping step in between."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+A DTO (Data Transfer Object) is a purpose-built shape for one direction of one endpoint's HTTP contract, kept separate from the database entity. Binding or returning the entity directly exposes the app to over-posting, couples the public API to the storage schema, and leaks internal fields, so each endpoint takes a request DTO and returns a response DTO, with an explicit mapping step in between.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak hamare `EmployeesController` me POST aur PUT dono seedha `Employee` entity ko `[FromBody]` bind kar rahe hain, aur GET bhi wahi entity JSON me return kar raha hai. Ye chalta hai, lekin har real API iska pehla refactor yahi karti hai: **entity ko HTTP ke aar-paar mat ghumao.** Is topic me hum teen chhote `record` DTOs banayenge, POST/PUT/GET ko unpe move karenge, pehle **manual mapping** se (sabse simple), phir **AutoMapper** se (production me common) — aur dono ke trade-offs honestly dekhenge.
+
+### What is it — DTO kya hai
+
+DTO = **Data Transfer Object**. Ek plain class/record jiska ek hi kaam hai: ek endpoint ke ek direction (request ya response) ka **exact shape** batana. Ye entity nahi hai — isme sirf woh fields hote hain jo us call me genuinely chahiye.
+
+Hamare project me teen chahiye:
+
+- `CreateEmployeeDto` — POST ka request body. Sirf woh fields jo client ko bhejne allowed hain.
+- `UpdateEmployeeDto` — PUT ka request body. Sirf woh fields jo update ho sakti hain.
+- `EmployeeResponseDto` — har GET/POST/PUT ka response body. Woh fields jo client ko dikhana safe hai. (Kuch codebases ise chhota `EmployeeDto` kehte hain — same cheez.)
+
+### Why do we need it — entity bind/return karne se kya tootega
+
+Char alag problem hain, aur teeno pehle wale abhi hamare code me live hain:
+
+**1. Over-posting (mass assignment).** `[FromBody] Employee` ka matlab client body me `Employee` ki **koi bhi** field bhej sakta hai — `"salary": 99999999`, `"isActive": true`, `"id": 500`. Humne `Id` to manually overwrite kar diya, par `Salary` aur `IsActive` abhi bhi client ke haath me hain. Ek employee apni hi salary POST me set kar sakta hai. `CreateEmployeeDto` me `Salary` HR-only field hai ya `IsActive` hai hi nahi — to model binder unhe kahin se le hi nahi sakta.
+
+**2. API contract DB schema se chipak jaata hai.** Agar GET `Employee` return karta hai, to jis din `DepartmentName` column hata ke `Department` navigation property aayegi (module 4), us din response JSON badal jaayega aur har client toot jaayega. DTO ek buffer hai — DB andar badle, response DTO waisa ka waisa.
+
+**3. Versioning ka dard.** `/v2` me ek field rename karni hai? Entity pe kiya to saare internal code, migrations, EF config sab hilta hai. `EmployeeResponseDtoV2` bana ke sirf mapping badal do.
+
+**4. Internal fields leak.** Entity me kal `PasswordResetToken`, `InternalRiskScore`, `RowVersion` aa sakte hain. Entity serialize karoge to ye sab JSON me chale jaayenge — kisi ne `[JsonIgnore]` lagana bhool gaya to. DTO me woh field hai hi nahi, to leak ho hi nahi sakta.
+
+Concrete failure scenario: ek onboarding form `Employee` ko POST karta hai. Ek tester ne curiosity me body me `"isActive": true, "salary": 5000000` add kiya — record ban gaya ek fake salary ke saath, aur payroll batch ne use pick kar liya. BFSI audit me ye ek reportable incident hai. `CreateEmployeeDto` hota to `Salary` client se aata hi nahi.
+
+### How does it work — step by step
+
+1. `Dtos/` folder me teen `record` banao — sirf allowed fields ke saath.
+2. Controller actions ke signatures badlo: `Create([FromBody] CreateEmployeeDto dto)`, `Update(int id, [FromBody] UpdateEmployeeDto dto)`, aur return type `ActionResult<EmployeeResponseDto>`.
+3. Action ke andar: incoming DTO ko `Employee` entity me **map** karo (create ke liye), ya existing entity ki fields DTO se overwrite karo (update ke liye).
+4. Store me entity daalo/dhoondo (abhi `static List`, module 4 me DB).
+5. Wapas bhejte waqt entity ko `EmployeeResponseDto` me **map** karo, phir `Ok(...)` / `CreatedAtAction(...)`.
+
+Step 3 aur 5 hi "mapping" hai. Do tareeke — pehle simple.
+
+### Show it in our project — the DTOs
+
+```csharp
+namespace EmployeeManagement.Api.Dtos;
+
+public record CreateEmployeeDto(
+    string FullName,
+    string Email,
+    string? MiddleName,
+    int DepartmentId,
+    DateOnly DateOfJoining,
+    decimal Salary,
+    string PanNumber);
+
+public record UpdateEmployeeDto(
+    string FullName,
+    string? MiddleName,
+    int DepartmentId,
+    decimal Salary);
+
+public record EmployeeResponseDto(
+    int Id,
+    string FullName,
+    string Email,
+    string? MiddleName,
+    int DepartmentId,
+    string DepartmentName,
+    DateOnly DateOfJoining,
+    decimal Salary,
+    string PanNumber,
+    bool IsActive);
+```
+
+- **`record`, class nahi.** Request DTO ban kar aata hai aur badalta nahi — immutable-by-default (`init` setters) exactly yahi chahiye. Value equality aur `with` expression bonus hain. Entity ke liye class (mutable, EF-trackable), DTO ke liye record — ye is course ka standard hai.
+- `CreateEmployeeDto` me **`Id` nahi** (server assign karta hai), **`IsActive` nahi** (server hamesha `true` set karta hai create pe), **`DepartmentName` nahi** (server department se derive karega). Client sirf woh de sakta hai jo yahan likha hai.
+- `UpdateEmployeeDto` me **`Email` nahi, `PanNumber` nahi** — ye identity-jaise fields hain, PUT se badalne nahi dete. **`IsActive` nahi** — activate/deactivate ek alag endpoint hoga. Sirf 4 fields genuinely editable hain.
+- `EmployeeResponseDto` me sab kuch hai jo dikhana safe hai. `PanNumber` yahan full aa raha hai — real BFSI me ise `ABCPS****K` mask karna response DTO ka hi kaam hai (ek jagah, saaf).
+
+### Simplest first — manual mapping helpers
+
+```csharp
+using EmployeeManagement.Api.Dtos;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Mapping;
+
+public static class EmployeeMappings
+{
+    public static Employee ToEntity(this CreateEmployeeDto dto) => new()
+    {
+        FullName = dto.FullName,
+        Email = dto.Email,
+        MiddleName = dto.MiddleName,
+        DepartmentId = dto.DepartmentId,
+        DateOfJoining = dto.DateOfJoining,
+        Salary = dto.Salary,
+        PanNumber = dto.PanNumber,
+        IsActive = true
+    };
+
+    public static EmployeeResponseDto ToResponse(this Employee e) => new(
+        e.Id, e.FullName, e.Email, e.MiddleName,
+        e.DepartmentId, e.DepartmentName, e.DateOfJoining,
+        e.Salary, e.PanNumber, e.IsActive);
+}
+```
+
+Controller ab DTOs pe:
+
+```csharp
+[HttpGet]
+public ActionResult<IEnumerable<EmployeeResponseDto>> GetAll() =>
+    Ok(_employees.Select(e => e.ToResponse()));
+
+[HttpGet("{id:int}")]
+public ActionResult<EmployeeResponseDto> GetById(int id)
+{
+    var employee = _employees.FirstOrDefault(e => e.Id == id);
+    return employee is null ? NotFound() : Ok(employee.ToResponse());
+}
+
+[HttpPost]
+public ActionResult<EmployeeResponseDto> Create([FromBody] CreateEmployeeDto dto)
+{
+    var employee = dto.ToEntity();
+    employee.Id = _employees.Count == 0 ? 1 : _employees.Max(e => e.Id) + 1;
+    _employees.Add(employee);
+
+    return CreatedAtAction(nameof(GetById), new { id = employee.Id }, employee.ToResponse());
+}
+
+[HttpPut("{id:int}")]
+public IActionResult Update(int id, [FromBody] UpdateEmployeeDto dto)
+{
+    var existing = _employees.FirstOrDefault(e => e.Id == id);
+    if (existing is null) return NotFound();
+
+    existing.FullName = dto.FullName;
+    existing.MiddleName = dto.MiddleName;
+    existing.DepartmentId = dto.DepartmentId;
+    existing.Salary = dto.Salary;
+    return NoContent();
+}
+```
+
+### Code explained line by line
+
+- `public static Employee ToEntity(this CreateEmployeeDto dto)` — ek **extension method**. `this` first parameter ki wajah se hum `dto.ToEntity()` likh sakte hain jaise ye DTO ka apna method ho. Sirf ek jagah define, poore project me available.
+- `new() { ... }` — target-typed `new`, return type `Employee` se compiler samajh jaata hai. Har property haath se assign — **koi field chhoot gayi to code me dikh jaayegi**, silently null nahi hogi.
+- `IsActive = true` — mapping ke andar. Client isse control nahi karta, server default deta hai. Ye ek chhota business decision hai jo yahan explicit hai.
+- `ToResponse()` me positional record constructor — arguments **order me** dene padte hain. IDE naam dikhata hai; ek galat order (do `string` swap) compile ho jaayega, isliye record fields ka order aur mapping ka order dono review me dekho.
+- `_employees.Select(e => e.ToResponse())` — poori list map. `GetAll` ab kabhi entity return nahi karta.
+- PUT me `existing` ki fields DTO se overwrite — `Email`/`PanNumber`/`Id` ko **haath nahi lagaya** kyunki `UpdateEmployeeDto` me woh hain hi nahi. Ye over-posting ke against structural guarantee hai, `if` check nahi.
+
+### Then production — AutoMapper
+
+Bade codebases (50+ DTOs) me har mapping haath se likhna repetitive lagta hai. **AutoMapper** convention se map karta hai — same naam ki properties apne aap.
+
+```bash
+dotnet add package AutoMapper
+```
+
+```csharp
+using AutoMapper;
+using EmployeeManagement.Api.Dtos;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Mapping;
+
+public class EmployeeProfile : Profile
+{
+    public EmployeeProfile()
+    {
+        CreateMap<CreateEmployeeDto, Employee>()
+            .ForMember(dest => dest.IsActive, opt => opt.MapFrom(_ => true))
+            .ForMember(dest => dest.Id, opt => opt.Ignore())
+            .ForMember(dest => dest.DepartmentName, opt => opt.Ignore());
+
+        CreateMap<Employee, EmployeeResponseDto>();
+    }
+}
+```
+
+`Program.cs` me ek line:
+
+```csharp
+builder.Services.AddAutoMapper(typeof(Program));
+```
+
+Controller ab `IMapper` inject karta hai:
+
+```csharp
+private readonly IMapper _mapper;
+
+public EmployeesController(IMapper mapper) => _mapper = mapper;
+
+[HttpPost]
+public ActionResult<EmployeeResponseDto> Create([FromBody] CreateEmployeeDto dto)
+{
+    var employee = _mapper.Map<Employee>(dto);
+    employee.Id = _employees.Count == 0 ? 1 : _employees.Max(e => e.Id) + 1;
+    _employees.Add(employee);
+
+    return CreatedAtAction(nameof(GetById), new { id = employee.Id },
+        _mapper.Map<EmployeeResponseDto>(employee));
+}
+```
+
+Line by line:
+
+- `class EmployeeProfile : Profile` — AutoMapper ki `Profile` base class. Constructor me saare `CreateMap` calls. AutoMapper startup pe assembly scan karke saare Profiles utha leta hai.
+- `CreateMap<CreateEmployeeDto, Employee>()` — "in do types ke beech map kar sakte ho". Same-naam properties (`FullName`, `Email`, `Salary`, ...) apne aap match.
+- `.ForMember(dest => dest.IsActive, opt => opt.MapFrom(_ => true))` — jahan convention kaafi nahi, wahan explicit rule. Yahan `IsActive` hamesha `true`.
+- `.ForMember(dest => dest.Id, opt => opt.Ignore())` — `Id` source me hai hi nahi, isliye "isse chhod do" batana padta hai, warna config-validation shikayat karta hai.
+- `builder.Services.AddAutoMapper(typeof(Program))` — DI me `IMapper` register + `typeof(Program)` ki assembly me Profiles dhoondo. (AutoMapper ke version pe `AddAutoMapper` ka overload thoda alag ho sakta hai — v13+ me main package me hi aa gaya, purane me `AutoMapper.Extensions.Microsoft.DependencyInjection` chahiye tha.)
+- `_mapper.Map<Employee>(dto)` — runtime pe compiled mapping plan chalta hai, naya `Employee` return.
+
+### AutoMapper ke trade-offs — honestly
+
+<Tradeoff
+  pros={["Bahut saare similar DTOs pe boilerplate kam — same-naam fields free", "Mapping rules ek jagah (Profiles) — controller me clutter nahi", "AssertConfigurationIsValid() startup pe missing maps pakad leta hai agar tum call karo"]}
+  cons={["Silent mis-maps: ek property rename ki aur naam match nahi hua to woh chup-chaap null/default reh jaati hai, koi error nahi", "Debugging mushkil — F12 se mapping code me nahi ja sakte, sab reflection/config hai; stack trace me AutoMapper internals", "Startup cost + reflection; hot paths pe manual/source-gen tez", "Naye devs ke liye magic — 'ye value aayi kahan se' ka jawaab code me nahi dikhta", "AutoMapper ab bade orgs ke liye commercially licensed hai — legal/procurement angle"]}
+/>
+
+**Beech ka raasta — Mapperly.** `Riok.Mapperly` ek **source generator** hai: tum ek `[Mapper]` partial class likhte ho, build pe wo actual C# mapping code **generate** kar deta hai jo tum padh sakte ho, debug kar sakte ho, aur jisme reflection zero hai. Missing/renamed property compile-time **warning/error** deta hai — silent mis-map possible hi nahi. Free bhi hai.
+
+**Is course ka stand:** hamare project size pe **manual mapping** bilkul theek hai — greppable, explicit, koi dependency nahi. Agar DTO count bahut badh jaaye to **Mapperly** pehli choice, AutoMapper uske baad. AutoMapper tab genuinely jeetata hai jab codebase bahut bada ho aur team already usme fluent ho.
+
+### Where is it used in day-to-day development
+
+- Har naya endpoint = pehle uska request DTO aur response DTO decide karna, phir mapping.
+- Code review ka common comment: "entity return mat karo, DTO banao" / "ye field response DTO me kyun hai".
+- Frontend team response DTO se apne TypeScript types banati hai — isliye response DTO stable rakhna contract hai.
+- Security review specifically over-posting dekhta hai: "kya koi endpoint poori entity bind karta hai?"
+
+### When to use / when NOT to use
+
+- **DTO hamesha** jab API external clients, mobile, ya doosri team consume karti hai. Hamara `EmployeeManagement.Api` yahi hai.
+- **Entity direct** sirf ek throwaway internal admin tool me chalega jahan koi security boundary nahi — waha bhi over-posting risk rehta hai.
+- **AutoMapper skip karo** chhote-medium projects me — manual ya Mapperly. **AutoMapper add karo** sirf jab boilerplate genuinely dard de raha ho aur team ready ho.
+
+</Hinglish>
+
+<Callout type="warning">
+
+DTO banane ka matlab validation ho gaya — aisa **nahi**. `CreateEmployeeDto` shape control karta hai, "PAN sahi format me hai" nahi. Field-level validation (required, regex, range) agla module hai (DataAnnotations phir FluentValidation). Abhi `[ApiController]` sirf malformed JSON pe `400` dega.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending app ka `PATCH /api/borrowers/{id}` poori `Borrower` entity bind karta tha. Ek client-side bug ne body me `"creditLimit": 500000` bhej diya (field UI me thi hi nahi, purane form-state se aa gayi). Entity bind hui, limit update ho gayi, aur us borrower ko instant `5,00,000` ka pre-approved offer mil gaya. Post-mortem ke baad har mutating endpoint pe ek explicit request DTO mandatory kar diya gaya — "agar field DTO me nahi hai, to bind ho hi nahi sakti".
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR API me shuru me AutoMapper use hua. Do saal baad `Employee.Salary` ko rename karke `AnnualCtc` kiya gaya, par `EmployeeResponseDto.Salary` waise ka waisa raha. AutoMapper ne chup-chaap `Salary` ko `0` map karna shuru kar diya — koi exception nahi. Do din reports me zero-salary rows dikhne ke baad bug pakda. Uske baad naye services Mapperly pe shift hue kyunki wo rename pe build hi fail kar deta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 DTOs is topic me: `CreateEmployeeDto`, `UpdateEmployeeDto`, `EmployeeResponseDto` — sab `record`
+- `CreateEmployeeDto` me 7 fields; entity `Employee` me 10 — 3 fields (`Id`, `DepartmentName`, `IsActive`) client se aa hi nahi sakte
+- `UpdateEmployeeDto` me sirf 4 editable fields — `Email`/`PanNumber`/`Id` structurally non-editable
+- Manual mapping = 2 methods, 0 NuGet packages; AutoMapper = 1 package + 1 Profile + `AddAutoMapper` line
+- AutoMapper silent mis-map risk = property rename pe 0 errors, wrong data at runtime
+- Mapperly = source generator, 0 reflection, compile-time error on unmapped member
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Guaranteed question: "Why not return the entity directly from the controller?" Strong 20-second jawaab: "Char wajah — over-posting: client entity ke sensitive fields jaise `Salary`, `IsActive` bind kar sakta hai; API contract DB schema se couple ho jaata hai, to column badalte hi clients tootte hain; versioning mushkil ho jaati hai; aur internal fields JSON me leak ho sakte hain. Isliye har endpoint ek request DTO leta hai aur response DTO deta hai, beech me ek explicit mapping." Follow-up aksar: "Mapping kaise karte ho?" — "Chhote projects me manual static helpers ya extension methods — greppable aur explicit. Bade codebases me AutoMapper, par uske silent-mis-map aur debugging costs hain, isliye ab kaafi teams Mapperly jaise source generator prefer karti hain jo compile-time pe error deta hai." Agar tum "over-posting" term bol dete ho aur AutoMapper ke cons genuinely gina dete ho, interviewer samajh jaata hai tumne production me jhela hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+POST/PUT me poori `Employee` entity `[FromBody]` bind karna aur `Id` overwrite karke "safe" maan lena. `Salary`, `IsActive`, aur kal aane wale internal fields abhi bhi client ke control me hain. Request DTO me woh field ho hi nahi — yahi asli fix hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi DTO teeno kaam ke liye use karna (`EmployeeDto` create, update, response sab). Create me `Id` nullable banana padta hai, update me `Email` allow ho jaata hai, response me kuch fields hamesha null. Teen alag DTOs — har ek apne direction ke liye tight.
+
+</Mistake>
+
+<Mistake>
+
+DTO ko `class` banana with mutable `set` properties. DTO immutable hona chahiye — `record` use karo. Mutable DTO ko log beech me modify karne lagte hain aur wo ek chhupa hua state ban jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+AutoMapper add karna sirf isliye ki "sab karte hain", jabki project me 4 DTOs hain. 4 mappings manual likhna 10 minute ka kaam hai aur zero dependency. AutoMapper tab jab boilerplate genuinely dard de.
+
+</Mistake>
+
+<Mistake>
+
+AutoMapper Profile likh ke `AssertConfigurationIsValid()` kabhi call na karna. Iske bina missing/unmapped members startup pe silently pass ho jaate hain aur runtime pe null data dete hain. Ek startup test me ise assert karo.
+
+</Mistake>
+
+<Mistake>
+
+Response DTO me `PanNumber`/`Aadhaar` full bhej dena. Masking (`ABCPS****K`) response DTO ke mapping me ek jagah hona chahiye — entity me nahi, har controller me nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["CreateEmployeeDto (JSON in)"] --> B["ToEntity() / mapper.Map"]
+    B --> C["Employee entity"]
+    C --> D["_employees.Add (store)"]
+    D --> E["Employee entity (Id assigned)"]
+    E --> F["ToResponse() / mapper.Map"]
+    F --> G["EmployeeResponseDto (JSON out)"]
+`}
+  caption="The entity never touches HTTP. A request DTO maps in, the entity lives only in the store, and a response DTO maps out. Over-posting is impossible because disallowed fields are simply not on the request DTO."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- DTO = ek endpoint ke ek direction ka purpose-built shape; entity ko HTTP ke aar-paar kabhi mat bind/return karo
+- Char wajah: over-posting (client `Salary`/`IsActive` set kare), API-DB schema coupling, versioning dard, internal field leak
+- 3 records: `CreateEmployeeDto` (7 allowed fields, no `Id`/`IsActive`/`DepartmentName`), `UpdateEmployeeDto` (4 editable), `EmployeeResponseDto` (safe-to-show)
+- Entity = `class` (mutable, EF-trackable); DTO = `record` (immutable `init`, value equality)
+- Simplest mapping: static `ToEntity()`/`ToResponse()` extension methods — explicit, greppable, 0 packages
+- Production option: AutoMapper — `Profile` + `CreateMap` + `AddAutoMapper` + `IMapper`; cons: silent mis-maps on rename, hard debugging, reflection cost, now commercially licensed
+- Beech ka raasta: Mapperly (source generator) — generated code you can read, compile-time error on unmapped member, free
+- DTO banana != validation; field rules (regex, required, range) agla module (DataAnnotations phir FluentValidation)
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Dtos/` folder me teeno `record` DTOs banao. `EmployeesController` ke `GetAll` aur `GetById` ko `EmployeeResponseDto` return karwao ek manual `ToResponse()` extension method se. Swagger se confirm karo response schema ab `Employee` nahi, `EmployeeResponseDto` dikhata hai.
+
+**Medium:** `Create` aur `Update` ko bhi `CreateEmployeeDto` / `UpdateEmployeeDto` pe move karo, `ToEntity()` helper ke saath. Ek POST karo jisme body me deliberately `"id": 999, "isActive": false, "salary": 99999999` bhi bhejo — confirm karo ye teeno ignore ho gaye kyunki `CreateEmployeeDto` me hai hi nahi. `EmployeeResponseDto.ToResponse()` me `PanNumber` ko `ABCPS****K` style mask karo aur GET se verify karo.
+
+**Bada (large):** Same project me dono mapping approaches side-by-side rakho. `Mapping/EmployeeMappings.cs` (manual) rakho, aur `AutoMapper` package + `EmployeeProfile` add karke controller me `IMapper` inject karo. `Program.cs` me ek startup check likho jo `IMapper` config ka `AssertConfigurationIsValid()` call kare. Phir jaan-boojh ke `Employee.Salary` ko `AnnualCtc` rename karo aur dono approaches me dekho: manual mapping **compile fail** karti hai, AutoMapper build ho jaata hai par response me `salary` `0` aata hai. Ek chhota note likho ki team ke liye kaunsa safer hai aur kyun.
+
+</Callout>

@@ -1,0 +1,335 @@
+---
+slug: "caching-inmemory-then-redis"
+title: "Caching: IMemoryCache First, Then Redis, Line by Line"
+section: "code-flow"
+module: "real-world-features"
+order: 5
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["related-entities-department-and-relationships", "linq-queries-for-data-access", "extract-the-service-layer", "calling-external-apis-with-httpclientfactory"]
+tags: ["dotnet", "aspnet-core", "web-api", "caching", "imemorycache", "redis", "employee-management"]
+englishDefinition: "Caching stores the result of an expensive operation so later requests can return it without redoing the work. In ASP.NET Core you start with IMemoryCache, a per-process in-memory store used with the cache-aside pattern (check cache, on miss load the source and populate), configured with absolute and sliding expiration and a size limit. For multiple instances you move to IDistributedCache backed by Redis, a shared out-of-process store that survives restarts, at the cost of serialization and a network hop, and you must invalidate cached entries whenever the underlying data changes."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Caching stores the result of an expensive operation so later requests can return it without redoing the work. In ASP.NET Core you start with `IMemoryCache`, a per-process in-memory store used with the cache-aside pattern (check cache, on miss load the source and populate), configured with absolute and sliding expiration and a size limit. For multiple instances you move to `IDistributedCache` backed by Redis, a shared out-of-process store that survives restarts, at the cost of serialization and a network hop, and you must invalidate cached entries whenever the underlying data changes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hamare EmployeeManagement.Api me `GET /api/departments` har employee-form load pe call hota hai — dropdown bharne ke liye. Departments din me shayad ek baar badalte hain, par ye query har request pe SQL Server ko jaati hai. Ye exactly wo case hai jahan caching sabse zyada faayda deta hai: **data jo bahut padha jaata hai par bahut kam badalta hai**. Is topic me pehle simplest cheez — `IMemoryCache` — phir production ke liye Redis.
+
+### What is it — cache aur cache-aside pattern
+
+Cache ek fast store hai jisme tum ek expensive result ki copy rakhte ho ek **key** ke against. Agli baar wahi cheez chahiye to pehle cache dekho:
+
+- **Hit** — mil gaya, seedha return, DB ko haath bhi nahi lagaya.
+- **Miss** — nahi mila, source (DB) se load karo, cache me daalo, phir return.
+
+Is "check -> miss -> load -> populate" flow ko **cache-aside** (ya lazy loading) kehte hain. Application cache aur DB dono ko manage karta hai; cache ko pata bhi nahi ki DB kya hai.
+
+### Why do we need it — bina iske kya hota hai
+
+Bina cache ke `GET /api/departments` har baar `SELECT * FROM Departments` chalata hai. 30 departments pe query 2 ms leti hai — lagta hai theek hai. Lekin 500 requests/second pe wo 500 identical queries/second hain, connection pool pe pressure, aur SQL Server CPU wo kaam kar raha hai jo har baar **same** answer deta hai. Cache lagane ke baad: pehli request DB jaati hai, agle 5 minute ki saari requests memory se milti hain — sub-microsecond, DB pe zero load.
+
+Failure scenario (galat use): agar tum employee list ko bhi 5 minute cache kar do aur HR ek salary update kare, to 5 minute tak API purani salary dikhata rahega — ek payroll discrepancy. **Caching sirf tab safe hai jab tumhe pata ho data kitna stale ho sakta hai aur wo acceptable ho.**
+
+### How does it work — IMemoryCache, the simplest approach
+
+`IMemoryCache` ek `Dictionary` jaisa in-process store hai jisme entries ki expiry aur size hoti hai. Register:
+
+```csharp
+builder.Services.AddMemoryCache(options =>
+{
+    options.SizeLimit = 1024;   // total "size units", not bytes
+});
+```
+
+Service me cache-aside, `GetOrCreateAsync` se:
+
+```csharp
+public class DepartmentService
+{
+    private readonly AppDbContext _db;
+    private readonly IMemoryCache _cache;
+    private const string DepartmentsKey = "departments:all";
+
+    public DepartmentService(AppDbContext db, IMemoryCache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
+
+    public async Task<IReadOnlyList<DepartmentDto>> GetAllAsync(CancellationToken ct)
+    {
+        return (await _cache.GetOrCreateAsync(DepartmentsKey, async entry =>
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
+            entry.SlidingExpiration = TimeSpan.FromMinutes(2);
+            entry.Size = 1;
+
+            return await _db.Departments
+                .AsNoTracking()
+                .OrderBy(d => d.Name)
+                .Select(d => new DepartmentDto(d.Id, d.Name, d.CostCentre))
+                .ToListAsync(ct);
+        }))!;
+    }
+
+    public void InvalidateDepartments() => _cache.Remove(DepartmentsKey);
+}
+```
+
+### Code explained line by line
+
+- `AddMemoryCache(...)` — DI me `IMemoryCache` singleton register karta hai. `SizeLimit = 1024` — cache **kabhi bhi** unbounded nahi hona chahiye; warna ye ek slow memory leak hai jo eventually process ko OOM kar deta hai.
+- `SizeLimit` set kiya to **har entry ko `entry.Size` dena mandatory hai** — nahi diya to `GetOrCreateAsync` exception phenkta hai. "Size" tumhari apni unit hai (yahan har entry `1`, matlab max 1024 entries).
+- `const string DepartmentsKey = "departments:all"` — key ko namespace karo (`entity:scope`). Poore app me consistent naming se collisions nahi hote.
+- `GetOrCreateAsync(key, factory)` — atomic-ish helper: key mile to cached value, na mile to `factory` chala kar, uska result cache me daal kar return. Factory sirf **miss** pe chalti hai.
+- `entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)` — entry **maximum** 10 minute jeeyegi, chahe kitni bhi baar access ho. Ye "worst-case staleness" ki guarantee hai.
+- `entry.SlidingExpiration = TimeSpan.FromMinutes(2)` — agar 2 minute tak koi access na kare to entry evict. Dono saath: sliding se idle data jaldi nikal jaata hai, absolute se hot data bhi 10 min se zyada stale nahi hota. Absolute ke bina akela sliding kharab hai — lagataar access hone waali entry **kabhi** refresh nahi hogi.
+- `entry.Size = 1` — is entry ka size budget. `SizeLimit` ke against ginta hai.
+- `AsNoTracking()` + projection to `DepartmentDto` — cache me halka immutable data jaaye, EF entities nahi (tracked entities + cache = subtle bugs).
+- `Remove(key)` — write hone par entry turant nikaal do. Agli read miss karegi aur fresh data cache karegi.
+
+### Invalidate on write
+
+Jab bhi department change ho, cache stale ho jaati hai. Isliye har write ke baad evict:
+
+```csharp
+public async Task<DepartmentDto> UpdateAsync(Guid id, UpdateDepartmentRequest req, CancellationToken ct)
+{
+    var dept = await _db.Departments.FirstOrDefaultAsync(d => d.Id == id, ct)
+        ?? throw new NotFoundException("Department not found.");
+
+    dept.Name = req.Name;
+    dept.CostCentre = req.CostCentre;
+    await _db.SaveChangesAsync(ct);
+
+    InvalidateDepartments();   // cache ab DB se match nahi karti — nikaal do
+    return new DepartmentDto(dept.Id, dept.Name, dept.CostCentre);
+}
+```
+
+Rule: **jo bhi code path cached data ka source badalta hai, use cache evict karna hi hai.** Ek missed invalidation = users ko purana data.
+
+### Cache stampede — the failure mode
+
+Maano key expire hui, aur usi millisecond 200 requests aayein. Sab cache miss karti hain, sab ek saath `factory` (DB query) chalati hain — 200 identical queries ne DB ko wahi hit diya jisse hum bach rahe the. Isse **stampede** (ya "dogpile") kehte hain.
+
+Mitigation:
+
+- **Lock around the factory** — ek `SemaphoreSlim` se sirf ek request ko factory chalane do, baaki uska wait karein phir cache se lein. .NET 9 ka `HybridCache` ye stampede protection built-in deta hai.
+- **Slightly randomised expiry (jitter)** — sab keys exactly same time pe expire na hon.
+- **Early/background refresh** — expiry se thoda pehle ek background task naya value load kar de.
+
+Chhote, low-churn data (jaise departments) pe ek `SemaphoreSlim` gate kaafi hai.
+
+### The production approach — IDistributedCache + Redis
+
+`IMemoryCache` ek problem ke saath aata hai: wo **per-process** hai. Production me tum 3-5 API instances (pods) chalate ho load balancer ke peeche. Har pod ka apna alag memory cache:
+
+- Pod A department update karta hai aur apni cache evict karta hai. Pod B aur C ki cache abhi bhi purani — user ko refresh pe kabhi naya kabhi purana data (inconsistent).
+- Deployment / restart pe har pod ki cache khaali — sab ek saath DB hit karte hain (cold cache).
+
+Solution: ek **shared, out-of-process cache** — Redis. Register:
+
+```csharp
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration.GetConnectionString("Redis");
+    options.InstanceName = "empmgmt:";   // key prefix / namespace
+});
+```
+
+`IDistributedCache` sirf `byte[]` / `string` samajhta hai, isliye khud serialize karna padta hai:
+
+```csharp
+public async Task<IReadOnlyList<DepartmentDto>> GetAllAsync(CancellationToken ct)
+{
+    const string key = "departments:all";
+    var cached = await _cache.GetStringAsync(key, ct);
+    if (cached is not null)
+        return JsonSerializer.Deserialize<List<DepartmentDto>>(cached)!;
+
+    var data = await _db.Departments.AsNoTracking()
+        .OrderBy(d => d.Name)
+        .Select(d => new DepartmentDto(d.Id, d.Name, d.CostCentre))
+        .ToListAsync(ct);
+
+    await _cache.SetStringAsync(key, JsonSerializer.Serialize(data),
+        new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
+        }, ct);
+
+    return data;
+}
+```
+
+- `AddStackExchangeRedisCache` — `Microsoft.Extensions.Caching.StackExchangeRedis` package. `Configuration` = connection string; `InstanceName` har key ke aage lag jaata hai (`empmgmt:departments:all`) taaki ek shared Redis me alag apps ki keys na takraayein.
+- `GetStringAsync` / `SetStringAsync` — network call to Redis. Isliye caching ki value tabhi hai jab source (DB) **usse zyada** mehnga ho. Ek trivial query ko Redis se wrap karna ulta slow ho sakta hai (network hop + JSON parse > 2 ms query).
+- **Serialization cost** — har get pe deserialize, har set pe serialize. Bade objects pe ye real CPU hai. Sirf woh cache karo jise serialize karna sasta hai.
+- `AbsoluteExpirationRelativeToNow` — Redis khud TTL enforce karta hai (`EXPIRE`). `SlidingExpiration` bhi supported hai par har read pe ek extra `EXPIRE` command bhejta hai.
+
+### The dual-write invalidation problem
+
+Distributed cache pe invalidation ka ek naya edge case: tumne DB update kiya, phir `_cache.RemoveAsync(key)` — do systems, do writes. Agar DB commit ho jaaye par `RemoveAsync` se pehle pod crash ho, Redis me stale value rah jaati hai (uske TTL tak). Options:
+
+- **TTL ko safety net maano** — worst case staleness = TTL. Chhoti TTL rakho un cheezon pe jo badal sakti hain.
+- **Delete-after-commit + retry** — invalidation ko outbox jaisa reliable banao (advanced).
+- **Pub/sub invalidation** — DB write ke baad ek Redis pub/sub message; har pod apni local L1 cache (agar 2-level hai) drop kare.
+
+### Output caching (.NET 8) — briefly
+
+`AddOutputCache()` poore HTTP response (status + headers + body) ko cache karta hai, MVC/endpoint level pe:
+
+```csharp
+builder.Services.AddOutputCache();
+app.UseOutputCache();
+// [OutputCache(Duration = 60)] on the action
+```
+
+Ye bahut fast hai (serialization tak nahi, ready bytes), par **authorized responses ke liye khatarnaak hai**: agar tum user-specific ya role-specific response cache karo, ek user ko doosre ka data mil sakta hai. Isliye output caching sirf **anonymous, identical-for-everyone** endpoints pe (public price list, blog post). Kisi bhi endpoint jispe `[Authorize]` hai, uspe `VaryByHeader`/`VaryByValue` bahut carefully set karo ya output caching bilkul mat lagao.
+
+### What is safe to cache in a BFSI API
+
+- **Safe:** reference/lookup data — departments, branch list, IFSC codes, product catalogue, currency codes, holiday calendar. Low churn, non-sensitive, same for everyone.
+- **Cache with care (short TTL, per-user key):** a user profile, permission set — invalidate on change.
+- **Never cache:** account balances, transaction lists, loan status, KYC verification results, anything where stale = a wrong financial decision or a compliance breach. Regulators expect these reads to be authoritative.
+
+### When to use / when NOT to use
+
+- **Use `IMemoryCache`** for a single instance, or for a tiny always-identical dataset where per-pod duplication and brief inconsistency are acceptable.
+- **Use Redis / `IDistributedCache`** for multi-instance apps, when the cache must survive restarts, or when entries are large enough that duplicating them in every pod wastes memory.
+- **Don't cache** cheap queries (the hop costs more than the query), highly volatile data, or per-user sensitive data without a per-user key + short TTL.
+- **Don't** deploy any cache without an expiry and (for `IMemoryCache`) a `SizeLimit`.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`IMemoryCache` per-process hai. Multi-instance deployment me pod A ka `Remove(key)` pod B ki cache ko touch nahi karta — users ko instance ke hisaab se kabhi naya kabhi purana data milta hai. Shared truth chahiye to Redis.
+
+</Callout>
+
+<Tradeoff pros={["IMemoryCache: zero infra, nanosecond reads, no serialization, dead simple", "Redis: shared across all instances, survives restarts and deploys, one place to invalidate, huge capacity"]} cons={["IMemoryCache: per-process (inconsistent across pods), lost on restart, competes with app memory", "Redis: network hop + serialize/deserialize on every access, an extra service to run and monitor, dual-write invalidation gap bounded only by TTL"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan product-catalogue endpoint har application-form load pe hit hota tha — 40 products, ek join-heavy query, about 15 ms, 900 requests/second peak. `IMemoryCache` with a 10-minute absolute + 2-minute sliding expiry laga: DB QPS 900 se gir kar about 0.1 ho gaya. Do mahine baad jab wo 4 pods pe scale hue, product update ke baad kuch users purana APR dekhne lage — per-pod cache. Move to Redis `IDistributedCache` with the same TTL aur ek `RemoveAsync` on the admin "publish product" action. Cold-start stampede ke liye ek `SemaphoreSlim` gate add kiya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke portal me ek dev ne account-summary response ko `[OutputCache(Duration = 30)]` laga diya "dashboard fast karne ke liye". UAT me tester A ne login kiya, tester B ne 20 second baad — B ko A ka account summary dikha. Output cache response ko user se vary nahi kar raha tha. Fix: authorized endpoints se output caching hata di, sirf public `GET /api/ifsc/{code}` jaisa reference data output-cached rakha, aur ek review rule bana ki `[OutputCache]` kabhi `[Authorize]` action pe na lage bina explicit `VaryByValue`.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `IMemoryCache` read: tens of nanoseconds; a Redis round-trip: about 0.2-1 ms on the same network; a simple indexed SQL query: a few ms
+- Always set both: an absolute expiration (max staleness) and, optionally, a sliding one (evict idle entries)
+- `IMemoryCache` needs a `SizeLimit` and a per-entry `Size`, or it can grow until the process OOMs
+- Cache hit ratio worth having: about 90%+ for a read-heavy lookup endpoint
+- Redis default port 6379; `IDistributedCache` stores `byte[]` — you serialize (JSON adds CPU + size)
+- Stampede: one expiry can trigger N concurrent factory runs — gate with a `SemaphoreSlim` or use `HybridCache`
+- Dual-write invalidation gap is bounded by the entry TTL — keep TTL short for data that changes
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "How would you add caching to a read-heavy endpoint?" Strong 20-second answer: "Cache-aside pattern: check the cache, on a miss load from the DB and populate. Sabse simple `IMemoryCache` with `GetOrCreateAsync`, ek absolute expiration for max staleness plus a `SizeLimit`. Har write path pe key evict karta hoon — missed invalidation ka matlab stale data. Ye per-process hai, isliye multi-instance pe `IDistributedCache` with Redis pe jaata hoon — shared truth, survives restarts, cost is serialization + a network hop. Stampede se bachne ke liye factory ke around ek `SemaphoreSlim` gate. BFSI me sirf reference data cache karta hoon — balances, transactions, KYC kabhi nahi." Follow-ups: "cache stampede kya hai?", "distributed cache me invalidation ka gap kaise handle karoge?", "output caching aur `[Authorize]` ka problem?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Cache entry ko bina expiry ke daalna. `IMemoryCache` me ye ek slow memory leak hai, aur poore app me stale data. Hamesha ek absolute expiration set karo; `SizeLimit` + per-entry `Size` bhi.
+
+</Mistake>
+
+<Mistake>
+
+Write path pe cache invalidate na karna. Department update ho gaya par `Remove(key)` nahi kiya — API TTL khatam hone tak purana data serve karta rahega. Har code path jo source badalta hai, use evict karna hai.
+
+</Mistake>
+
+<Mistake>
+
+`IMemoryCache` ko multi-instance deployment me consistent maan lena. Har pod ki apni copy hai; ek pod ka evict baaki ko nahi pahunchta. Shared consistency chahiye to Redis.
+
+</Mistake>
+
+<Mistake>
+
+Trivial queries ko Redis se cache karna. Network hop + JSON deserialize ek 2 ms indexed query se zyada le sakta hai — caching ne latency badha di. Pehle measure karo ki source actually mehnga hai.
+
+</Mistake>
+
+<Mistake>
+
+`[OutputCache]` ko ek `[Authorize]` action pe laga dena bina `VaryBy` ke. Ek user ka poora response doosre ko serve ho sakta hai — a data leak. Output caching sirf anonymous, everyone-identical endpoints pe.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["GET /api/departments"] --> B{"Key in cache?"}
+    B -->|hit| C["Return cached DTO list"]
+    B -->|miss| D["Query SQL Server (AsNoTracking + projection)"]
+    D --> E["Populate cache: absolute 10m + sliding 2m, Size = 1"]
+    E --> C
+    F["PUT/POST/DELETE department"] --> G["SaveChanges to DB"]
+    G --> H["cache.Remove('departments:all')"]
+`}
+  caption="Reads go through cache-aside; every write path evicts the key so the next read repopulates from the DB."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Cache-aside: check cache, on miss load the source and populate; the app owns both cache and DB
+- `IMemoryCache` is the simplest — `GetOrCreateAsync(key, factory)`, set `AbsoluteExpirationRelativeToNow` (max staleness) and optionally `SlidingExpiration` (drop idle); factory runs only on a miss
+- Always set `SizeLimit` on the cache and `entry.Size` on each entry, or `IMemoryCache` grows unbounded
+- Evict the key on every write that changes the cached data — a missed invalidation serves stale data until TTL
+- Cache stampede: one expiry, N concurrent misses, N identical DB queries — gate the factory with a `SemaphoreSlim`, add jitter, or use `HybridCache` (.NET 9)
+- `IMemoryCache` is per-process — inconsistent across instances and lost on restart; use `IDistributedCache` + Redis for a shared store
+- Redis costs a network hop + serialize/deserialize on every access — only cache things where the source is meaningfully more expensive
+- Distributed invalidation has a dual-write gap bounded by TTL; keep TTL short for changeable data, or use pub/sub invalidation
+- Output caching (`AddOutputCache`) caches the whole response and is fast, but never on `[Authorize]` endpoints without an explicit `VaryBy`
+- BFSI: cache reference data (departments, IFSC, product catalogue); never balances, transactions, loan status, or KYC results
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `DepartmentService.GetAllAsync` ko `IMemoryCache` + `GetOrCreateAsync` se wrap karo, key `departments:all`, absolute 10m + sliding 2m + `Size = 1`, aur `AddMemoryCache` me `SizeLimit = 1024`. Do baar call karke (EF Core query logging on) verify karo doosri call pe koi SQL nahi chala.
+
+**Medium:** `UpdateAsync` / `CreateAsync` / `DeleteAsync` sab me `_cache.Remove("departments:all")` add karo. Ek test likho: list load karo (cache warm), department update karo, phir list dobara load karke assert karo ki naya `Name` dikhta hai (stale nahi). Phir ek `SemaphoreSlim` gate add karke stampede protection banao aur 50 parallel calls pe factory sirf ek baar chale — assert karo.
+
+**Bada (large):** `IDepartmentCache` interface nikaalo with a `MemoryDepartmentCache` aur ek `RedisDepartmentCache` (`IDistributedCache` + `AddStackExchangeRedisCache`, JSON serialize, `InstanceName` prefix, 10m TTL). DI se swappable, `appsettings` flag se chuno. Local Redis (docker) ke against integration test likho: pod A (instance 1) update kare aur `RemoveAsync` kare, pod B (instance 2) fresh data dekhe. Phir dual-write gap demonstrate karo — `RemoveAsync` ko skip karke prove karo ki stale value TTL tak rehta hai, aur TTL chhoti karke mitigation dikhao.
+
+</Callout>

@@ -1,0 +1,382 @@
+---
+slug: "background-services-and-outbox"
+title: "Background Services & the Transactional Outbox, Line by Line"
+section: "code-flow"
+module: "real-world-features"
+order: 4
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["calling-external-apis-with-httpclientfactory", "ef-core-dbcontext-and-dbset", "async-await-end-to-end-and-why", "migrations-code-first"]
+tags: ["dotnet", "aspnet-core", "web-api", "background-service", "hosted-service", "outbox", "employee-management"]
+englishDefinition: "A background service is a long-running task that the ASP.NET Core host starts at boot and stops on shutdown, independent of any HTTP request, implemented with BackgroundService or IHostedService. The transactional outbox is a reliability pattern where a state change and a row describing the event it should publish are written in the same database transaction, and a separate background dispatcher later reads unsent rows, publishes them, and marks them sent, giving at-least-once delivery without a distributed transaction."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+A background service is a long-running task that the ASP.NET Core host starts at boot and stops on shutdown, independent of any HTTP request, implemented with `BackgroundService` or `IHostedService`. The transactional outbox is a reliability pattern where a state change and a row describing the event it should publish are written in the same database transaction, and a separate background dispatcher later reads unsent rows, publishes them, and marks them sent, giving at-least-once delivery without a distributed transaction.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hamare EmployeeManagement.Api me ab tak sab kuch **request ke andar** hota tha: koi HTTP call aayi, controller chala, DB update hua, response chala gaya. Lekin do kaam aise hain jo request ke andar fit nahi hote. Ek: har raat check karna ki kis employee ki `LastWorkingDate` nikal gayi hai aur use `IsActive = false` karna — iske liye koi request nahi aati. Do: jab employee create ya update hota hai, hamein doosre systems ko batana hai ("EmployeeCreated" event) — payroll, access-card system, email service. Agar hum ye event request ke andar hi HTTP se bhej dein aur wo call fail ho jaaye, to DB me employee ban gaya par event kabhi nahi gaya — data silently out of sync. Is topic me dono problems solve karenge: **background services** aur **transactional outbox**.
+
+### What is it — hosted service aur outbox
+
+**Hosted service** ek class hai jo `IHostedService` interface implement karti hai (ya usse aasan, `BackgroundService` base class se inherit karti hai). ASP.NET Core ka host (`WebApplication`) apne saare hosted services ko app start hone par `StartAsync` se launch karta hai aur shutdown par `StopAsync` se rokta hai. Ye HTTP pipeline ka hissa nahi hai — koi controller, koi route, koi request nahi. Ye bas process ke saath jeeta aur marta hai.
+
+**Transactional outbox** ek table hai — `OutboxMessages` — jisme hum "jo event publish karna hai" ek row ke roop me likhte hain, **usi DB transaction me** jisme asli domain change hota hai. Ek alag background dispatcher us table ko poll karta hai, unsent rows uthata hai, message broker pe publish karta hai, aur row ko `sent` mark kar deta hai.
+
+### Why do we need it — bina iske kya tootega
+
+**Failure scenario 1 (bina background service):** `LastWorkingDate` waale employees ko deactivate karne ka logic agar tum ek controller endpoint bana kar rakhte ho jise koi cron externally hit kare, to tum ek extra moving part pe depend kar rahe ho — cron server down, network issue, ya kisi ne endpoint ka URL badal diya, aur mahino tak ex-employees `IsActive = true` rehte hain. BFSI me ye ek **access-control audit finding** hai: jo aadmi resign kar chuka hai uska login abhi bhi kaam kar raha hai.
+
+**Failure scenario 2 (bina outbox — the dual-write problem):** Employee create karte waqt tum `SaveChangesAsync()` ke turant baad `await _bus.PublishAsync(new EmployeeCreated(...))` likhte ho. Ab do independent systems hain: SQL Server aur message broker. Sequence:
+
+1. `SaveChangesAsync` succeed — employee DB me hai.
+2. `PublishAsync` ke waqt broker down / network timeout / app pod crash.
+3. Employee DB me hai, par koi downstream system ko nahi pata. Payroll me entry nahi bani, access card issue nahi hui.
+
+Agar tum order ulta karo (pehle publish, phir save), to opposite bug: event chala gaya par DB save fail — downstream ne ek employee ke baare me suna jo exist hi nahi karta. Do alag systems ko ek saath atomically update karne ke liye tumhe distributed transaction (2-phase commit) chahiye — jo slow, complex, aur modern brokers me support hi nahi hota. **Outbox is the standard escape:** dono writes (domain row + outbox row) ek hi local DB transaction me — ya dono hote hain ya dono nahi. Publish baad me, retry ke saath.
+
+### How does it work — step by step
+
+**Background service lifecycle:**
+
+1. Host boot pe har registered `IHostedService` ka `StartAsync(CancellationToken)` call hota hai, registration order me.
+2. `BackgroundService` base class ka `StartAsync` internally tumhara `ExecuteAsync(CancellationToken stoppingToken)` call karta hai aur uska `Task` store kar leta hai — await nahi karta, isliye ye long-running loop ban sakta hai.
+3. `ExecuteAsync` ke andar tum ek loop chalate ho jo `stoppingToken` check karta hai. Jab app shutdown hota hai, host `stoppingToken` ko cancel karta hai.
+4. Shutdown pe `StopAsync` chalta hai — ye `stoppingToken` cancel karta hai aur phir tumhare `ExecuteAsync` ke khatam hone ka wait karta hai, ek timeout tak (default 30 seconds, "graceful shutdown"). Timeout ke baad process forcibly marta hai.
+
+**Outbox flow:**
+
+1. Request handler: `Employee` add/update + ek `OutboxMessage` row add, dono `_db` par, phir ek `SaveChangesAsync` — **ek transaction, ek atomic write**.
+2. Dispatcher background service: har few seconds `OutboxMessages` se `ProcessedAtUtc == null` waali rows `CreatedAtUtc` order me uthata hai (batch of 20).
+3. Har row ke liye: broker pe publish karo, success pe `ProcessedAtUtc = DateTime.UtcNow` set karo, `SaveChangesAsync`.
+4. Publish fail — row untouched, agle poll pe phir try. `RetryCount` badhao; bahut zyada retries pe row ko "dead" mark karke alert bhejo.
+
+### The scoped-in-singleton problem — sabse important gotcha
+
+Ek hosted service **singleton** hota hai — poore app life me ek hi instance. Lekin `AppDbContext` **scoped** register hota hai (`AddDbContext` default) — ek scope (normally ek HTTP request) ke andar ek instance, aur `DbContext` thread-safe nahi hai. Agar tum `AppDbContext` ko seedha hosted service ke constructor me inject karne ki koshish karo, do problems:
+
+- DI container startup pe error de sakta hai ("Cannot consume scoped service from singleton").
+- Ya (agar tum `IServiceProvider` se manually resolve karo) tumhe ek `DbContext` milega jo **poore app life** tak zinda rahega — ek hi context pe hazaaron `SaveChanges`, change-tracker phoolta jaata hai, memory leak, aur concurrent timer ticks pe race conditions.
+
+**Fix:** `IServiceScopeFactory` inject karo (wo singleton-safe hai). Har unit of work ke liye ek naya scope banao, us scope se `AppDbContext` resolve karo, kaam karo, scope dispose kar do. Bilkul waisa hi jaisa framework har HTTP request ke liye karta hai.
+
+### Show it in our project — Job 1: the deactivation sweeper
+
+`Models/OutboxMessage.cs` pehle (dono jobs ise use karenge):
+
+```csharp
+namespace EmployeeManagement.Api.Models;
+
+public class OutboxMessage
+{
+    public Guid Id { get; set; }
+    public string Type { get; set; } = null!;          // e.g. "EmployeeCreated"
+    public string Payload { get; set; } = null!;       // JSON
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime? ProcessedAtUtc { get; set; }       // null = not yet sent
+    public int RetryCount { get; set; }
+    public string? LastError { get; set; }
+}
+```
+
+`AppDbContext`: `public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();` phir `dotnet ef migrations add AddOutbox` + `dotnet ef database update`. Index `(ProcessedAtUtc, CreatedAtUtc)` add karo taaki dispatcher ka poll query fast rahe.
+
+Ab Job 1, `BackgroundServices/EmployeeDeactivationService.cs`:
+
+```csharp
+public class EmployeeDeactivationService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<EmployeeDeactivationService> _logger;
+
+    public EmployeeDeactivationService(
+        IServiceScopeFactory scopeFactory,
+        ILogger<EmployeeDeactivationService> logger)
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
+
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            try
+            {
+                await DeactivateExpiredAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Deactivation sweep failed; will retry next tick");
+            }
+        }
+    }
+
+    private async Task DeactivateExpiredAsync(CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        var expired = await db.Employees
+            .Where(e => e.IsActive
+                && e.LastWorkingDate != null
+                && e.LastWorkingDate < today)
+            .ToListAsync(ct);
+
+        foreach (var emp in expired)
+        {
+            emp.IsActive = false;
+            db.OutboxMessages.Add(new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                Type = "EmployeeDeactivated",
+                Payload = JsonSerializer.Serialize(new { emp.Id, Reason = "LastWorkingDate passed" }),
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        if (expired.Count > 0)
+        {
+            await db.SaveChangesAsync(ct);   // employee update + outbox rows: one transaction
+            _logger.LogInformation("Deactivated {Count} employees", expired.Count);
+        }
+    }
+}
+```
+
+Register in `Program.cs`: `builder.Services.AddHostedService<EmployeeDeactivationService>();`
+
+### Code explained line by line
+
+- `: BackgroundService` — hum `IHostedService` khud implement karne ke bajaye is base class se inherit karte hain. Ye `StartAsync`/`StopAsync` ka boilerplate de deta hai; hamein sirf `ExecuteAsync` likhna hota hai.
+- Constructor me `IServiceScopeFactory` — **not** `AppDbContext`, **not** `IServiceProvider`. Ye singleton-safe hai aur iska ek hi kaam hai: naye DI scopes banana.
+- `ILogger<EmployeeDeactivationService>` — background services silently fail hote hain (koi HTTP response nahi jisme error dikhe). Logging yahan optional nahi hai.
+- `PeriodicTimer` — .NET 6+ ka non-overlapping timer. Purana `System.Threading.Timer` callback ko dobara fire kar sakta tha jabki pichhla abhi chal raha ho; `PeriodicTimer.WaitForNextTickAsync` `await` hota hai, isliye jab tak tumhara kaam chal raha hai agla tick queue nahi hota — natural back-pressure.
+- `using var timer` — dispose zaroori, warna timer leak.
+- `while (await timer.WaitForNextTickAsync(stoppingToken))` — har tick pe loop body chalti hai. Jab `stoppingToken` cancel hota hai (shutdown), `WaitForNextTickAsync` `false` return karta hai (ya `OperationCanceledException` phenkta hai) aur loop cleanly khatam.
+- `catch (OperationCanceledException) { break; }` — shutdown ke waqt token cancel hota hai; ye ek expected signal hai, error nahi. `break` se loop nikal jaata hai aur `ExecuteAsync` complete ho jaata hai — clean shutdown.
+- `catch (Exception ex)` — koi bhi aur error: **log karo aur loop me raho**. Agar tum yahan exception ko bubble hone do, poora `ExecuteAsync` marta hai aur ye job app restart tak dobara nahi chalti. Ek DB blip se poora background job permanently band nahi hona chahiye.
+- `using var scope = _scopeFactory.CreateScope()` — ek fresh scope. Iske andar resolve kiya `AppDbContext` bilkul waisa hai jaisa ek HTTP request ke andar hota.
+- `scope.ServiceProvider.GetRequiredService<AppDbContext>()` — is scope ka context. Scope dispose hone par context bhi dispose — koi leak nahi.
+- `Where(e => e.IsActive && e.LastWorkingDate != null && e.LastWorkingDate < today)` — ek hi SQL `WHERE` me sab filter. Sirf woh rows aati hain jo actually deactivate karni hain.
+- Loop me `emp.IsActive = false` + ek `OutboxMessage` add — dono change-tracker me jama hote hain.
+- **Ek** `SaveChangesAsync(ct)` — EF Core sab changes (N employee updates + N outbox inserts) ek single transaction me commit karta hai. Ya sab, ya kuch nahi.
+
+### Job 2 — the outbox dispatcher
+
+```csharp
+public class OutboxDispatcher : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<OutboxDispatcher> _logger;
+
+    public OutboxDispatcher(IServiceScopeFactory scopeFactory, ILogger<OutboxDispatcher> logger)
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            try { await DispatchBatchAsync(stoppingToken); }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex) { _logger.LogError(ex, "Outbox dispatch batch failed"); }
+        }
+    }
+
+    private async Task DispatchBatchAsync(CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var bus = scope.ServiceProvider.GetRequiredService<IMessageBus>();
+
+        var batch = await db.OutboxMessages
+            .Where(m => m.ProcessedAtUtc == null && m.RetryCount < 10)
+            .OrderBy(m => m.CreatedAtUtc)
+            .Take(20)
+            .ToListAsync(ct);
+
+        foreach (var msg in batch)
+        {
+            try
+            {
+                await bus.PublishAsync(msg.Type, msg.Payload, ct);
+                msg.ProcessedAtUtc = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                msg.RetryCount++;
+                msg.LastError = ex.Message;
+                _logger.LogWarning(ex, "Publish failed for outbox {Id}, retry {Retry}", msg.Id, msg.RetryCount);
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+}
+```
+
+- Poll interval 5 seconds — trade-off: chhota interval = kam latency, zyada DB load. BFSI event-latency SLAs typically seconds me hote hain, minutes me nahi.
+- `Where(m => m.ProcessedAtUtc == null && m.RetryCount < 10)` — sirf pending aur "abhi zinda" rows. 10 retries ke baad row ko chhod do (aur ek alert / dead-letter mechanism).
+- `OrderBy(m => m.CreatedAtUtc)` — events roughly order me publish ho. (Strict per-entity ordering chahiye to `Take` ko partition-by-aggregate karna padta hai — advanced.)
+- `Take(20)` — bounded batch. Ek tick me 10,000 rows process karne ki koshish mat karo — memory spike aur ek slow transaction.
+- Har message alag `try/catch` — ek poison message poore batch ko block na kare.
+- **At-least-once delivery:** agar publish succeed hua par pod `msg.ProcessedAtUtc` save karne se pehle crash ho gaya, agle run pe wahi message dobara publish hoga. Isliye **consumers idempotent hone chahiye** — har event me ek unique `Id` bhejo, consumer "ye Id already process kiya?" check kare. Exactly-once practically nahi milta; at-least-once + idempotent consumer = effectively-once.
+
+### Why this beats calling the API inside the request
+
+- Request fast rehti hai — user `SaveChangesAsync` ke baad response le leta hai, downstream publish ka wait nahi.
+- Broker down hone se employee-create endpoint down nahi hota — outbox row baith jaati hai, dispatcher baad me nikaal deta hai.
+- Retry logic ek jagah (dispatcher), har controller me nahi.
+- Crash-safe — outbox row committed hai; kaam kabhi "kho" nahi sakta.
+
+### When to use / when NOT to use
+
+- **Use a hosted service** for scheduled sweeps, queue consumers, cache warmers, outbox dispatch — koi bhi kaam jo request se independent hai.
+- **Use the outbox** jab ek DB write ke saath ek external side effect (event publish, email, webhook) **reliably** hona chahiye.
+- **Don't** use a hosted service for heavy CPU work that starves request threads — use a real queue + separate worker process/container.
+- **Don't** run a `PeriodicTimer` sweep on **every** instance in a multi-instance deployment without a leader-election / distributed lock (or DB `UPDATE ... WHERE` with `rowlock`) — warna 5 pods ek hi kaam 5 baar karenge. Outbox dispatch pe use `UPDATE TOP (20) ... SET LockedBy = @pod OUTPUT ...` ya a `SELECT ... FOR UPDATE SKIP LOCKED` style claim.
+
+### Hangfire / Quartz.NET — alternatives
+
+- **Hangfire** — jobs ko DB me persist karta hai, ek dashboard deta hai, automatic retries, delayed + recurring jobs (`RecurringJob.AddOrUpdate` with a cron). "Har raat 2 baje deactivation sweep" ek line ban jaati hai, aur jobs process restart ke baar bhi bache rehte hain. Cost: ek extra library + iske tables.
+- **Quartz.NET** — Java Quartz ka .NET port, bahut powerful scheduling (cron, calendars, misfire handling), clustering built-in. Zyada config-heavy.
+- **Plain `BackgroundService` + `PeriodicTimer`** (jo humne kiya) — zero dependencies, poora control, par persistence/dashboard/clustering tumhe khud handle karna hai. Simple periodic work ke liye perfect; complex job orchestration ke liye Hangfire/Quartz better.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Kabhi `AppDbContext` (ya koi scoped service) ko seedha ek `BackgroundService` ke constructor me inject mat karo. Inject `IServiceScopeFactory`, aur har unit of work ke liye `CreateScope()` karke us scope se scoped services resolve karo.
+
+</Callout>
+
+<Tradeoff pros={["Outbox: domain change + event row commit atomically in one local transaction — no distributed transaction, no dual-write gap", "Outbox: broker outage never fails the request; the dispatcher drains the backlog later", "Hosted service: scheduled/queue work runs in-process with full DI, no external scheduler to break"]} cons={["Outbox adds a table, a dispatcher, polling load, and at-least-once semantics you must make idempotent downstream", "A PeriodicTimer sweep needs a distributed lock / leader election when you run more than one instance", "In-process background work shares the app's CPU and memory — heavy jobs belong in a separate worker"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-origination service har approved loan pe disbursement partner ko ek event bhejti thi — `SaveChangesAsync` ke turant baad `await _kafka.ProduceAsync(...)`. Ek Kafka broker rolling-restart ke 40 seconds ke window me 12 loans approve hue: DB me approved, Kafka ko kuch nahi pata, disbursement kabhi trigger nahi hua, aur pata teen din baad customer complaints se chala. Fix: ek `OutboxMessages` table, event row usi transaction me jisme loan status update, aur ek `OutboxDispatcher : BackgroundService` jo har 3 seconds poll karta hai. Ab broker restart ke doran rows jama hoti hain aur restore hote hi flush ho jaati hain. Consumer me ek `processed_event_ids` table add kiya idempotency ke liye.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke HR portal me ex-employees ka deactivation ek Windows Scheduled Task se ek internal endpoint hit karke hota tha. Server migration me task copy nahi hua; 5 mahine tak resigned employees active rahe, aur ek security audit me 60+ live logins for terminated staff flag hue. Remediation: logic ko application ke andar ek `BackgroundService` + `PeriodicTimer` me le aaye, multi-instance deployment ke liye ek DB-based advisory lock (`sp_getapplock`) add kiya taaki sirf ek pod sweep chalaye, aur ek alert jo sweep 26 ghante me na chale to fire ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `BackgroundService.StopAsync` graceful-shutdown wait defaults to 30 seconds (`HostOptions.ShutdownTimeout`) before the process is force-killed
+- Hosted services start in registration order and stop in reverse order
+- `PeriodicTimer` fires non-overlapping — the next tick does not queue while your handler is still running
+- Typical outbox poll interval: 2-10 seconds; batch size 20-100 rows
+- Give up / dead-letter an outbox row after about 10 failed publish attempts, then alert
+- At-least-once delivery: assume every message can arrive twice — consumers must dedupe on a message id
+- `AddHostedService<T>` registers the service as a singleton — never inject a scoped `DbContext` into it directly
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Two questions chain here. First: "How do you run background work in ASP.NET Core, and what is the scoped-service problem?" Strong answer: "Ek `BackgroundService` banata hoon, `ExecuteAsync` me `PeriodicTimer` loop with the `stoppingToken`. Hosted service singleton hota hai aur `DbContext` scoped, isliye main `IServiceScopeFactory` inject karta hoon aur har iteration me `CreateScope()` se ek fresh scope banakar usse `AppDbContext` resolve karta hoon." Second: "Employee create hone par doosre systems ko event bhejna hai — reliably kaise?" Strong answer: "Request ke andar broker call mat karo — wo dual-write problem hai. Employee row aur ek `OutboxMessage` row ek hi `SaveChangesAsync` transaction me likho, phir ek background dispatcher unsent rows poll karke publish karta hai aur `ProcessedAtUtc` set karta hai. Ye at-least-once deta hai, isliye consumers ko message-id pe idempotent banao." Follow-ups: "multi-instance pe timer 5 baar chalega, kya karoge?", "at-least-once vs exactly-once?", "Hangfire kyun nahi?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`AppDbContext` ko seedha `BackgroundService` constructor me inject karna. Ye ya to startup pe "cannot consume scoped from singleton" error deta hai, ya (via `IServiceProvider`) ek app-lifetime context deta hai jiska change-tracker phoolta jaata hai aur concurrent ticks pe race karta hai. `IServiceScopeFactory` + per-iteration `CreateScope()` use karo.
+
+</Mistake>
+
+<Mistake>
+
+`ExecuteAsync` ke loop me exception ko catch na karna. Ek transient DB error se poora `ExecuteAsync` complete ho jaata hai aur job app restart tak dobara nahi chalti. Har iteration ko `try/catch` me lapeto, error log karo, loop me raho.
+
+</Mistake>
+
+<Mistake>
+
+Domain change ke baad request ke andar hi `await _bus.PublishAsync(...)` karna. Broker down hone par ya to endpoint fail ho jaata hai, ya DB me change ho jaata hai par event kabhi nahi jaata — silent data drift. Outbox row usi transaction me likho.
+
+</Mistake>
+
+<Mistake>
+
+At-least-once ko exactly-once maan lena aur consumers ko non-idempotent chhod dena. Publish ke baad `ProcessedAtUtc` save se pehle crash = message dobara jaayega. Har event me unique id bhejo, consumer dedupe kare.
+
+</Mistake>
+
+<Mistake>
+
+Multi-instance deployment me `PeriodicTimer` sweep har pod pe chalne dena bina lock ke. 5 pods matlab har raat wahi deactivation 5 baar, wahi outbox row 5 baar publish. Leader election ya ek DB advisory lock (`sp_getapplock`) ya claim-by-`UPDATE` use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Request: create/update Employee"] --> B["One DB transaction: write Employee row + OutboxMessage row"]
+    B --> C["SaveChangesAsync commits both atomically"]
+    C --> D["Response returned to caller"]
+    E["OutboxDispatcher (BackgroundService, polls every 5s)"] --> F["SELECT rows WHERE ProcessedAtUtc IS NULL"]
+    F --> G["Publish to message bus"]
+    G -->|success| H["Set ProcessedAtUtc = now, SaveChanges"]
+    G -->|failure| I["RetryCount++, LastError, leave unsent for next poll"]
+`}
+  caption="The domain change and the outbox row commit together; a separate polling dispatcher publishes and marks sent, retrying failures independently of the request."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A `BackgroundService` (implements `IHostedService`) is started by the host at boot and stopped on shutdown; you override `ExecuteAsync(CancellationToken stoppingToken)` and loop until the token cancels
+- Use `PeriodicTimer` + `await WaitForNextTickAsync(stoppingToken)` for non-overlapping scheduled work; wrap each iteration in `try/catch` so one failure does not kill the loop
+- `StopAsync` cancels `stoppingToken` and waits up to about 30s (`HostOptions.ShutdownTimeout`) for `ExecuteAsync` to finish — honour the token for graceful shutdown
+- Hosted service is a singleton; `DbContext` is scoped — inject `IServiceScopeFactory`, call `CreateScope()` per unit of work, resolve `AppDbContext` from that scope
+- Dual-write problem: writing to the DB and then publishing to a broker are two systems with no shared transaction — a crash between them loses or duplicates the event
+- Transactional outbox: write the domain row and an `OutboxMessage` row in the same `SaveChangesAsync`; a dispatcher polls unsent rows, publishes, sets `ProcessedAtUtc`
+- Delivery is at-least-once — consumers must be idempotent (dedupe on a message id); dead-letter a row after ~10 failed attempts
+- In multi-instance deployments, guard timer sweeps and outbox polling with a distributed lock / leader election / claim-by-UPDATE
+- Hangfire (persistent jobs + dashboard + cron) and Quartz.NET (rich scheduling + clustering) are alternatives when you need persistence, retries, or orchestration beyond a plain timer loop
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeDeactivationService : BackgroundService` banao ek `PeriodicTimer` (1 hour) ke saath jo `IsActive && LastWorkingDate < today` employees ko `IsActive = false` kare. `IServiceScopeFactory` se scope banao. `AddHostedService` register karo aur logs me "Deactivated N employees" verify karo.
+
+**Medium:** `OutboxMessage` entity + migration + index `(ProcessedAtUtc, CreatedAtUtc)` add karo. `EmployeeService.CreateAsync` ko badlo taaki employee row ke saath ek `EmployeeCreated` `OutboxMessage` row usi `SaveChangesAsync` me likhe. Ek fake `IMessageBus` jo console pe likhe. Verify: employee create karo, DB me outbox row `ProcessedAtUtc == null` dikhe.
+
+**Bada (large):** Poora `OutboxDispatcher : BackgroundService` banao — 5s poll, `Take(20)`, per-message `try/catch`, `RetryCount`/`LastError`, `ProcessedAtUtc` on success. `IMessageBus` ka ek implementation jo pehli 2 calls pe throw kare phir succeed — verify karo message eventually `sent` ho jaata hai aur `RetryCount == 2`. Phir multi-instance simulate karo: do dispatcher instances ek saath chalao aur ek `sp_getapplock`-based lock (ya claim-by-`UPDATE`) add karke prove karo ki har message sirf ek baar publish hota hai.
+
+</Callout>
