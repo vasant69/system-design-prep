@@ -1,0 +1,352 @@
+---
+slug: "unit-testing-the-service-layer"
+title: "Unit Testing the Service Layer with xUnit and Moq"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 2
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["solid-principles-as-refactors", "extracting-the-service-layer", "the-repository-pattern", "dependency-injection-and-service-lifetimes"]
+tags: ["dotnet", "aspnet-core", "unit-testing", "xunit", "moq", "fluentassertions", "testing", "employee-management"]
+englishDefinition: "A unit test exercises one class in isolation by replacing its dependencies with test doubles. For our EmployeeManagement.Api this means testing EmployeeService business rules — duplicate email, invalid PAN, delete-active guard, deactivation flag — with the repository and the PAN client swapped for Moq mocks, so each test is fast, deterministic, and pinpoints exactly which rule broke."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Wipro", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+A unit test exercises one class in isolation by replacing its dependencies with test doubles. For our `EmployeeManagement.Api` this means testing `EmployeeService` business rules — duplicate email, invalid PAN, delete-active guard, deactivation flag — with the repository and the PAN client swapped for Moq mocks, so each test is fast, deterministic, and pinpoints exactly which rule broke.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Humne pichhle topics me `EmployeeService` ko ek saaf orchestrator bana diya — wo `IEmployeeRepository` aur `IPanVerificationClient` jaise abstractions pe depend karta hai, concrete classes pe nahi. Ab uska fayda uthaate hain: business rules ko **without database, without network** test karte hain.
+
+### What is it — plain definition
+
+Unit test ek chhota, automated test hota hai jo ek "unit" — humare case me ek class, `EmployeeService` — ko akela chalata hai. "Akela" ka matlab: uski saari dependencies ko **test doubles** se replace kar dete hain. Test double ek nakli object hai jo interface to satisfy karta hai par asli kaam nahi karta — asli DB call ki jagah bas woh return karta hai jo test bolta hai.
+
+Humare stack me:
+
+- **xUnit** — test framework. Test methods `[Fact]` ya `[Theory]` se mark hote hain, `dotnet test` unhe dhoondh ke chalata hai.
+- **Moq** — mocking library. `new Mock<IEmployeeRepository>()` se ek fake repository banti hai jise hum program kar sakte hain.
+- **FluentAssertions** (optional, par recommended) — readable assertions: `result.Should().BeTrue()` instead of `Assert.True(result)`.
+
+### Why do we need it — kya tootega bina iske
+
+Bina unit tests ke har business rule sirf tumhare dimaag me hai. "Duplicate email allow nahi hona chahiye" — ye rule ek din koi refactor me galti se hata dega, aur pata tab chalega jab production me do employees ka same email ban jaayega aur payroll dono ko mail bhej dega.
+
+Manual testing (Swagger me haath se try karna) slow hai aur har rule cover nahi karta. Ek business rule = ek automated test. Refactor karo, `dotnet test` chalao, 2 second me pata chal jaata hai kuch toota ya nahi.
+
+Concrete failure scenario: `DeleteAsync` me pehle check tha `if (employee.IsActive) throw`. Kisi ne performance ke chakkar me wo check repository me shift kar diya aur service se hata diya — par repository wala check galat column dekh raha tha. Active employees delete hone lage. Agar `Delete_ActiveEmployee_Throws` naam ka test hota, wo turant red ho jaata.
+
+### How does it work — mechanism, step by step
+
+1. **Arrange** — test double banao, unhe program karo (`.Setup(...)`), aur SUT (system under test — yahan `EmployeeService`) ko un doubles ke saath construct karo.
+2. **Act** — SUT ka ek method call karo. Bas ek behaviour per test.
+3. **Assert** — result verify karo (return value, ya thrown exception), aur/ya `mock.Verify(...)` se check karo ki SUT ne dependency ko sahi tarah call kiya.
+
+Isi ko **AAA pattern** kehte hain — Arrange, Act, Assert. Har test ye teen blocks me likha jaata hai, ek blank line se alag.
+
+### Show it in our project — the test project
+
+Solution me ek naya test project add karo:
+
+```bash
+dotnet new xunit -n EmployeeManagement.UnitTests
+dotnet sln add EmployeeManagement.UnitTests/EmployeeManagement.UnitTests.csproj
+dotnet add EmployeeManagement.UnitTests reference EmployeeManagement.Api/EmployeeManagement.Api.csproj
+dotnet add EmployeeManagement.UnitTests package Moq
+dotnet add EmployeeManagement.UnitTests package FluentAssertions
+```
+
+- `dotnet new xunit` — xUnit test project template. Isme `xunit`, `xunit.runner.visualstudio`, aur `Microsoft.NET.Test.Sdk` pehle se aate hain.
+- `dotnet add ... reference ...` — test project ko API project ka reference deta hai taaki `EmployeeService`, `IEmployeeRepository` waghairah dikhein.
+- `Moq` aur `FluentAssertions` — do NuGet packages, sirf test project me.
+
+Ab `EmployeeService` ke rules test karte hain:
+
+```csharp
+using FluentAssertions;
+using Moq;
+using Xunit;
+
+public class EmployeeServiceTests
+{
+    private readonly Mock<IEmployeeRepository> _repo = new();
+    private readonly Mock<IPanVerificationClient> _pan = new();
+
+    private EmployeeService CreateSut() =>
+        new EmployeeService(_repo.Object, _pan.Object);
+
+    [Fact]
+    public async Task CreateAsync_DuplicateEmail_ThrowsValidationException()
+    {
+        // Arrange
+        _repo.Setup(r => r.EmailExistsAsync("asha@bank.com"))
+             .ReturnsAsync(true);
+        var sut = CreateSut();
+        var request = new CreateEmployeeRequest
+        {
+            FullName = "Asha Rao",
+            Email = "asha@bank.com",
+            PanNumber = "ABCDE1234F"
+        };
+
+        // Act
+        Func<Task> act = () => sut.CreateAsync(request);
+
+        // Assert
+        await act.Should().ThrowAsync<ValidationException>()
+                 .WithMessage("*Duplicate email*");
+        _repo.Verify(r => r.AddAsync(It.IsAny<Employee>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateAsync_InvalidPan_ThrowsAndDoesNotPersist()
+    {
+        // Arrange
+        _repo.Setup(r => r.EmailExistsAsync(It.IsAny<string>()))
+             .ReturnsAsync(false);
+        _pan.Setup(p => p.IsValidPanAsync("BADPAN"))
+            .ReturnsAsync(false);
+        var sut = CreateSut();
+        var request = new CreateEmployeeRequest
+        {
+            FullName = "Asha Rao",
+            Email = "asha@bank.com",
+            PanNumber = "BADPAN"
+        };
+
+        // Act
+        Func<Task> act = () => sut.CreateAsync(request);
+
+        // Assert
+        await act.Should().ThrowAsync<ValidationException>();
+        _repo.Verify(r => r.AddAsync(It.IsAny<Employee>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ActiveEmployee_ThrowsInvalidOperation()
+    {
+        // Arrange
+        _repo.Setup(r => r.GetByIdAsync(7))
+             .ReturnsAsync(new Employee { Id = 7, IsActive = true });
+        var sut = CreateSut();
+
+        // Act
+        Func<Task> act = () => sut.DeleteAsync(7);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _repo.Verify(r => r.DeleteAsync(It.IsAny<int>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeactivateAsync_SetsIsActiveFalse_AndSaves()
+    {
+        // Arrange
+        var employee = new Employee { Id = 7, IsActive = true };
+        _repo.Setup(r => r.GetByIdAsync(7)).ReturnsAsync(employee);
+        var sut = CreateSut();
+
+        // Act
+        await sut.DeactivateAsync(7);
+
+        // Assert
+        employee.IsActive.Should().BeFalse();
+        _repo.Verify(r => r.SaveChangesAsync(), Times.Once);
+    }
+}
+```
+
+### Code explained line by line
+
+- `private readonly Mock<IEmployeeRepository> _repo = new();` — ek fresh mock har test class instance ke liye. xUnit **har test method ke liye class ka naya instance** banata hai, isliye ek test ka setup doosre me leak nahi hota. Ye xUnit ki test-isolation guarantee hai.
+- `_repo.Object` — mock ka asli `IEmployeeRepository` instance jo SUT ko diya jaata hai. `_repo` khud control-panel hai, `_repo.Object` woh cheez jo inject hoti hai.
+- `_repo.Setup(r => r.EmailExistsAsync("asha@bank.com")).ReturnsAsync(true);` — "jab bhi is mock pe `EmailExistsAsync("asha@bank.com")` call ho, `Task` me `true` return karo." `ReturnsAsync` isliye kyunki method ka return type `Task<bool>` hai.
+- `It.IsAny<string>()` — argument matcher: "koi bhi string chalega." Jab exact value maayne nahi rakhti tab use karo.
+- `Func<Task> act = () => sut.CreateAsync(request);` — async method ko turant `await` nahi karte; ek delegate me wrap karte hain taaki FluentAssertions use invoke karke exception pakad sake.
+- `await act.Should().ThrowAsync<ValidationException>().WithMessage("*Duplicate email*");` — assert karta hai ki wo exception type thrown hui aur message me "Duplicate email" tha (`*` wildcard).
+- `_repo.Verify(r => r.AddAsync(It.IsAny<Employee>()), Times.Never);` — **behaviour verification**: check karta hai ki jab email duplicate tha, SUT ne DB me kuch add karne ki koshish nahi ki. `Times.Never`, `Times.Once`, `Times.Exactly(2)` — sab available.
+- `[Fact]` — ek parameterless test. `[Theory]` + `[InlineData(...)]` ek hi test ko alag inputs pe chalane ke liye (neeche).
+- `DeactivateAsync` test me hum **same `employee` object reference** ko setup me diya aur baad me `employee.IsActive` assert kiya — kyunki service usi tracked object pe flag set karti hai.
+
+### `[Theory]` for boundaries
+
+Jab ek rule ke kai input variations hon, `[Theory]` use karo, alag-alag `[Fact]` copy-paste mat karo:
+
+```csharp
+[Theory]
+[InlineData("ABCDE1234F", true)]
+[InlineData("abcde1234f", false)]   // lowercase
+[InlineData("ABCD1234F", false)]    // 9 chars
+[InlineData("", false)]
+[InlineData("ABCDE12345", false)]   // last char must be a letter
+public void IsWellFormedPan_ChecksFormat(string pan, bool expected)
+{
+    PanFormat.IsWellFormed(pan).Should().Be(expected);
+}
+```
+
+Ek test method, paanch cases, test runner me paanch alag results. Boundary aur format checks ke liye ye ideal hai.
+
+### What NOT to unit-test
+
+- **Framework code** — mat test karo ki `[ApiController]` model binding kaam karta hai ya `[Authorize]` 401 deta hai. Wo Microsoft ne test kiya hua hai.
+- **EF Core / LINQ translation** — `_repo.GetActiveAsync()` sach me SQL generate karta hai ya nahi — ye **integration test** ka kaam hai (agla topic), unit test ka nahi. In-memory provider pe LINQ test karna false confidence deta hai.
+- **Trivial getters/setters / auto-properties** — `employee.FullName` set-get test karna time waste.
+- **DTO mapping jo AutoMapper karta hai** — AutoMapper ke `Profile` config ka ek "assert configuration is valid" test kaafi hai; har field mat test karo.
+
+Unit test wahan lagao jahan **tumhaari** decision logic hai — validation rules, guards, calculations, state transitions.
+
+### Where is it used in day-to-day development
+
+- Har PR ke saath naye/badle hue business rule ke tests expected hote hain; reviewer "test kahan hai?" poochhta hai.
+- CI pipeline `dotnet test` chalati hai — red hone pe merge block.
+- Bug aaya? Pehle ek failing test likho jo bug reproduce kare, phir fix karo — test permanent regression guard ban jaata hai.
+- TDD karne wale pehle test likhte hain, phir code — par team me minimum expectation "rule ke saath test" hai.
+
+### Pros and cons
+
+Fayde: milliseconds me chalte hain, deterministic (network/DB nahi), exact rule pinpoint karte hain, refactor ke waqt safety net, aur design pressure daalte hain (test likhna mushkil = design kharab).
+
+Nuksan: mocks real behaviour se drift kar sakte hain (mock bola `true`, asli repo kuch aur karta), over-mocking se test brittle ho jaate hain (har internal call verify karna), aur 100% coverage ka peechha karna low-value tests ki bheed bana deta hai.
+
+### When to use / when NOT to use
+
+- **Use** service-layer rules, calculators, validators, state machines ke liye — jahan branching logic hai.
+- **Don't** pure wiring code (`Program.cs`), thin controllers jo sirf service ko call karte hain, ya EF query correctness ke liye — wo integration test ka domain hai.
+
+### Coverage as a guide, not a target
+
+Code coverage % ek useful signal hai — "ye poora module bilkul untested hai" dikhata hai. Par use **target** banane pe log meaningless tests likhte hain sirf number badhaane ko. 70-80% par focused, behaviour-driven tests 100% par assertion-less tests se kahin behtar hain.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Test ka naam ek sentence padhna chahiye: `Method_Scenario_ExpectedResult`. Jaise `CreateAsync_DuplicateEmail_ThrowsValidationException`. Jab CI me red aaye, sirf naam se pata chal jaana chahiye kya toota — stack trace kholne ki zaroorat na pade.
+
+</Callout>
+
+<Tradeoff
+  pros={["Milliseconds me chalte hain — poora suite seconds me", "Deterministic: koi DB, network, ya time dependency nahi", "Fail hone pe exact rule/branch pinpoint karte hain", "Refactor ke waqt safety net; design smell jaldi dikhta hai"]}
+  cons={["Mocks asli dependency se drift kar sakte hain (false green)", "Over-mocking se brittle tests — har chhoti internal call se toot-te hain", "Integration bugs (wrong SQL, misconfigured DI) inhe nahi dikhte", "Coverage ko target banane pe assertion-less filler tests ban jaate hain"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ke disbursement service me "same bank account pe din me 3 se zyada disbursal nahi" rule tha. Ye rule ek refactor me galti se hat gaya aur do din baad ek duplicate-payout incident hua. Post-mortem ke baad har business rule ke liye ek named xUnit test mandate ho gaya — `Disburse_FourthAttemptSameDay_Rejected` jaise. Suite 400+ tests ka ho gaya par 6 second me chalta tha, aur agle 18 mahine me koi bhi rule-regression production tak nahi pahuncha.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR project me team ne pehle "sab kuch integration test se" kiya — har test asli SQL Server hit karta tha, poora suite 25 minute leta tha, aur developers use locally chalate hi nahi the. Architecture review ke baad unhone service-layer rules ko Moq-based unit tests me shift kiya (2 minute suite) aur sirf repository + pipeline ke liye integration tests rakhe. Local run wapas practical ho gaya aur CI feedback 25 se 6 minute pe aa gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- xUnit har test ke liye test class ka **naya instance** banata hai — constructor = per-test setup, no shared state
+- Ek healthy unit test < 10 ms me chalta hai; 1000+ ka suite kuch seconds me
+- `Times.Never` / `Times.Once` / `Times.Exactly(n)` / `Times.AtLeastOnce` — Moq ke common verify counts
+- Test pyramid: roughly 70% unit, 20% integration, 10% end-to-end
+- Practical coverage target: 70-80% on logic-heavy layers; 100% chase karna anti-pattern
+- 4 rules humne test kiye: duplicate email, invalid PAN, delete-active guard, deactivation flag
+- `[Theory]` + N `[InlineData]` = N separate results ek method se
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "How do you unit test a service that talks to a database and an external API?" Strong answer: "Service ko un dependencies pe interface ke through depend karwaao — `IEmployeeRepository`, `IPanVerificationClient`. Test me Moq se un interfaces ke mocks banao, `Setup(...).ReturnsAsync(...)` se scenario program karo, service ko mocks ke saath construct karo, ek method call karo, aur return/exception assert karo plus `Verify(...)` se check karo ki DB write scenario ke hisaab se hua ya nahi." Follow-ups: "AAA kya hai?", "`[Fact]` vs `[Theory]`?", "kya unit-test karna chahiye kya nahi?" (framework aur EF translation nahi), aur "mock vs stub vs fake ka farak?". Ek before/after example — "hamara `EmployeeService` DB aur SMTP dono call karta tha, testable nahi tha; SRP refactor ke baad har rule ka apna 5-line test hai" — turant seniority signal deta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+EF Core ko in-memory provider ke saath "unit test" karna aur maan lena ki query production SQL Server pe bhi waise hi chalegi. In-memory provider case-sensitivity, transactions, aur kai LINQ translations alag handle karta hai — ye integration test ka kaam hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek test method me kai behaviours assert karna — duplicate email, invalid PAN, aur happy path sab ek `[Fact]` me. Fail hone pe pata nahi chalta kaunsa rule toota. Ek test, ek behaviour.
+
+</Mistake>
+
+<Mistake>
+
+Over-mocking: SUT ke har internal method call ko `Verify` karna. Isse test implementation se chipak jaata hai — legitimate refactor bhi test tod deta hai. Sirf meaningful side-effects verify karo (DB write hua/nahi hua).
+
+</Mistake>
+
+<Mistake>
+
+`ReturnsAsync` ki jagah `Returns(Task.FromResult(...))` bhool jaana aur mock ka default `null` `Task` return karna — `NullReferenceException` on `await`. `Task<T>` return karne wale methods ke liye hamesha `ReturnsAsync`.
+
+</Mistake>
+
+<Mistake>
+
+Coverage % ko KPI bana dena. Log `Assert`-less tests likhne lagte hain jo sirf method call karte hain exception ke liye. Number 85% dikhta hai par regression detection zero.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Test["EmployeeServiceTests (one [Fact])"]
+        A["Arrange: build mocks, .Setup(...).ReturnsAsync(...)"] --> B["Act: await sut.CreateAsync(request)"]
+        B --> C["Assert: Should().ThrowAsync + _repo.Verify(...)"]
+    end
+    A --> SUT["SUT: EmployeeService (real code under test)"]
+    SUT --> M1["Mock IEmployeeRepository"]
+    SUT --> M2["Mock IPanVerificationClient"]
+`}
+  caption="The SUT is real; only its dependencies are mocked. Arrange sets up the doubles, Act calls one method, Assert checks the result and the interactions."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Unit test = ek class akela, dependencies mocked; fast, deterministic, pinpoints the broken rule.
+- Stack: **xUnit** (`[Fact]`, `[Theory]` + `[InlineData]`), **Moq** (`new Mock<IEmployeeRepository>()`, `.Setup(...).ReturnsAsync(...)`, `.Verify(..., Times.Never)`), **FluentAssertions** (`.Should().ThrowAsync<T>()`).
+- New project: `dotnet new xunit -n EmployeeManagement.UnitTests`, reference the API project, add `Moq` + `FluentAssertions`.
+- **AAA**: Arrange (mocks + SUT), Act (one method), Assert (return/exception + `Verify` interactions). One behaviour per test.
+- Test name = `Method_Scenario_ExpectedResult` — readable from the CI failure line alone.
+- Rules we tested: duplicate email rejected, invalid PAN rejected, cannot delete an active employee, deactivation sets `IsActive = false` and saves.
+- **Don't** unit-test: framework behaviour, EF/LINQ SQL translation, trivial getters, AutoMapper field-by-field.
+- `[Theory]` for boundaries/formats — one method, many `[InlineData]` rows.
+- Coverage is a guide (70-80% on logic layers), never a target — chasing 100% breeds assertion-less filler.
+- xUnit builds a fresh test-class instance per test — constructor is your per-test setup, no leakage.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.UnitTests` project banao, API project ka reference aur `Moq` + `FluentAssertions` add karo, aur ek `[Fact]` likho: `CreateAsync_DuplicateEmail_ThrowsValidationException` — `_repo.Setup(r => r.EmailExistsAsync(...)).ReturnsAsync(true)` ke saath.
+
+**Medium:** `EmployeeService` ke chaaron rules (duplicate email, invalid PAN, delete-active guard, deactivation flag) ke liye tests likho. PAN client mock karo. Har test me relevant `_repo.Verify(..., Times.Never/Once)` add karo taaki side-effect bhi assert ho. Phir ek `[Theory]` + `[InlineData]` daalo PAN format ke 5 boundary cases ke liye.
+
+**Bada (large):** `SalaryCalculator` (SOLID topic wala `IEnumerable<ISalaryRule>` wala) ke liye ek poora test class banao: har grade rule ka gross verify karo, unknown grade pe `InvalidOperationException` assert karo, aur ek naya `GradeL5SalaryRule` add karke uska test bina kisi purani test ko chhue likho. Phir CI me `dotnet test` step add karo aur ek deliberately-broken rule commit karke dekho ki suite red hota hai.
+
+</Callout>

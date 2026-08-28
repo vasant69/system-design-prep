@@ -1,0 +1,312 @@
+---
+slug: "production-configuration-and-environments"
+title: "Production Configuration & Environments, Line by Line"
+section: "code-flow"
+module: "deployment"
+order: 1
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["configuration-appsettings-ioptions-secrets", "restructuring-into-clean-architecture"]
+tags: ["dotnet", "aspnet-core", "web-api", "deployment", "configuration", "environments", "kestrel", "employee-management"]
+englishDefinition: "How an ASP.NET Core app behaves differently in production: the ASPNETCORE_ENVIRONMENT variable set to Production, configuration sourced from environment variables and a secrets manager instead of committed files, appsettings.Production.json for non-secret overrides, the dotnet publish Release output, running Kestrel behind a reverse proxy with forwarded headers, and validating options at startup so a missing setting fails fast at boot."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+How an ASP.NET Core app behaves differently in production: the `ASPNETCORE_ENVIRONMENT` variable set to `Production`, configuration sourced from environment variables and a secrets manager instead of committed files, `appsettings.Production.json` for non-secret overrides, the `dotnet publish` Release output, running Kestrel behind a reverse proxy with forwarded headers, and validating options at startup so a missing setting fails fast at boot.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne `EmployeeManagement.Api` ko sirf apni machine pe `dotnet run` se chalaya hai — `Development` environment me, Swagger khula hua, connection string `appsettings.Development.json` me plain text me padi hui. Production me har ek cheez badal jaati hai: environment ka naam, config kahan se aati hai, secrets kahan rakhe jaate hain, aur app kis process ke peeche chalti hai. Ye topic wahi gap band karta hai.
+
+### What is it — environment aur production config ka matlab
+
+ASP.NET Core me ek **environment** ek naam hota hai — by default teen: `Development`, `Staging`, `Production`. Ye naam ek environment variable `ASPNETCORE_ENVIRONMENT` se aata hai. App boot pe ise padhti hai aur `IWebHostEnvironment.EnvironmentName` me daal deti hai. `app.Environment.IsDevelopment()`, `IsProduction()` — ye sab isi ek string ka comparison hain.
+
+**Production configuration** ka matlab: wo saari settings jo deployed app ko chahiye — connection string, JWT signing key, external PAN-verification API ka URL aur key, Redis endpoint — lekin ye values ab code repo me commit nahi hoti. Wo **deploy environment** se aati hain: environment variables ya ek **secrets manager** (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault).
+
+### Why do we need it — commit ki hui config kyun tootegi
+
+Do alag problem hain, dono real:
+
+1. **Security.** Agar `appsettings.Production.json` me asli SQL password commit ho gaya, wo git history me hamesha ke liye reh jaata hai. BFSI client ka security audit isi ek cheez pe project rok deta hai. Password rotate karna bhi ab release banane jaisa ho jaata hai.
+2. **Same build, many environments.** Ek hi published artifact ko dev, staging aur prod me chalana chahiye — sirf config badle. Agar config code ke andar hai, har environment ke liye alag build banana padega, aur "jo test kiya wahi ship hua" guarantee toot jaati hai.
+
+Failure scenario: ek team ne `appsettings.json` (base file, sab environment me load hoti hai) me `"Jwt:Key": "dev-secret"` chhod diya aur production me environment variable set karna bhool gaye. App boot ho gayi — kyunki base file me value thi — aur poore ek hafte production tokens ek publicly-known dev key se sign hote rahe. Koi error nahi aaya. Isiliye humein startup validation chahiye (neeche).
+
+### How does it work — config layering aur precedence
+
+`WebApplication.CreateBuilder(args)` ek default config stack banati hai. Sources is order me load hote hain, **baad wala jeetta hai**:
+
+1. `appsettings.json`
+2. `appsettings.{ASPNETCORE_ENVIRONMENT}.json` (jaise `appsettings.Production.json`)
+3. User Secrets — sirf `Development` me
+4. Environment variables
+5. Command-line arguments
+
+Toh production me: base file + `appsettings.Production.json` + environment variables. Environment variable `ConnectionStrings__Default` (do underscore `__` colon `:` ki jagah nested key ke liye) `appsettings*.json` ki `ConnectionStrings:Default` ko override kar deta hai. Secrets manager ko bhi ek config provider ke roop me add kiya jaata hai (jaise `builder.Configuration.AddAzureKeyVault(...)`) — wo bhi bas is chain me ek aur layer hai.
+
+Rule of thumb: **non-secret** environment differences (log level, feature flag, external API ka base URL) → `appsettings.Production.json` (commit karna theek hai). **Secret** values (passwords, keys, tokens) → environment variables ya secrets manager, kabhi file me nahi.
+
+### Show it in our project
+
+**Step 1 — base file me sirf safe defaults, koi secret nahi:**
+
+```json
+{
+  "Logging": {
+    "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "Default": ""
+  },
+  "PanVerification": {
+    "BaseUrl": "https://api.example-kyc.test",
+    "ApiKey": ""
+  }
+}
+```
+
+**Step 2 — `appsettings.Production.json`, sirf non-secret overrides:**
+
+```json
+{
+  "Logging": {
+    "LogLevel": { "Default": "Warning" }
+  },
+  "PanVerification": {
+    "BaseUrl": "https://api.kyc-provider.example.com"
+  }
+}
+```
+
+Note: yahan `ApiKey` aur connection string **nahi** hai — wo prod me environment se aayenge.
+
+**Step 3 — strongly-typed options + startup validation:**
+
+```csharp
+public sealed class PanVerificationOptions
+{
+    public const string SectionName = "PanVerification";
+
+    [Required, Url]
+    public string BaseUrl { get; set; } = string.Empty;
+
+    [Required, MinLength(10)]
+    public string ApiKey { get; set; } = string.Empty;
+}
+```
+
+```csharp
+// Program.cs
+builder.Services
+    .AddOptions<PanVerificationOptions>()
+    .Bind(builder.Configuration.GetSection(PanVerificationOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+var connString = builder.Configuration.GetConnectionString("Default")
+    ?? throw new InvalidOperationException("ConnectionStrings:Default is not configured.");
+
+builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connString));
+```
+
+**Step 4 — Kestrel behind a reverse proxy.** Production me client Kestrel se direct baat nahi karta — beech me Nginx / YARP / IIS / ek cloud load balancer hota hai jo TLS terminate karta hai aur request forward karta hai. Wo proxy asli client IP aur scheme ko `X-Forwarded-For` / `X-Forwarded-Proto` headers me daalta hai. In ke bina `HttpContext.Connection.RemoteIpAddress` proxy ka IP dikhayega aur `Request.Scheme` `http` — jisse audit logs aur `UseHttpsRedirection` galat ho jaate hain.
+
+```csharp
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownProxies.Add(IPAddress.Parse("10.0.0.4")); // the proxy's IP
+});
+
+var app = builder.Build();
+
+app.UseForwardedHeaders(); // MUST be first, before auth / https redirection
+```
+
+### Code explained line by line
+
+- `AddOptions<PanVerificationOptions>().Bind(...)` — config section ko class me map karta hai. `.ValidateDataAnnotations()` `[Required]` / `[Url]` attributes ko check karta hai. `.ValidateOnStart()` **key line hai**: bina iske validation tab hoti hai jab pehli baar `IOptions<T>` inject hota hai (yaani pehli request pe); iske saath validation **boot pe** hoti hai — missing key = app start hi nahi hoti, container crash-loop me chala jaata hai, orchestrator naya deploy roll back kar deta hai. Fail fast, fail loud.
+- `GetConnectionString("Default") ?? throw ...` — connection string ke liye alag guard, kyunki wo `AddDbContext` ke andar chala jaata hai; null hone par ek clear message chahiye, na ki 20 line ki EF Core stack trace.
+- `ForwardedHeaders.XForwardedFor | XForwardedProto` — bitwise OR, dono headers process karo.
+- `KnownProxies.Add(...)` — **security-critical**. Iske bina koi bhi client `X-Forwarded-For` bhej ke apna IP spoof kar sakta hai. Sirf apne trusted proxy ka IP (ya `KnownNetworks`) whitelist karo.
+- `app.UseForwardedHeaders()` pipeline me sabse pehle — taaki uske baad ka har middleware (HTTPS redirection, auth, rate limiting) sahi client IP aur scheme dekhe.
+
+### dotnet publish — production ke liye build
+
+```bash
+dotnet publish EmployeeManagement.Api -c Release -o out
+```
+
+- `-c Release` — Release configuration: optimizations on, `DEBUG` symbol off, no debug-only code. Kabhi `Debug` build production me mat bhejo.
+- `-o out` — output folder. Andar milega: `EmployeeManagement.Api.dll` (tumhara code), saari dependency DLLs, `EmployeeManagement.Api.deps.json` (dependency graph), `appsettings.json` + `appsettings.Production.json` (par `appsettings.Development.json` bhi copy hoti hai — bas load nahi hoti), aur `web.config` agar IIS target hai. Ek `EmployeeManagement.Api` native executable bhi (Windows pe `.exe`) jo runtime ko host karta hai.
+
+**Framework-dependent (default):** output me sirf tumhari app hai; target machine pe **.NET 8 runtime installed hona chahiye**. Chhoti image, lekin runtime dependency.
+
+**Self-contained:** `dotnet publish -c Release -r linux-x64 --self-contained true` — output me .NET runtime bhi bundle ho jaata hai. Koi pre-installed runtime nahi chahiye, lekin output ~70+ MB bada.
+
+**ReadyToRun (R2R):** `-p:PublishReadyToRun=true` — code ka ek hissa ahead-of-time compile ho jaata hai, faster startup (cold start me farq dikhta hai), image thoda bada. **Native AOT** (`-p:PublishAot=true`) poori app ko native binary bana deta hai — sabse fast startup aur sabse kam memory, lekin reflection-heavy libraries (kuch EF Core scenarios, kuch serializers) toot sakte hain, isliye Web API me abhi selective use hota hai.
+
+Hamare Docker setup (agla topic) ke liye hum **framework-dependent Release publish** use karenge aur runtime image se .NET provide karayenge — sabse simple aur standard.
+
+### HTTPS aur certificates in prod
+
+Do common patterns:
+
+1. **TLS terminate at the proxy** (sabse aam). Nginx / load balancer ke paas certificate hota hai, wo HTTPS handle karta hai, aur andar Kestrel se plain HTTP me baat karta hai (private network pe). Kestrel ko cert ki zaroorat hi nahi. Bas `UseForwardedHeaders` chahiye taaki app ko pata rahe original request HTTPS thi.
+2. **Kestrel does TLS directly.** `appsettings` ya code me Kestrel ko cert do — file path + password (secret!), ya OS certificate store se, ya Key Vault se load karke. Chhote deployments / no-proxy setups me.
+
+BFSI context me aksar dono: edge pe load balancer TLS, aur andar mutual TLS (mTLS) service-to-service ke liye. Dev certs (`dotnet dev-certs https`) sirf local ke liye — production me kabhi nahi.
+
+### Where is it used in day-to-day development
+
+- Har deploy pipeline `ASPNETCORE_ENVIRONMENT` set karti hai — staging slot pe `Staging`, prod pe `Production`.
+- Naya config value add karte waqt: kya ye secret hai? Haan → Key Vault / env var + `ValidateOnStart`. Nahi → `appsettings.{Env}.json`.
+- "Prod me connection string kaam nahi kar raha" debugging — 90% baar env var ka naam galat (`ConnectionStrings__Default` me single underscore, ya casing).
+- Load balancer ke peeche client IP logging fix — `UseForwardedHeaders` + `KnownProxies`.
+
+### When to use / when NOT to
+
+- `appsettings.Production.json` **use karo** non-secret, environment-specific overrides ke liye (log level, feature toggle, external URL). **Mat use karo** secrets ke liye — chahe file gitignored ho, phir bhi disk pe plain text rehta hai aur backup/snapshot me leak hota hai.
+- `ValidateOnStart` **use karo** har required settings class pe. Downside: local pe bhi tab tak run nahi hoga jab tak har value na ho — isliye local ke liye User Secrets ya `.env` rakho.
+- Self-contained / AOT **use karo** jab target machine pe runtime install nahi kar sakte ya cold-start critical hai (serverless). **Mat karo** default choice ke roop me — bada artifact, AOT me library compatibility risk.
+
+### Pros and cons of the "config from environment" approach
+
+Pros: same build har jagah, secrets repo se bahar, rotate karna sirf env var badalna, 12-factor compliant. Cons: local dev setup me ek extra step (secrets provision karna), "config kahan se aayi" debug karna thoda mushkil (5 layers), aur env var typos silent hote hain jab tak `ValidateOnStart` na ho.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`app.UseForwardedHeaders()` ke saath `KnownProxies` / `KnownNetworks` **zaroor** set karo. Default (empty) me middleware sirf `127.0.0.1` ko trust karta hai; agar tum `options.KnownProxies` clear karke "sabko trust karo" kar dete ho, koi bhi caller `X-Forwarded-For` header bhej ke apna IP spoof kar sakta hai — rate limiting aur audit trail dono bekaar.
+
+</Callout>
+
+<Tradeoff pros={["Framework-dependent publish: chhoti image, patch karna aasan (runtime alag update hota hai)", "Self-contained / AOT: koi runtime dependency nahi, fastest cold start (AOT)"]} cons={["Framework-dependent: target pe .NET 8 runtime chahiye, version mismatch risk", "Self-contained / AOT: 70+ MB artifact, AOT me reflection-heavy libraries (kuch EF Core, serializers) break ho sakti hain"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending platform ka onboarding service Azure App Service pe chalta tha. Har secret — SQL password, JWT key, KYC provider ka API key — App Service ke "Configuration" blade me environment variable ke roop me tha, aur woh values Azure Key Vault se `@Microsoft.KeyVault(...)` reference se aati thi. Repo me `appsettings.Production.json` sirf log levels aur external base URLs rakhta tha. Jab ek KYC vendor ne API key rotate ki, deploy karne ki zaroorat hi nahi padi — Key Vault me nayi value daali, App Service ne agle boot pe utha li. `ValidateOnStart` ki wajah se ek baar jab Key Vault reference misconfigure hua, app boot pe hi crash hui aur slot swap automatically ruk gaya — galat config kabhi live traffic tak pahunchi hi nahi.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke internal API estate me har service ek shared "platform" NuGet package use karti thi jo Vault se config load karti thi aur `ValidateOnStart` mandatory banati thi. Security review checklist ka pehla item: `git log -p -- '**/appsettings*.json'` chala ke dekhо kabhi koi non-empty password/key commit toh nahi hua. Ek bhi hit = release block. Naye developers ko onboarding day-1 pe yahi sikhaya jaata: base file me secret ki jagah hamesha empty string, asli value deployment environment se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 built-in environment names: `Development`, `Staging`, `Production` (custom bhi ban sakte hain)
+- 5 default config sources, precedence order me: `appsettings.json` → `appsettings.{Env}.json` → User Secrets (dev only) → environment variables → command-line args
+- `__` (double underscore) = env var me nested key separator (`ConnectionStrings__Default`)
+- `-c Release` = optimizations on, `DEBUG` off — production ke liye mandatory
+- Framework-dependent publish output ~1-5 MB app code; self-contained ~70+ MB (runtime bundled)
+- `ValidateOnStart()` = validation boot pe, na ki pehli `IOptions<T>` resolve pe — missing setting = process exit, not a 500 on first request
+- Default forwarded-headers middleware sirf `127.0.0.1` ko trust karta hai jab tak `KnownProxies`/`KnownNetworks` set na ho
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common intermediate question: "Production me configuration kaise manage karte ho, aur secrets kahan rakhte ho?" Strong 20-second jawaab: "Non-secret environment differences `appsettings.{Environment}.json` me jaati hain jo commit hoti hai. Secrets — connection strings, keys — kabhi file me nahi; wo environment variables ya ek secrets manager jaise Key Vault se aate hain, jise ek config provider ke roop me add karte hain. `ASPNETCORE_ENVIRONMENT` batata hai kaunsi env file load ho. Aur main har required settings class pe `AddOptions<T>().Bind().ValidateDataAnnotations().ValidateOnStart()` lagata hoon taaki missing setting boot pe crash kare, pehli request pe nahi." Follow-up aksar: "Reverse proxy ke peeche client IP kaise milta hai?" → `UseForwardedHeaders` + `KnownProxies`, aur wo pipeline me sabse pehle.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Secret (SQL password, JWT key) `appsettings.Production.json` me daal ke commit kar dena. Git history se hat-ta nahi — audit fail, aur rotate karna ab code change ban jaata hai. Base/prod file me hamesha empty string; asli value environment se.
+
+</Mistake>
+
+<Mistake>
+
+`appsettings.json` (base file) me ek real default secret chhod dena "taaki local pe kaam kare". Base file har environment me load hoti hai — production env var set karna bhool gaye to app us dev secret ke saath chup-chaap chalti rehti hai, koi error nahi.
+
+</Mistake>
+
+<Mistake>
+
+`ValidateOnStart()` na lagana. Bina iske, galat/missing config ka pata pehli request pe chalta hai — deploy "successful" dikhta hai, phir 500s aane lagte hain. Iske saath deploy khud fail hota hai aur rollback trigger hota hai.
+
+</Mistake>
+
+<Mistake>
+
+`app.UseForwardedHeaders()` ko auth / `UseHttpsRedirection` ke baad rakhna, ya `KnownProxies` set na karna. Pehle case me baaki middleware galat scheme/IP dekhte hain; doosre case me `X-Forwarded-For` spoofable ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Production me `Debug` configuration se build karke deploy karna. Optimizations off, extra diagnostics on, dev-only branches active. Hamesha `dotnet publish -c Release`.
+
+</Mistake>
+
+<Mistake>
+
+Environment variable me single underscore likhna — `ConnectionStrings_Default` — jab nested key ke liye double `__` chahiye. Config bind silently fail hoti hai aur value null aati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["appsettings.json (safe defaults, no secrets)"] --> M["IConfiguration (merged, later wins)"]
+    B["appsettings.Production.json (non-secret overrides)"] --> M
+    C["Environment variables (ConnectionStrings__Default)"] --> M
+    D["Secrets manager: Key Vault / AWS Secrets"] --> M
+    M --> V["AddOptions().Bind().ValidateOnStart()"]
+    V -->|all required values present| App["App boots, serves traffic"]
+    V -->|missing / invalid| Crash["Process exits at boot -> deploy rolls back"]
+`}
+  caption="Config layers merge into IConfiguration (last source wins); ValidateOnStart turns a missing production setting into a boot-time crash, not a first-request 500."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `ASPNETCORE_ENVIRONMENT` = the environment name; `Production` is the default if unset. `IsDevelopment()` / `IsProduction()` just compare this string.
+- Config precedence (last wins): `appsettings.json` → `appsettings.{Env}.json` → User Secrets (dev only) → env vars → CLI args. Nested keys in env vars use `__`.
+- Non-secret env differences → `appsettings.Production.json` (commit OK). Secrets → env vars or a secrets manager (Key Vault / AWS Secrets), added as a config provider. Never a real secret in any committed file, including base `appsettings.json`.
+- `AddOptions<T>().Bind(section).ValidateDataAnnotations().ValidateOnStart()` — missing/invalid setting crashes the app at boot, so the deploy fails and rolls back instead of serving 500s.
+- `dotnet publish -c Release -o out` — Release = optimizations on. Output = your DLL + dependencies + `deps.json` + appsettings + a host executable.
+- Framework-dependent (default, small, needs .NET runtime on host) vs self-contained (`-r linux-x64 --self-contained`, ~70 MB, no runtime needed). ReadyToRun / Native AOT = faster cold start, bigger/riskier (AOT breaks reflection-heavy libs).
+- Kestrel runs behind a reverse proxy (Nginx / YARP / IIS / load balancer). Add `UseForwardedHeaders` FIRST in the pipeline, with `KnownProxies`/`KnownNetworks` set, so real client IP and `https` scheme survive.
+- HTTPS: usually terminated at the proxy (Kestrel talks plain HTTP on a private network); or Kestrel loads a cert from store / Key Vault. Dev certs are local-only.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.Api` me `appsettings.Production.json` banao jismein sirf `Logging:LogLevel:Default` = `Warning` aur `PanVerification:BaseUrl` ka prod value ho — koi secret nahi. Base `appsettings.json` me `ConnectionStrings:Default` aur `PanVerification:ApiKey` ko empty string kar do.
+
+**Medium:** `PanVerificationOptions` class banao `[Required]` / `[Url]` attributes ke saath, aur `Program.cs` me `AddOptions<PanVerificationOptions>().Bind(...).ValidateDataAnnotations().ValidateOnStart()` wire karo. `ApiKey` env var set kiye bina `dotnet run` chala ke confirm karo ki app boot pe hi crash karti hai ek clear message ke saath. Phir `PanVerification__ApiKey` env var set karke dobara chala ke pass hote dekho.
+
+**Bada (large):** Poore project ko production-config-ready banao: (1) har secret (connection string, JWT key, PAN API key, Redis) ke liye ek strongly-typed options class + `ValidateOnStart`. (2) `appsettings.Production.json` sirf non-secret overrides ke saath. (3) `Program.cs` me `UseForwardedHeaders` sabse pehle, `KnownProxies` config-driven. (4) `dotnet publish -c Release -o out` chala ke `out/` folder ka content inspect karo — konsi files aayi, `appsettings.Development.json` copy hui ya nahi, host executable ka naam kya hai. (5) Ek chhota `RUNBOOK.md` likho jo har required env var ka naam aur uska matlab list kare.
+
+</Callout>

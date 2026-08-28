@@ -1,0 +1,402 @@
+---
+slug: "the-repository-pattern"
+title: "The Repository Pattern, Line by Line"
+section: "code-flow"
+module: "layered-architecture"
+order: 4
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["extract-the-service-layer", "interfaces-and-why-they-exist", "why-layers-controller-service-repository"]
+tags: ["dotnet", "aspnet-core", "web-api", "repository-pattern", "data-access", "abstraction", "employee-management"]
+englishDefinition: "The Repository pattern puts data-access operations behind an interface that exposes only plain CRUD methods, so the rest of the application depends on the contract instead of a concrete storage technology. The service layer calls the repository for persistence while keeping every business rule to itself, and the concrete implementation, in-memory today or EF Core later, can be swapped without touching the service."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+The Repository pattern puts data-access operations behind an interface that exposes only plain CRUD methods, so the rest of the application depends on the contract instead of a concrete storage technology. The service layer calls the repository for persistence while keeping every business rule to itself, and the concrete implementation, in-memory today or EF Core later, can be swapped without touching the service.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne Service layer nikaali, lekin ek cheez jaan-boojh kar chhod di: `static List<Employee>` abhi bhi `EmployeeService` ke andar hai. Service me `_employees.FirstOrDefault(...)`, `_employees.Add(...)` jaisi LINQ lines pad rahi hain. Is topic me hum wo saara data-access code ek alag class `InMemoryEmployeeRepository` me nikaalenge, jo ek interface `IEmployeeRepository` implement karti hai. Service ab list ko nahi, is interface ko jaanegi.
+
+### What is it — Repository kya hai
+
+Repository ek class hai jiska ek hi kaam hai: **ek entity ko store se laana aur store me rakhna**. Bas CRUD — `GetAll`, `GetById`, `Add`, `Update`, `Remove`, aur ek-do lookup helper jaise `EmailExists`. Koi business rule nahi, koi HTTP nahi, koi DTO mapping nahi. Repository ke andar sirf ye sawaal hai: "data kaise nikaalein aur kaise save karein", "data valid hai ya nahi" nahi.
+
+Interface `IEmployeeRepository` sirf contract hai. Aaj uska implementation `InMemoryEmployeeRepository` hai jo ek `List` wrap karta hai. Module 4 me `EfEmployeeRepository` aayega jo `DbContext` wrap karega. Dono same contract — isliye `EmployeeService` ki ek line nahi badlegi.
+
+### Why do we need it — Service me list rakhne se kya tootega
+
+Agar `EmployeeService` seedha `static List` par LINQ likhti rahe, to teen problem hain:
+
+1. **Module 4 me poori Service rewrite hogi.** `_employees.FirstOrDefault(e => e.Id == id)` ko `_context.Employees.FindAsync(id)` banana padega — har method me. Repository ke peeche ye badlaav ek file me sirjkta hai, Service untouched.
+2. **EF Core ka detail poore codebase me leak karega.** `IQueryable`, `Include(...)`, `AsNoTracking()` jaise EF-specific concepts Service, aur phir shayad Controller tak pahunch jaate hain. Repository ek boundary banata hai: iske bahar koi EF type nahi.
+3. **Service test karne ke liye ek real store chahiye hoga.** Interface ho to test me 15-line ka `FakeEmployeeRepository` (ek `List` par) kaafi hai — koi database, koi EF provider nahi.
+
+Concrete failure scenario: maan lo Repository nahi hai aur Service `_employees.Where(e => e.Email == dto.Email)` likhti hai. Unit test me store ek `List` hai, jahan `==` **case-sensitive** hai — test pass. Production me SQL Server ki default collation **case-insensitive** hai — wahi query alag chalti hai. Result: `asha@corp.in` aur `ASHA@corp.in` test me do alag employees, prod me duplicate-email rule trigger. KYC records me mismatch, aur ye bug tests me kabhi nahi dikhta. Repository ke peeche ye comparison ek jagah define hoti hai, dono jagah same.
+
+### How does it work — step by step
+
+1. `IEmployeeRepository` interface likho — plain CRUD signatures, koi body nahi. Ye `Employee` **entity** return karta hai, `EmployeeDto` nahi (mapping Service ka kaam hai).
+2. `InMemoryEmployeeRepository : IEmployeeRepository` likho jo `static List<Employee>` aur `_nextId` ko apne andar rakhe. `static` isliye taaki data requests ke beech bacha rahe.
+3. `EmployeeService` ka constructor ab `IEmployeeRepository` maange. Har `_employees.X` call ko `_repo.X` se replace karo.
+4. Id assign karna ab Repository ke `Add` me jaata hai — ye ek **persistence** concern hai (database bhi yahi karta hai), business rule nahi.
+5. `Program.cs` me `builder.Services.AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>();` register karo, `EmployeeService` registration se pehle.
+
+### Show it in our project
+
+**`Repositories/IEmployeeRepository.cs`** — data contract:
+
+```csharp
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Repositories;
+
+public interface IEmployeeRepository
+{
+    IReadOnlyList<Employee> GetAll();
+    Employee? GetById(int id);
+    bool EmailExists(string email);
+    Employee Add(Employee employee);
+    void Update(Employee employee);
+    void Remove(Employee employee);
+}
+```
+
+**`Repositories/InMemoryEmployeeRepository.cs`** — implementation (wraps the list):
+
+```csharp
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Repositories;
+
+public class InMemoryEmployeeRepository : IEmployeeRepository
+{
+    private static readonly List<Employee> _employees = new();
+    private static int _nextId = 1;
+
+    public IReadOnlyList<Employee> GetAll() => _employees.ToList();
+
+    public Employee? GetById(int id) =>
+        _employees.FirstOrDefault(e => e.Id == id);
+
+    public bool EmailExists(string email) =>
+        _employees.Any(e => e.Email.Equals(email, StringComparison.OrdinalIgnoreCase));
+
+    public Employee Add(Employee employee)
+    {
+        employee.Id = _nextId++;
+        _employees.Add(employee);
+        return employee;
+    }
+
+    public void Update(Employee employee)
+    {
+        // In-memory: entity ek reference hai jo list me already hai, kuch persist nahi karna.
+        // EF Core version me yahan: _context.Employees.Update(employee); _context.SaveChanges();
+    }
+
+    public void Remove(Employee employee) => _employees.Remove(employee);
+}
+```
+
+**`Services/EmployeeService.cs`** — ab list nahi, `IEmployeeRepository` par depend karti hai:
+
+```csharp
+using System.Text.RegularExpressions;
+using EmployeeManagement.Api.Dtos;
+using EmployeeManagement.Api.Models;
+using EmployeeManagement.Api.Repositories;
+
+namespace EmployeeManagement.Api.Services;
+
+public class EmployeeService : IEmployeeService
+{
+    private readonly IEmployeeRepository _repo;
+
+    private static readonly Regex PanRegex =
+        new("^[A-Z]{5}[0-9]{4}[A-Z]$", RegexOptions.Compiled);
+
+    public EmployeeService(IEmployeeRepository repo) => _repo = repo;
+
+    public IReadOnlyList<EmployeeDto> GetAll() =>
+        _repo.GetAll().Select(ToDto).ToList();
+
+    public EmployeeDto? GetById(int id)
+    {
+        var employee = _repo.GetById(id);
+        return employee is null ? null : ToDto(employee);
+    }
+
+    public EmployeeDto Create(CreateEmployeeDto dto)
+    {
+        if (_repo.EmailExists(dto.Email))
+            throw new DomainRuleException("Employee with this email already exists.");
+
+        if (!PanRegex.IsMatch(dto.PanNumber))
+            throw new DomainRuleException("PAN number format is invalid. Expected AAAAA9999A.");
+
+        var employee = new Employee
+        {
+            FullName = dto.FullName,
+            Email = dto.Email,
+            DepartmentId = dto.DepartmentId,
+            DateOfJoining = dto.DateOfJoining,
+            Salary = dto.Salary,
+            PanNumber = dto.PanNumber,
+            IsActive = true
+        };
+
+        _repo.Add(employee);
+        return ToDto(employee);
+    }
+
+    public EmployeeDto? Update(int id, UpdateEmployeeDto dto)
+    {
+        var employee = _repo.GetById(id);
+        if (employee is null) return null;
+
+        employee.FullName = dto.FullName;
+        employee.DepartmentId = dto.DepartmentId;
+        employee.Salary = dto.Salary;
+        _repo.Update(employee);
+        return ToDto(employee);
+    }
+
+    public bool Delete(int id)
+    {
+        var employee = _repo.GetById(id);
+        if (employee is null) return false;
+
+        if (employee.IsActive)
+            throw new DomainRuleException("Cannot delete an active employee. Deactivate first.");
+
+        _repo.Remove(employee);
+        return true;
+    }
+
+    private static EmployeeDto ToDto(Employee e) => new()
+    {
+        Id = e.Id,
+        FullName = e.FullName,
+        Email = e.Email,
+        DepartmentId = e.DepartmentId,
+        DateOfJoining = e.DateOfJoining,
+        Salary = e.Salary,
+        PanNumber = e.PanNumber,
+        IsActive = e.IsActive
+    };
+}
+```
+
+**`Program.cs`** — dono register, repository pehle:
+
+```csharp
+builder.Services.AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>();
+builder.Services.AddScoped<IEmployeeService, EmployeeService>();
+```
+
+### Code explained line by line
+
+```csharp
+IReadOnlyList<Employee> GetAll();
+```
+
+- Return type `Employee` **entity** hai, `EmployeeDto` nahi. Repository ko DTO ka pata nahi — wo raw domain object deta hai, Service use `ToDto` se convert karti hai. `IReadOnlyList` isliye taaki caller galti se list me `Add`/`Remove` na kar de; store change sirf `Add`/`Update`/`Remove` methods se.
+
+```csharp
+bool EmailExists(string email);
+```
+
+- Ye ek **query helper** hai, business rule nahi. "Email exist karta hai kya" ek pure data sawaal hai. "Duplicate email allowed nahi" — wo decision Service me hai (`if (_repo.EmailExists(...)) throw ...`). Ek data sawaal, doosra business rule — dono alag layers me.
+
+```csharp
+public Employee Add(Employee employee)
+{
+    employee.Id = _nextId++;
+    _employees.Add(employee);
+    return employee;
+}
+```
+
+- Id assignment ab yahan hai, Service me nahi. Database bhi identity/sequence se Id yahi (persistence layer me) generate karta. Method saved entity (Id ke saath) wapas deta hai, taaki Service use `ToDto` me use kar sake.
+
+```csharp
+public void Update(Employee employee) { /* no-op for in-memory */ }
+```
+
+- In-memory me `GetById` jo object deta hai wo **wahi reference** hai jo list me hai — uske fields badal do, list already updated. Isliye body khaali. Lekin method interface me **rakha** hai kyunki EF Core version me yahan `_context.SaveChanges()` aayega. Interface aaj ke nahi, kal ke shape ke hisaab se design karo.
+
+```csharp
+private readonly IEmployeeRepository _repo;
+public EmployeeService(IEmployeeRepository repo) => _repo = repo;
+```
+
+- Wahi constructor injection jo Controller me tha — ab Service bhi apni dependency (`IEmployeeRepository`) bahar se maangti hai, khud `new InMemoryEmployeeRepository()` nahi karti. DI container `Program.cs` ki registration dekh kar inject karta hai.
+
+### Repository over EF Core: anti-pattern hai ya nahi — dono taraf imaandaari se
+
+Ye ek genuine, ongoing debate hai. Module 4 me jab EF Core aayega, tum ye zaroor sunoge: "EF Core ke upar repository likhna anti-pattern hai".
+
+**Anti-pattern kehne waalon ka point (valid hai):**
+
+- EF Core ka `DbContext` **khud already** Repository + Unit of Work pattern hai. `DbSet<Employee>` ek repository hai; `SaveChanges()` ek unit of work commit hai. Uske upar ek aur repository ek redundant layer hai.
+- Ek generic repository jo `IEnumerable<Employee>` return karta hai, wo EF ki server-side query composition maar deta hai — filtering/paging phir memory me hoti hai (`GetAll()` phir `.Where()`), ya har filter ke liye `GetActiveByDepartment`, `GetJoinedAfter` jaise methods bharte jaate hain.
+- Testing argument kamzor ho gaya hai: EF Core ka InMemory provider aur SQLite in-memory mode se `DbContext` ko bina repository ke bhi test kiya ja sakta hai.
+
+**Repository rakhne waalon ka point (bhi valid hai):**
+
+- LINQ-to-Entities aur EF types (`IQueryable`, `Include`, tracking) ko Service/domain se **bahar** rakhta hai. Service pure C# rehti hai, EF ka pata nahi.
+- Query logic ka **ek naam aur ek jagah** hoti hai — `_repo.GetActiveEmployees()` har controller me alag-alag LINQ likhne se behtar hai.
+- Cross-cutting filter (soft-delete, tenant/branch filter, "sirf apni branch ke employees") ek jagah enforce hote hain.
+- Storage swap genuinely possible: aaj in-memory, module 4 me EF Core, kal ek hot report ke liye Dapper — Service touch nahi hoti.
+- Unit tests ko **koi** provider nahi chahiye, ek plain `List`-backed fake kaafi hai.
+
+**Pragmatic verdict (is course ka stand):** ek **specific** repository (`IEmployeeRepository`) jisme intention-revealing methods hain aur jo **materialized entities** return karta hai (`IQueryable` nahi) — ye theek hai aur BFSI codebases me common hai. Jahan debate garam hota hai wo ek **generic** `IRepository<T>` hai jo `IQueryable<T>` leak karta hai. Hamare project me repository ka main faayda do hain: module 4 ka clean swap, aur Service ka 15-line fake se test hona.
+
+### Generic `IRepository<T>` vs specific `IEmployeeRepository` — trade-offs
+
+- **Generic `IRepository<T>`**: kam code, har entity ke liye same shape. Lekin lowest-common-denominator API — `EmailExists`, `GetActiveInDepartment` jaise aggregate-specific methods fit nahi hote, aur log `IQueryable` expose karke "flexibility" add karte hain, jahan se leak shuru.
+- **Specific `IEmployeeRepository`**: zyada files, lekin har method ek named, meaningful, testable operation hai. Koi leak nahi. Andar chaho to ek generic base class share kar lo, par contract specific rahe.
+
+### Where is it used in day-to-day development
+
+- **Naya query chahiye** ("last 30 din me joined employees") — pehle interface me method add hota hai, phir implementation, phir Service use call karti hai. Ad-hoc LINQ controller me nahi.
+- **Data source swap** — legacy Dapper se EF Core migration, ya ek read-replica repository — repository boundary isko contain karta hai.
+- **Code review** comment: "ye `Include(...)` service me kyun hai? Repository me le jao."
+- **Unit tests** — Service tests hamesha ek fake/mock repository ke against chalte hain, real DB kabhi nahi.
+
+### Pros and cons — honest trade-offs
+
+Repository ki cost: ek aur interface + implementation file per aggregate, aur ek indirection ("ye data kahan se aaya" dekhne ke liye ek hop zyada). Agar Service ke methods bas `return _repo.GetAll()` type pass-through hain to Service anemic lagti hai — lekin wahi Service rules bhi rakhti hai, isliye theek hai. Faayda: storage swap sasta, EF leak nahi, tests provider-free.
+
+### When to use / when NOT to use
+
+- **Use** jab: provider-free unit tests chahiye, ek se zyada data source ho sakta hai, ya query logic ko named aur ek jagah rakhna hai. Hamara EmployeeManagement.Api yahi hai.
+- **Skip** jab: chhota app, storage kabhi nahi badlega, aur tum EF Core InMemory/SQLite ke against test karne me comfortable ho — tab `Service -> DbContext` bhi acceptable hai. Ek pure generic `IRepository<T>` jo `IQueryable` deta hai — usse bachо, wo dono duniya ka bura deta hai.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Repository ke andar business rule kabhi nahi. `Add()` me duplicate-email check likhna galat hai — Repository "kya store karna chahiye" decide nahi karta, sirf "store kar do". Rule Service me, plain CRUD Repository me.
+
+</Callout>
+
+<Tradeoff
+  pros={["Storage swap (in-memory se EF Core) sirf Repository ko chhoota hai, Service untouched", "EF Core types (IQueryable, Include, tracking) Service/domain se bahar rehte hain", "Service tests ek 15-line List-backed fake se chalte hain, koi DB/provider nahi", "Query logic ka ek naam aur ek jagah; cross-cutting filters ek spot pe enforce"]}
+  cons={["Har aggregate ke liye ek aur interface + impl file", "EF Core ka DbContext already repo + unit-of-work hai, to ek layer redundant lag sakti hai", "Generic IRepository<T> jo IQueryable leak kare — worst of both worlds", "Anemic pass-through methods Service ko middleman bana sakte hain"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending platform ne shuru me `LoanApplicationService` ke andar seedha EF Core LINQ likha. 10 mahine baad ek "instant decisioning" feature aaya jise sub-50ms reads chahiye the, aur team ne un 3 hot queries ke liye Dapper use karna tha. Kyunki queries service me bikhri thi, har ek ko dhoondh kar Dapper me port karna pada aur do code paths ban gaye. Post-mortem ke baad `ILoanApplicationRepository` introduce hua — EF implementation default, Dapper implementation sirf un 3 read methods ke liye. Service ko farak nahi pada.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking project me har entity ka ek specific repository interface tha (`IAccountRepository`, `ICustomerRepository`), aur review rule tha: repository methods materialized list/entity return karein, `IQueryable` nahi. Reason — ek branch-level data-scoping filter (`WHERE BranchCode = @current`) har repository me ek jagah lagta tha. Agar `IQueryable` leak hota to koi bhi caller filter bhula sakta tha aur doosri branch ka data dikh jaata — ek compliance incident.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 6 methods `IEmployeeRepository` me: `GetAll`, `GetById`, `EmailExists`, `Add`, `Update`, `Remove` — sab pure CRUD
+- 0 business rules Repository me; 3 rules (duplicate email, PAN regex, active-delete) Service me
+- 2 DI registrations ab: `IEmployeeRepository` aur `IEmployeeService`, dono `AddScoped`
+- 1 file badlegi module 4 me: `InMemoryEmployeeRepository` ki jagah `EfEmployeeRepository` — Service, Controller untouched
+- Repository `Employee` entity return karta hai, `EmployeeDto` nahi — mapping Service ka kaam
+- Debate garam sirf generic `IRepository<T>` par jo `IQueryable<T>` expose kare; specific repo returning entities is mostly uncontroversial
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"What is the Repository pattern and is it an anti-pattern over EF Core?" ek very common .NET question hai. Strong 20-second jawab: "Repository data access ko ek interface ke peeche rakhta hai jisme sirf CRUD hai, koi business rule nahi. Faayda: storage swap sasta, EF types domain se bahar, aur service tests bina DB ke chalte hain. Anti-pattern debate valid hai — EF ka DbContext khud repo plus unit-of-work hai, aur ek generic repository jo IQueryable leak kare wo query composition maar deta hai. Lekin ek specific repository jo materialized entities return kare, wo aaj bhi common aur useful hai, khaaskar cross-cutting filters aur provider-free testing ke liye." Agar tum "specific vs generic" distinction bol dete ho, interviewer samajh jaata hai tumne ise sirf padha nahi, jhela hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Repository me business rule ghusa dena — jaise `Add()` ke andar duplicate-email check ya PAN validation. Repository "kya store karna chahiye" decide nahi karta. `EmailExists` ek data query hai; "duplicate allowed nahi" ek Service rule hai.
+
+</Mistake>
+
+<Mistake>
+
+`IEmployeeRepository` me EF-specific type leak karna — `IQueryable<Employee> Query()`, `DbSet<Employee> Set()`, ya `Include`-style params. Ab `InMemoryEmployeeRepository` is contract ko honestly nahi nibha sakta, aur EF ka detail poore codebase me phail jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Repository se `EmployeeDto` return karwana. Repository domain `Employee` entity deta hai — DTO mapping Service ka kaam hai. Repository ko DTO folder ka pata bhi nahi hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+Ek generic `IRepository<T>` bana kar usme `IQueryable<T> GetAll()` expose kar dena "flexibility ke liye". Ab har caller apni LINQ likhta hai, cross-cutting filters bypass ho jaate hain, aur test-vs-prod LINQ behaviour (case sensitivity, null handling) alag ho jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+`Update()` method ko interface se hata dena kyunki in-memory me wo no-op hai. Interface aaj ke implementation ke liye nahi, sabhi (future EF Core included) ke liye design hota hai — EF version me `Update` me `SaveChanges` aayega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C["EmployeesController<br/>HTTP only"] --> S["EmployeeService<br/>rules + orchestration + DTO mapping"]
+    S -->|depends on| I["IEmployeeRepository<br/>pure CRUD contract"]
+    N["InMemoryEmployeeRepository<br/>wraps static List (now)"] -.implements.-> I
+    E["EfEmployeeRepository<br/>wraps DbContext (module 4)"] -.implements.-> I
+`}
+  caption="Service depends on the repository contract, never on a storage class. Swapping in-memory for EF Core later touches only the implementation."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Repository = ek class behind an interface jiska ek hi kaam: entity ko store se laana aur rakhna. Pure CRUD, koi business rule nahi, koi HTTP, koi DTO
+- `IEmployeeRepository`: `GetAll`, `GetById`, `EmailExists`, `Add`, `Update`, `Remove` — sab `Employee` entity ke saath, `EmployeeDto` nahi
+- Service ab `static List` nahi, `IEmployeeRepository` par depend karti hai (constructor injection); `_employees.X` ban gaya `_repo.X`
+- Id assignment Service se Repository ke `Add` me shift — ye persistence concern hai, business rule nahi
+- `Program.cs`: `AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>()` `AddScoped<IEmployeeService, EmployeeService>()` se pehle
+- Anti-pattern debate: EF ka `DbContext` khud repo + unit-of-work hai; generic `IRepository<T>` jo `IQueryable` leak kare wo bura hai; specific repo returning entities is fine
+- Module 4 me swap: `InMemoryEmployeeRepository` ki jagah `EfEmployeeRepository`, Service/Controller ki ek line nahi badlegi
+- `Update()` in-memory me no-op par interface me rehta hai — EF version me `SaveChanges` yahan aayega
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Repositories/IEmployeeRepository.cs` aur `Repositories/InMemoryEmployeeRepository.cs` banao 6 methods ke saath. `EmployeeService` ke `GetAll` aur `GetById` ko `_repo` par point karwao, `Program.cs` me `AddScoped<IEmployeeRepository, InMemoryEmployeeRepository>()` register karo, aur Swagger se test karo.
+
+**Medium:** Baaki teen methods (`Create`, `Update`, `Delete`) bhi `_repo` par move karo. `_nextId++` ko Service se Repository ke `Add` me le jao. Phir ek `FakeEmployeeRepository` (plain `List`, `static` nahi) likho aur ek xUnit test add karo jo `new EmployeeService(fakeRepo)` bana kar duplicate-email `DomainRuleException` verify kare — bina HTTP, bina DB.
+
+**Bada (large):** `IEmployeeRepository` ke do implementations rakho: `InMemoryEmployeeRepository` aur ek `JsonFileEmployeeRepository` jo employees ko ek local `employees.json` file me read/write kare. `Program.cs` me ek config flag se switch karo (`"Storage": "InMemory"` ya `"JsonFile"`). Verify karo: `EmployeeService` aur `EmployeesController` ki koi line nahi badli — sirf registration. Ye module 4 ke EF Core swap ka rehearsal hai.
+
+</Callout>

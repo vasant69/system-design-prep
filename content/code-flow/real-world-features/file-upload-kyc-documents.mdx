@@ -1,0 +1,400 @@
+---
+slug: "file-upload-kyc-documents"
+title: "File Upload for KYC Documents, Line by Line"
+section: "code-flow"
+module: "real-world-features"
+order: 2
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["pagination-filtering-sorting", "controller-service-dto-layering", "efcore-migrations-add-update-database", "config-and-options-pattern"]
+tags: ["dotnet", "aspnet-core", "web-api", "file-upload", "iformfile", "kyc", "employee-management"]
+englishDefinition: "File upload is the flow where a client sends a binary file to the API as a multipart/form-data request, and the server validates it (size, content type, extension, magic bytes), sanitizes its name, stores the bytes outside the database, and records a metadata row that links the file to a domain entity. In our project this powers KYC document upload for an employee: POST /api/employees/{id}/documents accepts an IFormFile, saves it under a configured storage path, and inserts an EmployeeDocument row."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+File upload is the flow where a client sends a binary file to the API as a `multipart/form-data` request, and the server validates it (size, content type, extension, magic bytes), sanitizes its name, stores the bytes outside the database, and records a metadata row that links the file to a domain entity. In our project this powers KYC document upload for an employee: `POST /api/employees/{id}/documents` accepts an `IFormFile`, saves it under a configured storage path, and inserts an `EmployeeDocument` row.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hamare EmployeeManagement.Api me ab tak sab JSON tha. Lekin KYC ke liye HR ko employee ka **PAN card, Aadhaar, aur photo** upload karna padta hai — ye files hain, JSON nahi. Is topic me hum `POST /api/employees/{id}/documents` banayenge jo ek file leta hai, use validate karta hai, disk pe rakhta hai, aur ek `EmployeeDocument` row insert karta hai. Phir `GET /api/employees/{id}/documents/{docId}` se woh file download hoti hai.
+
+### What is it — multipart upload aur `IFormFile`
+
+Browser jab `<input type="file">` wala form submit karta hai, request ka `Content-Type` `multipart/form-data` hota hai — body me boundary-separated parts hote hain, har part ek field ya ek file. ASP.NET Core is body ko parse karke har file ko ek `IFormFile` object me deta hai. `IFormFile` ke paas hai: `FileName` (client ne jo naam bheja), `ContentType` (client ne jo MIME claim kiya), `Length` (bytes), aur `OpenReadStream()` (actual bytes padhne ke liye). Dhyan do — `FileName` aur `ContentType` **client-controlled** hain, in par bharosa nahi.
+
+### Why do we need it — bina proper handling ke kya tootega
+
+File upload web ka sabse khatarnaak endpoint hai. Agar tum bina soche implement karo:
+
+- Koi 2 GB ki file bhej de — API process ki memory bhar jaaye, OutOfMemory, sab requests down.
+- Koi `shell.aspx` ya `.exe` upload kar de aur naam `photo.jpg` rakh de — agar tum extension trust karo aur file web-servable folder me chali jaaye, **remote code execution**.
+- Koi filename `../../appsettings.json` bhej de — path traversal, tum galat jagah likh do ya overwrite kar do.
+- Files ko SQL Server me `varbinary(max)` column me daal do — har `SELECT` bhaari, backups phool jaayein, DB IO choke.
+
+BFSI me ye sirf bug nahi, audit finding aur regulatory issue ban jaata hai. Isliye har layer pe defence chahiye.
+
+### How does it work — the validation pipeline, step by step
+
+1. **Size limit** — request ko hi bade payload pe reject karo, bytes padhne se pehle. `[RequestSizeLimit]` attribute + `MultipartBodyLengthLimit`.
+2. **Extension allowlist** — sirf `.pdf`, `.png`, `.jpg`, `.jpeg`. Baaki sab reject. Allowlist, blocklist nahi.
+3. **Declared content type check** — `IFormFile.ContentType` ko bhi allowlist se match karo (`application/pdf`, `image/png`, `image/jpeg`). Ye kamzor check hai (client jhooth bol sakta hai) par pehla filter hai.
+4. **Magic-byte sniff** — file ke pehle kuch bytes padho aur asli signature verify karo: PDF = `25 50 44 46` (`%PDF`), PNG = `89 50 4E 47`, JPEG = `FF D8 FF`. Ye batata hai file **asli me** kya hai, extension se nahi.
+5. **Filename sanitization** — client ka naam kabhi disk pe use mat karo. Ek **naya stored name** generate karo: `Guid` + safe extension. Original naam sirf metadata row me store karo (display ke liye).
+6. **Store bytes** — configured `BasePath` ke andar, `OpenReadStream()` se `FileStream` me **stream** karo (poori file memory me mat lo).
+7. **Metadata row** — `EmployeeDocument` insert karo: original naam, stored naam, content type, size, document type, `UploadedAtUtc`.
+8. **Return `201 Created`** with a `Location` header pointing at the download endpoint.
+
+### Show it in our project — the entity + migration
+
+`Models/EmployeeDocument.cs`:
+
+```csharp
+namespace EmployeeManagement.Api.Models;
+
+public enum DocumentType { Pan = 1, Aadhaar = 2, Photo = 3 }
+
+public class EmployeeDocument
+{
+    public Guid Id { get; set; }
+    public Guid EmployeeId { get; set; }
+    public Employee Employee { get; set; } = null!;
+
+    public string OriginalFileName { get; set; } = null!;
+    public string StoredFileName { get; set; } = null!;
+    public string ContentType { get; set; } = null!;
+    public long SizeBytes { get; set; }
+    public DocumentType DocumentType { get; set; }
+    public DateTime UploadedAtUtc { get; set; }
+}
+```
+
+`AppDbContext` me:
+
+```csharp
+public DbSet<EmployeeDocument> EmployeeDocuments => Set<EmployeeDocument>();
+```
+
+Phir migration:
+
+```bash
+dotnet ef migrations add AddEmployeeDocuments
+dotnet ef database update
+```
+
+- `EmployeeId` + navigation `Employee` — foreign key. Ek employee ke kai documents.
+- `StoredFileName` alag hai `OriginalFileName` se — yahi safety ka core hai. Disk pe `3f2a...9c.pdf` pada hoga, user ko `Rahul_PAN.pdf` dikhega.
+- `SizeBytes` `long` — `int` 2 GB pe overflow karta hai; files bade ho sakte hain.
+- `DocumentType` enum — DB me `int` store hoti hai. `PAN`/`Aadhaar`/`Photo` fixed set hai.
+- **Koi `byte[] Content` column nahi** — bytes disk pe, DB me sirf pointer.
+
+### The options + the upload endpoint
+
+`FileStorageOptions.cs` (bound from config):
+
+```csharp
+public class FileStorageOptions
+{
+    public const string SectionName = "FileStorage";
+    public string BasePath { get; set; } = null!;
+    public long MaxFileSizeBytes { get; set; } = 5 * 1024 * 1024; // 5 MB
+    public string[] AllowedExtensions { get; set; } = [".pdf", ".png", ".jpg", ".jpeg"];
+}
+```
+
+`appsettings.json`:
+
+```json
+{
+  "FileStorage": {
+    "BasePath": "C:\\emp-kyc-store",
+    "MaxFileSizeBytes": 5242880
+  }
+}
+```
+
+`Program.cs`: `builder.Services.Configure<FileStorageOptions>(builder.Configuration.GetSection(FileStorageOptions.SectionName));`
+
+Controller:
+
+```csharp
+[HttpPost("{id:guid}/documents")]
+[RequestSizeLimit(6 * 1024 * 1024)]
+[RequestFormLimits(MultipartBodyLengthLimit = 6 * 1024 * 1024)]
+public async Task<ActionResult<EmployeeDocumentDto>> UploadDocument(
+    Guid id,
+    [FromForm] DocumentType documentType,
+    IFormFile file,
+    CancellationToken ct)
+{
+    if (file is null || file.Length == 0)
+        return BadRequest("File is required.");
+
+    var dto = await _documentService.SaveAsync(id, documentType, file, ct);
+    return CreatedAtAction(nameof(DownloadDocument),
+        new { id, docId = dto.Id }, dto);
+}
+```
+
+Line by line:
+
+- `[HttpPost("{id:guid}/documents")]` — route `POST /api/employees/{id}/documents`. `:guid` route constraint ensures a malformed id is `404` before our code runs.
+- `[RequestSizeLimit(...)]` — poori HTTP request body ka hard ceiling. Isse bada aaya to Kestrel `413 Payload Too Large` deta hai, hamara code chalta hi nahi. Thoda buffer rakho (6 MB) actual 5 MB limit ke upar for multipart overhead.
+- `[RequestFormLimits(MultipartBodyLengthLimit = ...)]` — form parser ka apna alag limit; default `128 MB` hai, isse chhota karna zaroori.
+- `[FromForm] DocumentType documentType` — multipart body ke ek text field se enum bind hota hai. `[FromForm]` isliye ki source form hai, query/route nahi.
+- `IFormFile file` — parameter naam `file` form ke file part ke naam se match karta hai.
+- `CreatedAtAction(...)` — `201` + `Location` header jo download endpoint ka URL banata hai. Ye REST convention hai "resource ban gaya, yahan hai".
+
+### Code explained — the service, magic bytes, streaming
+
+```csharp
+public async Task<EmployeeDocumentDto> SaveAsync(
+    Guid employeeId, DocumentType docType, IFormFile file, CancellationToken ct)
+{
+    var employeeExists = await _db.Employees.AnyAsync(e => e.Id == employeeId, ct);
+    if (!employeeExists) throw new NotFoundException("Employee not found.");
+
+    if (file.Length > _options.MaxFileSizeBytes)
+        throw new ValidationException("File exceeds the 5 MB limit.");
+
+    var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+    if (!_options.AllowedExtensions.Contains(ext))
+        throw new ValidationException($"Extension {ext} is not allowed.");
+
+    await using var stream = file.OpenReadStream();
+    if (!await IsAllowedSignatureAsync(stream, ext, ct))
+        throw new ValidationException("File content does not match its extension.");
+    stream.Position = 0;
+
+    var storedName = $"{Guid.NewGuid():N}{ext}";
+    var employeeFolder = Path.Combine(_options.BasePath, employeeId.ToString());
+    Directory.CreateDirectory(employeeFolder);
+    var fullPath = Path.Combine(employeeFolder, storedName);
+
+    await using (var target = new FileStream(
+        fullPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+        bufferSize: 81920, useAsync: true))
+    {
+        await stream.CopyToAsync(target, ct);
+    }
+
+    var doc = new EmployeeDocument
+    {
+        Id = Guid.NewGuid(),
+        EmployeeId = employeeId,
+        OriginalFileName = Path.GetFileName(file.FileName),
+        StoredFileName = storedName,
+        ContentType = file.ContentType,
+        SizeBytes = file.Length,
+        DocumentType = docType,
+        UploadedAtUtc = DateTime.UtcNow,
+    };
+    _db.EmployeeDocuments.Add(doc);
+    await _db.SaveChangesAsync(ct);
+
+    return EmployeeDocumentDto.From(doc);
+}
+```
+
+- `AnyAsync(...)` — pehle confirm karo employee ex`ist karta hai; warna orphan file + orphan row ban jaayega.
+- `file.Length > _options.MaxFileSizeBytes` — second size check (attribute pehla hai). Defence in depth — options se driven taaki config badalne pe recompile na karna pade.
+- `Path.GetExtension(file.FileName).ToLowerInvariant()` — `.JPG` aur `.jpg` same treat ho.
+- `file.OpenReadStream()` — file ke bytes ka stream. `await using` — dispose guaranteed.
+- `IsAllowedSignatureAsync(stream, ext, ct)` — pehle 8 bytes padho, `ext` ke expected signature se compare karo. `stream.Position = 0` — sniff ke baad stream rewind, warna save aadhi file likhega.
+- `storedName = $"{Guid.NewGuid():N}{ext}"` — **client ke naam ka koi hissa nahi**. `:N` = bina dashes ka guid. Path traversal impossible, collision practically impossible, overwrite impossible.
+- `Directory.CreateDirectory(employeeFolder)` — per-employee folder, warna ek folder me laakhon files.
+- `FileMode.CreateNew` — agar file already ho to exception (guid ke saath hoga nahi, par explicit safe).
+- `FileShare.None` — likhte waqt koi aur is file ko na chhue.
+- `useAsync: true` + `CopyToAsync` — bytes ko 80 KB chunks me stream karo disk pe. **Poori file kabhi memory me nahi aati** — 100 concurrent uploads pe bhi memory flat.
+- `Path.GetFileName(file.FileName)` on `OriginalFileName` — even the stored *display* name has any `../` path parts stripped.
+- `SaveChangesAsync` — metadata row commit. Note: file pehle likhi, row baad me. Agar row insert fail ho, ek orphan file rahega — ek cleanup job (ya `try/catch` jo file delete kare) chahiye. Ideal: outbox-style, par abhi simple rakha.
+
+### The download endpoint — streaming vs buffering
+
+```csharp
+[HttpGet("{id:guid}/documents/{docId:guid}")]
+public async Task<IActionResult> DownloadDocument(Guid id, Guid docId, CancellationToken ct)
+{
+    var doc = await _db.EmployeeDocuments
+        .AsNoTracking()
+        .FirstOrDefaultAsync(d => d.Id == docId && d.EmployeeId == id, ct);
+    if (doc is null) return NotFound();
+
+    var path = Path.Combine(_options.BasePath, id.ToString(), doc.StoredFileName);
+    if (!System.IO.File.Exists(path)) return NotFound();
+
+    return PhysicalFile(path, doc.ContentType, doc.OriginalFileName);
+}
+```
+
+- `d.Id == docId && d.EmployeeId == id` — dono match zaroori. Warna `GET /employees/A/documents/{B-ka-doc}` se cross-employee leak.
+- `PhysicalFile(path, contentType, downloadName)` — framework file ko **stream** karta hai directly to the response, `Content-Disposition` header ke saath `OriginalFileName` daal deta hai. Range requests (resume/seek) bhi automatic.
+- Alternative `File(byte[], ...)` — poori file memory me load karta hai (buffering). Chhoti files (thumbnails) pe theek, KYC PDFs pe `PhysicalFile`/`FileStreamResult` better — **streaming** = constant memory.
+- **Streaming vs buffering** ka rule: buffering tab jab bytes transform karne hain (resize, watermark) ya source seekable nahi; warna hamesha streaming.
+
+### Storage — disk now, blob storage in prod
+
+Abhi `BasePath` ek local folder hai — dev/single-server ke liye theek. Production BFSI me:
+
+- **Multiple API instances** — local disk share nahi hota; instance A ka upload instance B ko nahi dikhta. Chahiye ek shared store: **Azure Blob Storage / AWS S3**.
+- Blob storage deta hai: virtually unlimited size, lifecycle rules (auto-delete/archive after N years — retention!), server-side encryption, per-object access control, CDN.
+- Code change chhota hai: `SaveAsync` me `FileStream` ke bajaye `BlobClient.UploadAsync`, aur `StoredFileName` ki jagah blob key store karo. Isliye service ke peeche ek `IDocumentBlobStore` interface rakho — disk impl aur blob impl swap ho jayein.
+- **Kabhi bhi bade files SQL me mat rakho** — `varbinary(max)` DB size, backup time, buffer pool sab kharab karta hai. FileStream/FILESTREAM feature bhi generally avoid.
+
+### Antivirus + BFSI retention
+
+- **AV scan hook** — save ke baad (ya save se pehle, quarantine folder me) file ko ek scanner (ClamAV, Windows Defender CLI, ya cloud AV) se pass karao. `EmployeeDocument` me ek `ScanStatus` (Pending/Clean/Infected) column rakho; download tabhi allow karo jab `Clean`. BFSI me ye mandatory control hai.
+- **Retention** — KYC documents ke liye regulator (RBI/SEBI) minimum retention define karta hai (aksar 5-8 years account band hone ke baad). Blob lifecycle policy ya ek scheduled job se enforce karo — na jaldi delete, na hamesha rakho (GDPR/data-minimisation).
+
+### Where is it used in day-to-day development
+
+- Har onboarding/KYC flow — ID proof, address proof, photo, signature.
+- Expense/reimbursement — bill ki photo/PDF.
+- Loan origination — salary slips, bank statements, property papers.
+- Support tickets — screenshot/log attachments.
+
+### Pros and cons — disk vs blob vs DB
+
+- **Disk**: simplest, fast local, no extra service. Con: single-server, no built-in redundancy/retention, backup alag se.
+- **Blob (S3/Azure)**: scalable, durable, lifecycle/retention/encryption built-in, works across instances. Con: extra dependency, network latency, cost, SDK to learn.
+- **DB (`varbinary`)**: transactional with metadata, one backup. Con: bloats DB, slow queries, worst at scale — basically never for KYC-size files.
+
+### When to use / when NOT to use
+
+- **Use disk storage** only for local dev, a prototype, or a genuinely single-box internal tool.
+- **Use blob storage** for anything production, multi-instance, or with retention/compliance needs — which is every real BFSI app.
+- **Never** trust `IFormFile.FileName` or `IFormFile.ContentType` as your only validation, and **never** save under a web-servable path with the client's extension.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`IFormFile.ContentType` aur `FileName` dono client ne bheje hain — inhe validation ka **last word** kabhi mat banao. Magic-byte signature check + generated stored name = actual safety. Declared content type sirf ek sasta pehla filter hai.
+
+</Callout>
+
+<Tradeoff pros={["Blob storage: scales infinitely, durable, built-in encryption + lifecycle/retention, shared across all API instances", "Blob storage: offloads bandwidth (pre-signed download URLs) from the API"]} cons={["Blob storage: extra service dependency, network latency, per-request cost", "Local disk is simpler but breaks the moment you run a second API instance", "Files in SQL varbinary bloat the DB and backups and are slow to query — avoid"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+KYC service me pehla version `IFormFile` ko seedha `file.FileName` ke saath `wwwroot/uploads/` me save karta tha. Ek pen-test me `resume.pdf.aspx` upload karke server pe code chal gaya. Fix: files web root se baahar `C:\kyc-store\{customerId}\{guid}.pdf` gaye, extension allowlist + `%PDF` magic-byte check add hua, aur 3 mahine baad sab kuch S3 pe migrate ho gaya with a 7-year lifecycle policy for RBI retention. Ab API sirf pre-signed URL deta hai, bytes S3 se seedha client ko jaate hain.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke employee-portal me document upload endpoint pe `MultipartBodyLengthLimit` default `128 MB` chhoda hua tha. QA ne 90 MB ki file 20 baar parallel bheji — 8 GB RAM waala pod OOM-kill ho gaya. Remediation: `[RequestSizeLimit]` + `[RequestFormLimits]` har upload endpoint pe explicit, ek Roslyn analyzer rule jo missing attribute pe build fail kare, aur load test me "large file storm" ek permanent scenario ban gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `MultipartBodyLengthLimit` default is about 128 MB — almost always too high for a document API; set it explicitly
+- Kestrel default max request body is 30 MB (`MaxRequestBodySize`) — `[RequestSizeLimit]` overrides per-endpoint
+- Typical KYC file cap: 5 MB per file; PAN/Aadhaar PDFs are usually under 500 KB
+- Magic bytes: PDF `25 50 44 46`, PNG `89 50 4E 47 0D 0A 1A 0A`, JPEG starts `FF D8 FF`
+- `FileStream` default/optimal buffer for streaming copy: about 80 KB (81920 bytes)
+- `413 Payload Too Large` is the status for an over-limit upload; `201 Created` + `Location` for success
+- BFSI KYC retention is commonly 5-8 years after account closure, set via storage lifecycle policy
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common question: "How do you securely handle file uploads in a Web API?" Strong 20-second answer: "Endpoint `multipart/form-data` leta hai, parameter `IFormFile`. Main defence-in-depth lagata hoon: request-level `[RequestSizeLimit]` + `MultipartBodyLengthLimit`, extension allowlist, declared content-type check, aur most importantly a magic-byte signature sniff kyunki filename aur content-type client-controlled hain. Filename kabhi disk pe use nahi karta — ek `Guid`-based stored name generate karta hoon, original naam sirf DB metadata row me. Bytes disk/blob pe stream karta hoon (`CopyToAsync`, poori file memory me nahi), aur ek `EmployeeDocument` row insert karta hoon with size, content type, uploaded-at. Bade files kabhi SQL me nahi. Production me local disk ki jagah S3/Azure Blob for multi-instance + retention." Follow-ups: "magic bytes kyun jab extension already check kiya?", "streaming vs buffering download?", "orphan file agar DB insert fail ho jaaye?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Client ka `file.FileName` seedha `Path.Combine(folder, file.FileName)` me daal dena. Client `..\..\appsettings.json` bhej kar path traversal kar sakta hai. Hamesha ek generated stored name (`Guid` + validated extension) use karo, aur original naam sirf display metadata me rakho.
+
+</Mistake>
+
+<Mistake>
+
+Sirf extension ya sirf `ContentType` check karna aur maan lena file safe hai. Dono client-controlled hain — `virus.exe` ko `photo.jpg` naam dena trivial hai. Magic-byte signature sniff zaroori hai.
+
+</Mistake>
+
+<Mistake>
+
+`await file.CopyToAsync(memoryStream)` karke poori file RAM me le aana before saving. Bade files + concurrency = OutOfMemory. `file.OpenReadStream()` se seedha target `FileStream` me `CopyToAsync` karo — constant memory.
+
+</Mistake>
+
+<Mistake>
+
+File ko `varbinary(max)` column me DB me store karna "taaki transaction ek saath rahe". DB size aur backup phool jaate hain, har query bhaari ho jaati hai. Bytes disk/blob pe, DB me sirf pointer + metadata.
+
+</Mistake>
+
+<Mistake>
+
+`[RequestSizeLimit]` / `[RequestFormLimits]` set na karna aur default `128 MB` multipart limit pe chhod dena. Ek attacker bade files ki storm bhej kar memory/disk exhaust kar sakta hai. Har upload endpoint pe explicit chhota limit.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant Ctrl as EmployeesController
+    participant Svc as DocumentService
+    participant Disk as File store (BasePath)
+    participant DB as SQL Server
+    C->>Ctrl: POST /employees/{id}/documents (multipart/form-data, IFormFile)
+    Ctrl->>Ctrl: RequestSizeLimit + MultipartBodyLengthLimit
+    Ctrl->>Svc: SaveAsync(id, documentType, file)
+    Svc->>Svc: size + extension allowlist + magic-byte sniff
+    Svc->>Svc: generate stored name (Guid + ext)
+    Svc->>Disk: stream bytes (CopyToAsync)
+    Svc->>DB: INSERT EmployeeDocument (metadata row)
+    Svc-->>Ctrl: EmployeeDocumentDto
+    Ctrl-->>C: 201 Created + Location header
+`}
+  caption="Validation runs before a single byte is stored; the file goes to disk/blob and only a metadata row goes to SQL."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Accept `multipart/form-data` with an `IFormFile` parameter; add `[FromForm]` for any extra fields like `documentType`
+- Validate in layers: `[RequestSizeLimit]` + `MultipartBodyLengthLimit`, then extension allowlist, then declared content type, then magic-byte signature sniff (the only trustworthy one)
+- Never use the client's filename on disk — generate a `Guid`-based stored name; keep `OriginalFileName` only as display metadata (run it through `Path.GetFileName`)
+- Stream bytes with `OpenReadStream()` -> `CopyToAsync(FileStream)`; never buffer the whole file in memory
+- Store bytes on disk (`FileStorageOptions.BasePath`) for dev, blob storage (S3/Azure) for prod — never large files in SQL `varbinary`
+- `EmployeeDocument` row: `EmployeeId`, `OriginalFileName`, `StoredFileName`, `ContentType`, `SizeBytes` (`long`), `DocumentType` enum, `UploadedAtUtc` — plus an EF migration
+- Download with `PhysicalFile(path, contentType, originalName)` (streaming); match both `docId` AND `employeeId` to prevent cross-employee leaks
+- Add an antivirus scan hook + a retention/lifecycle policy (5-8 years for BFSI KYC)
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `FileStorageOptions` add karo (`BasePath`, `MaxFileSizeBytes`, `AllowedExtensions`), `Program.cs` me bind karo, aur `SaveAsync` me size + extension checks options se drive karao. Ek `[Fact]` likho jo `.txt` file reject hona verify kare.
+
+**Medium:** `EmployeeDocument` entity + migration banao, `POST /api/employees/{id}/documents` implement karo full validation (size, extension, magic-byte sniff for PDF/PNG/JPG, generated stored name) ke saath, aur `GET .../documents/{docId}` download endpoint `PhysicalFile` se. Teen cases test karo: valid PDF (`201`), `.exe` renamed to `.pdf` (`400` on magic bytes), doosre employee ka `docId` (`404`).
+
+**Bada (large):** Ek `IDocumentBlobStore` interface nikaalo with a `LocalDiskStore` aur ek `AzureBlobStore` (ya `S3Store`) implementation, DI se swappable. Upload flow me ek `ScanStatus` column + ek background AV-scan hook add karo jahan download tabhi allow ho jab status `Clean` ho. Phir ek retention job likho jo `UploadedAtUtc` se N saal purane documents ko archive/delete kare, aur poora flow (upload -> scan -> download -> retention) ke integration tests likho.
+
+</Callout>

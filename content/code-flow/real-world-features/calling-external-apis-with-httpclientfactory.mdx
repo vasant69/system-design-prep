@@ -1,0 +1,390 @@
+---
+slug: "calling-external-apis-with-httpclientfactory"
+title: "Calling External APIs with IHttpClientFactory, Line by Line"
+section: "code-flow"
+module: "real-world-features"
+order: 3
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["file-upload-kyc-documents", "config-and-options-pattern", "controller-service-dto-layering"]
+tags: ["dotnet", "aspnet-core", "web-api", "httpclient", "ihttpclientfactory", "resilience", "employee-management"]
+englishDefinition: "IHttpClientFactory is the built-in ASP.NET Core factory that creates and pools HttpClient instances so outbound HTTP calls do not exhaust sockets or use stale DNS. You register a named or typed client once with AddHttpClient, configure its base address, default headers and resilience policies (retry, circuit breaker, timeout) there, and inject the ready-configured client wherever you need to call an external service."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+`IHttpClientFactory` is the built-in ASP.NET Core factory that creates and pools `HttpClient` instances so outbound HTTP calls do not exhaust sockets or use stale DNS. You register a named or typed client once with `AddHttpClient`, configure its base address, default headers and resilience policies (retry, circuit breaker, timeout) there, and inject the ready-configured client wherever you need to call an external service.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hamare EmployeeManagement.Api me jab HR naya employee create karta hai, business rule hai: **PAN number ek external government-authorized provider se verify hona chahiye** (naam PAN se match karta hai ya nahi, PAN active hai ya nahi). Ye ek HTTP call hai hamare API se kisi doosre API ko. Sunne me simple — `new HttpClient()`, `GetAsync`, done. Lekin yahi ek line production me sabse zyada outages deti hai. Is topic me hum sahi tareeka seekhenge: `IHttpClientFactory` ke saath ek **typed client** `PanVerificationClient`, config se base address aur API key, aur Polly-based resilience.
+
+### What is it — factory jo HttpClient banati hai
+
+`HttpClient` ek object hai jisse tum HTTP requests bhejte ho. Problem ye hai ki `HttpClient` ke **andar** ek `HttpMessageHandler` hota hai jo asli TCP connections manage karta hai — aur wo handler expensive hai. `IHttpClientFactory` (namespace `System.Net.Http`, `builder.Services.AddHttpClient(...)` se register hota hai) ek factory hai jo:
+
+- Handlers ka ek **pool** rakhti hai aur unhe reuse karti hai (connection reuse = fast).
+- Har handler ko ek **lifetime** deti hai (default 2 minutes) — phir naya handler banta hai taaki DNS changes pick ho jaayein.
+- Ek jagah pe base address, default headers, aur **resilience policies** attach karne deti hai.
+
+### Why do we need it — `new HttpClient()` se kya tootega
+
+**Failure 1 — socket exhaustion.** `HttpClient` `IDisposable` hai, to log har call pe `using var client = new HttpClient();` likh dete hain. Dispose hone par underlying socket turant free nahi hota — wo `TIME_WAIT` state me ~4 minutes tak baithta hai. High traffic pe machine ke saare ephemeral ports (`~28,000`) khatam ho jaate hain aur naye connections fail hone lagte hain: `SocketException: Only one usage of each socket address is normally permitted`. Ye classic hai — Microsoft ne isi wajah se `IHttpClientFactory` banaya.
+
+**Failure 2 — stale DNS.** Fix ki koshish me log ek `static readonly HttpClient` bana lete hain — ab socket exhaustion nahi. Lekin ek `static` client apne connections **hamesha** ke liye pakde rakhta hai. Agar provider apna DNS badal de (failover, IP migration), tumhara client purane, ab-dead IP pe hit karta rahega. Restart ke bina thik nahi hota. `IHttpClientFactory` ka handler rotation (2 min) exactly isi ka balance hai — connections reuse bhi hote hain aur DNS periodically refresh bhi hota hai.
+
+### How does it work — named vs typed client
+
+Do tarike hain register karne ke:
+
+- **Named client** — `AddHttpClient("pan", c => ...)`. Jahan chahiye wahan `IHttpClientFactory` inject karke `factory.CreateClient("pan")`. String naam se milta hai — typo-prone, aur har call site ko factory pata hona chahiye.
+- **Typed client** — `AddHttpClient<PanVerificationClient>(c => ...)`. Tum ek class banate ho jo constructor me `HttpClient` leti hai. DI us class ko register kar deta hai; tum seedha `PanVerificationClient` inject karte ho. Compile-time safe, aur saara HTTP detail (URLs, JSON shape, error mapping) us ek class me encapsulated rehta hai. **Production me typed client default choice hai.**
+
+### Show it in our project — options + typed client
+
+Pehle config-bound options, `PanVerificationOptions.cs`:
+
+```csharp
+namespace EmployeeManagement.Api.ExternalClients;
+
+public class PanVerificationOptions
+{
+    public const string SectionName = "PanVerification";
+    public string BaseUrl { get; set; } = null!;
+    public string ApiKey { get; set; } = null!;
+    public int TimeoutSeconds { get; set; } = 10;
+}
+```
+
+`appsettings.json`:
+
+```json
+{
+  "PanVerification": {
+    "BaseUrl": "https://api.pan-provider.example/v1/",
+    "TimeoutSeconds": 10
+  }
+}
+```
+
+`ApiKey` yahan **nahi** — wo user-secrets / environment variable / key vault se aata hai. Ab typed client:
+
+```csharp
+public class PanVerificationClient
+{
+    private readonly HttpClient _http;
+
+    public PanVerificationClient(HttpClient http) => _http = http;
+
+    public async Task<PanCheckResult> VerifyAsync(
+        string pan, string fullName, CancellationToken ct)
+    {
+        var response = await _http.PostAsJsonAsync(
+            "pan/verify", new { pan, name = fullName }, ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return PanCheckResult.NotFound();
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content
+            .ReadFromJsonAsync<PanProviderResponse>(cancellationToken: ct);
+
+        return new PanCheckResult(
+            body!.Valid, body.NameMatchScore, body.PanStatus);
+    }
+}
+
+public record PanProviderResponse(bool Valid, int NameMatchScore, string PanStatus);
+public record PanCheckResult(bool Valid, int NameMatchScore, string Status)
+{
+    public static PanCheckResult NotFound() => new(false, 0, "NOT_FOUND");
+}
+```
+
+Registration in `Program.cs`:
+
+```csharp
+builder.Services.Configure<PanVerificationOptions>(
+    builder.Configuration.GetSection(PanVerificationOptions.SectionName));
+
+builder.Services
+    .AddHttpClient<PanVerificationClient>((sp, c) =>
+    {
+        var opt = sp.GetRequiredService<IOptions<PanVerificationOptions>>().Value;
+        c.BaseAddress = new Uri(opt.BaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(opt.TimeoutSeconds);
+        c.DefaultRequestHeaders.Add("X-Api-Key", opt.ApiKey);
+        c.DefaultRequestHeaders.Add("Accept", "application/json");
+    })
+    .AddStandardResilienceHandler();
+```
+
+### Code explained line by line
+
+- `AddHttpClient<PanVerificationClient>(...)` — DI ko bolta hai: jab bhi koi `PanVerificationClient` maange, ek fresh `HttpClient` factory se lo (pooled handler ke saath), us class ka constructor call karo, aur wo instance do. `PanVerificationClient` khud transient hai; uska `HttpClient` short-lived hai par handler pooled.
+- `(sp, c) => ...` — do-argument overload: `sp` service provider (taaki `IOptions` resolve kar sako), `c` wo `HttpClient` jise configure karna hai.
+- `c.BaseAddress = new Uri(opt.BaseUrl)` — ab call sites relative path de sakte hain (`"pan/verify"`). Base URL ka trailing slash aur relative path ka **no leading slash** — ye combine hoke `.../v1/pan/verify` banta hai. Leading slash lagaya to `/v1/` gir jaata hai — common bug.
+- `c.Timeout` — poore request ka ceiling. Iske baad `TaskCanceledException`. Per-client, config se driven.
+- `DefaultRequestHeaders.Add("X-Api-Key", opt.ApiKey)` — har request pe auth header, ek jagah set. Call site ko API key ka pata bhi nahi.
+- `PostAsJsonAsync("pan/verify", payload, ct)` — `System.Net.Http.Json` extension: object ko JSON serialize karta hai, `Content-Type: application/json` set karta hai, POST bhejta hai. `GetAsync` GET ke liye analogous hai.
+- `response.StatusCode == HttpStatusCode.NotFound` — humne decide kiya `404` matlab "PAN record hi nahi mila" — ye ek valid business outcome hai, exception nahi. Isliye pehle handle kiya.
+- `response.EnsureSuccessStatusCode()` — baaki non-2xx (`500`, `403`, `429`) pe `HttpRequestException` throw. Isse resilience handler / global exception handler pick karega.
+- `ReadFromJsonAsync<PanProviderResponse>` — response body ko strongly-typed record me deserialize. Streaming deserialize hai, poori string memory me nahi.
+- `AddStandardResilienceHandler()` — `Microsoft.Extensions.Http.Resilience` package se. Ye ek pre-tuned Polly pipeline attach karta hai: **rate limiter -> total timeout -> retry (exponential backoff + jitter) -> circuit breaker -> per-attempt timeout**. Ek line me production-grade resilience.
+
+### Resilience explained — retry, circuit breaker, timeout, fallback
+
+`AddStandardResilienceHandler()` ke defaults samajhna zaroori hai (aur customize kaise karein):
+
+```csharp
+.AddResilienceHandler("pan", b =>
+{
+    b.AddTimeout(TimeSpan.FromSeconds(10));            // total
+    b.AddRetry(new HttpRetryStrategyOptions
+    {
+        MaxRetryAttempts = 3,
+        BackoffType = DelayBackoffType.Exponential,
+        UseJitter = true,                               // thundering-herd se bachao
+        ShouldHandle = args => ValueTask.FromResult(
+            args.Outcome.Result?.StatusCode is
+                HttpStatusCode.RequestTimeout or
+                HttpStatusCode.TooManyRequests or
+                >= HttpStatusCode.InternalServerError)
+    });
+    b.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+    {
+        FailureRatio = 0.5,
+        SamplingDuration = TimeSpan.FromSeconds(30),
+        MinimumThroughput = 10,
+        BreakDuration = TimeSpan.FromSeconds(15)
+    });
+    b.AddTimeout(TimeSpan.FromSeconds(3));              // per attempt
+});
+```
+
+- **Retry with jitter** — transient failure (`503`, timeout, `429`) pe automatically 3 baar retry, har baar wait double (1s, 2s, 4s) plus ek random jitter. Jitter isliye ki agar 500 requests ek saath fail hui, wo sab ek saath retry na karein aur provider ko dobara na girayein. **Sirf idempotent ops pe retry** — PAN verify safe hai (read-only), lekin ek "create payment" POST ko blindly retry mat karo.
+- **Circuit breaker** — agar 30-second window me 50%+ calls fail ho rahi hain (min 10 calls), circuit **open** ho jaata hai: agle 15 seconds sab calls turant `BrokenCircuitException` se fail hoti hain, provider ko hit kiye bina. Ye cascading failure rokta hai — ek down dependency tumhare threads ko block karke tumhe bhi nahi giraati. 15s baad **half-open** — ek test call, pass hui to circuit band, nahi to phir 15s.
+- **Timeout (two levels)** — per-attempt timeout (3s) taaki ek slow call retry budget na kha jaaye; total timeout (10s) taaki retries + backoff milke bhi caller ko forever hang na karein.
+- **Fallback** — jab sab fail ho jaaye, ek default/degraded response do. Humare case me: PAN provider down hai to employee ko `PanStatus = "VERIFICATION_PENDING"` ke saath create karo aur ek background job baad me verify kare. Fallback business decision hai, `AddFallback` se ya `catch (BrokenCircuitException)` se.
+
+### Calling it from EmployeeService
+
+```csharp
+public async Task<EmployeeDto> CreateAsync(CreateEmployeeRequest req, CancellationToken ct)
+{
+    PanCheckResult pan;
+    try
+    {
+        pan = await _panClient.VerifyAsync(req.PanNumber, req.FullName, ct);
+    }
+    catch (BrokenCircuitException)
+    {
+        pan = new PanCheckResult(false, 0, "VERIFICATION_PENDING");
+    }
+
+    if (pan.Status == "NOT_FOUND")
+        throw new ValidationException("PAN number is not recognised.");
+
+    var employee = new Employee
+    {
+        Id = Guid.NewGuid(),
+        FullName = req.FullName,
+        PanNumber = req.PanNumber,
+        IsActive = pan.Status != "VERIFICATION_PENDING",
+        // ...
+    };
+    _db.Employees.Add(employee);
+    await _db.SaveChangesAsync(ct);
+    return EmployeeDto.From(employee);
+}
+```
+
+`EmployeeService` ko `HttpClient` ke baare me kuch nahi pata — usne bas `PanVerificationClient` inject kiya aur ek method call kiya. Yahi typed client ka faayda: HTTP concerns ek jagah, business logic doosri jagah.
+
+### Testing a typed client — mock HttpMessageHandler
+
+Typed client ke andar `HttpClient` hai, aur `HttpClient` ke andar `HttpMessageHandler`. Test me hum handler ko fake karte hain — koi real network nahi:
+
+```csharp
+public class StubHandler : HttpMessageHandler
+{
+    private readonly HttpStatusCode _code;
+    private readonly string _json;
+    public StubHandler(HttpStatusCode code, string json) => (_code, _json) = (code, json);
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken ct)
+        => Task.FromResult(new HttpResponseMessage(_code)
+        {
+            Content = new StringContent(_json, Encoding.UTF8, "application/json")
+        });
+}
+
+[Fact]
+public async Task VerifyAsync_returns_valid_when_provider_says_valid()
+{
+    var handler = new StubHandler(HttpStatusCode.OK,
+        "{\"valid\":true,\"nameMatchScore\":95,\"panStatus\":\"ACTIVE\"}");
+    var http = new HttpClient(handler) { BaseAddress = new Uri("https://x.test/") };
+    var client = new PanVerificationClient(http);
+
+    var result = await client.VerifyAsync("ABCDE1234F", "Rahul Sharma", default);
+
+    Assert.True(result.Valid);
+    Assert.Equal("ACTIVE", result.Status);
+}
+```
+
+- Hum `PanVerificationClient` ko ek `HttpClient` de rahe hain jiska handler humara stub hai — koi socket, koi DNS, koi provider.
+- `SendAsync` override har request ka canned response deta hai. Alag tests: `404` -> `NotFound()`, `500` -> exception, malformed JSON -> exception.
+- Handler ko `Moq` se bhi mock kar sakte ho (`Protected().Setup<Task<HttpResponseMessage>>("SendAsync", ...)`), par ek chhota stub class zyada readable hai.
+- Resilience pipeline ka test alag: handler ko pehli 2 calls pe `503` phir `200` dene do, aur assert karo ki final result success hai (retry ne bacha liya).
+
+### Where is it used in day-to-day development
+
+- Payment gateways, KYC/PAN/Aadhaar verification, credit bureau (CIBIL) pulls, SMS/email providers, currency-rate feeds.
+- Internal microservice-to-microservice calls (though gRPC ya a message bus bhi common hai).
+- Third-party enrichment — geocoding, IP lookup, document OCR.
+- Har jagah jahan tumhara process kisi doosre HTTP endpoint ko call karta hai.
+
+### When to use / when NOT to use
+
+- **Use `IHttpClientFactory` (typed client)** for every outbound HTTP call in a long-running service. Zero reason to `new` up an `HttpClient` in ASP.NET Core.
+- **Named client** jab ek hi endpoint ko bahut alag-alag jagah se, alag config ke saath call karna ho, ya jab typed class banane layak logic na ho.
+- **Plain `new HttpClient()`** sirf ek chhote console tool / one-shot script me jo turant exit ho jaata hai — aur wahan bhi `static` reuse better hai.
+- **Retry ko NEVER** non-idempotent operations pe blindly lagao (double payment, double employee). Aise APIs pe idempotency key bhejo ya retry disable karo.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`BaseAddress` set karne ke baad call sites pe relative path bina leading slash ke do: `"pan/verify"`, na ki `"/pan/verify"`. Leading slash base path ka `/v1/` hissa gira deta hai aur tum galat URL pe `404` khaate ho.
+
+</Callout>
+
+<Tradeoff pros={["Typed client: compile-time safe, HTTP details encapsulated in one class, trivially unit-testable via a stub handler", "IHttpClientFactory: pooled handlers (no socket exhaustion) plus periodic rotation (no stale DNS), resilience configured in one place"]} cons={["Slightly more setup than new HttpClient()", "Handler pooling means DefaultRequestHeaders set at registration are shared — per-call auth tokens must be set per-request, not on the client", "Standard resilience defaults must be understood and tuned, not blindly trusted, especially retry on non-idempotent calls"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Onboarding service har naye applicant pe PAN + bank-account verification ke liye ek vendor API call karti thi with `using var client = new HttpClient()` per request. Diwali sale pe traffic 8x hua aur pods `SocketException: address already in use` se crash hone lage — ephemeral ports khatam. Fix: ek typed `KycVendorClient` via `AddHttpClient<KycVendorClient>` + `AddStandardResilienceHandler`. Bonus: vendor ne ek hafte baad DNS failover kiya aur naye setup ne bina restart ke naye IP pick kar liya, jabki purane static-client wala service down ho gaya tha.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke integration layer me CIBIL score pull retry policy bina jitter ke thi — `MaxRetryAttempts = 5`, fixed 2s delay. CIBIL ke end pe ek 30-second blip hua; 4,000 waiting requests sabne exactly same 2s baad ek saath retry kiya, CIBIL ko dobara giraya, aur ye 20 minute tak oscillate karta raha. Remediation: exponential backoff + jitter + ek circuit breaker jo blip pe 15s ke liye open ho jaata hai, aur retry sirf `408/429/5xx` pe.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Default `HttpMessageHandler` lifetime in `IHttpClientFactory`: 2 minutes (`SetHandlerLifetime` se change)
+- Ephemeral port range on Windows: roughly 28,000 ports; a socket sits in `TIME_WAIT` for about 4 minutes after close
+- `HttpClient.Timeout` default: 100 seconds — almost always too long for a synchronous request path; set 5-10s
+- `AddStandardResilienceHandler` defaults: 3 retries, exponential backoff with jitter, circuit breaker at 50% failure ratio over a 30s window, per-attempt timeout 10s, total timeout 30s
+- Retry only on idempotent verbs / operations; a blind retry on a payment POST can double-charge
+- Circuit breaker `BreakDuration` typical: 5-30 seconds
+- `429 Too Many Requests` and `503 Service Unavailable` are the canonical "retry me later" statuses; honour `Retry-After` if present
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Why should you not use `new HttpClient()` in a loop, and what do you use instead?" Strong 20-second answer: "`HttpClient` dispose hone par socket turant free nahi hota — wo `TIME_WAIT` me baithta hai, aur high traffic pe ports khatam ho kar `SocketException` aata hai. Ek `static` client isse bachata hai par DNS changes miss karta hai. `IHttpClientFactory` sahi jawaab hai — handlers pool hote hain aur har ~2 minute rotate hote hain, DNS bhi refresh hota hai. Main ek typed client register karta hoon `AddHttpClient<T>` se, base address aur auth header config se, aur `AddStandardResilienceHandler` se retry-with-jitter, circuit breaker aur timeout ek line me. Business service us typed client ko inject karti hai aur HTTP ke baare me kuch nahi jaanti. Test me `HttpMessageHandler` ko stub kar deta hoon." Follow-ups: "retry kab khatarnaak hai?", "circuit breaker half-open kya hai?", "named vs typed client?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har request pe `using var client = new HttpClient()`. Dispose ke baad socket `TIME_WAIT` me rehta hai; load pe ephemeral ports khatam aur `SocketException`. `IHttpClientFactory` / typed client use karo.
+
+</Mistake>
+
+<Mistake>
+
+Socket exhaustion se bachne ke liye ek `static readonly HttpClient` bana lena aur khush ho jaana. Ab connections hamesha ke liye pin ho jaate hain — provider ka DNS/IP badla to tum dead endpoint pe hit karte raho ge, restart ke bina fix nahi.
+
+</Mistake>
+
+<Mistake>
+
+`BaseAddress` ke saath call site pe leading slash wala path dena (`"/pan/verify"`). Ye base ka path segment (`/v1/`) gira deta hai. Relative paths bina leading slash: `"pan/verify"`.
+
+</Mistake>
+
+<Mistake>
+
+Non-idempotent POST (create employee, initiate payment) pe blanket retry lagana. Provider ne request process kar li par response drop hua — retry se duplicate ban jaata hai. Aise calls pe idempotency key bhejo ya retry off rakho.
+
+</Mistake>
+
+<Mistake>
+
+Per-user auth token ko `client.DefaultRequestHeaders` me set karna. Handler pooled hai, wo header agli request (dusre user) pe bhi chala jaayega — ek serious data leak. Per-call headers `HttpRequestMessage` pe set karo, client pe nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant Svc as EmployeeService
+    participant Cli as PanVerificationClient
+    participant Res as Resilience pipeline
+    participant Api as PAN provider API
+    Svc->>Cli: VerifyAsync(pan, name)
+    Cli->>Res: POST pan/verify
+    Res->>Api: attempt 1
+    Api-->>Res: 503 Service Unavailable
+    Res->>Res: wait backoff + jitter
+    Res->>Api: attempt 2 (retry)
+    Api-->>Res: 200 OK { valid, score, status }
+    Res-->>Cli: success response
+    Cli-->>Svc: PanCheckResult
+    Note over Res,Api: If failure ratio > 50% in 30s, circuit opens for 15s and calls fail fast
+`}
+  caption="The typed client hands the request to a resilience pipeline: retry-with-jitter on transient errors, a circuit breaker that trips on sustained failure, and per-attempt plus total timeouts."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Never `new HttpClient()` per call (socket exhaustion via `TIME_WAIT`), never one `static` forever (stale DNS) — use `IHttpClientFactory`, which pools handlers and rotates them every ~2 minutes
+- Typed client = register with `AddHttpClient<PanVerificationClient>((sp, c) => ...)`, set `BaseAddress`, `Timeout`, and auth header from a config-bound `PanVerificationOptions`; inject the class directly
+- Named client (`AddHttpClient("name")` + `IHttpClientFactory.CreateClient("name")`) is the string-keyed alternative; typed is the default for production
+- Call with `GetAsync` / `PostAsJsonAsync`; check `response.StatusCode` for known business cases, then `EnsureSuccessStatusCode()`, then `ReadFromJsonAsync<T>()`
+- `AddStandardResilienceHandler()` (from `Microsoft.Extensions.Http.Resilience`) gives retry with exponential backoff + jitter, a circuit breaker (opens ~50% failure over 30s), and per-attempt + total timeouts
+- Retry only idempotent operations; add a fallback (degraded response, e.g. `VERIFICATION_PENDING`) for when the circuit is open
+- Relative call paths take no leading slash when `BaseAddress` has a path
+- Test a typed client by constructing it with an `HttpClient` wrapping a stub `HttpMessageHandler` — no real network
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `PanVerificationOptions` (`BaseUrl`, `ApiKey`, `TimeoutSeconds`) add karo, `Program.cs` me `Configure` + `AddHttpClient<PanVerificationClient>` wire karo with base address aur `X-Api-Key` header options se. Ek stub-handler `[Fact]` likho jo `200` + valid JSON pe `PanCheckResult.Valid == true` assert kare.
+
+**Medium:** `PanVerificationClient.VerifyAsync` implement karo teen outcomes ke saath (`200` -> parsed result, `404` -> `NotFound()`, `5xx` -> `EnsureSuccessStatusCode` throw). `EmployeeService.CreateAsync` se call karao aur `NOT_FOUND` pe `ValidationException` phenko. Teeno paths ke liye stub-handler tests likho.
+
+**Bada (large):** `AddStandardResilienceHandler` ki jagah ek explicit `AddResilienceHandler` pipeline banao (total timeout, retry with jitter on `408/429/5xx`, circuit breaker, per-attempt timeout). Ek stub handler likho jo pehli 2 calls pe `503` phir `200` de — assert karo retry ne bacha liya. Phir handler ko lagataar `500` dene do aur assert karo ki circuit open hone ke baad calls `BrokenCircuitException` se fast-fail hoti hain, aur `EmployeeService` us pe `VERIFICATION_PENDING` fallback leta hai.
+
+</Callout>

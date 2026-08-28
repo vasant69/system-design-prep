@@ -1,0 +1,250 @@
+---
+slug: "post-endpoint-and-status-codes"
+title: "POST Endpoint & Status Codes, Line by Line"
+section: "code-flow"
+module: "crud-in-memory"
+order: 4
+difficulty: "beginner"
+readingTime: 16
+prerequisites: ["get-endpoints-list-and-by-id", "routing-in-web-api"]
+tags: ["dotnet", "aspnet-core", "web-api", "http-post", "status-codes", "model-binding", "created-at-action", "employee-management"]
+englishDefinition: "The create operation of our API: POST /api/employees reads an employee from the JSON request body, assigns it a new id, adds it to the in-memory list, and returns 201 Created with a Location header pointing at the new record. With [ApiController], an invalid body is rejected automatically with a 400 before the action runs."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+The create operation of our API: `POST /api/employees` reads an employee from the JSON request body, assigns it a new id, adds it to the in-memory list, and returns `201 Created` with a `Location` header pointing at the new record. With `[ApiController]`, an invalid body is rejected automatically with a `400` before the action runs.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+GET ho gaya — ab CRUD ka "C" (Create). POST me pehli baar request ke **body** se data aata hai, hum naya record banate hain, aur response me sirf status nahi — ek **`Location` header** bhi bhejte hain. Yahin `[FromBody]`, JSON model binding, `CreatedAtAction`, `nameof`, aur `[ApiController]` ka automatic `400` samajh me aa jaata hai.
+
+### What is it — POST endpoint kya hai
+
+`POST /api/employees` ka matlab: "is collection me ek naya employee **banao**". Naya data HTTP request ke **body** me JSON ke roop me aata hai:
+
+```json
+{
+  "fullName": "Kiran Rao",
+  "email": "kiran.rao@acmebank.in",
+  "departmentId": 10,
+  "departmentName": "Retail Lending",
+  "dateOfJoining": "2024-03-01",
+  "salary": 1200000,
+  "panNumber": "AAqPR1234M",
+  "isActive": true
+}
+```
+
+Server naya `Id` khud assign karta hai (client `Id` nahi bhejta), record store karta hai, aur **`201 Created`** return karta hai — plus ek `Location` header jaise `Location: /api/employees/4` jo batata hai "naya record yahan milega".
+
+### Why do we need it — iske bina kya
+
+Create ke bina system me data aayega kahan se? Har naye resource ke liye ye second endpoint hai (list ke baad). Design decisions do hain:
+
+1. **`201` kyun, `200` nahi?** `200 OK` "generic success" hai. `201 Created` specific batata hai "ek **naya resource ban gaya**" aur uske saath `Location` header aata hai — client ko turant pata chal jaata hai naya record kis URL pe hai, bina guess kiye. Automation, HATEOAS clients, aur logs sab isse behtar samajhte hain.
+2. **`Location` header kyun?** Client ne abhi jo banaya, uska canonical URL. Frontend seedha us URL pe redirect kar sakta hai ya use cache kar sakta hai. Ye REST ka "create ke baad naye resource ka pata do" convention hai.
+
+### How does it work — step by step
+
+1. `POST /api/employees` body ke saath aati hai, header `Content-Type: application/json`.
+2. `[ApiController]` + `[FromBody]` ki wajah se model binder request body ko `System.Text.Json` se **deserialize** karta hai ek `Employee` object me — JSON property naam case-insensitively C# properties se match hote hain.
+3. `[ApiController]` **automatic model validation** chalati hai. Agar body invalid hai (missing required field module 5 me, ya JSON hi galat), action chalne se **pehle** `400 Bad Request` chala jaata hai ek problem-details body ke saath. Action ke andar `ModelState.IsValid` check karne ki zaroorat nahi.
+4. Action body chalti hai. Hum naya `Id = max(existing ids) + 1` set karte hain, `_employees.Add(employee)`.
+5. `return CreatedAtAction(nameof(GetById), new { id = employee.Id }, employee);` — framework `201`, `Location` header (`GetById` route se bana), aur body me naya employee bhej deta hai.
+
+### Show it in our project — `EmployeesController` me POST
+
+```csharp
+// POST /api/employees
+[HttpPost]
+public ActionResult<Employee> Create([FromBody] Employee employee)
+{
+    // client jo Id bheje use ignore karo — server decide karta hai
+    employee.Id = _employees.Count == 0 ? 1 : _employees.Max(e => e.Id) + 1;
+
+    _employees.Add(employee);
+
+    return CreatedAtAction(
+        actionName: nameof(GetById),
+        routeValues: new { id = employee.Id },
+        value: employee);
+}
+```
+
+### Code explained line by line
+
+- `[HttpPost]` — bina template. URL = controller base = `POST /api/employees`. Method `POST` isi attribute se fix.
+- `ActionResult<Employee>` — return me ya `Employee` (created record) ya ek HTTP result (`CreatedAtAction`, ya validation ke case me framework ka `400`).
+- `[FromBody] Employee employee` — "is parameter ko **request body** se bind karo". `[ApiController]` ke saath complex types default me `[FromBody]` hote hain, par explicitly likhna clear rakhta hai. Ek request me sirf **ek** `[FromBody]` parameter ho sakta hai — body ek hi baar padhi jaati hai.
+- `employee.Id = _employees.Count == 0 ? 1 : _employees.Max(e => e.Id) + 1;` — naya id. Pehle list khaali ho to `1`, warna abhi tak ka **max id + 1**. `Count + 1` **galat** hota — agar beech ka record delete ho gaya to `Count + 1` kisi existing id se clash kar sakta hai. `Max + 1` collision-free hai (is simple in-memory setup me). Database aane pe (module 4) ye identity column ka kaam ban jaayega.
+- `_employees.Add(employee)` — in-memory list me daal diya. Bas — koi save/commit nahi kyunki abhi koi DB nahi.
+- `CreatedAtAction(...)` — `ControllerBase` ka helper. Teen cheezein karta hai: status `201`, `Location` header banata hai us action ke route se jo pehla argument batata hai, aur `value` ko response body me daalta hai.
+- `nameof(GetById)` — string `"GetById"` compile-time pe. Agar hum plain `"GetById"` likhte aur baad me method rename hoti, string chhoot jaati aur `Location` header run-time pe toot jaata. `nameof` ke saath rename karo to compiler yahan bhi error dega — refactor-safe.
+- `new { id = employee.Id }` — route values. `GetById` ka template `{id:int}` hai, isliye key ka naam `id` hona chahiye. Isse `Location: /api/employees/4` banta hai.
+- `value: employee` — response body. Client ko turant naya record (server-assigned `Id` ke saath) mil jaata hai, use dobara GET nahi karna padta.
+
+### `[ApiController]` ka automatic `400`
+
+`[ApiController]` lagi controller me tumhe **ye likhne ki zaroorat nahi**:
+
+```csharp
+if (!ModelState.IsValid)
+    return BadRequest(ModelState);
+```
+
+Framework har action se pehle ye khud karta hai. Body deserialize nahi hui, required field missing (module 5), type mismatch (`salary: "abc"`) — sab pe action chalne se pehle `400` + ek standard **problem-details** JSON. Iska matlab action ke andar `employee` hamesha at-least-bound hota hai.
+
+### Over-posting ka risk — DTO ka teaser
+
+Abhi hum poori `Employee` entity ko `[FromBody]` bind kar rahe hain. Iska matlab client body me **kuch bhi** bhej sakta hai jo `Employee` me hai — `"salary": 99999999`, `"isActive": true`, `"id": 500`. Humne `Id` to manually overwrite kar diya, par `Salary` aur `IsActive` jaise sensitive fields client ke control me aa gaye. Ye **over-posting** (ya mass-assignment) hai — ek real security issue. Iska proper fix ek alag **`CreateEmployeeDto`** hai jisme sirf woh fields hote hain jo client ko bhejne allowed hain. Ye is module ka agla topic hai (Models vs DTOs).
+
+### Where is it used in day-to-day development
+
+- Har "Add / New / Register / Submit" button ke peeche ek POST hota hai.
+- Signup, onboarding, KYC document submit, loan application create — sab POST.
+- Integration jobs bulk data POST karte hain (aksar rate-limited).
+- `201` + `Location` ko automated test suites assert karti hain — "created aur URL sahi hai".
+
+### Pros and cons — `201 + Location` vs plain `200`
+
+- **`201` + `Location` + body (jo humne chuna):** client ko status, canonical URL, aur naya record — teeno ek response me. REST-correct, tooling-friendly.
+- **Plain `200` + body:** kaam chal jaata hai, par "kya naya bana" ka explicit signal nahi, aur client ko naye record ka URL khud construct karna padta hai. Chhote internal APIs me log aksar yahi karte hain — technically valid, semantically kamzor.
+- **`204 No Content` on create:** galat — client ko naya `Id` chahiye hota hai, `204` me body nahi bhej sakte.
+
+### When to use / when NOT to use POST
+
+- **POST:** naya resource banana jab server id decide karta ho (`POST /api/employees`). Non-idempotent — do baar bhejo, do records ban sakte hain.
+- **NOT POST:** agar client khud id/key decide karta hai aur "isi id pe rakh do" chahiye (create-or-replace), to `PUT /api/employees/{id}` zyada sahi hai kyunki wo idempotent hai. Ye agla topic hai.
+
+### Failure scenario
+
+`nameof(GetById)` ki jagah kisi ne `"GetEmployeeById"` string likh diya, phir 6 mahine baad action ka naam `GetById` hi tha — string galat thi shuru se. `CreatedAtAction` us naam ka koi route nahi dhoondh paata aur run-time pe `InvalidOperationException: No route matches the supplied values` — POST `500` deta hai **create hone ke baad bhi** (record list me add ho chuka hai, par response error). Client ko lagta hai create fail hua, wo retry karta hai — **duplicate record**. `nameof` use kiya hota to ye compile hi na hota.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`CreatedAtAction` me action ka naam string me mat likho — hamesha `nameof(GetById)`. Method rename hone pe plain string silently toot jaata hai aur POST create ke baad `500` deta hai, jisse client retry karke duplicate bana deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending app ke "create loan application" endpoint ne `200` + body return kiya, `Location` header nahi. Mobile app ko application ka URL chahiye tha status polling ke liye — usne URL client-side string concatenation se banaya (`/api/loan-applications/` + id). Backend ne baad me route `/api/loans/applications/{id}` kiya — mobile app ke saare status calls `404` dene lage. Agar `201` + `Location` hota, mobile bas wahi URL use karta aur kuch na tootta.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Bank onboarding API me create endpoints ka contract test suite har `POST` pe teen cheezein assert karta hai: status exactly `201`, `Location` header present aur usse `GET` karne pe wahi record `200` me aaye, aur response body ka `id` `Location` ke id se match kare. Ye teen assertions "create sahi se implement hua hai" ka standard gate hain — koi bhi PR inke bina merge nahi hota.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `201 Created` — new resource banaya; `Location` header + (usually) body ke saath
+- `200 OK` — generic success; create pe technically valid par semantically weak
+- `204 No Content` — success, no body; create ke liye **galat** (client ko naya id chahiye)
+- `400 Bad Request` — `[ApiController]` automatic, invalid body pe, action chalne se pehle
+- 1 `[FromBody]` parameter per request — body ek hi baar padhi jaati hai
+- POST **non-idempotent** — 2 identical POST = possibly 2 records
+- New id here = `Max(e => e.Id) + 1`, kabhi `Count + 1` nahi (delete ke baad clash)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Create endpoint ka response kya hona chahiye?" Strong jawaab: "`201 Created`, `200` nahi. `201` specific batata hai ki naya resource bana, aur uske saath `Location` header aata hai jo naye record ka URL deta hai — client ko guess nahi karna padta. `CreatedAtAction(nameof(GetById), new { id }, employee)` ye teeno — status, header, body — ek saath handle kar deta hai." Follow-ups: "`nameof` kyun, plain string kyun nahi?" (refactor-safe — method rename pe compiler error, warna run-time `500`), "`[ApiController]` invalid body pe kya karta hai?" (automatic `400` + problem-details, action se pehle — `ModelState.IsValid` manually check nahi karna), "over-posting kya hai?" (client entity ke sensitive fields — `salary`, `isActive` — body me bhej deta hai; fix = request DTO). Interviewer dekh raha hai ki tum status codes aur headers ko contract ki tarah treat karte ho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Create pe `Ok(employee)` (`200`) ya `Ok()` return karna. Naya resource bana hai — `201 Created` via `CreatedAtAction`/`CreatedAtRoute`, taaki `Location` header bhi jaaye.
+
+</Mistake>
+
+<Mistake>
+
+`CreatedAtAction("GetById", ...)` me plain string. Method rename pe string silently toot jaati hai, POST create ke baad `500` deta hai, client retry karke duplicate banata hai. Hamesha `nameof(GetById)`.
+
+</Mistake>
+
+<Mistake>
+
+Naye id ke liye `_employees.Count + 1`. Beech ka record delete hone ke baad ye kisi existing id se clash kar sakta hai. `Max(e => e.Id) + 1` (ya khaali list pe `1`).
+
+</Mistake>
+
+<Mistake>
+
+Action ke andar `if (!ModelState.IsValid) return BadRequest(ModelState);` likhna jab controller pe `[ApiController]` hai. Framework ye already automatically karta hai — duplicate, dead code.
+
+</Mistake>
+
+<Mistake>
+
+Poori `Employee` entity ko `[FromBody]` bind karna aur `id` ke alawa baaki server-controlled fields (`salary`, `isActive`) ko client bhejne dena. Ye over-posting hai — fix ek `CreateEmployeeDto` (agla topic).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant V as [ApiController] validation
+    participant A as Create(employee)
+    participant L as static List<Employee>
+    C->>V: POST /api/employees + JSON body
+    V-->>C: 400 Bad Request (if body invalid) 
+    V->>A: bound Employee (body valid)
+    A->>A: employee.Id = Max(Id) + 1
+    A->>L: _employees.Add(employee)
+    A-->>C: 201 Created + Location: /api/employees/4 + body
+`}
+  caption="Validation runs before the action; on success the action assigns an id, adds to the list, and returns 201 with a Location header via CreatedAtAction."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `POST /api/employees` — naya data request **body** se (`[FromBody]`, JSON), server naya `Id` assign karta hai (client ka `id` ignore)
+- Return `201 Created` via `CreatedAtAction(nameof(GetById), new { id = employee.Id }, employee)` — status + `Location` header + body, teeno ek saath
+- `nameof(GetById)` — plain string mat likho; rename pe compiler pakadta hai, warna run-time `500`
+- New id = `_employees.Max(e => e.Id) + 1` (khaali list pe `1`) — kabhi `Count + 1` nahi
+- `[ApiController]` = automatic `400` + problem-details on invalid body, action se **pehle**; `ModelState.IsValid` manually check karne ki zaroorat nahi
+- Ek request me sirf ek `[FromBody]` parameter (body ek baar hi padhi jaati hai)
+- POST **non-idempotent** — 2 identical POST se 2 records ban sakte hain
+- Over-posting: client `salary`/`isActive` body me bhej sakta hai jab poori entity bind ho — fix = `CreateEmployeeDto` (agla topic)
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeesController` me `Create` action upar wale code se likho. Swagger se ek naya employee POST karo. Response me check karo: status `201`, `Location` header `/api/employees/4` jaisa, aur body me server-assigned `id`. Phir us `Location` URL pe `GET` karke confirm karo wahi record `200` me aata hai.
+
+**Medium:** `Create` ke saath `GetById` aur `GetAll` bhi wired rakho. Ek POST karo jisme body me `"id": 999` bhi bhejo — confirm karo response ka `id` `999` nahi, `Max + 1` hai (server ne overwrite kiya). Phir ek POST karo `"salary": 99999999` ke saath aur `GET` se dekho wo value store ho gayi — ye over-posting hai; ek comment likho ki next topic isko DTO se kaise rokega.
+
+**Bada (large):** Poora create flow banao: `Create` action, `nameof(GetById)` ke saath `CreatedAtAction`, aur `Max + 1` id logic ek chhote private helper `NextId()` me nikaalo. Phir teen POST-then-GET round-trips ka ek chhota `.http` file (ya Postman collection) banao jo assert kare — `201`, `Location` sahi, aur `GET Location` `200` + same record. Ek case add karo jisme body deliberately galat JSON ho aur confirm karo `[ApiController]` `400` + problem-details deta hai bina tumhare kisi check ke.
+
+</Callout>

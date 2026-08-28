@@ -1,0 +1,262 @@
+---
+slug: "authentication-vs-authorization"
+title: "Authentication vs Authorization, Line by Line"
+section: "code-flow"
+module: "security"
+order: 1
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["middleware-and-the-request-pipeline", "global-exception-handling"]
+tags: ["dotnet", "aspnet-core", "web-api", "security", "authentication", "authorization", "employee-management"]
+englishDefinition: "Authentication is the process of verifying who a caller is by checking their credentials and turning them into an identity; authorization is the separate step that decides whether that already-identified caller is allowed to perform the requested action. In ASP.NET Core the authentication middleware builds an HttpContext.User (a ClaimsPrincipal), and the authorization middleware then evaluates policies against it, returning 401 when identity is missing and 403 when identity exists but permission does not."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Authentication is the process of verifying who a caller is by checking their credentials and turning them into an identity; authorization is the separate step that decides whether that already-identified caller is allowed to perform the requested action. In ASP.NET Core the authentication middleware builds an `HttpContext.User` (a `ClaimsPrincipal`), and the authorization middleware then evaluates policies against it, returning 401 when identity is missing and 403 when identity exists but permission does not.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Abhi tak hamari `EmployeeManagement.Api` me saare write endpoints — `POST`, `PUT`, `DELETE` — bilkul khule pade hain. Koi bhi `curl` maar ke ek employee ki salary badal sakta hai ya record delete kar sakta hai. Is module me hum ise lock karenge. Sabse pehla concept: **authentication aur authorization alag-alag cheezein hain**, aur interview me sabse zyada yahi confuse kiya jaata hai.
+
+### What is it — dono ka plain matlab
+
+- **Authentication (AuthN)** = "Tum kaun ho?" Caller apna proof deta hai (username + password, ek token, ek certificate), server us proof ko verify karta hai, aur agar sahi hai to caller ko ek **identity** de deta hai. Result: "Ye request Ramesh ki hai, jiska role HrManager hai."
+- **Authorization (AuthZ)** = "Tum ye kaam kar sakte ho ya nahi?" Identity pehle se maloom hai; ab server rule check karta hai — "Kya HrManager employee delete kar sakta hai?" Haan to aage badho, nahi to rok do.
+
+Sequence hamesha yahi hai: **pehle AuthN, phir AuthZ**. Authorization ke paas dekhne ke liye kuch hona chahiye — wo "kuch" authentication banata hai.
+
+### Why do we need it — bina iske kya tootega
+
+Bina authentication ke tumhe pata hi nahi kaun call kar raha hai — audit trail jhooth bolega, rate-limit per-user nahi lag sakta, aur BFSI me compliance fail. Bina authorization ke har authenticated user sab kuch kar sakta hai — ek intern jo login kar paaya, wo bhi CEO ki salary badal sakta hai. Dono chahiye. Ek missing ho to system ya to andha hai ya khula hai.
+
+Concrete failure scenario: maan lo tum sirf authentication laga do aur socho "ab safe hai". Ek naya joinee register karta hai, valid token milta hai, aur `DELETE /api/employees/5` chala deta hai — token valid tha, to request pass. Tumne "kaun" check kiya, "kya kar sakta hai" nahi. Data gaya.
+
+### How does it work — ASP.NET Core ka mechanism
+
+ASP.NET Core me authentication **schemes** aur **handlers** se chalta hai. Ek scheme ka naam hota hai (jaise `"Bearer"`, `"Cookies"`) aur uske peeche ek handler class hoti hai jo request ko dekh kar identity banane ki koshish karti hai.
+
+1. Request aati hai. `UseAuthentication()` middleware chalta hai.
+2. Wo configured scheme ka handler bulaata hai. Bearer handler `Authorization: Bearer <token>` header dekhta hai, token validate karta hai.
+3. Agar token sahi hai, handler ek `ClaimsPrincipal` banata hai aur usse `HttpContext.User` pe set kar deta hai.
+4. `UseAuthorization()` middleware chalta hai. Wo endpoint pe lage `[Authorize]` / policy ko dekh kar `HttpContext.User` ke against evaluate karta hai.
+5. Pass hua to action method chalti hai. Fail hua to response short-circuit — 401 ya 403.
+
+**`ClaimsPrincipal` kya hai?** Ye ek user ka poora identity object hai. Andar ek ya zyada `ClaimsIdentity` hote hain, aur har identity ke andar `Claim`s ki list — key/value pairs jaise `name = ramesh`, `role = HrManager`, `dept = HR`, `sub = 42`. Tum apni action me `User.Identity?.IsAuthenticated`, `User.FindFirst("role")?.Value`, `User.IsInRole("Admin")` se ye padhte ho.
+
+### Show it in our project — pipeline wiring
+
+`Program.cs` me order sab kuch hai. Ye do lines **`UseRouting()` ke baad** aur **`MapControllers()` ke pehle** aani chahiye, aur authentication hamesha authorization se pehle:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+// AuthN: register a scheme + its handler (JWT bearer — full setup next topic)
+builder.Services.AddAuthentication("Bearer")
+    .AddJwtBearer("Bearer", options =>
+    {
+        // TokenValidationParameters aaenge agle topic me
+    });
+
+// AuthZ: register the authorization services (policies aaenge topic 3)
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+
+app.UseRouting();
+
+app.UseAuthentication();   // 1. build HttpContext.User
+app.UseAuthorization();    // 2. check policies against it
+
+app.MapControllers();
+
+app.Run();
+```
+
+Aur ek controller action jo current identity padhti hai:
+
+```csharp
+using System.Security.Claims;
+
+[HttpGet("me")]
+public IActionResult WhoAmI()
+{
+    if (User.Identity?.IsAuthenticated != true)
+        return Unauthorized();   // 401
+
+    var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+    var name   = User.FindFirstValue(ClaimTypes.Name);
+    var role   = User.FindFirstValue(ClaimTypes.Role);
+
+    return Ok(new { userId, name, role });
+}
+```
+
+### Code explained line by line
+
+- `AddAuthentication("Bearer")` — default scheme ka naam set karta hai. Jab `[Authorize]` lagta hai bina scheme bataye, yahi scheme use hota hai.
+- `.AddJwtBearer("Bearer", options => ...)` — us naam ke against JWT bearer **handler** register karta hai. Handler hi asli kaam karta hai: header padhna, signature check karna.
+- `AddAuthorization()` — authorization services (policy provider, `IAuthorizationService`) DI me daalta hai. Iske bina `[Authorize]` crash karega.
+- `app.UseRouting()` — decide karta hai kaunsa endpoint match hua. Authorization ko endpoint pata hona chahiye taaki uske attributes dekh sake — isliye routing pehle.
+- `app.UseAuthentication()` — `HttpContext.User` ko `ClaimsPrincipal` se bharta hai. Agar token nahi hai to `User` ek anonymous principal rehta hai (`IsAuthenticated == false`), request abhi bhi aage jaati hai — reject yahan nahi hota.
+- `app.UseAuthorization()` — yahan actual reject hota hai. `[Authorize]` hai aur `User` anonymous hai to 401. `[Authorize(Roles="Admin")]` hai aur user Admin nahi hai to 403.
+- `User.Identity?.IsAuthenticated` — kya koi valid identity attach hui.
+- `User.FindFirstValue(ClaimTypes.NameIdentifier)` — `sub`/nameidentifier claim ki value. `ClaimTypes.*` bas lambe URI strings ke constants hain.
+- `return Unauthorized()` — 401. `return Forbid()` — 403.
+
+### Where is it used in day-to-day development
+
+- Har protected API pe: ek `AuthController` login endpoint deta hai, baaki har controller pe `[Authorize]`.
+- `User.FindFirstValue(...)` se current user ki id nikaal ke "sirf apna data" queries banti hain — `where e.CreatedBy == currentUserId`.
+- Debugging "401 aa raha hai" tickets: 90% baar `UseAuthentication` missing hai, galat order me hai, ya token bheja hi nahi gaya.
+- Swagger me "Authorize" button — wo bearer token attach karta hai taaki tum protected endpoints test kar sako.
+
+### When to use / when NOT to use
+
+Har real API me authentication chahiye — exception sirf truly public read-only endpoints (health check, public docs). Authorization tab chahiye jab alag users ke alag rights ho. Agar sab authenticated users ke rights same hain, bare `[Authorize]` kaafi hai — mat over-engineer karke policies banao.
+
+### Cookie vs token auth — API bearer token kyun chunta hai
+
+- **Cookie auth**: server session/cookie set karta hai, browser har request pe apne aap bhejta hai. Server-side ya signed state. Achha traditional server-rendered web apps ke liye. Cross-domain aur mobile clients pe dard, aur CSRF ka surface deta hai.
+- **Token (bearer) auth**: client ek self-contained JWT rakhta hai aur khud `Authorization` header me bhejta hai. Stateless (server ko kuch store nahi karna), kisi bhi client se kaam karta hai (mobile, SPA, service-to-service), aur CSRF nahi kyunki browser apne aap attach nahi karta.
+
+APIs — jinhe React SPA, Android app, aur doosri services sab call karti hain — isliye bearer token chunte hain: stateless, portable, CORS-friendly.
+
+</Hinglish>
+
+<Callout type="trap">
+
+401 ka matlab "authenticate karo" (identity missing/invalid), 403 ka matlab "tum authenticated ho par ye allowed nahi". Ulta likhna — anonymous user ko 403 dena — ek classic interview red flag hai.
+
+</Callout>
+
+<Tradeoff
+  pros={["Bearer tokens stateless hote hain — server ko session store nahi chahiye, horizontal scaling easy", "Ek hi token web, mobile, aur service-to-service sab jagah chalta hai", "Browser token ko apne aap attach nahi karta, to CSRF surface nahi"]}
+  cons={["Token client ke paas hai — leak hua to expiry tak valid, isliye short lifetime + refresh chahiye", "Server-side instant revoke mushkil (stateless ka ulta pehlu) — blacklist ya short TTL se manage karna padta hai", "Token size cookie session-id se bada — har request pe jaata hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-origination API me pehle sirf authentication tha — valid token = full access. Ek support engineer ka token, jo sirf application status dekhne ke liye tha, use karke kisi ne disbursement endpoint hit kar diya. Post-mortem me pata chala "kaun" to check ho raha tha, "kya kar sakta hai" nahi. Fix: har write endpoint pe role-based authorization, aur disbursement pe ek dedicated policy. Lesson: authentication akela darwaza band nahi karta.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking integration me `Program.cs` me `app.UseAuthorization()` galti se `app.UseAuthentication()` se pehle likha gaya tha. Result: `HttpContext.User` hamesha anonymous, har protected endpoint 401 — bhale hi token perfect ho. Do din ka debugging, fix ek line swap. Isi wajah se onboarding checklist me "authentication before authorization, both after routing, before MapControllers" ratta lagwaate hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- **401 Unauthorized** = authenticate karo (identity missing/invalid). **403 Forbidden** = identity hai, permission nahi
+- Pipeline order: `UseRouting` → `UseAuthentication` → `UseAuthorization` → `MapControllers` — ye 4 hamesha isi kram me
+- `HttpContext.User` hamesha non-null hota hai; anonymous request pe `User.Identity.IsAuthenticated == false`
+- Ek `ClaimsPrincipal` me 1+ `ClaimsIdentity`, har identity me 0+ `Claim` (key/value strings)
+- `AddAuthentication(...)` me diya default scheme = jo `[Authorize]` bina argument ke use karega
+- Bare `[Authorize]` = koi bhi authenticated user; `[AllowAnonymous]` har cheez ko override karta hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye lagbhag har .NET security round ka opener hai: "Difference between authentication and authorization?" 20-second answer: "Authentication verifies identity — kaun ho, credentials se prove. Authorization decides permission — us identity ko ye action allowed hai ya nahi. ASP.NET Core me `UseAuthentication` `HttpContext.User` ko `ClaimsPrincipal` se bharta hai, phir `UseAuthorization` policies ko us principal ke against evaluate karta hai. Missing identity pe 401, insufficient permission pe 403." Follow-up hamesha "pipeline order" aur "cookie vs token for APIs" hota hai — dono ready rakho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`UseAuthorization()` ko `UseAuthentication()` se pehle likhna, ya dono ko `UseRouting()` se pehle. Order galat ho to `HttpContext.User` populate hi nahi hota aur har protected request bina token ke jaisi treat hoti hai — silent 401 ya silent open.
+
+</Mistake>
+
+<Mistake>
+
+401 aur 403 ko interchange karna. Anonymous caller ko `Forbid()` (403) dena galat signal deta hai — client sochta hai "login to hai, bas access nahi", jabki asal me usne login kiya hi nahi. Anonymous = `Unauthorized()` (401).
+
+</Mistake>
+
+<Mistake>
+
+"Authentication laga diya, ab secure hai" maan lena. Authentication sirf naam batata hai; agar har authenticated user sab kuch kar sakta hai to tumne kuch lock nahi kiya. Write endpoints pe authorization alag se chahiye.
+
+</Mistake>
+
+<Mistake>
+
+`AddAuthorization()` ko `Program.cs` se chhod dena kyunki "abhi koi policy nahi hai". `[Authorize]` attribute ko authorization services chahiye — register nahi kiya to runtime exception.
+
+</Mistake>
+
+<Mistake>
+
+Identity ke liye `Thread.CurrentPrincipal` ya static context dhoondhna (old .NET Framework habit). ASP.NET Core me current user hamesha `HttpContext.User` / controller ka `User` property se aata hai, aur non-controller code me `IHttpContextAccessor` se.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    A["Incoming request"] --> B["UseRouting: which endpoint?"]
+    B --> C["UseAuthentication: read token, build ClaimsPrincipal"]
+    C --> D{"Identity valid?"}
+    D -- "No token / bad token" --> E["401 Unauthorized"]
+    D -- "Yes" --> F["UseAuthorization: check [Authorize] / policy"]
+    F --> G{"Allowed?"}
+    G -- "No" --> H["403 Forbidden"]
+    G -- "Yes" --> I["Controller action runs"]
+`}
+  caption="Authentication builds the identity first; authorization judges it second. No identity is a 401, wrong identity is a 403."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **AuthN** = who are you (verify credentials → identity). **AuthZ** = what may you do (check rules against that identity). AuthN always first.
+- ASP.NET Core: `UseAuthentication()` builds `HttpContext.User` (a `ClaimsPrincipal`); `UseAuthorization()` evaluates `[Authorize]` / policies against it.
+- Pipeline order (memorize): `UseRouting` → `UseAuthentication` → `UseAuthorization` → `MapControllers`.
+- `ClaimsPrincipal` → 1+ `ClaimsIdentity` → many `Claim`s (name, role, sub, dept as key/value strings). Read via `User.FindFirstValue(...)`, `User.IsInRole(...)`.
+- **401** = not authenticated (missing/invalid identity). **403** = authenticated but not permitted.
+- Authentication runs via named **schemes** backed by **handlers**; the default scheme is the one bare `[Authorize]` uses.
+- APIs pick **bearer tokens** over cookies: stateless, work for SPA + mobile + service-to-service, no automatic browser attach so no CSRF surface.
+- `[AllowAnonymous]` overrides any `[Authorize]` — use it on `login`/`register`/health checks.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Program.cs` me `AddAuthentication`/`AddAuthorization` register karo aur `UseAuthentication`/`UseAuthorization` ko sahi order me daalo. Ek `[Authorize]` sirf `GET /api/employees/me` action banao jo `User` claims JSON me lauta de. Bina token call karke 401 confirm karo.
+
+**Medium:** Global exception handler wale topic se jodo — ek middleware ya filter banao jo 401 aur 403 responses ko ek consistent problem-details JSON shape me convert kare (`type`, `title`, `status`), taaki client ko dono cases ek jaise structure me milein. Swagger se dono trigger karke verify karo.
+
+**Bada (large):** `EmployeeManagement.Api` ke sabhi controllers pe ek baseline `[Authorize]` lagao (controller-level), phir `login`/`register`/health endpoints pe `[AllowAnonymous]`. Ek chhota integration-test set likho jo har route ko (a) no token, (b) valid token se hit kare aur expected 401 vs 200/403 assert kare. Ye test suite baaki security topics ke liye regression net ban jaayega.
+
+</Callout>

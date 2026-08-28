@@ -1,0 +1,301 @@
+---
+slug: "related-entities-department-and-relationships"
+title: "Related Entities: Department, Navigation Properties, and Loading Strategies"
+section: "code-flow"
+module: "data-access-efcore"
+order: 7
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["ef-core-dbcontext-and-dbset", "linq-queries-for-data-access", "async-await-end-to-end-and-why"]
+tags: ["dotnet", "ef-core", "relationships", "navigation-properties", "include", "n-plus-1", "employee-management"]
+englishDefinition: "In EF Core a one-to-many relationship between Employee and Department is expressed with a foreign key property (Employee.DepartmentId), a reference navigation (Employee.Department), and a collection navigation (Department.Employees), then configured in OnModelCreating with HasOne, WithMany, HasForeignKey and a delete behaviour. Related rows are brought into memory using eager loading (Include/ThenInclude), explicit loading (Entry(...).Collection(...).LoadAsync()), or lazy loading via proxies, and the classic N plus 1 problem appears when code loops over a parent list and touches an unloaded navigation on each item."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+In EF Core a one-to-many relationship between `Employee` and `Department` is expressed with a foreign key property (`Employee.DepartmentId`), a reference navigation (`Employee.Department`), and a collection navigation (`Department.Employees`), then configured in `OnModelCreating` with `HasOne`, `WithMany`, `HasForeignKey` and a delete behaviour. Related rows are brought into memory using eager loading (`Include` / `ThenInclude`), explicit loading (`Entry(...).Collection(...).LoadAsync()`), or lazy loading via proxies, and the classic N plus 1 problem appears when code loops over a parent list and touches an unloaded navigation on each item.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak hamara `Employee` akela tha. Real BFSI system me har employee kisi `Department` se juda hota hai — "Retail Lending", "Treasury", "Compliance" — aur har department me kai employees. Ye ek **one-to-many** relationship hai: ek Department ke paas many Employees. Is topic me hum ye relationship model karenge, EF Core ko batayenge ki tables kaise jude hain, aur — sabse important — related data ko memory me laane ke teen tareeke aur unme se galat tareeka choose karne pe kya tootta hai.
+
+### What is it — navigation properties aur foreign key
+
+EF Core me ek relationship teen cheezon se banti hai:
+
+- **Foreign key property** — `Employee.DepartmentId` (`int`). Ye actual column hai jo DB me store hota hai.
+- **Reference navigation** — `Employee.Department` (`Department` type). "Is employee ka department object."
+- **Collection navigation** — `Department.Employees` (`ICollection<Employee>`). "Is department ke saare employees."
+
+FK property optional hai (EF "shadow property" bhi bana leta hai), lekin explicit `DepartmentId` rakhna best practice hai — tum bina poora `Department` object load kiye employee ka department set/filter kar sakte ho.
+
+### Why do we need it — bina relationship ke kya breaks
+
+Bina navigation ke, employee ka department naam chahiye to tumhe do query likhni padegi aur haath se join karna padega har jagah. Reporting, filtering ("Compliance ke saare active employees"), cascade rules ("department band ho to employees ka kya") — sab manual ho jaata hai. Relationship declare karne se EF `JOIN` khud likhta hai, referential integrity DB constraint se enforce hoti hai, aur `Include` se ek hi round-trip me parent + children aa jaate hain.
+
+### How does it work — OnModelCreating me configuration
+
+Entities:
+
+```csharp
+public class Department
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = default!;
+    public string CostCentre { get; set; } = default!;
+    public ICollection<Employee> Employees { get; set; } = new List<Employee>();
+}
+
+public class Employee
+{
+    public int Id { get; set; }
+    public string FullName { get; set; } = default!;
+    public bool IsActive { get; set; }
+    public int DepartmentId { get; set; }        // FK property
+    public Department Department { get; set; } = default!;  // reference navigation
+}
+```
+
+`DbContext` me:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Employee>(entity =>
+    {
+        entity.HasOne(e => e.Department)
+              .WithMany(d => d.Employees)
+              .HasForeignKey(e => e.DepartmentId)
+              .OnDelete(DeleteBehavior.Restrict);
+    });
+}
+```
+
+Line by line:
+
+- `HasOne(e => e.Department)` — Employee ki taraf se: har employee ka **ek** Department.
+- `WithMany(d => d.Employees)` — doosri taraf: us Department ke **many** Employees. Dono navigation ek dusre se link ho gaye.
+- `HasForeignKey(e => e.DepartmentId)` — kaunsa column FK hai. EF convention se `DepartmentId` khud pakad leta, par explicit likhna clear rehta hai.
+- `.OnDelete(DeleteBehavior.Restrict)` — agar koi department delete karne ki koshish kare jabki usme employees hain, DB **error** dega. BFSI me yahi chahiye — audit/data integrity ke liye. `Cascade` hota to department delete karte hi saare employees bhi ud jaate — khatarnak. `SetNull` FK ko `null` kar deta (tab `DepartmentId` nullable hona chahiye).
+
+Migration banao: `dotnet ef migrations add AddDepartment`, phir `dotnet ef database update`.
+
+### Show it in our project — teen loading strategies
+
+**1. Eager loading — `Include` / `ThenInclude`**
+
+```csharp
+public async Task<List<Employee>> GetWithDepartmentAsync(CancellationToken ct)
+{
+    return await _db.Employees
+        .Include(e => e.Department)
+        .AsNoTracking()
+        .ToListAsync(ct);
+}
+```
+
+`Include(e => e.Department)` EF ko bolta hai: is query me `Department` bhi `JOIN` karke le aao. Nested ho to `ThenInclude`: `.Include(e => e.Department).ThenInclude(d => d.CostCentreOwner)`.
+
+**2. Explicit loading — baad me, on demand**
+
+```csharp
+var department = await _db.Departments.FirstAsync(d => d.Id == id, ct);
+// abhi Employees load nahi hue
+await _db.Entry(department)
+    .Collection(d => d.Employees)
+    .LoadAsync(ct);
+// ab department.Employees bhar gaya
+```
+
+Tab use karo jab parent to hamesha chahiye par children sirf kabhi-kabhi.
+
+**3. Lazy loading — proxies (aksar disabled)**
+
+`Microsoft.EntityFrameworkCore.Proxies` package + `.UseLazyLoadingProxies()` + har navigation `virtual`. Phir `employee.Department` ko chhoote hi EF chupke se query maar deta hai. Convenient lagta hai, **lekin aksar disable rakha jaata hai** kyunki: (a) ek innocent property access ek DB call ban jaata hai — N+1 ka sabse bada source; (b) serialization (JSON response banate waqt) har navigation touch karke queries ki jhadi laga deta hai; (c) DbContext dispose hone ke baad access `ObjectDisposedException`. Isliye explicit `Include` prefer kiya jaata hai — tum control me ho ki kab kya load hoga.
+
+### Code explained — N+1 problem concretely
+
+Ye repository method dekho:
+
+```csharp
+var employees = await _db.Employees.AsNoTracking().ToListAsync(ct);  // 1 query
+foreach (var e in employees)
+{
+    // lazy loading on: har line pe ek naya SELECT Department WHERE Id = ...
+    Console.WriteLine($"{e.FullName} - {e.Department.Name}");
+}
+```
+
+Agar 500 employees hain to ye **1 + 500 = 501 queries** chalayega. Yahi "N+1": 1 parent query + N child queries. Latency 20ms se 3s ho jaati hai.
+
+**Logs me kaise dikhta hai** — `appsettings.Development.json` me EF logging `Information` pe rakho aur console me dekho: ek `SELECT ... FROM Employees` ke baad barah-barah `SELECT ... FROM Departments WHERE Id = @__p_0` repeat hota dikhega, har baar naya parameter. Ye N+1 ka fingerprint hai. `MiniProfiler` ya Application Insights "SQL dependencies" bhi 500 chhoti queries dikhaata hai.
+
+**Fix 1 — `Include`:** `_db.Employees.Include(e => e.Department)` — ab 1 `JOIN` query, sab kuch ek round-trip me.
+
+**Fix 2 — projection (best for read/list endpoints):**
+
+```csharp
+var rows = await _db.Employees
+    .Select(e => new EmployeeListItemDto
+    {
+        Id = e.Id,
+        FullName = e.FullName,
+        DepartmentName = e.Department.Name   // EF khud JOIN add karta hai
+    })
+    .AsNoTracking()
+    .ToListAsync(ct);
+```
+
+Projection me `Include` ki zaroorat nahi — jo navigation tum `Select` me touch karte ho, EF uska `JOIN` khud jod deta hai, aur sirf zaroori columns aate hain.
+
+### AsSplitQuery — jab ek bade Include se cartesian explosion ho
+
+Agar tum ek query me kai collection `Include` karo (`Department` + `Documents` + `Projects`), to single `JOIN` rows ko multiply kar deta hai (cartesian explosion) — 100 departments x 50 employees x 10 docs = bahut duplicate data wire pe. `.AsSplitQuery()` EF ko bolta hai: har collection ke liye alag SELECT chalao (2-3 queries, par har ek chhoti). Trade-off: multiple round-trips, aur ek hi transaction me consistency thodi kamzor. Single collection ke liye default `AsSingleQuery` theek hai.
+
+### Where is it used in day-to-day development
+
+Har list endpoint jahan parent + related naam chahiye (employee list with department, order with customer), har detail page (`GET /employees/{id}` with department + documents), har report. `Include` vs projection ka decision code review me roz aata hai. N+1 production incident postmortems me sabse common EF finding hai.
+
+### When to use / when NOT
+
+- **Projection (`Select` to DTO)** — list/read endpoints ke liye default. Kam columns, no tracking, no N+1.
+- **`Include`** — jab tumhe poore entity chahiye (update ke liye, ya complex business logic jo poore object graph pe chale).
+- **Explicit loading** — parent hamesha, children kabhi-kabhi.
+- **Lazy loading** — team ne consciously decide kiya ho aur serialization boundary control me ho. Web API me aksar avoid.
+
+### Failure scenario
+
+Ek team ne `GET /api/employees` pe `.Include(e => e.Department).Include(e => e.Documents).Include(e => e.Projects)` laga diya. 2000 employees, har ek ke 5 documents aur 3 projects. Single query ne cartesian explosion se 30000 rows return kiye, response 40MB, p99 12s, SQL Server memory grant warnings. Fix: list endpoint ko projection me badla (sirf `Id`, `FullName`, `DepartmentName`), aur detail endpoint pe `AsSplitQuery()` lagaya. p99 12s se 250ms.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Lazy loading proxies "convenient" lagti hain par ek `foreach` loop me `e.Department.Name` touch karna chupke se N alag DB queries maar deta hai — code me kuch bhi async/await ya query jaisa nahi dikhta. Isiliye zyadatar teams proxies off rakhti hain aur explicit `Include` / projection use karti hain.
+
+</Callout>
+
+<Tradeoff pros={["Include ek round-trip me parent + related laata hai", "Projection sirf zaroori columns + auto JOIN + no N+1 — list endpoints ke liye best", "Explicit loading se children on-demand load hote hain", "OnDelete(Restrict) BFSI data integrity ke liye safe default"]} cons={["Multiple collection Include se cartesian explosion — AsSplitQuery chahiye", "Lazy loading proxies N+1 aur ObjectDisposedException ka source", "AsSplitQuery multiple round-trips + weaker single-transaction consistency", "Include ke saath pura entity aata hai — bade columns bhi jab zaroorat nahi"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-ops dashboard "agents with their branch name" list dikhata tha. Original code lazy loading pe tha, har agent pe `agent.Branch.Name` touch hota tha — 800 agents matlab 801 queries, page 4s me load hota tha. Ek developer ne EF Core logs Development me on kiye, console me 800 identical `SELECT ... FROM Branches WHERE Id = @p` dikhe. Fix: list ko `.Select(a => new { a.Id, a.Name, BranchName = a.Branch.Name })` projection me badla — ek JOIN query, 120ms.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking module me `Department` pe `OnDelete(DeleteBehavior.Cascade)` default chhod diya gaya tha. QA me ek tester ne ek test department delete kiya jisme 1200 employees the — cascade ne saari employee rows aur unse judi audit-log rows silently delete kar di. Recovery me backup restore karna pada. Uske baad team ka standard ban gaya: har parent-child relationship pe `OnDelete` explicitly `Restrict` ya `SetNull`, `Cascade` sirf tab jab child ka parent ke bina koi matlab hi na ho (jaise `OrderLine` under `Order`).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- N+1 loop over 500 parents = 1 + 500 = 501 queries; `Include` se 1 query
+- `Include` par default single `JOIN` query; 2+ collection includes par cartesian row count parent x child1 x child2
+- `.AsSplitQuery()` = 1 query per included collection (N collections = N+1 SELECTs)
+- `DeleteBehavior` options: `Cascade`, `Restrict` (a.k.a. `NoAction` in effect), `SetNull`, `ClientSetNull`
+- EF Core FK convention: property named `<Nav>Id` or `<Principal>Id` auto-detected as foreign key
+- Projection typically transfers 2-4 columns vs full entity's 8-15+ columns for `Employee`
+- EF SQL logging visible at `LogLevel` `Information` for category `Microsoft.EntityFrameworkCore.Database.Command`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "What is the N+1 problem and how do you fix it in EF Core?" Strong 20-second answer: "N+1 tab hota hai jab tum ek parent list load karte ho (1 query) aur phir loop me har parent ki related navigation touch karte ho, jisse har item pe ek alag child query chalti hai — 500 parents matlab 501 queries. EF Core logs me ye ek parent SELECT ke baad barah-barah same-shape child SELECT ke roop me dikhta hai. Fix: eager load `Include(e => e.Department)` — ek JOIN query — ya list endpoints ke liye behtar, projection `.Select(e => new Dto { DeptName = e.Department.Name })` jisme EF khud JOIN add karta hai aur sirf zaroori columns aate hain. Lazy loading proxies is problem ko chhupa dete hain isliye web API me aksar off." Follow-ups: `AsSplitQuery` kab, `Include` vs projection, `OnDelete` behaviours.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Lazy loading proxies on rakhna aur phir controller me entity ko directly JSON serialize karna. Serializer har navigation touch karta hai — ek response ke liye dozens of queries, aur kabhi circular reference loop.
+
+</Mistake>
+
+<Mistake>
+
+List endpoint pe poora entity `Include` karna jab sirf 2-3 fields chahiye. Projection use karo — kam columns, no change tracking, no N+1, aur sensitive columns (`Salary`, `PanNumber`) fetch hi nahi hote.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi query me kai collection navigations `Include` karna bina `AsSplitQuery()` ke. Cartesian explosion se rows multiply hote hain, response phool jaata hai, SQL Server memory grants spike.
+
+</Mistake>
+
+<Mistake>
+
+`OnDelete(DeleteBehavior.Cascade)` ko default chhod dena parent-child pe jahan child ka apna independent matlab hai (`Department` -> `Employee`). Parent delete hote hi children silently ud sakte hain.
+
+</Mistake>
+
+<Mistake>
+
+`Include` bhoolna aur phir `NullReferenceException` pe `employee.Department.Name` — proxies off hone par navigation `null` hota hai jab tak explicitly load na kiya jaaye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+erDiagram
+    DEPARTMENT ||--o{ EMPLOYEE : "has many"
+    DEPARTMENT {
+        int Id PK
+        string Name
+        string CostCentre
+    }
+    EMPLOYEE {
+        int Id PK
+        string FullName
+        bool IsActive
+        int DepartmentId FK
+    }
+`}
+  caption="One Department to many Employees. DepartmentId is the FK column; Employee.Department and Department.Employees are the navigation properties EF maps onto it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- A relationship = FK property (`Employee.DepartmentId`) + reference nav (`Employee.Department`) + collection nav (`Department.Employees`)
+- Configure in `OnModelCreating`: `HasOne(e => e.Department).WithMany(d => d.Employees).HasForeignKey(e => e.DepartmentId).OnDelete(...)`
+- `OnDelete`: `Restrict` (safe BFSI default, blocks parent delete), `Cascade` (deletes children too), `SetNull` (needs nullable FK)
+- Eager: `Include` / `ThenInclude` — one round-trip, `JOIN`; use when you need whole entities
+- Explicit: `_db.Entry(parent).Collection(p => p.Children).LoadAsync(ct)` — load children on demand
+- Lazy: proxies package + `virtual` navs + `UseLazyLoadingProxies()`; usually disabled — hidden N+1, serialization query storms, `ObjectDisposedException`
+- N+1 = 1 parent query + N child queries in a loop; in EF logs it shows as one parent SELECT then the same child SELECT repeated
+- Fix N+1 with `Include`, or better for lists, a projection (`.Select(e => new Dto { DeptName = e.Department.Name })`) — EF adds the `JOIN` itself
+- `.AsSplitQuery()` when multiple collection `Include`s cause cartesian explosion — separate SELECT per collection
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Department` entity aur `Employee.DepartmentId` + `Employee.Department` navigation add karo, `OnModelCreating` me one-to-many configure karo `OnDelete(DeleteBehavior.Restrict)` ke saath, aur ek migration bana ke apply karo.
+
+**Medium:** `GET /api/employees` ko do versions me likho: ek `.Include(e => e.Department)` se, ek projection `.Select(...)` se jisme sirf `Id`, `FullName`, `DepartmentName` ho. EF logs Development me on karke dono ka generated SQL compare karo — column count aur query shape note karo.
+
+**Bada (large):** Ek jaanbujh ke N+1 banao — lazy loading proxies on karo, `GET /api/employees` me loop chala ke `e.Department.Name` touch karo, aur logs me 1 + N queries confirm karo. Phir teen fixes implement karo (proxies off + `Include`, phir projection, phir ek detail endpoint pe `AsSplitQuery`), aur ek chhote seed dataset (500 employees / 20 departments) pe har version ki latency aur query count measure karke ek chhoti comparison table banao.
+
+</Callout>

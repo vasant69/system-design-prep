@@ -1,0 +1,248 @@
+---
+slug: "get-endpoints-list-and-by-id"
+title: "GET Endpoints: List and By-Id, Line by Line"
+section: "code-flow"
+module: "crud-in-memory"
+order: 3
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["routing-in-web-api", "the-employee-model"]
+tags: ["dotnet", "aspnet-core", "web-api", "http-get", "actionresult", "status-codes", "employee-management"]
+englishDefinition: "The two read operations of our API: GET /api/employees returns the whole in-memory list, and GET /api/employees/{id} returns a single employee or a 404 when no record matches. Both are written as controller actions that return ActionResult<T>, using Ok(...) for success and NotFound() for a missing record."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+The two read operations of our API: `GET /api/employees` returns the whole in-memory list, and `GET /api/employees/{id}` returns a single employee or a `404` when no record matches. Both are written as controller actions that return `ActionResult<T>`, using `Ok(...)` for success and `NotFound()` for a missing record.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Routing topic me humne URL table bana li — ab pehli baar wo actions **asli data** return karenge. CRUD ka "R" (Read) sabse aasan hai aur yahin `ActionResult`, `Ok()`, `NotFound()`, aur model binding ka pattern set ho jaata hai jo baaki POST/PUT/DELETE me bhi wahi rahega.
+
+### What is it — GET endpoints kya hain
+
+Do read endpoints:
+
+- **List** — `GET /api/employees` — saari employees ka array JSON me.
+- **By-id** — `GET /api/employees/5` — sirf employee number 5. Agar 5 number ka koi employee nahi hai to **`404 Not Found`**, khaali body ke saath `200` nahi.
+
+GET ka matlab hai "mujhe data do, kuch badlo mat". Ye **safe** (server pe koi change nahi) aur **idempotent** (10 baar call karo, wahi result) hona chahiye.
+
+### Why do we need it — iske bina kya
+
+List endpoint ke bina UI koi table hi nahi bana sakta. By-id ke bina "employee detail" page, edit form pre-fill, ya kisi aur service ka "is employee ka data chahiye" call possible nahi. Ye do endpoints har resource ke liye sabse pehle bante hain — inhi pe frontend, mobile, aur integration teams depend karti hain.
+
+By-id me sabse important design decision hai: **record na mile to kya bhejein**. Agar hum `200 OK` ke saath `null` body bhej dein, to caller ko har jagah `null` check likhna padega, HTTP-level pe "mila ya nahi" ka koi signal nahi rahega, aur monitoring/logs me ek missing record ek successful call jaisa dikhega. `404` iska seedha, standard jawaab hai — "aisa resource hai hi nahi".
+
+### How does it work — step by step
+
+1. Request `GET /api/employees/5` aati hai. Routing `[HttpGet("{id:int}")]` template se match karti hai.
+2. Model binder URL ke `5` ko action parameter `int id` me daal deta hai — ye `[FromRoute]` binding hai (simple type + route me naam match, isliye attribute likhna optional).
+3. Action body chalti hai. Hum in-memory `List<Employee>` me `FirstOrDefault(e => e.Id == id)` se dhoondhte hain.
+4. Mila to `Ok(employee)` — framework object ko JSON me serialize karke `200` ke saath bhejta hai. Nahi mila (`employee is null`) to `NotFound()` — `404`, koi body nahi.
+5. List endpoint me koi lookup nahi — `Ok(_employees)` seedha poori list serialize kar deta hai.
+
+### Show it in our project — `EmployeesController`
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Controllers;
+
+[ApiController]
+[Route("api/employees")]
+public class EmployeesController : ControllerBase
+{
+    private static readonly List<Employee> _employees = SeedData.Employees;
+
+    // GET /api/employees
+    // GET /api/employees?activeOnly=true
+    [HttpGet]
+    public ActionResult<IEnumerable<Employee>> GetAll([FromQuery] bool activeOnly = false)
+    {
+        IEnumerable<Employee> result = _employees;
+        if (activeOnly)
+            result = result.Where(e => e.IsActive);
+
+        return Ok(result);
+    }
+
+    // GET /api/employees/5
+    [HttpGet("{id:int}")]
+    public ActionResult<Employee> GetById([FromRoute] int id)
+    {
+        var employee = _employees.FirstOrDefault(e => e.Id == id);
+
+        if (employee is null)
+            return NotFound();
+
+        return Ok(employee);
+    }
+}
+```
+
+### Code explained line by line
+
+- `private static readonly List<Employee> _employees = SeedData.Employees;` — poore module ka data ek **process-wide static list** hai. `static` isliye ki har request ek naya controller instance banati hai, par list wahi ek rehni chahiye. `readonly` — reference badal nahi sakta (list object same rahega), par list ke **andar** add/remove chalega. Ye `SeedData` class module 1 me bani thi.
+- `public ActionResult<IEnumerable<Employee>> GetAll(...)` — return type `ActionResult<T>`. Iska matlab: "main ya to `T` (yahan employees ki list) return karunga, ya ek HTTP result jaise `NotFound()`/`BadRequest()`". `T` khud bhi allowed hai — `return Ok(list)` aur `return list` dono compile karte hain. `IEnumerable<Employee>` interface use kiya concrete `List<Employee>` ke bajaye taaki caller ko sirf "ginne-yogya sequence" mile, poore list API pe depend na kare.
+- `[FromQuery] bool activeOnly = false` — ye value **query string** se aati hai: `?activeOnly=true`. Default `false` hai to parameter optional ban jaata hai — bina query ke bhi endpoint chalta hai. `[FromQuery]` yahan explicitly likha readability ke liye; simple types default me query se hi bind hote hain (route me match na ho to).
+- `IEnumerable<Employee> result = _employees;` — filter lagane se pehle ek variable. `.Where(...)` ek **deferred LINQ** query banata hai — actual filtering tab hoti hai jab `Ok()` ise serialize karte waqt enumerate karta hai.
+- `[HttpGet("{id:int}")]` — routing topic se: `{id:int}` constraint `/api/employees/abc` ko yahan aane hi nahi deta (`404` before body).
+- `[FromRoute] int id` — value URL path se. `[FromRoute]` optional hai kyunki parameter naam `id` template ke `{id}` se match karta hai.
+- `_employees.FirstOrDefault(e => e.Id == id)` — LINQ. `FirstOrDefault` pehla matching element deta hai, **ya `null`** agar koi match nahi (`Employee` reference type hai, iska "default" `null` hota hai). `First()` iske jagah use karte to match na hone pe **exception** phenkta — isliye lookup me hamesha `FirstOrDefault`.
+- `if (employee is null)` — `is null` pattern use karo, `== null` nahi. `is null` ko koi custom `==` operator override nahi kar sakta — ye hamesha sach me reference null check karta hai. Reads bhi saaf: "employee is null".
+- `return NotFound();` — helper method `ControllerBase` se. `404` status, empty body. `NotFound("message")` bhi hota hai agar detail chahiye.
+- `return Ok(employee);` — `200` + `employee` JSON body.
+
+### Where is it used in day-to-day development
+
+- Har naye resource pe sabse pehle yahi do endpoints likhe jaate hain — list aur by-id.
+- Edit screen kholte waqt frontend by-id call karta hai form pre-fill ke liye.
+- Ek microservice doosre se "is employee ka current data" by-id se leta hai.
+- `activeOnly` jaise query filters list endpoint pe dheere-dheere add hote rehte hain — department, search text, pagination.
+
+### Pros and cons — `404` vs `200`-with-`null`
+
+- **`404` (jo humne chuna):** HTTP-level pe hi "nahi mila" ka signal. Client `response.ok` / status code dekh ke branch kar sakta hai. Logs aur dashboards me missing lookups alag dikhte hain. REST convention.
+- **`200` + `null` body:** har caller ko response body parse karke `null` check karna padta hai. Ek bhoola hua check = silent bug. Sirf tab theek jab "nahi mila" ek **normal, expected** state ho aur tum uske liye ek proper empty shape bhej rahe ho (jaise `{ "items": [] }` — jo `404` nahi hai kyunki wo ek valid empty collection hai, missing resource nahi).
+
+### When to use / when NOT to use `404`
+
+- **Use `404`:** single resource by-id/by-key lookup jab wo key exist hi nahi karti.
+- **Don't use `404`:** list endpoint jab result khaali ho — `GET /api/employees?department=99` jise koi employee na mile, wo `200` + `[]` hai, `404` nahi. Collection mili, bas khaali hai. `404` collection route pe tab jab route hi galat ho.
+
+### Failure scenario
+
+`GetById` me `FirstOrDefault` ki jagah `First()` likh do aur code review nikal jaaye. Test data me sab ids exist karte hain to dev/QA me sab pass. Production me koi user purana bookmark kholta hai `/api/employees/500` — `InvalidOperationException: Sequence contains no elements` — `500 Internal Server Error`, stack trace logs me, on-call ko page. Sahi behaviour to bas ek clean `404` tha. Ek galat LINQ method call ne user-error ko server-error bana diya.
+
+</Hinglish>
+
+<Callout type="tip">
+
+`is null` / `is not null` use karo `== null` ke bajaye. Agar kabhi kisi type pe `==` overload hua (records, some structs), `is null` phir bhi sahi reference/`null` check deta hai. Habit ban jaaye to ye category ke bugs khatam.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending app ke customer-service dashboard me "loan by reference number" lookup `200` + `null` return karta tha jab reference galat hoti. Frontend ne `null` handle nahi kiya, blank detail screen khul jaata, agent samajhta data load ho raha hai. Fix: backend ne `404` dena shuru kiya aur frontend ne uspe ek "No loan found for this reference" message dikhaya. Ek status code change ne poore support flow ka confusion hata diya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Bank integration APIs me by-id endpoints ka contract likha hota hai: "200 with body when found, 404 with a standard error envelope when not". Consumer teams apne retry/alert logic isi pe banati hain — `5xx` pe retry + alert, `404` pe "skip, log as data issue". Agar server missing record pe `500` de de to consumer ka alerting jhooth bolne lagta hai. Isliye "user-error kabhi `5xx` nahi" ek hard review rule hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `200 OK` — GET success with body
+- `404 Not Found` — single resource lookup, key exist nahi karti
+- `200` + `[]` — list endpoint, filter ka result khaali (NOT `404`)
+- `FirstOrDefault` — match nahi to `null`; `First` — match nahi to **exception**
+- GET properties: **safe** (koi server change nahi) + **idempotent** (N calls = same result)
+- `ActionResult<T>` return: `T` bhi allowed, `Ok(T)` bhi, `NotFound()` bhi — teeno compile
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "By-id endpoint pe record na mile to kya return karoge, aur kyun?" Strong 20-second jawaab: "`404 Not Found`, `200` with `null` nahi. `404` HTTP-level pe hi bata deta hai ki resource exist nahi karta — client status code pe branch kar sakta hai, logs me missing lookups alag dikhte hain, aur har caller ko body me `null` check nahi likhna padta. Lekin list endpoint pe khaali result `200` + empty array hota hai, `404` nahi — wahan collection mili, bas khaali hai." Follow-ups: "`FirstOrDefault` vs `First`?" (default `null` vs exception — lookup me hamesha `FirstOrDefault`), "`ActionResult<T>` kya deta hai?" (`T` ya HTTP result dono return kar sakte ho, Swagger ko response type bhi pata chalta hai). Interviewer dekh raha hai ki tum status codes ko meaning se choose karte ho, aadat se nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+By-id pe record na milne par `Ok(null)` ya `Ok(new Employee())` return karna. Ye `200` deta hai — caller ko lagta hai sab theek hai. Missing single resource = `404`.
+
+</Mistake>
+
+<Mistake>
+
+List endpoint pe khaali result ko `404` bana dena. `GET /api/employees?department=99` jise kuch na mile wo `200` + `[]` hai. Collection exist karti hai, bas is filter pe khaali hai.
+
+</Mistake>
+
+<Mistake>
+
+Lookup me `Single()` ya `First()` use karna. `First()` match na hone pe exception phenkta hai — user-error `500` ban jaata hai. `Single()` to ek se zyada match pe bhi phatega. By-id lookup me `FirstOrDefault` + `is null` check.
+
+</Mistake>
+
+<Mistake>
+
+`if (employee == null)` likhna jab `Employee` ya koi wrapper type `==` override kar sakta ho. `is null` use karo — wo hamesha genuine null reference check hai.
+
+</Mistake>
+
+<Mistake>
+
+Filter/sort/paginate params ko route segment banana (`/api/employees/active/true`) query string ke bajaye. `[FromQuery] bool activeOnly` + `?activeOnly=true` — optional, combine-able, aur route table clean rehti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant R as Routing
+    participant A as GetById(id)
+    participant L as static List<Employee>
+    C->>R: GET /api/employees/2
+    R->>A: id = 2 (FromRoute)
+    A->>L: FirstOrDefault(e => e.Id == 2)
+    L-->>A: Employee #2
+    A-->>C: 200 OK + JSON body
+    C->>R: GET /api/employees/500
+    R->>A: id = 500
+    A->>L: FirstOrDefault(e => e.Id == 500)
+    L-->>A: null
+    A-->>C: 404 Not Found (no body)
+`}
+  caption="Same action, two outcomes: a hit serializes the employee as 200; a miss returns a clean 404 instead of 200-with-null."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `GET /api/employees` -> `Ok(_employees)` -> `200` + JSON array; khaali filter result bhi `200` + `[]`, kabhi `404` nahi
+- `GET /api/employees/{id:int}` -> `FirstOrDefault(e => e.Id == id)` -> mila `Ok(employee)`, `null` ho to `NotFound()`
+- Missing **single** resource = `404`; missing item in a **collection** filter = `200` + empty array
+- `ActionResult<T>` = `T` ya HTTP result (dono `return` legal); Swagger ko success type bhi batata hai
+- `FirstOrDefault` -> no match = `null`; `First`/`Single` -> no match = **exception** -> user-error becomes `500`. Lookup me hamesha `FirstOrDefault`
+- `is null` / `is not null` use karo, `== null` nahi — `==` override-proof
+- `[FromRoute]` id URL path se, `[FromQuery]` filters query string se (default value do to optional)
+- Data ek `static` list hai — har request naya controller instance, list process-wide ek
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeesController` me `GetAll` aur `GetById` upar wale exact code se likho. Swagger me teen calls karo: `GET /api/employees` (poori list), `GET /api/employees/1` (`200` + ek record), `GET /api/employees/999` (`404`). Response status codes note karo.
+
+**Medium:** `GetAll` me `[FromQuery] int? departmentId = null` add karo aur di gayi ho to `Where(e => e.DepartmentId == departmentId)` filter lagao. Confirm karo `GET /api/employees?departmentId=99` (jisme koi match nahi) `200` + `[]` deta hai, `404` nahi. Phir ek `GetById` variant likho jo `First()` use karta hai aur dekho `id = 999` pe kaisa `500` + exception aata hai; wapas `FirstOrDefault` pe aao.
+
+**Bada (large):** `EmployeesController` me poora read surface banao: `GetAll` with `activeOnly`, `departmentId`, aur `search` (name/email substring, case-insensitive) query filters; `GetById` with `404`; aur `GetByPan` (`[HttpGet("by-pan/{pan}")]`) jo mile to `Ok`, na mile to `404`. Har action ka return `ActionResult<T>` ho, har miss pe `NotFound()`. Swagger me har filter combination test karo aur ek chhoti table banao: URL, expected status, expected body shape.
+
+</Callout>

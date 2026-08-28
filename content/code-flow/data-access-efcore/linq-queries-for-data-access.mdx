@@ -1,0 +1,316 @@
+---
+slug: "linq-queries-for-data-access"
+title: "LINQ Queries for Data Access: IQueryable, Projection, and SQL Translation"
+section: "code-flow"
+module: "data-access-efcore"
+order: 5
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["repository-backed-by-ef-core", "dbcontext-and-dbset", "connection-strings-and-configuration"]
+tags: ["dotnet", "ef-core", "linq", "iqueryable", "projection", "employee-management"]
+englishDefinition: "LINQ is the query syntax you write in C# against EF Core's DbSet to filter, shape, sort, and page data. Because a DbSet is an IQueryable, the LINQ expression tree is translated to a single SQL statement and runs on the database only when the query is enumerated. Knowing where the line between database execution and in-memory client evaluation sits is what separates a fast endpoint from one that pulls a whole table into memory."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+LINQ is the query syntax you write in C# against EF Core's `DbSet` to filter, shape, sort, and page data. Because a `DbSet` is an `IQueryable`, the LINQ expression tree is translated to a single SQL statement and runs on the database only when the query is enumerated. Knowing where the line between database execution and in-memory client evaluation sits is what separates a fast endpoint from one that pulls a whole table into memory.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak hamare `EfEmployeeRepository` me shayad sirf `ToListAsync()` aur `FindAsync()` jaise basic calls hain. Real endpoints me client bolta hai: "sirf active employees do, department 5 ke, naam se sorted, 20 per page, aur mujhe pura entity mat bhejo — sirf Id, Name, Email chahiye." Ye sab kaam **LINQ** karta hai `DbSet` ke upar, aur EF Core us LINQ ko **ek SQL query** me badal deta hai. Is topic ka asli point ye samajhna hai: kaunsa code **database pe** chalta hai aur kaunsa **tumhari app ki memory me** — kyunki galat jagah pe line kheench di to ek endpoint poori `Employees` table RAM me le aayega.
+
+### What is it — LINQ against a DbSet
+
+LINQ (Language Integrated Query) C# ka built-in query language hai. Collections pe `Where`, `Select`, `OrderBy` jaise operators chalte hain. `_db.Employees` ek `DbSet<Employee>` hai jo `IQueryable<Employee>` implement karta hai — matlab tum ispe LINQ likh sakte ho, lekin ye normal in-memory list ki tarah turant execute nahi hoti. Har operator ek **expression tree** (code ka data-representation) build karta hai, aur EF Core us tree ko padh ke SQL likhta hai.
+
+Core operators jo har din chahiye:
+
+- `Where(predicate)` — filter, SQL ka `WHERE`
+- `Select(projection)` — sirf zaroori columns/shape nikalo, SQL ka `SELECT col1, col2`
+- `OrderBy` / `OrderByDescending` / `ThenBy` / `ThenByDescending` — SQL ka `ORDER BY`
+- `Skip(n)` / `Take(n)` — pagination, SQL Server pe `OFFSET n ROWS FETCH NEXT m ROWS ONLY`
+- `FirstOrDefaultAsync()` — pehla match ya `null` (`TOP 1`)
+- `SingleOrDefaultAsync()` — exactly ek match expect karo; 2 mile to exception (`TOP 2`, phir check)
+- `AnyAsync(predicate)` — sirf haan/na chahiye, `SELECT CASE WHEN EXISTS(...)`
+- `CountAsync(predicate)` — `SELECT COUNT(*)`
+
+### Why do we need it — kya problem solve hota hai
+
+Iske bina do hi raaste bachte hain: (1) haath se SQL strings likho har query ke liye — typo-prone, refactor pe silently tootega, aur SQL injection ka darwaza; (2) `ToListAsync()` karke poori table le aao aur C# me `.Where()` chalao — 2 lakh employees ki table pe har request pe wo network aur memory kharch. LINQ-to-SQL dono se bachata hai: type-safe C# likho, EF Core parameterised SQL generate kare, aur filtering/sorting/paging **database** kare jahan indexes hain.
+
+### How does it work — IQueryable, expression tree, deferred execution
+
+3 cheezein yaad rakho:
+
+1. **Deferred execution** — `_db.Employees.Where(...).OrderBy(...)` likhne se kuch nahi hota. Koi DB call nahi. Tum sirf query **describe** kar rahe ho.
+2. **Composition** — har operator ek naya `IQueryable` return karta hai jo pichle ke upar bana hota hai. Tum method-by-method query build kar sakte ho, `if` ke andar bhi (`if (deptId != null) query = query.Where(...)`).
+3. **Trigger** — query tabhi chalti hai jab tum use **enumerate** karo: `ToListAsync()`, `FirstOrDefaultAsync()`, `CountAsync()`, ya `foreach`. Us pal EF Core pura expression tree leta hai, ek SQL statement banata hai, bhejta hai, aur result ko objects me map karta hai.
+
+`IQueryable` banaam `IEnumerable` — yahi asli farq hai. `IQueryable` ke upar likha `Where` expression tree me jaata hai aur **SQL ban jaata hai**. `IEnumerable` ke upar likha `Where` ek compiled C# delegate hai jo **memory me** row-by-row chalta hai. Jaise hi tum `AsEnumerable()`, `ToList()`, `ToArray()`, ya `AsEnumerable().Where(...)` call karte ho, us point ke baad ka sab kuch **client-side** (tumhari app ki RAM) me chalega.
+
+### Show it in our project — EfEmployeeRepository me real queries
+
+Ek list endpoint ke liye DTO pehle (kabhi pura `Employee` entity API se bahar mat bhejo — `Salary`, `PanNumber` leak ho jayega):
+
+```csharp
+public class EmployeeListItemDto
+{
+    public int Id { get; set; }
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string DepartmentName { get; set; } = "";
+}
+```
+
+Ab repository me:
+
+```csharp
+public async Task<List<EmployeeListItemDto>> GetActiveByDepartmentAsync(
+    int departmentId, int page, int pageSize)
+{
+    return await _db.Employees
+        .Where(e => e.IsActive && e.DepartmentId == departmentId)
+        .OrderBy(e => e.FullName)
+        .ThenByDescending(e => e.DateOfJoining)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Select(e => new EmployeeListItemDto
+        {
+            Id = e.Id,
+            FullName = e.FullName,
+            Email = e.Email,
+            DepartmentName = e.Department.Name
+        })
+        .ToListAsync();
+}
+
+public Task<Employee?> GetByIdAsync(int id) =>
+    _db.Employees.FirstOrDefaultAsync(e => e.Id == id);
+
+public Task<Employee?> GetByPanAsync(string pan) =>
+    _db.Employees.SingleOrDefaultAsync(e => e.PanNumber == pan);
+
+public Task<bool> EmailExistsAsync(string email) =>
+    _db.Employees.AnyAsync(e => e.Email == email);
+
+public Task<int> CountActiveAsync() =>
+    _db.Employees.CountAsync(e => e.IsActive);
+```
+
+### Code explained line by line
+
+- `_db.Employees` — `DbSet<Employee>`, ek `IQueryable<Employee>`. Yahan tak koi SQL nahi.
+- `.Where(e => e.IsActive && e.DepartmentId == departmentId)` — `e => ...` ek **expression**, delegate nahi. EF ise `WHERE [e].[IsActive] = 1 AND [e].[DepartmentId] = @departmentId` me translate karta hai. `departmentId` **parameter** banta hai — injection-safe.
+- `.OrderBy(...).ThenByDescending(...)` — `ORDER BY [e].[FullName], [e].[DateOfJoining] DESC`. `ThenBy` tabhi likho jab pehle `OrderBy` ho.
+- `.Skip((page - 1) * pageSize).Take(pageSize)` — pagination. SQL Server pe `OFFSET ... ROWS FETCH NEXT ... ROWS ONLY`. Bina `OrderBy` ke `Skip`/`Take` ka result non-deterministic hota hai — hamesha order ke saath.
+- `.Select(e => new EmployeeListItemDto { ... })` — **projection**. Generated SQL sirf `SELECT [e].[Id], [e].[FullName], [e].[Email], [d].[Name]` karega — 4 columns, pura row nahi. `e.Department.Name` likhne pe EF apne aap ek `JOIN [Departments] [d]` add karta hai; alag `Include` ki zaroorat nahi jab tum project kar rahe ho.
+- `.ToListAsync()` — **yahi trigger hai**. Ab SQL banta hai, execute hota hai, `await` thread free karta hai jab tak DB jawab de.
+- `GetByIdAsync` — `FirstOrDefaultAsync` = `SELECT TOP(1)`. Match nahi to `null`.
+- `GetByPanAsync` — `SingleOrDefaultAsync` = `SELECT TOP(2)`; agar 2 rows aayi to `InvalidOperationException`. PAN unique hona chahiye, isliye `Single` semantically sahi hai — do PAN mile to wo ek **data bug** hai jo tum chhupana nahi chahte.
+- `AnyAsync` — `EXISTS`. `CountAsync() > 0` mat likho — wo poora count karta hai, `Any` pehla match milte hi ruk jaata hai.
+- `CountAsync(predicate)` — filter + count ek hi SQL me.
+
+### Query syntax vs method syntax
+
+Do tareeke, dono same SQL dete hain:
+
+```csharp
+// Method syntax (lambda chain) — 95% code isi me likha jaata hai
+var q1 = _db.Employees
+    .Where(e => e.IsActive)
+    .OrderBy(e => e.FullName)
+    .Select(e => e.Email);
+
+// Query syntax (SQL jaisa) — joins/groupings me kabhi-kabhi zyada readable
+var q2 = from e in _db.Employees
+         where e.IsActive
+         orderby e.FullName
+         select e.Email;
+```
+
+Query syntax compiler ke liye method syntax me hi convert hota hai. Team codebases me method syntax default hai; `join`/`group by`/`let` bhaari ho to query syntax choose kar lo.
+
+### IQueryable vs IEnumerable — the boundary that matters
+
+```csharp
+// GOOD — sab kuch DB pe: filter + top 1, ek chhoti query
+var e1 = await _db.Employees
+    .Where(e => e.DepartmentId == 5)
+    .FirstOrDefaultAsync();
+
+// BAD — AsEnumerable() ne poori Employees table memory me kheench li,
+// filter phir C# me chala. 200k rows network + RAM.
+var e2 = _db.Employees
+    .AsEnumerable()
+    .Where(e => e.DepartmentId == 5)
+    .FirstOrDefault();
+```
+
+Rule: **`ToList()` / `AsEnumerable()` sabse aakhir me** — jab filtering, sorting, paging, projection sab ho chuki ho. Jaldi materialise kiya to har baad wala operator client-side.
+
+### Failure scenario — C# helper method inside Where
+
+```csharp
+private bool IsSenior(Employee e) =>
+    e.DateOfJoining < DateTime.UtcNow.AddYears(-10);
+
+// EF Core 3.0+ pe ye RUNTIME exception phenkta hai:
+// "could not be translated. Either rewrite the query in a form that can be
+//  translated, or switch to client evaluation explicitly"
+var seniors = await _db.Employees
+    .Where(e => IsSenior(e))
+    .ToListAsync();
+```
+
+EF `IsSenior` method ka body nahi padh sakta — wo compiled IL hai, expression tree nahi. Purane EF Core (2.x) is case me **chupke se** poori table le aata tha aur C# me filter karta tha — ek silent production-killer. Ab wo throw karta hai, jo achha hai. Fix: predicate ko **inline** likho taaki EF translate kar sake:
+
+```csharp
+var cutoff = DateTime.UtcNow.AddYears(-10);
+var seniors = await _db.Employees
+    .Where(e => e.DateOfJoining < cutoff)
+    .ToListAsync();
+```
+
+Ya agar logic genuinely SQL-translatable nahi hai (koi complex C# calc), to consciously `AsEnumerable()` ke baad karo aur pehle `Where` se result chhota kar lo.
+
+### When to use / when NOT to use
+
+- **Use LINQ-to-SQL** for har normal read: filter, sort, page, project, aggregate. 99% queries.
+- **When NOT** — bahut heavy reporting query, window functions, recursive CTE, hints — jahan generated SQL bad ho ya feature translate hi na ho. Tab `FromSql(...)` (raw parameterised SQL) ya ek database view use karo. LINQ ko zabardasti mat todo.
+- Bulk update/delete ke liye EF Core 7+ me `ExecuteUpdateAsync` / `ExecuteDeleteAsync` — ek SQL statement, entities load kiye bina.
+
+### Pros and cons
+
+Pros: type-safe (column rename compile pe pakadta hai), parameterised by default (injection-safe), composable (conditional filters), ek round-trip me filter+page+project. Cons: generated SQL kabhi-kabhi optimal nahi (extra joins, `N+1` agar `Include` galat), abstraction leak — tumhe pata hona chahiye peeche SQL kya ban raha hai, aur har LINQ feature translate nahi hota.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`.Select()` se projection karna optional lagta hai lekin sabse bada single win hai: pura `Employee` entity fetch karne ke bajaye 4 columns fetch karo — kam data, kam memory, change tracker pe load nahi, aur BFSI me `Salary`/`PanNumber` galti se API response me aane ka risk khatam.
+
+</Callout>
+
+<Tradeoff pros={["Type-safe aur refactor-safe queries", "Parameterised SQL by default — injection-safe", "Ek round-trip me filter + sort + page + project", "Conditional query composition (if ke andar .Where)"]} cons={["Generated SQL hamesha optimal nahi", "Har SQL feature translate nahi hota (CTE, window fns)", "Leaky abstraction — SQL samajhna phir bhi zaroori", "Galat jagah AsEnumerable() = poori table memory me"]} />
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending app ke admin panel me "employee search" endpoint har request pe `_context.Employees.ToList()` karke phir C# me `.Where(name contains)` chala raha tha. 40k employees pe har keystroke (type-ahead) 40k rows network pe. p95 latency 2.1s. Fix ek line ka tha: filter ko `IQueryable` pe le jao, `.Where(e => EF.Functions.Like(e.FullName, $"%{term}%")).Take(20).Select(dto)` — latency 90ms, memory graph flat ho gaya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking reporting module me developers ne har LINQ query me ek static helper `MaskPan(e.PanNumber)` `Select` ke andar call kiya. EF Core 6 pe wo translate nahi hua aur poore result set client-eval hue — nightly batch 45 min se 3 ghante ho gaya. Standard bana: masking/formatting queries ke **baad** (materialised list pe) hoti hai, query ke andar sirf translate-able expressions.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `FirstOrDefaultAsync` = SQL `TOP(1)`; `SingleOrDefaultAsync` = `TOP(2)` + client check
+- `Skip`/`Take` SQL Server pe `OFFSET/FETCH` — SQL Server 2012+ feature
+- Projection se aksar 5-10x kam data transfer (4 columns vs 15-column row)
+- EF Core 3.0 (2019) se client evaluation of `Where` **band** — ab exception, pehle silent
+- `AnyAsync()` `CountAsync() > 0` se tez — pehle match pe rukta hai
+- `ExecuteUpdateAsync` (EF Core 7+) — bulk update bina entities load kiye, ek `UPDATE` statement
+- No-tracking query (`AsNoTracking()`) read-only lists pe ~10-30% kam memory/CPU
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Sabse common: "`IQueryable` aur `IEnumerable` me farq kya hai?" Strong 20-second answer: "`IQueryable` ke upar likha LINQ expression tree banta hai jise EF Core SQL me translate karke database pe chalata hai — filtering, sorting, paging sab DB par. `IEnumerable` ke upar likha LINQ compiled C# delegate hai jo in-memory chalta hai. Jaise hi main `ToList()` ya `AsEnumerable()` call karta hoon, boundary cross ho jaati hai aur baaki sab client-side. Isliye `Where`/`Select`/`Skip`/`Take` hamesha materialise se pehle." Follow-up hamesha aata hai: "deferred execution kya hai" aur "projection kyun important hai." Ek line bolo ki tum generated SQL logs me dekhte ho — ye seniority signal hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`_db.Employees.ToList().Where(...)` — pehle poori table memory me, phir filter. Sahi: `.Where(...)` pehle `IQueryable` pe, `ToListAsync()` aakhir me.
+
+</Mistake>
+
+<Mistake>
+
+`Where` ya `Select` ke andar apna C# helper method call karna. EF translate nahi kar paata — EF Core 3+ pe runtime exception, purane pe silent client-eval. Predicate inline likho.
+
+</Mistake>
+
+<Mistake>
+
+Pura `Employee` entity fetch karke controller me manually DTO banana. `.Select(e => new Dto { ... })` query me hi likho — SQL sirf zaroori columns laayega aur change tracker load nahi hoga.
+
+</Mistake>
+
+<Mistake>
+
+`Skip`/`Take` bina `OrderBy` ke — result har request pe alag order me aa sakta hai, page 2 pe wahi rows repeat ho sakti hain. Pagination hamesha ek stable `OrderBy` ke saath.
+
+</Mistake>
+
+<Mistake>
+
+Existence check ke liye `CountAsync(...) > 0` ya `Where(...).ToListAsync().Any()`. `AnyAsync(predicate)` use karo — sabse sasta, pehle match pe rukta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    A["_db.Employees (IQueryable)"] --> B[".Where(e => e.IsActive)"]
+    B --> C[".OrderBy(e => e.FullName)"]
+    C --> D[".Skip / .Take (paging)"]
+    D --> E[".Select(e => new Dto)"]
+    E --> F["await .ToListAsync()  <-- trigger"]
+    F --> G["EF builds ONE SQL: SELECT cols ... WHERE ... ORDER BY ... OFFSET/FETCH"]
+    G --> H["SQL Server runs it (indexes) -> rows mapped to DTOs"]
+`}
+  caption="Nothing runs until ToListAsync(). The whole chain becomes one SQL statement executed on the database, not in app memory."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `DbSet` is `IQueryable` — LINQ on it builds an expression tree, translated to ONE SQL statement, run only when enumerated (`ToListAsync`, `FirstOrDefaultAsync`, `CountAsync`, `foreach`)
+- Deferred execution: `.Where().OrderBy()` does no DB call; the terminal async method triggers it
+- `IQueryable` = runs as SQL on the DB; `IEnumerable` = runs in app memory. `ToList()`/`AsEnumerable()` too early moves the rest client-side and can load a whole table
+- Always `.Select(...)` a DTO projection — fewer columns, less memory, no change tracking, no `Salary`/`PanNumber` leak
+- `FirstOrDefaultAsync` = `TOP 1`; `SingleOrDefaultAsync` throws if 2+ match (use for truly unique keys like PAN); `AnyAsync` beats `CountAsync() > 0`
+- `Skip`/`Take` for paging, but only meaningful with a stable `OrderBy`
+- Calling a C# helper method inside `Where`/`Select` fails to translate — EF Core 3+ throws at runtime; inline the expression instead
+- When LINQ can't express it (CTE, window functions), use `FromSql(...)` or a DB view — don't force it
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `IEmployeeRepository` me `Task<bool> PanExistsAsync(string pan)` add karo aur `EfEmployeeRepository` me `AnyAsync` se implement karo. EF Core logging on karke generated SQL terminal me dekho — confirm karo ki `EXISTS` ban raha hai, `SELECT *` nahi.
+
+**Medium:** Ek `GET /api/employees?departmentId=&isActive=&page=&pageSize=` endpoint banao. Repository me query **conditionally compose** karo — `var q = _db.Employees.AsQueryable(); if (departmentId is not null) q = q.Where(...);` — phir `OrderBy` + `Skip`/`Take` + `Select` DTO + `ToListAsync`. Verify ek hi SQL statement banta hai.
+
+**Bada (large):** Poore `EfEmployeeRepository` ki har read method audit karo: koi bhi `ToList()`/`AsEnumerable()` filter/sort/project se pehle to nahi? Har list method ko projection DTO pe move karo, `AsNoTracking()` add karo read-only pe, aur ek chhota "query log" middleware ya EF interceptor lagao jo 100ms se slow SQL warn kare. Before/after latency note karo.
+
+</Callout>

@@ -1,0 +1,350 @@
+---
+slug: "authorize-roles-policies-claims"
+title: "[Authorize] with Roles, Policies, and Claims, Line by Line"
+section: "code-flow"
+module: "security"
+order: 3
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["authentication-vs-authorization", "jwt-end-to-end"]
+tags: ["dotnet", "aspnet-core", "web-api", "security", "authorization", "policies", "claims", "employee-management"]
+englishDefinition: "Authorization in ASP.NET Core is applied with the [Authorize] attribute, which can require nothing more than an authenticated user, a specific role, or a named policy. Policies are registered once with AddAuthorization and are built from requirements such as RequireRole and RequireClaim or from custom IAuthorizationRequirement types paired with an AuthorizationHandler; resource-based checks run imperatively through IAuthorizationService.AuthorizeAsync inside an action when the decision depends on the specific entity being accessed."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Authorization in ASP.NET Core is applied with the `[Authorize]` attribute, which can require nothing more than an authenticated user, a specific role, or a named policy. Policies are registered once with `AddAuthorization` and are built from requirements such as `RequireRole` and `RequireClaim` or from custom `IAuthorizationRequirement` types paired with an `AuthorizationHandler`; resource-based checks run imperatively through `IAuthorizationService.AuthorizeAsync` inside an action when the decision depends on the specific entity being accessed.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle do topics me humne identity bana li — login pe ek signed JWT, aur har request pe `HttpContext.User` ek `ClaimsPrincipal`. Ab asli sawaal: is identity ko **kya karne dena hai**. `EmployeeManagement.Api` me abhi `POST`, `PUT`, `DELETE` sab khule hain. Is topic me hum teen tools seekhenge — roles, policies, claims — aur decide karenge kaunsa kahan.
+
+### What is it — teen level ki authorization
+
+- **Bare `[Authorize]`** — sirf itna: "koi bhi authenticated user". Koi role, koi claim check nahi. Token valid hai to andar aao.
+- **Role-based** — `[Authorize(Roles = "Admin,HrManager")]`. User ke paas in me se ek role claim hona chahiye.
+- **Policy-based** — `[Authorize(Policy = "CanManageEmployees")]`. Policy ek naam hai jiske peeche ek ya zyada **requirements** hote hain, jo `Program.cs` me ek baar define hote hain. Yahi production ka default hai kyunki rule ek jagah rehta hai, attribute me nahi bikhta.
+
+`[AllowAnonymous]` in sab ko override karta hai — login/register/health endpoints pe yahi lagta hai.
+
+### Why do we need it — bina iske kya tootega
+
+Bina authorization ke har authenticated user sab kuch kar sakta hai. Ek naya joinee jo login kar paaya, wo bhi `DELETE /api/employees/5` chala sakta hai. Concrete failure scenario: ek intern ka token, jo sirf apni profile dekhne ke liye tha, us se kisi ne saari employees ki salary `PUT` kar di — kyunki endpoint pe sirf `[Authorize]` tha, role check nahi. "Kaun" verify hua tha, "kya kar sakta hai" nahi.
+
+Aur agar tum har endpoint pe `Roles = "..."` haath se likhte raho, to ek din rule badalne pe 30 files edit karni padengi, aur ek jagah bhoolne pe hole ban jaata hai. Policy isi liye hai — rule ek jagah.
+
+### How does it work — mechanism step by step
+
+1. `UseAuthorization()` middleware endpoint pe lage `[Authorize]` metadata ko dekhta hai.
+2. Har `[Authorize]` ke andar ki demand ko ek ya zyada **`IAuthorizationRequirement`** me convert kiya jaata hai (`RolesAuthorizationRequirement`, `ClaimsAuthorizationRequirement`, ya tumhara custom requirement).
+3. Har requirement ke liye ek ya zyada **`AuthorizationHandler`** register hote hain. Middleware har handler ko `AuthorizationHandlerContext` deta hai jisme `context.User` aur saari pending requirements hoti hain.
+4. Handler agar satisfied hai to `context.Succeed(requirement)` call karta hai. Kisi bhi requirement ke liye agar koi bhi handler `Succeed` nahi karta, poori request fail — 403 (authenticated hai) ya 401 (anonymous).
+5. **Resource-based** case me decision entity pe depend karta hai (jaise "ye employee record isi user ka hai kya"), isliye ye check attribute se nahi hota — action ke andar `IAuthorizationService.AuthorizeAsync(User, resource, requirement)` se hota hai.
+
+Ek important detail: ek requirement ke **multiple handlers OR** ki tarah kaam karte hain — koi ek `Succeed` kar de to kaafi. Multiple requirements ek policy me **AND** ki tarah — sab satisfy hone chahiye.
+
+### Show it in our project — Part 1: roles aur endpoint lockdown
+
+Role claim already token me hai (`jwt-end-to-end` topic me `new Claim(ClaimTypes.Role, user.Role)`). Ab `EmployeesController`:
+
+```csharp
+[ApiController]
+[Route("api/employees")]
+[Authorize] // baseline: har endpoint ko authenticated user chahiye
+public class EmployeesController : ControllerBase
+{
+    private readonly IEmployeeService _employees;
+    private readonly IAuthorizationService _authz;
+
+    public EmployeesController(IEmployeeService employees, IAuthorizationService authz)
+    {
+        _employees = employees;
+        _authz = authz;
+    }
+
+    [HttpGet] // koi bhi authenticated user list dekh sakta hai
+    public Task<ActionResult<IReadOnlyList<EmployeeDto>>> GetAll()
+        => _employees.GetAllAsync();
+
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<EmployeeDto>> GetById(int id) { /* Part 3 */ }
+
+    [HttpPost]
+    [Authorize(Policy = "CanManageEmployees")]
+    public Task<ActionResult<EmployeeDto>> Create(CreateEmployeeRequest req)
+        => _employees.CreateAsync(req);
+
+    [HttpPut("{id:int}")]
+    [Authorize(Policy = "CanManageEmployees")]
+    public Task<IActionResult> Update(int id, UpdateEmployeeRequest req)
+        => _employees.UpdateAsync(id, req);
+
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = "Admin")] // delete sirf Admin
+    public Task<IActionResult> Delete(int id)
+        => _employees.DeleteAsync(id);
+}
+```
+
+Aur `AuthController.Login` pe `[AllowAnonymous]` — warna login karne ke liye pehle login chahiye hoga.
+
+**Line by line:**
+
+- Controller pe `[Authorize]` = poore controller ke liye baseline. Har action ise inherit karti hai; `[AllowAnonymous]` se hi ek action isse bahar aati hai.
+- `[HttpGet]` pe koi extra attribute nahi — controller ka baseline `[Authorize]` kaafi hai, GET sabke liye open-ish.
+- `[Authorize(Policy = "CanManageEmployees")]` — `POST` aur `PUT` pe ye policy. Policy ki definition `Program.cs` me ek jagah.
+- `[Authorize(Roles = "Admin")]` — `DELETE` pe seedha role. Chhota, fixed rule — policy banana over-engineering hota.
+- `IAuthorizationService _authz` — resource-based check ke liye inject kiya, Part 3 me use hoga.
+
+### Show it in our project — Part 2: policies aur ek custom requirement
+
+`Program.cs` me:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    // simple: role se bani policy
+    options.AddPolicy("CanManageEmployees", policy =>
+        policy.RequireRole("Admin", "HrManager"));
+
+    // claim-based: sirf wo jinke paas dept=HR claim hai
+    options.AddPolicy("HrOnly", policy =>
+        policy.RequireClaim("dept", "HR"));
+
+    // custom requirement: sirf same branch ka HrManager
+    options.AddPolicy("SameBranchHrManager", policy =>
+        policy.Requirements.Add(new SameBranchRequirement()));
+});
+
+builder.Services.AddScoped<IAuthorizationHandler, SameBranchHandler>();
+```
+
+Custom requirement + handler:
+
+```csharp
+public sealed class SameBranchRequirement : IAuthorizationRequirement
+{
+    // marker type — koi data nahi chahiye is case me
+}
+
+public sealed class SameBranchHandler
+    : AuthorizationHandler<SameBranchRequirement, Employee>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        SameBranchRequirement requirement,
+        Employee resource)
+    {
+        var isHrManager = context.User.IsInRole("HrManager");
+        var userBranch = context.User.FindFirst("branch")?.Value;
+
+        if (isHrManager && userBranch is not null &&
+            userBranch == resource.Branch)
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+**Line by line:**
+
+- `AddPolicy("CanManageEmployees", p => p.RequireRole(...))` — ek policy jiska rule "in roles me se ek chahiye". `[Authorize(Policy = "CanManageEmployees")]` isi ko point karta hai.
+- `RequireClaim("dept", "HR")` — user ke claims me `dept=HR` hona chahiye. Value list bhi de sakte ho.
+- `policy.Requirements.Add(new SameBranchRequirement())` — ek custom requirement daala. Iske liye ab ek handler chahiye.
+- `SameBranchRequirement : IAuthorizationRequirement` — ek khaali marker class. Kabhi-kabhi requirement me data hota hai (jaise `MinimumAgeRequirement(18)`); yahan zaroorat nahi.
+- `AuthorizationHandler<SameBranchRequirement, Employee>` — do generic args: kaunsa requirement handle karna hai, aur kis **resource type** ke against. Do-arg version sirf resource-based call se trigger hota hai.
+- `context.User.IsInRole("HrManager")` — role claim check.
+- `context.User.FindFirst("branch")?.Value` — custom `branch` claim (login pe token me daala hua).
+- `context.Succeed(requirement)` — condition poori. Ise call nahi kiya to requirement unsatisfied reh jaata hai aur authorization fail. Note: fail explicitly karne ke liye `context.Fail()` hota hai, par usually na-`Succeed` karna hi kaafi hai.
+- `AddScoped<IAuthorizationHandler, SameBranchHandler>()` — handler ko DI me register karna zaroori hai, warna wo kabhi chalega hi nahi (silent — koi error nahi).
+
+### Show it in our project — Part 3: resource-based authorization
+
+"Ek employee sirf apna record padh sake, HR sabka" — ye attribute se nahi ho sakta, kyunki decision `id` pe depend karta hai.
+
+```csharp
+[HttpGet("{id:int}")]
+public async Task<ActionResult<EmployeeDto>> GetById(int id)
+{
+    var employee = await _employees.GetEntityByIdAsync(id);
+    if (employee is null) return NotFound();
+
+    // HR/Admin sabko dekh sakte hain
+    if (User.IsInRole("Admin") || User.IsInRole("HrManager"))
+        return Ok(_employees.ToDto(employee));
+
+    // warna sirf apna record
+    var currentUserEmpId = User.FindFirstValue("employeeId");
+    if (currentUserEmpId == employee.Id.ToString())
+        return Ok(_employees.ToDto(employee));
+
+    return Forbid(); // 403 — authenticated hai par ye record nahi
+}
+```
+
+Ya requirement/handler ke through, jab logic reusable ho:
+
+```csharp
+var result = await _authz.AuthorizeAsync(User, employee, "SameBranchHrManager");
+if (!result.Succeeded) return Forbid();
+```
+
+- `_authz.AuthorizeAsync(User, employee, "SameBranchHrManager")` — imperative check. `employee` object handler ke `resource` parameter me pahunchta hai.
+- `result.Succeeded` — bool. `false` pe `Forbid()` (403), kyunki user authenticated to hai.
+- `Forbid()` vs `NotFound()` — kabhi-kabhi 403 ki jagah 404 dete hain taaki attacker ko pata na chale record exist karta hai (BFSI me common).
+
+### Where is it used in day-to-day development
+
+- Har controller pe class-level `[Authorize]`, write verbs pe policy — ye standard lockdown pattern hai.
+- Admin panels: `[Authorize(Roles = "Admin")]` poore `AdminController` pe.
+- "Sirf apna data" screens (my profile, my documents, my leave) — resource-based `AuthorizeAsync` ya inline owner check.
+- Feature flags per plan/tenant: `RequireClaim("plan", "Premium")`.
+- Multi-tenant apps: har query pe tenant claim match — aksar ek custom requirement.
+
+### When to use / when NOT to use
+
+- **Role** — jab permission ek fixed job-title se bandha ho aur shaayad hi badle (`Admin` delete kar sakta hai). Simple, readable.
+- **Policy with RequireClaim** — jab rule ek attribute pe ho jo role nahi hai (`dept`, `branch`, `plan`, `country`).
+- **Custom requirement + handler** — jab rule me logic ho (do cheezein compare karni ho, DB dekhna ho, "same branch") ya wahi rule kai jagah chahiye.
+- **Resource-based** — jab decision specific entity pe depend karta ho. Isko attribute me thoosne ki koshish mat karo.
+- Over-engineering se bacho: 3 endpoints ke liye 3 lines wale `Roles = "Admin"` theek hai, uske liye policy infra mat khada karo.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Custom `AuthorizationHandler` ko DI me `AddScoped<IAuthorizationHandler, ...>()` se register karna **zaroori** hai. Bhool gaye to handler kabhi nahi chalega, requirement kabhi satisfy nahi hoga, aur har request 403 dega — bina kisi error ya log ke. Ye ghante kha jaata hai.
+
+</Callout>
+
+<Tradeoff
+  pros={["Policy rule ek jagah (Program.cs) rehta hai — 30 attributes me nahi bikharta", "Custom handler me poori C# logic + DB access — jitna complex rule chahiye", "Resource-based check se 'sirf apna data' rules clean aur testable", "Requirements AND, ek requirement ke handlers OR — expressive combos"]}
+  cons={["Indirection zyada — attribute dekh ke rule pata nahi chalta, Program.cs kholna padta hai", "Handler DI registration bhoolna ek silent-403 trap hai", "Chhote fixed rules ke liye policy infra over-engineering", "Resource-based check har action me manually likhna padta hai, attribute automatic nahi"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-ops API me shuru me sab kuch role-based tha — `Agent`, `Manager`, `Admin`. Phir requirement aaya "manager sirf apni city ke applications approve kare". Role me city nahi thi. Team ne `city` claim JWT me add kiya aur ek `SameCityRequirement` + handler banaya jo `context.User`'s `city` claim ko application ki city se match karta tha, `IAuthorizationService.AuthorizeAsync(User, application, "SameCity")` action me. Ek jagah rule, 12 endpoints pe reuse, aur unit test me handler ko seedha `AuthorizationHandlerContext` de kar test kiya.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR module me ek custom `AuthorizationHandler` register karna reh gaya tha — code review me miss ho gaya. QA me har `PUT /api/employees/{id}` 403 de raha tha. Do din "token me role hai, phir bhi forbidden" debug hua. Root cause: `builder.Services.AddScoped<IAuthorizationHandler, BranchScopeHandler>()` line hi nahi thi. Iske baad onboarding checklist me "har custom handler ke saath uska DI registration same commit me" add kiya gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- **3** built-in levels: bare `[Authorize]`, `[Authorize(Roles = "...")]`, `[Authorize(Policy = "...")]`
+- Multiple requirements in a policy = **AND**; multiple handlers for one requirement = **OR** (ek `Succeed` kaafi)
+- `[AllowAnonymous]` **har** `[Authorize]` ko override karta hai — chahe controller pe ho ya globally
+- Anonymous user + `[Authorize]` = **401**; authenticated but rule fail = **403**
+- Custom handler lifetime: usually `Scoped` (DB access hone par) ya `Singleton` (pure claim logic)
+- `AuthorizeAsync` return karta hai `AuthorizationResult` — check `.Succeeded` (bool)
+- Role claim ka default type `ClaimTypes.Role` — JWT me `RoleClaimType` se map hota hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Roles vs policies vs claims — kab kya use karoge?" Strong 20-second answer: "Role jab permission ek fixed job-title se bandha ho aur shaayad hi badle. Claim-based policy jab rule ek non-role attribute pe ho — dept, branch, plan. Custom `IAuthorizationRequirement` + `AuthorizationHandler` jab rule me logic ho ya reuse chahiye. Aur resource-based `IAuthorizationService.AuthorizeAsync` jab decision specific entity pe depend kare, jaise 'sirf apna record'. Policy ka fayda — rule ek jagah `Program.cs` me, attribute me nahi bikharta." Follow-ups: "handler register karna kaise" (DI `IAuthorizationHandler`), "do handlers ek requirement pe" (OR), "401 vs 403 anonymous case me".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Custom `AuthorizationHandler` likhna par `Program.cs` me `AddScoped<IAuthorizationHandler, MyHandler>()` bhoolna. Handler kabhi nahi chalta, requirement kabhi satisfy nahi hota, har request silently 403 — koi error nahi.
+
+</Mistake>
+
+<Mistake>
+
+Har endpoint pe `[Authorize(Roles = "Admin,HrManager")]` haath se repeat karna. Rule badla to 20 jagah edit, ek jagah bhoole to hole. Ek named policy banao, ek baar define karo.
+
+</Mistake>
+
+<Mistake>
+
+Resource-based decision ("sirf apna record") ko role/policy attribute me fit karne ki koshish. Attribute ke paas entity nahi hoti — ye check action ke andar `IAuthorizationService.AuthorizeAsync(User, entity, ...)` se hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Anonymous user ko `Forbid()` (403) dena jab actual me identity hi nahi bani. Anonymous = `Unauthorized()` / 401. `Forbid()` sirf tab jab user authenticated hai par rule fail.
+
+</Mistake>
+
+<Mistake>
+
+Role check client-side data se karna — jaise request body me bheja hua `role` field trust karna. Role hamesha token ke `ClaimsPrincipal` se aana chahiye, jise server ne sign kiya hai.
+
+</Mistake>
+
+<Mistake>
+
+`context.Fail()` ke bharose rehna aur `context.Succeed(requirement)` na call karna. Authorization default se deny hai — pass karne ke liye `Succeed` call karna hi padta hai; `Succeed` na hone par requirement apne aap fail ho jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Request hits endpoint with [Authorize(Policy = CanManageEmployees)]"] --> B["UseAuthorization reads policy metadata"]
+    B --> C["Policy expands to requirements (AND)"]
+    C --> D["Each requirement: run its handlers (OR)"]
+    D --> E{"Every requirement got context.Succeed?"}
+    E -- "Yes" --> F["Action method runs"]
+    E -- "No, user authenticated" --> G["403 Forbidden"]
+    E -- "No, user anonymous" --> H["401 Unauthorized"]
+`}
+  caption="A policy is a set of requirements (AND); each requirement is satisfied if any one of its handlers calls context.Succeed (OR)."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `[Authorize]` = any authenticated user; `[Authorize(Roles = "Admin,HrManager")]` = one of those roles; `[Authorize(Policy = "X")]` = a named policy defined once in `AddAuthorization`.
+- `[AllowAnonymous]` overrides every `[Authorize]` — put it on `login`/`register`/health.
+- Policy = requirements combined with **AND**; one requirement is met if **any** of its handlers calls `context.Succeed(requirement)` (**OR**).
+- `RequireRole(...)`, `RequireClaim(key, values...)` for simple policies; `policy.Requirements.Add(new MyRequirement())` for custom logic.
+- Custom rule = `IAuthorizationRequirement` (marker or data) + `AuthorizationHandler<TRequirement>` (or `<TRequirement, TResource>`); **must** register the handler as `IAuthorizationHandler` in DI or it never runs.
+- Resource-based ("only my own record"): call `IAuthorizationService.AuthorizeAsync(User, entity, "policy")` inside the action, check `result.Succeeded`.
+- Our lockdown: class-level `[Authorize]`, `GET` open to any authenticated user, `POST`/`PUT` need `CanManageEmployees` (Admin or HrManager), `DELETE` needs `Admin`.
+- Anonymous + `[Authorize]` = 401; authenticated but rule fails = 403; never send 403 to an anonymous caller.
+- Choose: role for fixed job-title rules, claim-policy for non-role attributes, custom handler for logic/reuse, resource-based for per-entity decisions.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Program.cs` me ek `CanManageEmployees` policy add karo (`RequireRole("Admin", "HrManager")`) aur `EmployeesController` ke `POST`/`PUT` pe `[Authorize(Policy = "CanManageEmployees")]`, `DELETE` pe `[Authorize(Roles = "Admin")]` lagao. Ek `HrManager` token se `POST` (200) aur `DELETE` (403) call karke confirm karo.
+
+**Medium:** `jwt-end-to-end` topic ke login se jodo — token me ek `branch` aur ek `employeeId` claim add karo. Phir `GET /api/employees/{id}` me resource-based check likho: Admin/HrManager sabko, baaki sirf apna `employeeId` wala record; mismatch pe `Forbid()`. Do alag users ke token se verify karo.
+
+**Bada (large):** Ek `SameBranchRequirement` + `SameBranchHandler` (`AuthorizationHandler<SameBranchRequirement, Employee>`) banao jo "HrManager sirf apni branch ke employees update kar sake" enforce kare, DI me register karo, aur `PUT`/`DELETE` actions me `IAuthorizationService.AuthorizeAsync(User, employee, "SameBranchHrManager")` se use karo. Handler ke liye unit tests likho jo `AuthorizationHandlerContext` ko manually construct karke same-branch (succeed) aur cross-branch (fail) dono cover karein.
+
+</Callout>

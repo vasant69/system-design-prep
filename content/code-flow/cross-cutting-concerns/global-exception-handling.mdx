@@ -1,0 +1,393 @@
+---
+slug: "global-exception-handling"
+title: "Global Exception Handling with IExceptionHandler & ProblemDetails"
+section: "code-flow"
+module: "cross-cutting-concerns"
+order: 2
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["middleware-and-the-request-pipeline", "extracting-the-service-layer"]
+tags: ["dotnet", "aspnet-core", "web-api", "exception-handling", "problem-details", "intermediate", "employee-management"]
+englishDefinition: "Global exception handling is a single, centralized place where every unhandled exception in the app is caught, logged, and converted into a consistent HTTP error response. On .NET 8 the idiomatic approach is IExceptionHandler implementations registered with AddExceptionHandler plus UseExceptionHandler, returning RFC 7807 ProblemDetails so clients always get the same machine-readable error shape and internal stack traces never leak."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Wipro", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Global exception handling is a single, centralized place where every unhandled exception in the app is caught, logged, and converted into a consistent HTTP error response. On .NET 8 the idiomatic approach is `IExceptionHandler` implementations registered with `AddExceptionHandler` plus `UseExceptionHandler`, returning RFC 7807 `ProblemDetails` so clients always get the same machine-readable error shape and internal stack traces never leak.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Humare `EmployeeManagement.Api` me abhi `EmployeesController` ki har action me kuch aisa hoga:
+
+```csharp
+[HttpGet("{id:int}")]
+public async Task<ActionResult<EmployeeDto>> GetById(int id)
+{
+    var employee = await _service.GetByIdAsync(id);
+    if (employee is null)
+        return NotFound();
+    return Ok(employee);
+}
+```
+
+Ab socho 40 endpoints. Har ek me `try/catch`, har ek me alag error JSON shape, kisi me `{ "error": "..." }`, kisi me `{ "message": "..." }`, kisi me plain string. Aur agar `SaveChangesAsync` pe SQL exception aaya jise kisi ne catch nahi kiya — client ko poora **stack trace** dikh jaayega jisme connection string aur table names tak ho sakte hain. BFSI audit me ye instant fail hai.
+
+### What is it — plain definition
+
+Global exception handling ka matlab: **ek hi jagah** jahan har unhandled exception aa kar rukta hai, log hota hai, aur ek **consistent HTTP error response** me convert hota hai. Controllers me `try/catch` khatam. Business code sirf **exception throw** karta hai (`throw new NotFoundException(...)`), aur ek central handler use sahi status code aur JSON me badal deta hai.
+
+### Why do we need it — bina iske kya tootega
+
+- **Inconsistent error shapes** — frontend/mobile team ko har endpoint ka error alag parse karna padta hai.
+- **Stack trace leak** — `500` pe internal exception message client tak jaana ek security vulnerability hai (information disclosure).
+- **Duplicated code** — wahi `try/catch` 40 baar; ek jagah bhool gaye to unhandled `500` with full detail.
+- **No traceability** — support ko "kaunsi request fail hui" trace karne ke liye kuch nahi milta.
+
+Failure scenario: ek digital-lending API me `POST /api/employees` pe duplicate PAN aane par `DbUpdateException` aata tha. Kisi ne catch nahi kiya. Client ko `500` ke saath `"Cannot insert duplicate key row in object 'dbo.Employees' with unique index 'IX_Employees_PanNumber'"` dikh gaya. Ab attacker ko table name, index name, aur constraint sab pata hai. Sahi behaviour: `409 Conflict` with `"An employee with this PAN already exists."` — bas.
+
+### How does it work — the .NET 8 mechanism
+
+.NET 8 me idiomatic tareeka teen tukdon me:
+
+1. **`AddProblemDetails()`** — framework ko bolo ki error responses RFC 7807 `ProblemDetails` format me generate karo (`type`, `title`, `status`, `detail`, `instance`, aur extensions jaise `traceId`).
+2. **`IExceptionHandler` implementations** — ek ya zyada classes jo `TryHandleAsync(HttpContext, Exception, CancellationToken)` implement karti hain. Har handler bolta hai "ye exception mera hai" (`return true`, response likh diya) ya "mera nahi" (`return false`, agle handler ko try karne do).
+3. **`app.UseExceptionHandler()`** — ek terminal-ish middleware jo pipeline me sabse upar baithta hai, `try/catch` karta hai poore downstream ko, aur exception aane par registered `IExceptionHandler`s ko order me call karta hai.
+
+Flow: exception Service me throw hoti hai to wo Controller ke through bubble up karti hai, `UseExceptionHandler` middleware use catch karta hai, registered handlers ko turn-by-turn poochta hai, pehla jo `true` return kare uska response chala jaata hai. Koi handle na kare to default `500 ProblemDetails` (bina detail ke).
+
+### Show it in our project — the exception hierarchy
+
+Pehle ek chhoti domain-exception hierarchy `EmployeeManagement.Api/Exceptions/` me:
+
+```csharp
+namespace EmployeeManagement.Api.Exceptions;
+
+public abstract class AppException : Exception
+{
+    protected AppException(string message) : base(message) { }
+}
+
+public sealed class NotFoundException : AppException
+{
+    public NotFoundException(string resource, object key)
+        : base($"{resource} with key '{key}' was not found.") { }
+}
+
+public sealed class ConflictException : AppException
+{
+    public ConflictException(string message) : base(message) { }
+}
+
+public sealed class DomainValidationException : AppException
+{
+    public IReadOnlyDictionary<string, string[]> Errors { get; }
+
+    public DomainValidationException(IReadOnlyDictionary<string, string[]> errors)
+        : base("One or more validation errors occurred.")
+        => Errors = errors;
+}
+```
+
+Service ab clean throw karti hai:
+
+```csharp
+public async Task<EmployeeDto> GetByIdAsync(int id)
+{
+    var employee = await _repository.GetByIdAsync(id);
+    if (employee is null)
+        throw new NotFoundException("Employee", id);
+
+    return _mapper.ToDto(employee);
+}
+
+public async Task<EmployeeDto> CreateAsync(CreateEmployeeDto dto)
+{
+    if (await _repository.PanExistsAsync(dto.PanNumber))
+        throw new ConflictException("An employee with this PAN already exists.");
+
+    // ... map, add, SaveChangesAsync
+}
+```
+
+Aur Controller ab sirf happy path:
+
+```csharp
+[HttpGet("{id:int}")]
+public async Task<ActionResult<EmployeeDto>> GetById(int id)
+    => Ok(await _service.GetByIdAsync(id));
+```
+
+### The IExceptionHandler
+
+```csharp
+using EmployeeManagement.Api.Exceptions;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+namespace EmployeeManagement.Api.Handlers;
+
+public sealed class AppExceptionHandler : IExceptionHandler
+{
+    private readonly IProblemDetailsService _problemDetailsService;
+    private readonly ILogger<AppExceptionHandler> _logger;
+
+    public AppExceptionHandler(
+        IProblemDetailsService problemDetailsService,
+        ILogger<AppExceptionHandler> logger)
+    {
+        _problemDetailsService = problemDetailsService;
+        _logger = logger;
+    }
+
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var (status, title) = exception switch
+        {
+            NotFoundException          => (StatusCodes.Status404NotFound, "Resource not found"),
+            ConflictException          => (StatusCodes.Status409Conflict, "Conflict"),
+            DomainValidationException  => (StatusCodes.Status400BadRequest, "Validation failed"),
+            _                          => (StatusCodes.Status500InternalServerError, "An unexpected error occurred"),
+        };
+
+        if (status == StatusCodes.Status500InternalServerError)
+            _logger.LogError(exception, "Unhandled exception for {Path}", httpContext.Request.Path);
+        else
+            _logger.LogWarning("Handled {Type}: {Message}", exception.GetType().Name, exception.Message);
+
+        httpContext.Response.StatusCode = status;
+
+        var problemDetails = new ProblemDetails
+        {
+            Status = status,
+            Title = title,
+            Detail = status == StatusCodes.Status500InternalServerError
+                ? null                       // 500 pe NO detail — leak prevention
+                : exception.Message,
+            Instance = httpContext.Request.Path,
+        };
+        problemDetails.Extensions["traceId"] =
+            httpContext.TraceIdentifier;
+
+        if (exception is DomainValidationException dve)
+            problemDetails.Extensions["errors"] = dve.Errors;
+
+        return await _problemDetailsService.TryWriteAsync(new ProblemDetailsContext
+        {
+            HttpContext = httpContext,
+            ProblemDetails = problemDetails,
+            Exception = exception,
+        });
+    }
+}
+```
+
+`Program.cs` wiring:
+
+```csharp
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<AppExceptionHandler>();
+
+var app = builder.Build();
+
+app.UseExceptionHandler();      // pipeline me sabse upar (UseRequestLogging ke baad chalega but wraps everything downstream)
+
+if (app.Environment.IsDevelopment())
+{
+    // dev-only: full stack trace page, sirf local debugging ke liye
+    app.UseDeveloperExceptionPage();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+```
+
+### Code explained line by line
+
+- `IExceptionHandler` — .NET 8 ka naya interface. Ek method: `ValueTask<bool> TryHandleAsync(...)`. `true` = "maine handle kar liya, response likh diya"; `false` = "next handler try kare".
+- `IProblemDetailsService` — `AddProblemDetails()` isko DI me daal deta hai. Ye `ProblemDetails` object ko content negotiation ke saath JSON response me likhta hai, `application/problem+json` content type ke saath.
+- `exception switch { ... }` — C# pattern matching. Har domain exception type ko ek status+title pe map karta hai. `_` (discard) = "koi bhi aur exception" → `500`.
+- `LogError(exception, ...)` **sirf** `500` pe — expected business exceptions (`NotFound`, `Conflict`) ko `LogWarning` se log karo, warna logs `500`-level noise se bhar jaate hain aur real errors chhup jaati hain.
+- `Detail = ... ? null : exception.Message` — **yahi wo line hai jo stack trace leak rokti hai**. `500` pe client ko sirf generic title milega, `traceId` milega, detail nahi. `traceId` se support internal logs me exact request dhoondh leti hai.
+- `problemDetails.Extensions["traceId"]` — RFC 7807 me custom fields "extensions" me daalte hain. `httpContext.TraceIdentifier` har request ka unique ID hai (jo logs me bhi aata hai).
+- `DomainValidationException` ke liye `Extensions["errors"]` — field-wise errors dictionary, taaki frontend har field ke neeche message dikha sake (jaise `ValidationProblemDetails` karta hai).
+- `_problemDetailsService.TryWriteAsync(...)` — actual response write; iska bool return hi handler ka return ban jaata hai.
+
+### The older / alternative approaches (know them for interviews)
+
+**1. `UseExceptionHandler` with a lambda / error path (pre-.NET 8, still valid):**
+
+```csharp
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var feature = context.Features.Get<IExceptionHandlerFeature>();
+        var ex = feature?.Error;
+        context.Response.StatusCode = 500;
+        await context.Response.WriteAsJsonAsync(new { error = "Something went wrong" });
+    });
+});
+```
+
+Ya `app.UseExceptionHandler("/error")` + ek `ErrorController` with `[Route("/error")]`. Kaam karta hai, lekin `IExceptionHandler` cleaner hai — testable class, multiple handlers, DI.
+
+**2. A custom exception-handling middleware** (`try { await _next(ctx); } catch (Exception ex) { ... }`) — bilkul valid, aur `IExceptionHandler` se pehle log yahi likhte the. `IExceptionHandler` basically iska framework-blessed version hai.
+
+**3. MVC `IExceptionFilter`** — sirf MVC actions ke andar ke exceptions pakadta hai, middleware-level ya routing errors nahi. Ab prefer nahi kiya jaata global handling ke liye.
+
+**4. `app.UseDeveloperExceptionPage()`** — full stack trace ka HTML page. **Sirf** `if (app.Environment.IsDevelopment())` ke andar. Production me kabhi nahi — wahi leak jise hum rok rahe hain.
+
+### Where is it used in day-to-day development
+
+- Har production Web API me day 1 pe set hota hai — team ka "error contract" isse define hota hai.
+- Frontend/mobile teams `ProblemDetails` shape pe apna error-toast logic likhte hain — ek baar, sab endpoints ke liye.
+- Support tickets me user `traceId` batata hai, engineer logs me wahi ID search karta hai.
+- New exception type add karna = handler ke `switch` me ek line — poore codebase me `catch` blocks nahi badalne padte.
+
+### When to use / when NOT to use
+
+Global handler har **unexpected** aur **cross-cutting** error ke liye. Lekin har `if (x is null) return NotFound()` ko exception me convert karna zaroori nahi — agar wo ek normal, expected control-flow hai (jaise search me kuch na mila) to `404` seedha return karna sasta hai (exceptions ka performance cost hota hai). Rule of thumb: exception tab jab caller ka aage badhna galat hi hai; simple `return NotFound()` tab jab "kuch nahi mila" ek valid outcome hai.
+
+### Pros and cons
+
+Fayde: consistent error contract, zero leak, ek jagah change, clean controllers, built-in `traceId` correlation. Nuksan: exceptions ka runtime cost (hot path me hazaaron/sec throw karna mehnga), aur stack traces read karna thoda seekhna padta hai kyunki business code ab "kaha se ye 409 aaya" turant nahi dikhta — handler dekhna padta hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "Ek consistent RFC 7807 error shape saare endpoints par",
+    "Stack traces / internal details client tak kabhi nahi jaate",
+    "Controllers sirf happy-path — try/catch clutter khatam",
+    "traceId se support aur logs correlate hote hain",
+  ]}
+  cons={[
+    "Exceptions ka runtime cost — hot path me heavy throw mehnga",
+    "Naye devs ko 'error kaha se aaya' handler dekh kar samajhna padta hai",
+    "Har expected 404 ko exception banana over-engineering ho sakta hai",
+    "Handler order galat ho to zyada-general handler pehle match kar sakta hai",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending platform ke KYC service me har microservice ka error format alag tha. Mobile app ke andar 6 alag error-parsing branches the. Team ne ek shared `ProblemDetails`-based `IExceptionHandler` NuGet package banaya, sab services me `AddExceptionHandler` + `AddProblemDetails` lagaya. Mobile side 6 branches ek `parseProblemDetails()` function me collapse ho gaye, aur `traceId` field ko crash-reporting tool me attach kar diya — ab har user-reported error ek server log line se linked hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank ke integration project me security audit ne finding raise ki: "3 endpoints `500` pe SQL exception text return kar rahe hain." Root cause — un 3 controllers me `try/catch` tha jo `ex.Message` ko response me daal raha tha. Fix: saare local `try/catch` hataye, ek `AppExceptionHandler` add kiya jo `500` pe `Detail = null` rakhta hai aur sirf `traceId` deta hai. Audit re-test pass ho gaya bina kisi business logic ko chhue.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- RFC **7807** = `ProblemDetails` spec; content type `application/problem+json`
+- `IExceptionHandler` .NET **8** me introduce hua; pehle custom middleware ya `UseExceptionHandler` lambda hota tha
+- Standard mapping: `NotFoundException` to **404**, `ConflictException` to **409**, validation to **400**, baaki sab to **500**
+- `500` response me `Detail` field **null** — koi internal message nahi; sirf `traceId`
+- Multiple `IExceptionHandler`s registration order me chalte hain; pehla `true` return karne wala jeetta hai
+- `UseDeveloperExceptionPage()` **sirf** Development environment me — production me information disclosure
+- `httpContext.TraceIdentifier` format aksar `00-<trace-id>-<span-id>-01` (W3C Trace Context) jab distributed tracing on ho
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic senior-leaning hai aur bahut poochha jaata hai. Common opener: "How do you handle exceptions globally in a Web API?" Strong jawaab: ".NET 8 me `IExceptionHandler` implement karta hoon, `AddExceptionHandler` + `AddProblemDetails` + `app.UseExceptionHandler()` se wire karta hoon. Domain exceptions (`NotFoundException`, `ConflictException`) ko status codes pe map karta hoon RFC 7807 `ProblemDetails` ke saath. `500` pe koi detail nahi bhejta — sirf `traceId` jo logs se correlate hota hai. `UseDeveloperExceptionPage` sirf dev me." Follow-up hamesha: "`500` pe client ko kya bhejoge?" — generic title + `traceId`, exception message NAHI. Aur: "expected `404` ke liye bhi exception throw karoge?" — nahi, agar wo normal outcome hai to seedha `return NotFound()`, exceptions ka cost hota hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`500` response me `exception.Message` ya `exception.ToString()` daal dena "taaki debugging aasan ho." Ye information-disclosure vulnerability hai — SQL constraint names, file paths, connection details leak hote hain. `500` pe sirf generic title + `traceId`.
+
+</Mistake>
+
+<Mistake>
+
+`app.UseDeveloperExceptionPage()` ko `if (app.Environment.IsDevelopment())` ke bahar rakhna. Production me har `500` pe full stack trace ka HTML page client ko chala jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Har chhoti "not found" situation ke liye `NotFoundException` throw karna, jaise search results empty hone par. Exceptions ka runtime cost hai; expected empty result ke liye `return NotFound()` ya empty list return karo.
+
+</Mistake>
+
+<Mistake>
+
+`AddProblemDetails()` register karna bhool jaana. Phir `IProblemDetailsService.TryWriteAsync` `false` return karta hai ya default fallback response jaata hai jo tumhare custom `ProblemDetails` fields ko drop kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+Local `try/catch` blocks ko controllers me chhod dena "extra safety ke liye" jab global handler already hai. Ye double handling hai — local catch exception ko nigal leta hai to global handler ko wo dikhta hi nahi, aur error shape phir inconsistent ho jaata hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    S["Service: throw new ConflictException('duplicate PAN')"] --> C["Controller action (no try/catch) — exception bubbles up"]
+    C --> M["UseExceptionHandler middleware catches it"]
+    M --> H["AppExceptionHandler.TryHandleAsync — switch on exception type"]
+    H --> D{"Which type?"}
+    D -->|NotFoundException| R404["404 + ProblemDetails(detail = message)"]
+    D -->|ConflictException| R409["409 + ProblemDetails(detail = message)"]
+    D -->|anything else| R500["500 + ProblemDetails(detail = null, traceId only)"]
+`}
+  caption="The exception is thrown deep in the Service, bubbles past a clean Controller, and a single handler maps its type to a status code and a safe ProblemDetails body."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Goal: one central place — no `try/catch` in controllers, consistent error shape, no stack-trace leak
+- .NET 8 idiom: `AddProblemDetails()` + `AddExceptionHandler<T>()` + `app.UseExceptionHandler()`
+- `IExceptionHandler.TryHandleAsync` returns `true` (handled, response written) or `false` (let the next handler try)
+- Map domain exceptions to status: `NotFoundException` to 404, `ConflictException` to 409, validation to 400, everything else to 500
+- On 500: generic title + `traceId` only — `Detail` MUST be null; never `exception.Message`
+- Return RFC 7807 `ProblemDetails` / `ValidationProblemDetails`; content type `application/problem+json`; custom fields go in `Extensions`
+- Older approaches still valid: `UseExceptionHandler("/error")` + error controller, or a hand-written try/catch middleware, or `UseExceptionHandler(lambda)`
+- `UseDeveloperExceptionPage()` — Development only, never production
+- Don't convert every expected "not found" into an exception — exceptions have a runtime cost
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.Api` me `NotFoundException` aur `ConflictException` classes banao (`Exceptions/` folder). `EmployeeService.GetByIdAsync` me `return null` ko `throw new NotFoundException("Employee", id)` se replace karo, aur `EmployeesController.GetById` se `if (employee is null) return NotFound()` hata do.
+
+**Medium:** `AppExceptionHandler : IExceptionHandler` implement karo jo in dono exceptions ko 404/409 pe map kare aur baaki sab ko 500 pe (detail null). `Program.cs` me `AddProblemDetails()`, `AddExceptionHandler<AppExceptionHandler>()`, `app.UseExceptionHandler()` wire karo. Swagger se ek non-existent id GET karke `404 application/problem+json` with `traceId` verify karo.
+
+**Bada (large):** `DomainValidationException` add karo jo ek `IReadOnlyDictionary<string, string[]>` carry kare. `EmployeeService.CreateAsync` me do business invariants check karo (salary non-negative, DateOfJoining future me nahi) aur violation par ye exception throw karo. Handler ko update karo taaki ye `400` `ValidationProblemDetails`-style response de with per-field `errors`. Phir ek dusra `IExceptionHandler` (`SqlExceptionHandler`) add karo jo `DbUpdateException` ke andar unique-constraint violation ko detect karke `409` de — dono handlers ko sahi order me register karo aur test likho.
+
+</Callout>

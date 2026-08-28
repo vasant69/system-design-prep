@@ -1,0 +1,360 @@
+---
+slug: "jwt-end-to-end"
+title: "JWT End to End: Anatomy, Issuing, and Validating a Bearer Token"
+section: "code-flow"
+module: "security"
+order: 2
+difficulty: "intermediate"
+readingTime: 20
+prerequisites: ["authentication-vs-authorization", "configuration-and-the-options-pattern"]
+tags: ["dotnet", "aspnet-core", "web-api", "security", "jwt", "authentication", "employee-management"]
+englishDefinition: "A JSON Web Token (JWT) is a compact, URL-safe string with three base64url-encoded parts separated by dots — a header, a payload of claims, and a signature. In an ASP.NET Core Web API the server issues a signed JWT at login and the JwtBearer authentication handler validates every later request's Authorization Bearer header against configured TokenValidationParameters, turning a valid token into an HttpContext.User ClaimsPrincipal."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+A JSON Web Token (JWT) is a compact, URL-safe string with three base64url-encoded parts separated by dots — a header, a payload of claims, and a signature. In an ASP.NET Core Web API the server issues a signed JWT at login and the `JwtBearer` authentication handler validates every later request's `Authorization: Bearer` header against configured `TokenValidationParameters`, turning a valid token into an `HttpContext.User` `ClaimsPrincipal`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne decide kiya ki `EmployeeManagement.Api` bearer token auth use karegi. Ab actual token: wo dikhta kaisa hai, server use banata kaise hai, aur har request pe validate kaise hota hai. Ye topic thoda lamba hai kyunki poora login-to-request loop ek saath samajhna zaroori hai.
+
+### What is it — JWT ki anatomy
+
+JWT ek string hoti hai teen hisso me, dot (`.`) se alag:
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MiIsInJvbGUiOiJBZG1pbiIsImV4cCI6MTcxNzAwMDAwMH0.d2hvYXRlSXNUaGVTaWduYXR1cmVIZXJl
+```
+
+- **Header** — chhota JSON: `{ "alg": "HS256", "typ": "JWT" }`. `alg` batata hai signature kis algorithm se bana. `HS256` = HMAC-SHA256.
+- **Payload** — claims ka JSON. Standard (registered) claims: `sub` (subject — user id), `name`, `role`, `exp` (expiry, Unix seconds), `iss` (issuer — kisne banaya), `aud` (audience — kiske liye), `iat` (issued-at), `nbf` (not-before). Iske alaawa tum custom claims daal sakte ho jaise `dept`.
+- **Signature** — header aur payload ko join karke, ek **secret key** se HMAC-SHA256 hash. Formula: `HMACSHA256(base64url(header) + "." + base64url(payload), secret)`.
+
+Har part **base64url** encoded hai — normal base64 jaisa, par URL-safe (`+` `/` ki jagah `-` `_`, aur padding `=` hata hua) taaki token header/URL me safely jaa sake.
+
+### Why do we need it — ye kya solve karta hai
+
+Bina token ke API stateless nahi ho sakti — har request pe username/password bhejna padta (bahut galat) ya server ko session table maintain karni padti. JWT self-contained hai: usme user id, role, expiry — sab andar hai, cryptographically signed. Server ko database dekhne ki zaroorat nahi, sirf signature verify karo. Isse API horizontally scale karti hai — koi bhi instance kisi bhi token ko akele validate kar leta hai.
+
+**Ek critical baat — JWT signed hai, encrypted nahi.** Payload base64url me hai, koi bhi `jwt.io` pe paste karke claims padh sakta hai. Signature sirf **tampering** rokta hai, **reading** nahi. Isliye JWT me kabhi password, PAN number, ya koi secret mat daalo — sirf id, role, aur non-sensitive claims.
+
+Concrete failure scenario: ek dev ne JWT payload me poora employee object daal diya including `salary` aur `panNumber`, socha "encrypted hai na". Ek attacker ne browser devtools se token copy kiya, base64url decode kiya, aur saari salaries plain text me mil gayin. Signed ≠ encrypted.
+
+### How does it work — signature ka mechanism
+
+HMAC-SHA256 ek **symmetric** algorithm hai — ek hi secret key sign aur verify dono karti hai. Server ke paas ek secret string hai (config me). Login pe wo secret se signature banata hai. Baad ki har request pe wahi server wahi secret se dobara signature compute karta hai aur token me aayi signature se compare karta hai — match hua to token intact hai, kisi ne beech me `role: User` ko `role: Admin` nahi banaya. Agar match nahi, token reject.
+
+Trade-off: symmetric key ka matlab jo verify kar sakta hai wo sign bhi kar sakta hai. Agar tumhare paas kai alag services hain jo sirf verify karni chahiye (sign nahi), tab **asymmetric** (`RS256` — private key sign, public key verify) better hai. Ek single API ke liye `HS256` simple aur kaafi hai.
+
+### Show it in our project — Part 1: config aur validation setup
+
+Pehle secret ko config me rakho, hardcode nahi. `appsettings.json`:
+
+```json
+{
+  "Jwt": {
+    "Issuer": "EmployeeManagement.Api",
+    "Audience": "EmployeeManagement.Client",
+    "SecretKey": "dev-only-secret-change-me-min-32-chars-long-please",
+    "AccessTokenMinutes": 30
+  }
+}
+```
+
+Ek strongly-typed options class:
+
+```csharp
+public sealed class JwtOptions
+{
+    public const string SectionName = "Jwt";
+    public string Issuer { get; set; } = string.Empty;
+    public string Audience { get; set; } = string.Empty;
+    public string SecretKey { get; set; } = string.Empty;
+    public int AccessTokenMinutes { get; set; } = 30;
+}
+```
+
+`Program.cs` me bind karo aur JwtBearer wire karo:
+
+```csharp
+builder.Services.Configure<JwtOptions>(
+    builder.Configuration.GetSection(JwtOptions.SectionName));
+
+var jwt = builder.Configuration
+    .GetSection(JwtOptions.SectionName)
+    .Get<JwtOptions>()!;
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwt.Issuer,
+
+            ValidateAudience = true,
+            ValidAudience = jwt.Audience,
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
+
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwt.SecretKey)),
+
+            RoleClaimType = ClaimTypes.Role,
+            NameClaimType = ClaimTypes.Name
+        };
+    });
+
+builder.Services.AddAuthorization();
+```
+
+### Code explained line by line
+
+- `JwtBearerDefaults.AuthenticationScheme` — ye constant `"Bearer"` string hai. Isse spelling mistake nahi hoti.
+- `.AddJwtBearer(options => ...)` — `"Bearer"` scheme ke against `JwtBearerHandler` register karta hai. Yahi handler har request pe `Authorization` header padhega.
+- `TokenValidationParameters` — validation rules ka bag. Handler har token ko in rules pe chalata hai.
+- `ValidateIssuer = true` + `ValidIssuer` — token ka `iss` claim exactly hamare issuer se match hona chahiye. Isse doosre system ke token reject ho jaate hain.
+- `ValidateAudience = true` + `ValidAudience` — token ka `aud` claim check. Ek auth server kai APIs ke liye token deta ho to isse "ye token mere liye hai" confirm hota hai.
+- `ValidateLifetime = true` — `exp` (aur `nbf`) check. Expired token reject.
+- `ClockSkew = TimeSpan.FromSeconds(30)` — **default 5 minute hai**, jo bahut zyada hai. Server aur client ki ghadi thodi alag ho sakti hai, isliye thoda buffer chahiye, par 30 second kaafi. Iske bina exactly-expired token pe edge failures aate hain.
+- `ValidateIssuerSigningKey = true` + `IssuerSigningKey` — signature ko is key se verify karo. `SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))` — hamari secret string ko bytes me badal ke key banata hai.
+- `RoleClaimType = ClaimTypes.Role` — batata hai `User.IsInRole(...)` aur `[Authorize(Roles=...)]` ko kaunsa claim role samajhna hai. JWT me role aksar `"role"` ya schema URI se aata hai; ye line dono ko consistent rakhti hai.
+
+### Show it in our project — Part 2: token issue karna
+
+`User` entity aur password verify agle topic me detail me — abhi maan lo `IUserService.ValidateCredentialsAsync` username/password check karke `User` ya `null` deta hai.
+
+```csharp
+[ApiController]
+[Route("api/auth")]
+public class AuthController : ControllerBase
+{
+    private readonly IUserService _users;
+    private readonly JwtOptions _jwt;
+
+    public AuthController(IUserService users, IOptions<JwtOptions> jwt)
+    {
+        _users = users;
+        _jwt = jwt.Value;
+    }
+
+    [AllowAnonymous]
+    [HttpPost("login")]
+    public async Task<ActionResult<LoginResponse>> Login(LoginRequest request)
+    {
+        var user = await _users.ValidateCredentialsAsync(
+            request.Username, request.Password);
+
+        if (user is null)
+            return Unauthorized(new { message = "Invalid username or password" });
+
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Name, user.Username),
+            new Claim(ClaimTypes.Role, user.Role),
+            new Claim("dept", user.Department ?? "NONE"),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
+
+        var key = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(_jwt.SecretKey));
+        var creds = new SigningCredentials(
+            key, SecurityAlgorithms.HmacSha256);
+
+        var expires = DateTime.UtcNow.AddMinutes(_jwt.AccessTokenMinutes);
+
+        var token = new JwtSecurityToken(
+            issuer: _jwt.Issuer,
+            audience: _jwt.Audience,
+            claims: claims,
+            notBefore: DateTime.UtcNow,
+            expires: expires,
+            signingCredentials: creds);
+
+        var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+        return Ok(new LoginResponse(tokenString, expires));
+    }
+}
+
+public record LoginRequest(string Username, string Password);
+public record LoginResponse(string AccessToken, DateTime ExpiresAtUtc);
+```
+
+Line by line:
+
+- `[AllowAnonymous]` — login endpoint ko token nahi chahiye, warna chicken-and-egg. Ye baaki module ke `[Authorize]` ko override karta hai.
+- `IOptions<JwtOptions> jwt` inject, `_jwt = jwt.Value` — options pattern se config aata hai, hardcoded nahi.
+- `claims` array — token ke andar kya jaayega. `NameIdentifier` = user id (`sub`), `Name` = username, `Role` = role. `"dept"` ek custom claim hai jo agli topic me policy me use hoga. `Jti` (JWT ID) ek unique id — refresh/revocation ke liye kaam aata hai.
+- `SigningCredentials(key, SecurityAlgorithms.HmacSha256)` — key + algorithm ka pair. Yahi `alg: HS256` header me likhta hai aur signature banata hai.
+- `DateTime.UtcNow` — hamesha UTC. `exp` claim UTC me hi hota hai; local time use kiya to production me galat expiry.
+- `new JwtSecurityToken(...)` — token ka in-memory representation. `JwtSecurityTokenHandler().WriteToken(token)` ise actual `header.payload.signature` string me serialize karta hai.
+- Response me token + exact expiry — client ko pata rehta hai kab refresh karna hai.
+
+> Nayi API ke liye Microsoft ab `JsonWebTokenHandler` (`Microsoft.IdentityModel.JsonWebTokens`) recommend karta hai — faster aur `JwtSecurityTokenHandler` se cleaner. API almost same hai (`CreateToken(SecurityTokenDescriptor)`). Concept identical: claims + signing key + lifetime.
+
+### Token lifetime, clock skew, aur refresh tokens
+
+- **Access token short rakho** — 15 se 30 minute. Leak hua to damage window chhota.
+- **Clock skew** — do machines ki ghadi sync me nahi hoti; `ClockSkew` thoda tolerance deta hai. Default 5 min ko 1-2 min ya 30s pe le aao.
+- **Refresh token** — access token ko baar-baar login kiye bina renew karne ke liye. Idea: login pe ek short access token + ek long-lived (7-30 din) **refresh token** do. Access expire hone pe client `POST /api/auth/refresh` pe refresh token bhejta hai, server naya access (aur naya refresh — **rotation**) deta hai. Refresh token DB me store hota hai (hashed), taaki logout/breach pe revoke ho sake. Refresh token kabhi `localStorage` me nahi — httpOnly cookie ya secure storage. Is topic me hum concept samajh rahe hain; full refresh implementation ek alag feature hai.
+
+### Consuming — client side
+
+Client login se token leta hai aur har protected call pe header lagata hai:
+
+```text
+GET /api/employees HTTP/1.1
+Host: localhost:5028
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0Mi...
+```
+
+Server side JwtBearer handler: header padha → `Bearer ` prefix hataya → token ko `TokenValidationParameters` pe validate kiya → valid hua to `ClaimsPrincipal` banaya → `HttpContext.User` set. Ab `[Authorize]` aur `User.FindFirstValue(...)` kaam karte hain. Invalid/expired → 401, `WWW-Authenticate` header me reason.
+
+### Where is it used in day-to-day development
+
+- Har login flow: `AuthController.Login` token deta hai, frontend use store karke interceptor me har request pe attach karta hai.
+- Swagger ka "Authorize" button — wahi `Bearer <token>` header inject karta hai taaki tum protected endpoints test kar sako.
+- Debugging "401 on a valid-looking token": 90% baar issuer/audience mismatch, expired token, ya `appsettings` me secret alag environment me alag hai.
+- Microservices: ek gateway token issue karta hai, downstream services sirf validate karti hain (aksar `RS256` public key se).
+
+### When to use / when NOT to use
+
+Use JWT bearer jab: stateless API, multiple client types (SPA, mobile, service). NOT ideal jab: tumhe har request pe instant server-side revocation chahiye (JWT stateless hai — revoke ke liye short TTL + refresh rotation ya ek deny-list chahiye), ya jab client ek hi trusted server-rendered app ho (tab cookie session simpler hai).
+
+</Hinglish>
+
+<Callout type="trap">
+
+JWT **signed** hota hai, **encrypted nahi**. Payload ko koi bhi base64url-decode karke padh sakta hai. Token me kabhi password, PAN, salary jaisi sensitive value mat daalo — sirf id, role, aur non-secret claims.
+
+</Callout>
+
+<Tradeoff
+  pros={["Stateless — server ko session store nahi chahiye, koi bhi instance token validate kar leta hai", "Self-contained — id, role, expiry sab token me, DB hit nahi", "Standard format — har language/framework me library available, interop easy"]}
+  cons={["Instant revoke nahi ho sakta — issued token expiry tak valid; short TTL + refresh rotation chahiye", "Payload readable hai — sensitive data kabhi andar nahi", "Secret leak = koi bhi valid token bana sakta hai; key rotation ka plan chahiye"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-app backend me access token 60 minute ka tha aur refresh token nahi tha. Ek user ka token ek shared-computer ke browser cache me reh gaya; agla user usse ek ghante tak application data dekh paaya. Fix: access token 15 minute, refresh token httpOnly cookie me with rotation, aur logout pe server-side refresh token invalidate. Damage window ek ghante se ghat kar 15 minute ho gaya, aur logout ab actually kaam karta hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking API me `ClockSkew` default 5 minute chhod diya tha, aur ek scheduled job ne token generate karke turant use kiya — kabhi-kabhi "token used before nbf" ya "expired" random failures. Root cause: app servers ka NTP sync drift kar gaya tha. Do fixes: NTP theek kiya, aur `ClockSkew` ko explicit 60 second kiya taaki misconfiguration chhupe nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- JWT ke **3** parts: header, payload, signature — `.` se separated, sab **base64url**
+- `ClockSkew` default **5 minutes** — production me isse **30-60 seconds** karo
+- Access token typical lifetime: **15-30 minutes**; refresh token: **7-30 days**
+- HMAC-SHA256 secret: minimum **32 bytes** (256-bit); chhota key `IDX10653` error deta hai
+- Valid token → **200/expected**; missing/invalid/expired → **401** with `WWW-Authenticate: Bearer`
+- Standard registered claims: `sub`, `iss`, `aud`, `exp`, `nbf`, `iat`, `jti` — 7 defined by RFC 7519
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Sabse common: "Explain the structure of a JWT" aur "how does the server validate it without a database?". Strong 20-second answer: "JWT ke teen base64url parts hain — header with `alg`, payload with claims like `sub`, `role`, `exp`, `iss`, `aud`, aur signature. Signature header aur payload ka HMAC-SHA256 hash hai ek server secret se. Validation pe server wahi secret se signature dobara compute karke compare karta hai plus issuer, audience, aur lifetime check karta hai — sab token ke andar hai, DB nahi chahiye. Token signed hai encrypted nahi, isliye sensitive data andar nahi jaata." Follow-ups: refresh token flow, `HS256` vs `RS256`, aur "revocation kaise" — teenon ready rakho.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Secret ko `Program.cs` me hardcode karna ya git me commit karna. Secret hi poori security hai — leak hua to koi bhi Admin token bana lega. Use config + environment variables / user-secrets / a vault, aur environment ke hisaab se rotate karo.
+
+</Mistake>
+
+<Mistake>
+
+Token me sensitive data daalna kyunki "JWT encrypted hai". JWT signed hai, encrypted nahi — payload plain base64url hai. Password, PAN, salary jaisi cheezein kabhi claim me nahi.
+
+</Mistake>
+
+<Mistake>
+
+`ClockSkew` ko default 5 minute chhod dena. Iska matlab ek expired token 5 minute aur chalega. Production me explicitly 30-60 second set karo.
+
+</Mistake>
+
+<Mistake>
+
+`DateTime.Now` (local time) se `expires` set karna. `exp` claim UTC seconds me hota hai — local time use kiya to non-UTC servers pe token turant expired ya bahut lamba valid lag sakta hai. Hamesha `DateTime.UtcNow`.
+
+</Mistake>
+
+<Mistake>
+
+`ValidateIssuer`/`ValidateAudience` ko `false` kar dena "kaam karwane ke liye". Isse kisi bhi issuer ka token accept ho jaata hai. Agar issuer/audience match nahi ho raha to values theek karo, validation band mat karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant C as Client
+    participant A as AuthController
+    participant J as JwtBearer handler
+    participant E as EmployeesController
+    C->>A: POST /api/auth/login (username, password)
+    A->>A: verify user, build claims, sign HS256
+    A-->>C: 200 { accessToken, expiresAtUtc }
+    C->>J: GET /api/employees + Authorization: Bearer token
+    J->>J: check signature, issuer, audience, lifetime
+    J->>E: valid -> HttpContext.User = ClaimsPrincipal
+    E-->>C: 200 employee list
+`}
+  caption="Login issues a signed token once; every later request carries it in the Bearer header and the JwtBearer handler validates it before the action runs."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- JWT = `base64url(header).base64url(payload).base64url(signature)` — signed, **not encrypted**; anyone can read the payload.
+- Claims: `sub` (user id), `name`, `role`, `exp`, `iss`, `aud`, `nbf`, `iat`, `jti`; add custom ones like `dept` freely (nothing secret).
+- Signature = `HMACSHA256(header + "." + payload, secret)` — symmetric key signs and verifies (`HS256`); `RS256` splits into private-sign / public-verify.
+- Server setup: `AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o => o.TokenValidationParameters = ...)` — validate Issuer, Audience, Lifetime, IssuerSigningKey; set `ClockSkew` to 30-60s.
+- Issue: verify user → `Claim[]` → `SymmetricSecurityKey` + `SigningCredentials(HmacSha256)` → `JwtSecurityToken` → `JwtSecurityTokenHandler().WriteToken(...)`; return token + UTC expiry.
+- Secret comes from `JwtOptions` bound to config — never hardcoded, minimum 32 bytes.
+- Consume: `Authorization: Bearer <token>` header on every protected request; handler builds `HttpContext.User`, invalid/expired → 401.
+- Keep access tokens short (15-30 min); use a long-lived, DB-stored, rotated **refresh token** for renewal without re-login.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `JwtOptions` class banao, `appsettings.json` me `Jwt` section add karo, aur `Program.cs` me `AddJwtBearer` ko `TokenValidationParameters` ke saath wire karo. App run karke confirm karo build clean hai aur Swagger ka Authorize button dikh raha hai.
+
+**Medium:** `AuthController` me `POST /api/auth/login` banao jo ek hardcoded test user (`admin` / `admin123`) verify karke `NameIdentifier`, `Name`, `Role`, `dept` claims wala token return kare. `GET /api/employees/me` (from topic 1) ko token ke saath call karke claims wapas aate dekho, bina token 401 confirm karo.
+
+**Bada (large):** Ek `ITokenService` banao jo token creation ko `AuthController` se bahar nikaale (testable). Uske upar ek minimal refresh-token flow add karo: `RefreshToken` entity (Id, UserId, TokenHash, ExpiresAtUtc, IsRevoked), `POST /api/auth/refresh` endpoint jo purana refresh token validate karke naya access + naya refresh (rotation) de, aur `POST /api/auth/logout` jo refresh token revoke kare. Unit test karo ki revoked ya expired refresh token 401 deta hai.
+
+</Callout>

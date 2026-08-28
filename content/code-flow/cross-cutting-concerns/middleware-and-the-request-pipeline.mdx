@@ -1,0 +1,327 @@
+---
+slug: "middleware-and-the-request-pipeline"
+title: "Middleware & the Request Pipeline, Line by Line"
+section: "code-flow"
+module: "cross-cutting-concerns"
+order: 1
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["create-the-project-and-walk-the-structure", "dependency-injection-and-service-lifetimes"]
+tags: ["dotnet", "aspnet-core", "web-api", "middleware", "request-pipeline", "intermediate", "employee-management"]
+englishDefinition: "Middleware is a chain of components that every HTTP request passes through on the way in and every response passes through on the way out. Each component is a RequestDelegate that can run code, then either call the next component or short-circuit the pipeline. In ASP.NET Core you assemble this chain in Program.cs with app.Use, app.Run, and app.Map, and the order you add them is the order they execute."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Middleware is a chain of components that every HTTP request passes through on the way in and every response passes through on the way out. Each component is a `RequestDelegate` that can run code, then either call the next component or short-circuit the pipeline. In ASP.NET Core you assemble this chain in `Program.cs` with `app.Use`, `app.Run`, and `app.Map`, and the order you add them is the order they execute.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humara `EmployeeManagement.Api` Controller se Service se EF Core repository tak clean bana hua hai. Lekin request Controller tak **pahunchti kaise hai**? Beech me kya hota hai? Wo beech ka raasta hi **middleware pipeline** hai — aur `Program.cs` me `app.UseHttpsRedirection()`, `app.UseAuthorization()`, `app.MapControllers()` jaisi lines jo tumne ab tak "copy-paste magic" maani thi, wo actually is pipeline ke steps hain.
+
+### What is it — plain definition
+
+Middleware ek **software component** hai jo HTTP request aur response ke beech me baithta hai. Technically har middleware ek `RequestDelegate` hai — yaani ek function jiska signature hai `Task Invoke(HttpContext context)`. Ek middleware ke paas 3 choices hoti hain:
+
+1. Request pe kuch kaam karo (log karo, header check karo, timer start karo).
+2. `await next(context)` call karke request ko **agle** middleware ko de do.
+3. `next` call **mat** karo — yaani pipeline ko yahin **short-circuit** kar do aur khud response bhej do (jaise `401 Unauthorized`).
+
+Sab middleware milke ek **chain** banate hain. Request chain me upar se neeche jaati hai, phir response neeche se upar wapas aati hai. Isko "Russian doll" ya "onion" model kehte hain — har middleware ek layer hai jiske andar agli layer hai.
+
+### Why do we need it — bina iske kya tootega
+
+Socho har cross-cutting kaam — logging, authentication, HTTPS redirect, exception handling, CORS — agar tumhe **har Controller action** me manually likhna pade. 40 endpoints, har ek me wahi 6 lines. Ek jagah bhool gaye to security hole. Middleware ye saara "har request pe chalne wala" kaam **ek jagah, ek baar** define karne deta hai, aur framework use har request pe automatically chala deta hai. Ye DRY principle ka infrastructure-level version hai.
+
+Failure scenario: agar pipeline hi na ho, to authentication ka koi central point nahi hoga. Har developer apne hisaab se token check karega, koi `Bearer` prefix bhool jaayega, koi expiry check nahi karega — aur audit ke time BFSI client poochhega "har request authenticate kaise hoti hai?" aur tumhare paas ek line ka jawaab nahi hoga.
+
+### How does it work — step by step
+
+`Program.cs` me `var app = builder.Build();` ke **baad** wali lines pipeline banati hain. Order **exactly** wahi hai jis order me tum likhte ho:
+
+1. Request Kestrel server pe aati hai.
+2. Pehla registered middleware chalta hai. Wo `await next()` karta hai.
+3. Dusra middleware chalta hai. Wo bhi `await next()` karta hai.
+4. ...aise hi neeche tak, jab tak **terminal** middleware (`MapControllers` ke andar ka endpoint) na aa jaaye jo actual Controller action chalata hai.
+5. Ab response ulta chalta hai — terminal se wapas pehle middleware tak — aur har middleware ka `await next()` ke **baad** wala code ab chalta hai.
+
+Iska matlab: `await next()` ke pehle likha code = "request going in", `await next()` ke baad likha code = "response coming out".
+
+### Show it in our project — custom RequestLoggingMiddleware
+
+Hum har request ka method, path, status code, aur time (ms) log karna chahte hain. Ye classic middleware use-case hai. Teen tareeke hain — sabse readable wala **convention-based class** pehle.
+
+**Tareeka 1 — convention-based class (recommended):**
+
+```csharp
+namespace EmployeeManagement.Api.Middleware;
+
+public class RequestLoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestLoggingMiddleware> _logger;
+
+    public RequestLoggingMiddleware(
+        RequestDelegate next,
+        ILogger<RequestLoggingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await _next(context);
+        }
+        finally
+        {
+            stopwatch.Stop();
+            _logger.LogInformation(
+                "HTTP {Method} {Path} responded {StatusCode} in {Elapsed} ms",
+                context.Request.Method,
+                context.Request.Path,
+                context.Response.StatusCode,
+                stopwatch.ElapsedMilliseconds);
+        }
+    }
+}
+```
+
+Iske saath ek chhota **extension method** — taaki `Program.cs` me `app.UseRequestLogging()` ek clean line ban jaaye:
+
+```csharp
+namespace EmployeeManagement.Api.Middleware;
+
+public static class RequestLoggingMiddlewareExtensions
+{
+    public static IApplicationBuilder UseRequestLogging(
+        this IApplicationBuilder app)
+        => app.UseMiddleware<RequestLoggingMiddleware>();
+}
+```
+
+`Program.cs` me register:
+
+```csharp
+var app = builder.Build();
+
+app.UseRequestLogging();   // sabse pehle — taaki har request ka time capture ho
+
+app.UseHttpsRedirection();
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+```
+
+### Code explained line by line
+
+- `private readonly RequestDelegate _next;` — ye "chain ka agla component" hai. Framework ise constructor me **inject** karta hai jab `UseMiddleware` call hota hai. Isko call karna matlab "request ko aage bhejo".
+- Constructor me `ILogger<RequestLoggingMiddleware>` — convention-based middleware constructor injection support karta hai **singleton-style** dependencies ke liye. `ILogger` safe hai. **Scoped** service (jaise humara `AppDbContext`) constructor me inject karna galat hai — wo `InvokeAsync` ke parameter me lena chahiye (framework wahan scoped resolve karta hai).
+- `InvokeAsync(HttpContext context)` — framework is **exact naam** (`Invoke` ya `InvokeAsync`) ko reflection se dhoondhta hai. `HttpContext` me poori request/response info hai — headers, path, user, status.
+- `Stopwatch.StartNew()` — timer, `await _next` ke pehle start.
+- `await _next(context)` — yahi wo line hai jo **agle middleware ko chalati hai**. Agar ye line hata do, to pipeline yahin ruk jaayega aur Controller kabhi nahi chalega — request "hang" ho jaayegi ya khaali response jaayega.
+- `finally` block — response wapas aane ke baad (ya exception aane par bhi) time aur status log hota hai. `finally` isliye taaki exception aane par bhi log mile.
+- Structured logging placeholders (`{Method}`, `{Path}`) — string interpolation nahi. Isse Serilog/Seq jaisi tools me tum `StatusCode = 500` pe filter kar sakte ho.
+
+**Tareeka 2 — inline lambda** (chhote, throwaway logic ke liye, ya jab alag class banane ka mann na ho):
+
+```csharp
+app.Use(async (context, next) =>
+{
+    var start = DateTime.UtcNow;
+    await next(context);
+    var ms = (DateTime.UtcNow - start).TotalMilliseconds;
+    app.Logger.LogInformation("{Method} {Path} -> {Status} ({Ms} ms)",
+        context.Request.Method, context.Request.Path,
+        context.Response.StatusCode, ms);
+});
+```
+
+**Tareeka 3 — `IMiddleware` factory-based** (jab tumhe middleware me **scoped** dependency chahiye har request pe fresh, ya middleware ko unit-test karna ho):
+
+```csharp
+public class RequestLoggingMiddleware : IMiddleware
+{
+    private readonly ILogger<RequestLoggingMiddleware> _logger;
+    public RequestLoggingMiddleware(ILogger<RequestLoggingMiddleware> logger)
+        => _logger = logger;
+
+    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    {
+        // ...same logic, but `next` is a parameter, not a field
+        await next(context);
+    }
+}
+```
+
+Iske liye DI me register karna padta hai: `builder.Services.AddScoped<RequestLoggingMiddleware>();` phir `app.UseMiddleware<RequestLoggingMiddleware>();`. Fayda: DI-friendly, testable. Nuksan: thodi extra wiring.
+
+### Terminal middleware, Map, aur short-circuiting
+
+- `app.Run(handler)` — **terminal** middleware. Ye `next` leta hi nahi — pipeline yahin khatam. `MapControllers` andar se ek terminal endpoint middleware hai.
+- `app.Map("/health", branch => branch.Run(...))` — path-based **branch**. `/health` se shuru hone wali requests ek alag mini-pipeline me chali jaati hain.
+- `app.MapWhen(ctx => ctx.Request.Query.ContainsKey("debug"), branch => ...)` — kisi bhi predicate pe branch.
+- **Short-circuit** — agar koi middleware `await next()` **na** kare aur `context.Response` khud likh de (jaise `context.Response.StatusCode = 401; return;`), to us request ke liye baaki pipeline aur Controller **kabhi nahi chalte**. `UseAuthorization` aise hi 401/403 pe pipeline rok deta hai.
+
+### Built-in middleware jo hum already use karte hain
+
+| Line | Kaam |
+|---|---|
+| `UseHttpsRedirection` | HTTP request ko HTTPS pe redirect |
+| `UseRouting` | URL ko dekh kar decide karo kaunsa endpoint match hua |
+| `UseAuthentication` | `Authorization` header se user identity banao |
+| `UseAuthorization` | Us user ko is endpoint ki permission hai ya nahi — nahi to 401/403 pe short-circuit |
+| `MapControllers` | Matched Controller action chalao (terminal) |
+
+### Where is it used in day-to-day development
+
+- **Correlation ID middleware** — har request pe ek `X-Correlation-Id` header add/read karke logs me daalna, taaki ek request ko poore microservice chain me trace kar sako.
+- **Request/response logging** for audit — BFSI me mandatory.
+- **Global exception handling** (agla topic) — ek middleware jo saare unhandled exceptions pakadta hai.
+- **Rate limiting, CORS, response compression, static files** — sab middleware.
+- **Tenant resolution** — multi-tenant SaaS me subdomain se tenant identify karna.
+
+### When to use / when NOT to use
+
+**Use middleware** jab logic **har request** (ya requests ke bade subset) pe chalni ho aur wo **HTTP-level** ho — headers, status, timing, auth. **Mat use karo** middleware jab logic ek specific endpoint ya business rule ho — wo Controller filter (`ActionFilter`) ya Service layer me jaani chahiye. Ek employee ke salary validation ke liye middleware likhna galat design hai; wo Service ki invariant hai.
+
+### Pros and cons
+
+Fayde: ek jagah, reusable, order-controlled, framework-managed. Nuksan: **order galat to bug silent hota hai** (jaise auth ke pehle endpoint execute ho jaaye), aur middleware me heavy synchronous kaam poore server ki throughput girata hai kyunki har request usme se guzarti hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Custom middleware ko `app.MapControllers()` ke **baad** likhoge to wo matched Controller routes ke liye **kabhi nahi chalega** — `MapControllers` terminal hai, wo `next` call nahi karta jab route match ho jaata hai. `UseRequestLogging()` hamesha `MapControllers` se pehle rakho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ne `RequestLoggingMiddleware` galti se `app.UseAuthentication()` ke **baad** aur `MapControllers` ke **theek pehle** rakha. Kaam kar raha tha — lekin jab ek endpoint 401 pe short-circuit hota (`UseAuthorization` se), tab bhi... ruko, actually unka asli bug ye tha: unhone logging middleware ko `UseRouting` ke pehle rakha, isliye `context.GetEndpoint()` hamesha `null` aata tha aur wo endpoint name log nahi kar paate the. `UseRouting` ke baad shift karte hi endpoint metadata mil gaya. Pipeline order sirf "chalta hai / nahi chalta" nahi — "kya data available hai" bhi decide karta hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Bade BFSI projects me ek standard **"platform middleware bundle"** hota hai — correlation ID, request logging, exception handling, security headers — jo ek internal NuGet package se aata hai aur har service `app.UsePlatformDefaults()` ek line se lagati hai. Naya developer ye ek line dekhta hai lekin andar 5 middleware registered hote hain, fixed order me. Audit team isi ek entry point se prove karti hai ki har request log hoti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Middleware method ka naam framework `Invoke` ya `InvokeAsync` dhoondhta hai — spelling galat to runtime pe crash
+- Pipeline order = registration order — 1:1, koi auto-sorting nahi
+- `await next()` ke pehle = request phase; `await next()` ke baad = response phase
+- `app.Run()` aur `MapControllers` dono terminal — `next` nahi lete
+- Convention-based middleware **1 baar** construct hota hai (effectively singleton) — scoped dependency `InvokeAsync` parameter me lo, constructor me nahi
+- `IMiddleware` version DI se resolve hota hai — scoped registration allowed
+- 3 branch options: `Map` (path prefix), `MapWhen` (predicate), `UseWhen` (predicate, phir main pipeline me wapas)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye **very-high frequency** topic hai .NET interviews me. Sabse common: "What is middleware and how does the pipeline work?" Strong 20-second jawaab: "Middleware ek chain of `RequestDelegate`s hai. Har component request pe kuch kar sakta hai, phir `await next()` se aage bhej sakta hai, ya short-circuit kar sakta hai. Order = `Program.cs` me registration order. Request neeche jaati hai, response wapas upar aati hai — `next()` se pehle wala code request phase, baad wala response phase. `app.Run` aur `MapControllers` terminal hote hain." Follow-up hamesha aata hai: "`UseRouting` aur `UseAuthorization` ka order kyun matter karta hai?" — kyunki `UseAuthorization` ko routing metadata chahiye ye jaanne ke liye ki endpoint pe `[Authorize]` hai ya nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Custom middleware ko `app.MapControllers()` ke **baad** register karna. `MapControllers` terminal hai — matched routes ke liye `next` call nahi hota, isliye tumhara middleware chalta hi nahi. Hamesha `MapControllers` se pehle.
+
+</Mistake>
+
+<Mistake>
+
+Convention-based middleware ke **constructor** me scoped service (jaise `AppDbContext`) inject karna. Middleware ek baar banta hai, `DbContext` scoped hai — ye "captive dependency" hai aur runtime pe `InvalidOperationException` ya stale context deta hai. Scoped service `InvokeAsync(HttpContext ctx, AppDbContext db)` parameter me lo.
+
+</Mistake>
+
+<Mistake>
+
+`await next(context)` likhna bhool jaana. Middleware chalega, log karega, lekin request kabhi aage nahi jaayegi — client ko empty ya hanging response milega aur Controller kabhi hit nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+`UseAuthentication` / `UseAuthorization` ko `UseRouting` ke **pehle** ya `MapControllers` ke **baad** rakhna. Auth ko endpoint metadata chahiye; galat jagah pe `[Authorize]` silently ignore ho jaata hai aur protected endpoint public ban jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Middleware me `context.Response.Body` ko `await next()` ke **baad** modify karne ki koshish karna jab response already client ko bhej diya gaya ho (headers "sent"). Ye `System.InvalidOperationException: Headers are read-only` deta hai. Response buffering ya `OnStarting` callback use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    REQ["Incoming HTTP request"] --> RL["RequestLogging: start timer"]
+    RL --> HTTPS["UseHttpsRedirection"]
+    HTTPS --> ROUTE["UseRouting"]
+    ROUTE --> AUTHZ["UseAuthorization (can short-circuit -> 401/403)"]
+    AUTHZ --> MC["MapControllers -> Employees action runs"]
+    MC -. response travels back up .-> RL
+    RL --> RESP["RequestLogging: log method, path, status, ms -> response out"]
+`}
+  caption="Request travels down the stack to the Controller, the response travels back up — RequestLogging's timer starts on the way in and logs on the way out."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Middleware = chain of `RequestDelegate`s; each one: do work, then `await next()` OR short-circuit
+- Pipeline order = the order you call `app.Use.../app.Map...` in `Program.cs` — no auto-sorting
+- Code before `await next()` = request phase; code after = response phase; response flows back up the stack
+- `app.Run` and `MapControllers` are terminal — they don't call `next`
+- Three ways to write custom middleware: convention-based class (+ `IApplicationBuilder` extension), inline `app.Use` lambda, `IMiddleware` factory (DI-registered, testable, scoped-safe)
+- Convention-based middleware is constructed once — inject only singleton-safe deps in the constructor; take scoped services as `InvokeAsync` parameters
+- `Map` / `MapWhen` / `UseWhen` create branches; not calling `next` short-circuits the rest of the pipeline
+- Put custom middleware BEFORE `MapControllers`, and auth middleware between `UseRouting` and `MapControllers`
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.Api` me `RequestLoggingMiddleware` (convention-based class + `UseRequestLogging()` extension) add karo aur `Program.cs` me `MapControllers()` se pehle register karo. `GET /api/employees` hit karke console me `HTTP GET /api/employees responded 200 in X ms` line verify karo.
+
+**Medium:** Ek `CorrelationIdMiddleware` likho jo incoming request me `X-Correlation-Id` header dhoondhe; na ho to naya `Guid` banaye; use `HttpContext.Items` me daale aur response header me bhi set kare. Phir `RequestLoggingMiddleware` ko update karo taaki wo correlation ID bhi log kare. Dono ka order sahi rakho.
+
+**Bada (large):** Ek `ApiKeyMiddleware` banao jo `X-Api-Key` header ko `appsettings.json` ki ek key se compare kare. Match na ho to `401` pe **short-circuit** kare (ProblemDetails JSON ke saath) — `await next()` call kiye bina. `/swagger` aur `/health` paths ke liye `app.UseWhen(...)` se ise bypass karo. Ek integration test likho jo galat key pe 401 aur sahi key pe 200 verify kare.
+
+</Callout>

@@ -1,0 +1,402 @@
+---
+slug: "pagination-filtering-sorting"
+title: "Pagination, Filtering & Sorting, Line by Line"
+section: "code-flow"
+module: "real-world-features"
+order: 1
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["efcore-async-queries-tolistasync", "controller-service-dto-layering", "model-binding-and-validation"]
+tags: ["dotnet", "aspnet-core", "web-api", "ef-core", "pagination", "iqueryable", "employee-management"]
+englishDefinition: "Pagination, filtering, and sorting are the three query-shaping features every list endpoint needs so it returns a small, ordered, relevant slice of data instead of the whole table. In ASP.NET Core with EF Core, you bind the client's query-string parameters to a parameters model, compose an IQueryable step by step (filter, then sort, then count, then page), project to a DTO, and return a PagedResult envelope plus pagination metadata."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Pagination, filtering, and sorting are the three query-shaping features every list endpoint needs so it returns a small, ordered, relevant slice of data instead of the whole table. In ASP.NET Core with EF Core, you bind the client's query-string parameters to a parameters model, compose an `IQueryable` step by step (filter, then sort, then count, then page), project to a DTO, and return a `PagedResult` envelope plus pagination metadata.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak hamara `GET /api/employees` poori table return kar raha tha. 20 employees pe theek hai. 2 lakh employees pe? Response 50 MB ka ho jaayega, SQL Server table scan karega, API timeout dega, aur mobile app crash. Har real list endpoint ko teen cheezein chahiye: **filtering** (mujhe sirf HR department ke active employees do), **sorting** (naam ke hisaab se), aur **pagination** (ek baar me sirf 20). Is topic me teeno ek saath, hamare `EmployeesController` me.
+
+### What is it — teen alag cheezein, ek pipeline
+
+- **Filtering** — `WHERE` clause. Client batata hai `department=HR&isActive=true`, hum us hisaab se rows kam karte hain.
+- **Sorting** — `ORDER BY`. Client batata hai `sortBy=fullName&sortDir=asc`.
+- **Pagination** — `OFFSET / FETCH` (EF Core me `Skip` / `Take`). Client batata hai `page=1&pageSize=20`, hum sirf woh 20 rows dete hain plus total count taaki UI "Page 1 of 37" dikha sake.
+
+Final URL aisa dikhta hai:
+
+```text
+GET /api/employees?page=1&pageSize=20&department=HR&isActive=true&sortBy=fullName&sortDir=asc
+```
+
+### Why do we need it — bina iske kya tootega
+
+Failure scenario: ek payroll ops team hai jinke paas 80,000 employees hain. Woh `GET /api/employees` khol te hain. Kya hota hai:
+
+1. EF Core `SELECT * FROM Employees` chalata hai — 80,000 rows.
+2. SQL Server saari rows memory me laata hai, network pe bhejta hai.
+3. API process me 80,000 `Employee` objects ban te hain — memory spike, GC pressure.
+4. JSON serialization me 3-4 seconds.
+5. Client (browser/mobile) 60 MB JSON parse nahi kar paata, tab hang ho jaata hai.
+
+Ek concurrent user aur — ab do table scans. Load thoda badha — API down. Pagination sirf "nice UX" nahi hai, ye **survival** hai. BFSI apps me to compliance requirement bhi hoti hai ki koi bhi endpoint bounded response de.
+
+### How does it work — step by step, IQueryable composition
+
+Key idea: EF Core ka `IQueryable` **turant execute nahi hota**. Tum uspe `.Where()`, `.OrderBy()`, `.Skip()`, `.Take()` chain karte raho — kuch nahi hota. Jab tum `.ToListAsync()` ya `.CountAsync()` call karte ho, tab EF Core poori chain ko **ek SQL query** me translate karke bhejta hai. Isliye hum query ko compositionally build kar sakte hain:
+
+1. `IQueryable<Employee> query = _db.Employees.AsNoTracking();` — base.
+2. **Filter** — jo parameters aaye hain unke hisaab se `query = query.Where(...)`. Har filter optional.
+3. **Total count** — `int totalCount = await query.CountAsync();` — ye filtered set ka count hai, paging se pehle. UI ko "kitne total" isse pata chalta hai.
+4. **Sort** — `query = query.OrderBy(...)` ya `OrderByDescending(...)`, whitelist column ke hisaab se.
+5. **Page** — `query = query.Skip((page - 1) * pageSize).Take(pageSize);`
+6. **Project to DTO** — `.Select(e => new EmployeeListItemDto { ... })` — sirf woh columns jo chahiye, na ki poora entity.
+7. **Execute** — `var items = await query.ToListAsync();`
+8. **Envelope** — `new PagedResult<EmployeeListItemDto>(items, page, pageSize, totalCount)`.
+
+Order matter karta hai: filter pehle (count sahi aaye), phir `Skip`/`Take` (EF Core ko `OrderBy` chahiye `Skip` se pehle — bina order ke paging ke results non-deterministic hote hain).
+
+### Show it in our project — the parameters model
+
+Pehle ek binding model banao, `Models/Queries/EmployeeQueryParameters.cs`:
+
+```csharp
+namespace EmployeeManagement.Api.Models.Queries;
+
+public class EmployeeQueryParameters
+{
+    private const int MaxPageSize = 100;
+    private int _pageSize = 20;
+
+    public int Page { get; set; } = 1;
+
+    public int PageSize
+    {
+        get => _pageSize;
+        set => _pageSize = value > MaxPageSize ? MaxPageSize : (value < 1 ? 1 : value);
+    }
+
+    public string? Department { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Search { get; set; }
+
+    public string SortBy { get; set; } = "fullName";
+    public string SortDir { get; set; } = "asc";
+}
+```
+
+Line by line:
+
+- `private const int MaxPageSize = 100;` — hard ceiling. Client `pageSize=100000` bheje to bhi humein 100 se zyada nahi dena. Ye **DoS protection** hai — warna ek request se poori table maang li jaayegi.
+- `PageSize` ka `set` accessor value ko **clamp** karta hai: 100 se upar to 100, 1 se neeche to 1. Isliye service ko kabhi galat value nahi milegi.
+- `Page { get; set; } = 1;` — default first page. `Page` bhi 1 se kam nahi hona chahiye — hum service me ya yahan guard kar sakte hain (main service me `Math.Max(1, page)` rakhta hoon).
+- `Department`, `IsActive`, `Search` — sab nullable. `null` matlab "ye filter mat lagao".
+- `SortBy` / `SortDir` — strings, defaults ke saath. Inhe hum **kabhi seedha LINQ me nahi daalenge** (aage dekhoge kyun).
+
+Controller me binding automatic hai — query-string keys property names se match ho jaati hain (case-insensitive):
+
+```csharp
+[HttpGet]
+public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> GetEmployees(
+    [FromQuery] EmployeeQueryParameters query,
+    CancellationToken ct)
+{
+    var result = await _employeeService.GetEmployeesAsync(query, ct);
+
+    Response.Headers["X-Pagination"] = JsonSerializer.Serialize(result.Metadata);
+    return Ok(result);
+}
+```
+
+- `[FromQuery] EmployeeQueryParameters query` — ASP.NET Core `?page=1&pageSize=20&...` ko is object me bind kar deta hai. `[FromQuery]` explicit isliye likha taaki intent clear rahe (complex types ke liye default source body hota, isliye yahan zaroori hai).
+- `CancellationToken ct` — agar client request cancel kar de (tab band), EF Core query bhi cancel ho jaaye. Framework ye token khud inject karta hai.
+- `Response.Headers["X-Pagination"] = ...` — pagination metadata ko response header me bhi daal rahe hain, taaki jo client body envelope na chahe woh header se kaam chala le.
+
+### The service — compositional IQueryable, line by line
+
+```csharp
+public async Task<PagedResult<EmployeeListItemDto>> GetEmployeesAsync(
+    EmployeeQueryParameters p, CancellationToken ct)
+{
+    var query = _db.Employees.AsNoTracking();
+
+    // 1. FILTER
+    if (!string.IsNullOrWhiteSpace(p.Department))
+        query = query.Where(e => e.Department.Name == p.Department);
+
+    if (p.IsActive is not null)
+        query = query.Where(e => e.IsActive == p.IsActive);
+
+    if (!string.IsNullOrWhiteSpace(p.Search))
+        query = query.Where(e =>
+            e.FullName.Contains(p.Search) || e.Email.Contains(p.Search));
+
+    // 2. TOTAL COUNT (after filter, before paging)
+    var totalCount = await query.CountAsync(ct);
+
+    // 3. SORT (whitelisted)
+    query = ApplySort(query, p.SortBy, p.SortDir);
+
+    // 4. PAGE
+    var page = Math.Max(1, p.Page);
+    query = query.Skip((page - 1) * p.PageSize).Take(p.PageSize);
+
+    // 5. PROJECT + EXECUTE
+    var items = await query
+        .Select(e => new EmployeeListItemDto(
+            e.Id, e.FullName, e.Email, e.Department.Name, e.IsActive))
+        .ToListAsync(ct);
+
+    return new PagedResult<EmployeeListItemDto>(items, page, p.PageSize, totalCount);
+}
+```
+
+- `_db.Employees.AsNoTracking()` — hum sirf padh rahe hain, update nahi. `AsNoTracking()` EF Core ko bolta hai "in entities ko change-tracker me mat daal" — list endpoints pe ye 20-40% tez hota hai aur kam memory leta hai.
+- Har `if` block ek optional filter hai. `query = query.Where(...)` — hum reference reassign kar rahe hain; abhi bhi koi SQL nahi chala.
+- `p.IsActive is not null` — `bool?` hai, isliye "user ne bheja hi nahi" (null) aur "user ne false bheja" alag hain.
+- `CountAsync(ct)` — **yahan pehli SQL query chalti hai**: `SELECT COUNT(*) FROM Employees WHERE ...` filtered. Paging se pehle isliye ki UI ko total filtered rows chahiye.
+- `ApplySort(...)` — alag method, aage. Yahan `SortBy` string ko safely handle karte hain.
+- `Skip((page - 1) * p.PageSize).Take(p.PageSize)` — page 1 → `Skip(0).Take(20)`, page 3 → `Skip(40).Take(20)`. SQL me ye `OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY` ban ta hai.
+- `.Select(e => new EmployeeListItemDto(...))` — **projection**. EF Core sirf yeh columns SELECT karega — `Salary`, `PanNumber` waghairah query me aayenge hi nahi. Ye security (PII leak nahi) aur performance dono ke liye.
+- `.ToListAsync(ct)` — **doosri aur aakhri SQL query**: filtered + sorted + paged + projected. Total do round-trips: ek count, ek data.
+
+### Code explained — the dynamic sort, safely
+
+Ye sabse important security bit hai. `SortBy` ek client-controlled string hai. Agar tum kar do:
+
+```csharp
+// NEVER DO THIS
+query = query.OrderBy(p.SortBy);   // string overload from System.Linq.Dynamic
+```
+
+...to client `sortBy` me kuch bhi bhej sakta hai — internal column names probe kar sakta hai, ya dynamic-LINQ library ke saath expression injection. Sahi tareeka: **whitelist**.
+
+```csharp
+private static IQueryable<Employee> ApplySort(
+    IQueryable<Employee> query, string sortBy, string sortDir)
+{
+    var descending = sortDir?.ToLowerInvariant() == "desc";
+
+    return sortBy?.ToLowerInvariant() switch
+    {
+        "fullname" => descending
+            ? query.OrderByDescending(e => e.FullName)
+            : query.OrderBy(e => e.FullName),
+        "email" => descending
+            ? query.OrderByDescending(e => e.Email)
+            : query.OrderBy(e => e.Email),
+        "dateofjoining" => descending
+            ? query.OrderByDescending(e => e.DateOfJoining)
+            : query.OrderBy(e => e.DateOfJoining),
+        // default / unknown → deterministic fallback
+        _ => query.OrderBy(e => e.Id),
+    };
+}
+```
+
+- `switch` expression sirf **known column names** ko map karta hai real lambda expressions pe. Unknown input → `OrderBy(e => e.Id)` — deterministic, safe, kabhi crash nahi.
+- Har lambda ek **compile-time-checked** property access hai — koi string parsing nahi, koi injection surface nahi.
+- Fallback `OrderBy(e => e.Id)` critical hai: `Skip`/`Take` ko stable order chahiye, warna page 2 pe kuch rows repeat ya skip ho jaayengi.
+
+### The envelope types
+
+```csharp
+public record EmployeeListItemDto(
+    Guid Id, string FullName, string Email, string Department, bool IsActive);
+
+public class PagedResult<T>
+{
+    public IReadOnlyList<T> Items { get; }
+    public int Page { get; }
+    public int PageSize { get; }
+    public int TotalCount { get; }
+    public int TotalPages => (int)Math.Ceiling(TotalCount / (double)PageSize);
+    public bool HasPrevious => Page > 1;
+    public bool HasNext => Page < TotalPages;
+
+    public object Metadata => new
+    {
+        Page, PageSize, TotalCount, TotalPages, HasPrevious, HasNext
+    };
+
+    public PagedResult(IReadOnlyList<T> items, int page, int pageSize, int totalCount)
+    {
+        Items = items;
+        Page = page;
+        PageSize = pageSize;
+        TotalCount = totalCount;
+    }
+}
+```
+
+- `TotalPages` computed hai — `Math.Ceiling(105 / 20.0)` → 6. `(double)` cast zaroori, warna integer division `105 / 20 = 5` galat aayega.
+- `HasPrevious` / `HasNext` — UI ke "Prev"/"Next" buttons enable/disable karne ke liye ready.
+- `Metadata` — wahi subset jo hum `X-Pagination` header me daalte hain.
+
+### Where is it used in day-to-day development
+
+- Har admin panel / dashboard ki har table — employee list, transaction list, audit-log list.
+- Mobile app ke infinite-scroll screens — har scroll pe agla `page`.
+- Export jobs — "sabhi records" ko chunks me process karne ke liye internally paginate karte hain.
+- Reporting APIs — analyst filtered slices maang te hain.
+
+### Pros and cons — offset vs keyset
+
+**Offset pagination** (jo humne banaya, `Skip`/`Take`):
+
+- Pro: simple, "jump to page 37" possible, total count milta hai.
+- Con: **deep pages slow** — `OFFSET 100000` matlab SQL Server ko 100,020 rows read karke 100,000 phenkni padti hain.
+- Con: **shifting data** — jab tum page 2 dekh rahe ho aur koi page 1 pe naya employee add kar de, to page 2 ka pehla row page 3 pe shift ho jaata hai — tumhe ek row do baar dikh sakta hai ya ek miss.
+
+**Keyset / cursor pagination** — "last row ke `Id` (ya `CreatedAt`) ke baad ke 20 do":
+
+```csharp
+query = query.Where(e => e.Id > lastSeenId).OrderBy(e => e.Id).Take(pageSize);
+```
+
+- Pro: har page **same speed** — index seek, koi throwaway rows nahi.
+- Pro: shifting data se immune — cursor ek stable pointer hai.
+- Con: "page 37 pe jump" nahi kar sakte, sirf next/prev. Total count bhi typically nahi dete.
+
+<Tradeoff pros={["Offset: page numbers, jump-to-page, total count, trivial to build", "Offset: works with any sort column"]} cons={["Offset: deep pages get linearly slower (OFFSET throws away rows)", "Offset: rows can duplicate or vanish when data changes between page loads", "Keyset fixes both but loses jump-to-page and needs a stable, unique sort key"]} />
+
+### When to use / when NOT to use
+
+- **Use offset** for admin panels where humans click page numbers and datasets are moderate (tens of thousands), or where "Page X of Y" is a product requirement.
+- **Use keyset/cursor** for public APIs, infinite-scroll feeds, very large tables, or anywhere deep paging or data churn is real. Twitter/GitHub-style `?cursor=...` APIs are keyset.
+- **Never** skip pagination entirely on a list endpoint "because there's not much data yet" — data grows, and retrofitting pagination breaks every existing client.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`SortBy` / `SortDir` ko kabhi bhi string ke roop me seedha `IQueryable.OrderBy(string)` (dynamic LINQ) me mat daalo. Hamesha ek `switch` whitelist se client string ko ek known lambda pe map karo, aur unknown input pe `OrderBy(e => e.Id)` fallback rakho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-servicing dashboard me ops team `GET /api/loans` khol ti thi — 400k active loans, koi pagination nahi. Har subah 9 baje jab 30 log ek saath login karte, API 30 full table scans chalati, p99 latency 12 seconds, aur din me 2-3 baar 502. Fix: `LoanQueryParameters` with `pageSize` clamp at 50, offset pagination, aur `AsNoTracking()`. p99 gir kar 180 ms. Baad me "export all" feature ke liye internally keyset pagination add kiya taaki 400k rows bina memory spike ke chunks me nikle.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Client audit me ek finding aayi: employee-list API `sortBy` parameter dynamic LINQ se bind ho raha tha, aur pen-tester ne `sortBy=Department.CostCentre` bhej kar ek column expose kar diya jo DTO me tha hi nahi. Remediation: har sortable field ka explicit whitelist `switch`, aur ek unit test jo har allowed value + ek garbage value cover karta hai. Ab har naye sortable column ke liye ek code review + test mandatory hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Sensible default `pageSize`: 20; hard max clamp: 100 (BFSI apps often 50)
+- A list endpoint should stay under about 1-2 MB response and under 200 ms server time
+- Offset pagination cost is roughly O(offset + pageSize) rows read — page 5000 reads ~100,000 rows to return 20
+- Keyset pagination cost is O(pageSize) — constant, index-seek based
+- Two SQL round-trips per paged request: one `COUNT(*)`, one data query — acceptable; cache the count if it's expensive
+- `AsNoTracking()` on read-only list queries: typically 20-40% faster, less memory
+- HTTP status: `200 OK` with an empty `items` array for a valid page past the end — not `404`
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "How would you implement pagination in a Web API?" Strong 20-second answer: "Client `page` aur `pageSize` query params bhej ta hai, main unhe ek parameters model me bind karta hoon with a default `pageSize` aur ek hard max clamp taaki koi poori table na maang le. Service me `IQueryable` compositionally build karta hoon — filters lagao, phir `CountAsync` for total, phir `OrderBy` (whitelisted column), phir `Skip`/`Take`, phir `Select` to DTO, phir `ToListAsync`. Return ek `PagedResult` envelope with items, page, pageSize, totalCount, totalPages. Deep pages ya high-churn data ke liye offset ke bajaye keyset/cursor pagination use karta hoon." Follow-ups jo aate hain: "offset kab tootega?", "sortBy ko safely kaise handle karoge?", "total count mehnga ho to?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`Skip`/`Take` ko bina `OrderBy` ke lagana. SQL me bina `ORDER BY` ke row order undefined hota hai — page 2 pe wahi rows aa sakti hain jo page 1 pe thi. Hamesha ek deterministic sort (kam se kam `OrderBy(e => e.Id)`) `Skip` se pehle.
+
+</Mistake>
+
+<Mistake>
+
+`CountAsync` ko `Skip`/`Take` ke **baad** call karna. Tab count sirf current page ke rows ka aa jaayega (max `pageSize`), total nahi. Count hamesha filter ke baad, paging se pehle.
+
+</Mistake>
+
+<Mistake>
+
+Client ka `pageSize` bina clamp ke accept karna. `?pageSize=1000000` ek hi request se poori table load kar dega — effectively pagination bypass aur ek easy DoS. Max clamp mandatory hai.
+
+</Mistake>
+
+<Mistake>
+
+`sortBy` string ko dynamic LINQ (`OrderBy(string)`) me daalna. Ye injection / column-probing surface deta hai. Whitelist `switch` se known lambdas pe map karo.
+
+</Mistake>
+
+<Mistake>
+
+Poora entity return karna (`.ToListAsync()` on `Employee`) instead of projecting to a DTO. Isse `Salary`, `PanNumber` jaisi PII leak hoti hai aur zyada columns transfer hote hain. `.Select(e => new Dto(...))` hamesha.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    A["Query params: page, pageSize, department, isActive, sortBy, sortDir"] --> B["Bind to EmployeeQueryParameters (defaults + max pageSize clamp)"]
+    B --> C["IQueryable: apply optional filters (Where)"]
+    C --> D["CountAsync -> totalCount"]
+    C --> E["ApplySort: whitelist switch -> OrderBy / OrderByDescending"]
+    E --> F["Skip((page-1)*pageSize).Take(pageSize)"]
+    F --> G["Select -> EmployeeListItemDto"]
+    G --> H["ToListAsync -> items"]
+    D --> I["PagedResult { items, page, pageSize, totalCount, totalPages }"]
+    H --> I
+`}
+  caption="One filter chain feeds two executions: a COUNT for the total, and a paged+projected query for the items. Sort is always a whitelisted switch, never a raw string."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Bind query string to an `EmployeeQueryParameters` model: `Page = 1`, `PageSize = 20` default, hard max clamp (e.g. 100) inside the `PageSize` setter
+- Build `IQueryable` in order: `AsNoTracking()` -> optional `Where` filters -> `CountAsync` (total) -> `OrderBy` (whitelisted) -> `Skip((page-1)*pageSize).Take(pageSize)` -> `Select` DTO -> `ToListAsync`
+- Two SQL round-trips: one `COUNT(*)`, one data query
+- `Skip`/`Take` needs a deterministic `OrderBy` before it, or pages overlap; unknown `sortBy` falls back to `OrderBy(e => e.Id)`
+- Never feed the client `sortBy` string into dynamic LINQ — map it through a `switch` to known lambdas
+- Return a `PagedResult<T>` envelope (items, page, pageSize, totalCount, totalPages, hasNext/hasPrevious) and/or an `X-Pagination` response header
+- Offset pagination: simple, jump-to-page, but slow on deep pages and unstable under inserts/deletes
+- Keyset/cursor pagination: constant speed, churn-immune, but no jump-to-page and needs a stable unique sort key
+- Always project to a DTO — never return the raw `Employee` entity (PII + extra columns)
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeQueryParameters` me `PageSize` ka setter clamp add karo (max 100, min 1) aur ek `[Fact]` likho jo `pageSize=5000` bhej kar assert kare ki bound value 100 hai.
+
+**Medium:** `GetEmployeesAsync` me `Department` aur `IsActive` filters add karo plus `X-Pagination` response header, aur teen calls se verify karo: no filter, `department=HR`, `department=HR&isActive=false`. Har call pe `totalCount` sahi aana chahiye.
+
+**Bada (large):** `EmployeesController` me poora paged endpoint banao — parameters model, compositional service query, whitelisted `ApplySort` (kam se kam 3 columns + fallback), `PagedResult<EmployeeListItemDto>` envelope, aur RFC 5988 `Link` header (`rel="next"`, `rel="prev"`, `rel="first"`, `rel="last"`). Phir ek alternate `GET /api/employees/cursor?after={lastId}&pageSize=20` keyset endpoint add karo aur dono ki SQL (via EF Core logging) compare karke likho ki page 500 pe offset kitni rows read karta hai vs keyset.
+
+</Callout>

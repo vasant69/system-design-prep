@@ -1,0 +1,287 @@
+---
+slug: "ef-core-dbcontext-and-dbset"
+title: "EF Core: DbContext and DbSet, Line by Line"
+section: "code-flow"
+module: "data-access-efcore"
+order: 1
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["the-repository-pattern-and-why-interfaces", "dependency-injection-and-service-lifetimes", "the-employee-model-and-dtos"]
+tags: ["dotnet", "aspnet-core", "ef-core", "orm", "dbcontext", "sql-server", "employee-management"]
+englishDefinition: "EF Core is an object-relational mapper for .NET: it maps C# entity classes to relational tables and translates LINQ queries into SQL so you do not hand-write CRUD SQL. The DbContext is the class that represents a session with the database; each DbSet property on it maps one entity type to one table, and OnModelCreating is where you configure keys, indexes, and column types the conventions cannot infer."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+EF Core is an object-relational mapper for .NET: it maps C# entity classes to relational tables and translates LINQ queries into SQL so you do not hand-write CRUD SQL. The `DbContext` is the class that represents a session with the database; each `DbSet` property on it maps one entity type to one table, and `OnModelCreating` is where you configure keys, indexes, and column types the conventions cannot infer.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Module 3 ke end me hamara project aisa tha: `EmployeesController` -> `EmployeeService` -> `IEmployeeRepository`, aur us interface ke peeche ek `InMemoryEmployeeRepository` jo ek `List<Employee>` me data rakhta tha. App restart karo, data gaya. Ab hum us list ko ek **asli SQL Server database** se replace karenge — lekin controller aur service ko chhue bina. Iska pehla kadam: EF Core ko project me lana aur `DbContext` likhna.
+
+### What is it — ORM aur EF Core kya hai
+
+**ORM = Object-Relational Mapper.** Do duniya hain jo naturally match nahi karti:
+
+- C# ki duniya — objects, references, `List<Employee>`, inheritance.
+- Relational database ki duniya — tables, rows, columns, foreign keys.
+
+ORM woh translator layer hai jo `Employee` object ko `Employees` table ki ek row bana deta hai aur wapas row ko object bana deta hai. **EF Core** (Entity Framework Core) Microsoft ka official ORM hai .NET ke liye — cross-platform, open-source, .NET 8 ke saath first-class.
+
+Ek line me: EF Core ke saath tum `_db.Employees.Add(emp)` likhte ho, EF Core `INSERT INTO Employees (...) VALUES (...)` SQL khud banata hai aur chalata hai.
+
+**EF Core vs EF6 (purana "EF"):** EF6 (`EntityFramework` package, version 6.x) sirf Windows / full .NET Framework ke liye tha aur ab sirf maintenance mode me hai. EF Core (`Microsoft.EntityFrameworkCore.*` packages) naya, rewrite kiya hua, cross-platform version hai — naye projects me hamesha EF Core. Naam me "Core" isliye hai kyunki ye `.NET Core` ke daur me aaya; concept wahi hai, code alag.
+
+### Why do we need it — iske bina kya tootega
+
+ORM ke bina tumhe har CRUD operation ke liye khud SQL likhna padta hai aur `SqlConnection` / `SqlCommand` / `SqlDataReader` se manually har column padhna padta hai:
+
+```csharp
+using var conn = new SqlConnection(connectionString);
+using var cmd = new SqlCommand("SELECT Id, FullName, Email, Salary FROM Employees WHERE Id = @id", conn);
+cmd.Parameters.AddWithValue("@id", id);
+conn.Open();
+using var reader = cmd.ExecuteReader();
+if (!reader.Read()) return null;
+var emp = new Employee
+{
+    Id = reader.GetInt32(0),
+    FullName = reader.GetString(1),
+    Email = reader.GetString(2),
+    Salary = reader.GetDecimal(3),
+};
+```
+
+Ye ek row ke liye. Ab isko GET-all, POST, PUT, DELETE ke liye multiply karo, phir har naye column pe har jagah update karo. Yahi boilerplate EF Core ek line me kar deta hai: `await _db.Employees.FindAsync(id)`. Manual approach me ek chhoti si galti — column order galat, ek column add kiya lekin ek query me bhoola — aur runtime pe galat data ya crash.
+
+**When to use / when NOT to use.** Line-of-business CRUD apps (jaise hamara Employee Management) ke liye EF Core default choice hai — 95% queries simple hain aur productivity huge hai. Jab NOT: bulk data pipelines (lakhon rows ek saath), ya jab ek specific report query ko database-specific tuning chahiye — wahan raw SQL (`Dapper` ya EF Core ka `FromSqlRaw`) behtar. Real projects me dono saath chalte hain: 90% EF Core, thodi si hot queries raw SQL.
+
+### How does it work — mechanism step by step
+
+1. Tum ek class banate ho jo `DbContext` se inherit karti hai — hamare case me `AppDbContext`.
+2. Us class me har table ke liye ek `DbSet<T>` property — `DbSet<Employee> Employees`.
+3. App start pe `Program.cs` me tum `AddDbContext<AppDbContext>()` register karte ho ek connection string ke saath (agla topic).
+4. EF Core startup pe apna **model** banata hai: entity classes ko reflect karke, conventions apply karke (property `Id` = primary key), phir `OnModelCreating` me tumhaari extra rules apply karke.
+5. Jab tum query likhte ho — `_db.Employees.Where(e => e.IsActive)` — EF Core us LINQ expression tree ko **SQL me translate** karta hai, database pe bhejta hai, result rows ko wapas `Employee` objects me materialize karta hai.
+6. Jab tum change karte ho — `emp.Salary = 90000` — EF Core ka **change tracker** note karta hai ki ye object "Modified" hai. `SaveChangesAsync()` pe woh sirf badle hue objects ke liye `UPDATE` bhejta hai.
+
+### Show it in our project — packages aur AppDbContext
+
+Pehle do NuGet packages, `EmployeeManagement.Api` folder me:
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.SqlServer
+dotnet add package Microsoft.EntityFrameworkCore.Tools
+```
+
+- `Microsoft.EntityFrameworkCore.SqlServer` — SQL Server **provider**. EF Core ka core alag hai, database-specific SQL banane wala hissa provider me hota hai. Postgres ke liye `Npgsql.EntityFrameworkCore.PostgreSQL` hota, SQLite ke liye alag.
+- `Microsoft.EntityFrameworkCore.Tools` — `Add-Migration` / `dotnet ef` commands ke liye design-time support. Sirf development me chahiye, phir bhi normal `PackageReference` hi rehta hai.
+
+Ab `Data/AppDbContext.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Data;
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Employee> Employees => Set<Employee>();
+    public DbSet<Department> Departments => Set<Department>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Employee>(entity =>
+        {
+            entity.HasIndex(e => e.Email).IsUnique();
+
+            entity.Property(e => e.Email)
+                  .IsRequired()
+                  .HasMaxLength(200);
+
+            entity.Property(e => e.PanNumber)
+                  .IsRequired()
+                  .HasMaxLength(10)
+                  .IsFixedLength();
+
+            entity.Property(e => e.Salary)
+                  .HasPrecision(18, 2);
+
+            entity.Property(e => e.FullName)
+                  .IsRequired()
+                  .HasMaxLength(150);
+        });
+
+        modelBuilder.Entity<Department>(entity =>
+        {
+            entity.HasIndex(d => d.Name).IsUnique();
+            entity.Property(d => d.Name).IsRequired().HasMaxLength(100);
+            entity.Property(d => d.CostCentre).HasMaxLength(20);
+        });
+    }
+}
+```
+
+### Code explained line by line
+
+- `public class AppDbContext : DbContext` — hamari context class. `DbContext` EF Core ki base class hai jo change tracking, query translation, aur `SaveChanges` sab manage karti hai. Ek `DbContext` instance = database ke saath ek short session (usually ek HTTP request jitna — lifetime agle topics me).
+- `public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)` — **constructor injection**. `DbContextOptions` batata hai kaunsa provider, kaunsi connection string, kaunse options. Hum ise khud nahi banate — `Program.cs` me `AddDbContext` ise configure karke DI container me daal deta hai, aur DI ise yahan pass karta hai. `: base(options)` woh options `DbContext` ko forward karta hai.
+- `public DbSet<Employee> Employees => Set<Employee>();` — **ye ek table hai**. `DbSet<Employee>` matlab "Employees table, jiski har row ek `Employee` object hai". Iske through hi tum query (`_db.Employees.Where(...)`), add (`_db.Employees.Add(...)`), remove karte ho. `=> Set<Employee>()` expression-body form nullable-warning se bachne ke liye hai; purana style `public DbSet<Employee> Employees { get; set; }` bhi chalta hai.
+- Table ka naam by convention `DbSet` property ke naam se aata hai — `Employees`. `Department` singular hai lekin `DbSet` `Departments` hai, to table `Departments` banega.
+- `protected override void OnModelCreating(ModelBuilder modelBuilder)` — yahan tum **Fluent API** se model configure karte ho, un cheezon ke liye jo conventions ya `[Attributes]` se express nahi hoti ya jinhe tum entity class se door rakhna chahte ho.
+- `entity.HasIndex(e => e.Email).IsUnique()` — database me `Email` column pe ek **unique index** banega. Do employees same email se insert nahi ho sakte — database khud reject karega. BFSI me ye zaroori hai: email ya PAN duplicate matlab do log ek hi identity share kar rahe hain.
+- `entity.Property(e => e.Email).IsRequired().HasMaxLength(200)` — `Email` column `NOT NULL` hoga aur `nvarchar(200)`, `nvarchar(max)` nahi. `MaxLength` important hai: unbounded strings pe index nahi ban sakta aur storage predictable nahi rehti.
+- `entity.Property(e => e.PanNumber).HasMaxLength(10).IsFixedLength()` — PAN hamesha 10 characters ka hota hai (`ABCDE1234F`). `IsFixedLength()` se column `char(10)` banega `varchar` ke bajaye — fixed-width data ke liye thoda efficient aur intent clear.
+- `entity.Property(e => e.Salary).HasPrecision(18, 2)` — **sabse important line money ke liye**. Bina iske EF Core `decimal` ko `decimal(18, 2)` map to karta hai (SQL Server default), lekin purane versions me ya kuch providers me silently truncate ka risk hota tha, aur EF Core aaj bhi is pe ek warning deta hai agar tum explicit na ho. `18` total digits, `2` decimal places — `9999999999999999.99` tak. Money kabhi `float`/`double` me nahi — rounding errors se paisa kho jaata hai.
+- `Department` block wahi pattern — unique index `Name` pe, lengths set.
+
+Notice: `Id` property ke liye humne kuch nahi likha. Convention: agar entity me `Id` ya `EmployeeId` naam ki property hai to woh **primary key** hai, aur agar `int` hai to SQL Server me `IDENTITY` (auto-increment) ban jaati hai. Conventions ka fayda uthao, sirf exceptions likho.
+
+### Where is it used in day-to-day development
+
+- **Har naya entity** — ek nayi class banao `Models/`, ek `DbSet` line `AppDbContext` me, ek migration, done.
+- **Har naya constraint** — client bola "phone number unique hona chahiye" — ek `HasIndex(...).IsUnique()` line `OnModelCreating` me.
+- **Code review** me `OnModelCreating` sabse pehle padha jaata hai — schema ka single source of truth yahi hai.
+- **Debugging "column truncated" / "cannot insert null"** errors — 90% baar answer `OnModelCreating` ki ek missing `HasMaxLength` ya `IsRequired` line hoti hai.
+
+### Pros and cons
+
+EF Core ki keemat: startup pe model-build ka thoda overhead, complex LINQ kabhi-kabhi ajeeb SQL me translate hota hai (`.Include()` chains, `GroupBy`), aur ek abstraction layer jo tumse SQL "chhupa" deta hai — junior devs ko pata hi nahi chalta ek innocent loop 100 queries chala raha hai (N+1 problem, is module me aage). Fayda: CRUD boilerplate lagbhag zero, migrations se schema version-controlled, change tracking free, aur LINQ compile-time checked hota hai — column rename karo to code compile hi nahi hoga jab tak sab jagah fix na karo.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`decimal` properties pe `HasPrecision(18, 2)` (ya `[Precision(18, 2)]`) hamesha explicitly lagao. EF Core money ko default `decimal(18, 2)` deta hai lekin ispe build-time warning bhi deta hai — BFSI project me is warning ko ignore karna audit me finding ban sakta hai.
+
+</Callout>
+
+<Tradeoff
+  pros={["CRUD SQL khud likhna nahi padta — Add/Remove/SaveChanges bas", "LINQ compile-time checked — schema change pe code break hota hai, silently galat nahi chalta", "Migrations se schema version control me", "Change tracking free — sirf badle rows ka UPDATE"]}
+  cons={["Generated SQL kabhi-kabhi non-obvious — profiler dekhna zaroori", "N+1 query trap — ek loop 100 queries chala sakta hai", "Startup pe model-build overhead", "Bulk operations (lakhs of rows) ke liye slow — raw SQL chahiye"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ne apna loan-origination service Dapper (raw SQL micro-ORM) pe banaya tha "performance" ke liye. Six months me schema 4 baar badla, aur har baar 30+ hand-written SQL strings dhoondh ke update karni padi — do baar production me ek query miss ho gayi aur galat column map hua. Team ne core CRUD ko EF Core pe migrate kiya, sirf 3 heavy reporting queries Dapper pe rakhi. Schema change ab ek migration + compile error list ban gaya — "yeh 6 jagah fix karo" compiler batata hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking-adjacent project me `AppDbContext` ka `OnModelCreating` 400+ lines ka tha aur har PR me merge conflicts hote the. Team ne ise `IEntityTypeConfiguration<T>` classes me tod diya — har entity ki config apni file me (`EmployeeConfiguration.cs`), aur `OnModelCreating` me sirf `modelBuilder.ApplyConfigurationsFromAssembly(...)`. Ek hi context, lekin config modular. Concept wahi jo upar dikhaya — bas file organisation better.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 2 NuGet packages EF Core + SQL Server start karne ke liye: `...EntityFrameworkCore.SqlServer` aur `...EntityFrameworkCore.Tools`
+- `HasPrecision(18, 2)` — 18 total digits, 2 decimal places; SQL Server ka default `decimal` bhi `decimal(18, 2)` hai
+- PAN = fixed 10 characters — `char(10)`, hamesha
+- 1 `DbSet` property = 1 table; table naam by convention `DbSet` property ke naam se
+- Convention: `Id` ya `<Entity>Id` property = primary key; `int` PK = auto-increment `IDENTITY`
+- EF6 last major version 6.4/6.5, maintenance mode; EF Core current major 8.x, .NET 8 ke saath
+- 1 `DbContext` instance ≈ 1 HTTP request ki lifetime (scoped) — thread-safe nahi hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common opening: "What is EF Core and what is a DbContext?" Strong 20-second answer: "EF Core ek ORM hai jo C# entity classes ko relational tables se map karta hai aur LINQ ko SQL me translate karta hai, to CRUD SQL hand-write nahi karni padti. `DbContext` database ke saath ek session represent karta hai — usme har `DbSet<T>` property ek table ko map karti hai, aur `OnModelCreating` me Fluent API se keys, indexes, aur column types configure hote hain jo conventions se nahi aate. Ek `DbContext` scoped hota hai — ek request jitna jeeta hai, thread-safe nahi." Follow-ups jo aate hain: change tracking kaise kaam karta hai, `DbSet` vs `IQueryable`, aur `AddDbContext` ka lifetime kyun scoped hai. Agar tum "EF Core sirf SQL generator hai" bolte ho to interviewer poochega change tracker ke baare me — usko chhodo mat.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`Salary` jaisi money property ko `double` ya `float` banana, ya `decimal` to rakhna lekin `HasPrecision` na dena. Floating-point me `0.1 + 0.2 != 0.3` — paison me ye rounding error compliance issue hai. Hamesha `decimal` + explicit precision.
+
+</Mistake>
+
+<Mistake>
+
+`DbContext` ko singleton register karna ya ek hi instance ko multiple threads/requests me share karna. `DbContext` thread-safe nahi hai — concurrent use pe "A second operation was started on this context" exception aata hai. Scoped rakho (default `AddDbContext` yahi karta hai).
+
+</Mistake>
+
+<Mistake>
+
+Business logic `AppDbContext` ke andar daal dena — `OnModelCreating` me `if` conditions, ya context me custom methods jo validation karte hain. Context ka kaam sirf mapping + persistence hai; logic service layer me.
+
+</Mistake>
+
+<Mistake>
+
+`string` properties pe `HasMaxLength` na dena. Default `nvarchar(max)` ban jaata hai — us column pe unique index nahi ban sakta, aur SQL Server usko row ke bahar store karta hai (slow). Har string ka realistic max length socho.
+
+</Mistake>
+
+<Mistake>
+
+`OnModelCreating` me `base.OnModelCreating(modelBuilder)` call karna bhool jaana jab tum ek base context ya identity context se inherit kar rahe ho (jaise `IdentityDbContext`). Plain `DbContext` me zaroori nahi, lekin inheritance chain ho to base ki config apply hi nahi hoti.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart LR
+    A["C# Employee object<br/>Id, FullName, Email, Salary"] -- "Add / Update / Remove" --> B["AppDbContext<br/>DbSet Employees<br/>+ change tracker"]
+    B -- "SaveChangesAsync builds SQL" --> C["Employees table<br/>(SQL Server)"]
+    C -- "rows materialized back to objects" --> A
+    D["OnModelCreating<br/>unique Email, char(10) PAN, decimal(18,2) Salary"] -. "shapes the schema" .-> C
+`}
+  caption="DbContext sits between C# objects and the table: it tracks changes, turns them into SQL on SaveChangesAsync, and maps rows back to objects. OnModelCreating decides the table's shape."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- EF Core = ORM: C# entity classes `<->` relational rows, LINQ `->` SQL, no hand-written CRUD SQL. EF6 is the old Windows-only one, EF Core is the current cross-platform rewrite.
+- `DbContext` = one session with the DB — change tracking + query translation + `SaveChanges`. Scoped lifetime, not thread-safe.
+- Each `DbSet<T>` property = one table; table name comes from the `DbSet` property name by convention.
+- Constructor takes `DbContextOptions<AppDbContext>` — provider + connection string, injected by `AddDbContext` in `Program.cs`.
+- `OnModelCreating` + Fluent API = where you set what conventions cannot: `HasIndex(...).IsUnique()`, `IsRequired()`, `HasMaxLength(n)`, `IsFixedLength()`, `HasPrecision(18, 2)`.
+- `HasPrecision(18, 2)` on every money `decimal` — never `double`/`float` for currency.
+- Convention gives you: `Id` = primary key, `int` PK = auto-increment. Only write the exceptions.
+- Change tracker preview: `Add` marks Added, editing a loaded entity marks Modified, `SaveChangesAsync` emits INSERT/UPDATE/DELETE only for changed entities.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `AppDbContext` me `DateOfJoining` ke liye ek Fluent API line add karo jo usse `IsRequired()` banaye, aur `IsActive` ke liye ek `HasDefaultValue(true)`. Build karke dekho koi warning to nahi.
+
+**Medium:** Ek `Department` class banao (`Id`, `Name`, `CostCentre`) `Models/` me, `AppDbContext` me `DbSet<Department> Departments` add karo, aur `OnModelCreating` me `Name` ko unique + max length 100, `CostCentre` ko max length 20 configure karo. Abhi migration mat chalao (agla topic) — sirf `dotnet build` clean hona chahiye.
+
+**Bada (large):** Poore `Employee` entity ka `OnModelCreating` block `IEntityTypeConfiguration<Employee>` class me nikaalo (`Data/Configurations/EmployeeConfiguration.cs`), same `Department` ke liye, aur `OnModelCreating` ko `modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly)` tak chhota karo. Confirm karo behaviour bilkul same hai (build clean, koi rule kho na jaaye).
+
+</Callout>

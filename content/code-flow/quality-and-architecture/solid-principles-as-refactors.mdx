@@ -1,0 +1,544 @@
+---
+slug: "solid-principles-as-refactors"
+title: "SOLID Principles as Real Refactors of Our Code"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 1
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["extracting-the-service-layer", "the-repository-pattern", "dependency-injection-and-service-lifetimes"]
+tags: ["dotnet", "aspnet-core", "solid", "design-principles", "refactoring", "architecture", "employee-management"]
+englishDefinition: "SOLID is five object-oriented design principles — Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, and Dependency Inversion — that together keep a codebase easy to change without breaking existing behaviour. In this topic each letter is applied as a concrete refactor of the EmployeeManagement.Api code we have already written, not as an abstract definition."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Wipro", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+SOLID is five object-oriented design principles — Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, and Dependency Inversion — that together keep a codebase easy to change without breaking existing behaviour. In this topic each letter is applied as a concrete refactor of the `EmployeeManagement.Api` code we have already written, not as an abstract definition.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne `EmployeeManagement.Api` me controller, service, repository, EF Core, JWT, file upload, external PAN call — sab likh diya hai. Feature-wise project complete hai. Lekin `EmployeeService` dheere-dheere ek 400-line class ban gaya hai jo sab kuch karta hai. SOLID exactly isi bimari ka ilaaj hai. Is topic me hum har letter ko ek **refactor** ki tarah dekhenge — pehle current (kharab) code, phir SOLID-friendly version.
+
+### What is it — plain definition
+
+SOLID paanch principles ka acronym hai, Robert C. Martin ne popularise kiya:
+
+- **S** — Single Responsibility Principle (SRP): ek class ke paas badalne ki **sirf ek wajah** honi chahiye.
+- **O** — Open/Closed Principle (OCP): class **extension ke liye open**, **modification ke liye closed** — naya behaviour add karo bina purana code chhue.
+- **L** — Liskov Substitution Principle (LSP): jahan base type expect ho, wahan koi bhi derived type bina surprise ke chal jaana chahiye.
+- **I** — Interface Segregation Principle (ISP): client ko aisa interface implement karne pe majboor mat karo jiske methods wo use hi nahi karta.
+- **D** — Dependency Inversion Principle (DIP): high-level modules low-level modules pe depend na karein; dono **abstractions** pe depend karein.
+
+### Why do we need it — kya tootega bina iske
+
+Bina SOLID ke code "chalta" toh hai, par har change mehenga ho jaata hai:
+
+- Ek chhota bug fix karne ke liye 400-line class padho, dar-dar ke change karo.
+- Naya salary grade add karna hai? Purani `if-else` chain me ek aur branch — aur galti se doosra grade tod diya.
+- `EmployeeService` ka unit test likhna hai? Ek test ke liye database, SMTP, aur PAN API — teeno mock karo.
+- Ek jagah change karo, teen anjaan jagah break — kyunki responsibilities ghuli hui hain.
+
+Concrete failure scenario: `EmployeeService.CreateAsync` ke andar hi `SmtpClient` se welcome email jaata hai. Ek din SMTP server 30 second timeout deta hai. Ab har employee-create request 30 second hang karti hai aur user ko lagta hai save hi nahi hua — jabki DB me row ban chuki hai. Email bhejna `CreateAsync` ki responsibility thi hi nahi.
+
+### How does it work — mechanism, step by step
+
+Har principle ka ek "smell" hota hai jo batata hai wo violate ho raha hai:
+
+1. **SRP smell** — class ka naam `And` maangta hai ("Employee service jo validate karta hai *and* PAN check karta hai *and* email bhejta hai").
+2. **OCP smell** — naya case add karne ke liye existing `switch`/`if` chain edit karni padti hai.
+3. **LSP smell** — override kiya hua method `NotSupportedException` ya `null` phenkta hai jahan base contract kuch aur promise karta hai.
+4. **ISP smell** — implementing class ke aadhe methods `throw new NotImplementedException()`.
+5. **DIP smell** — service ke andar `new SqlConnection(...)` ya `new HttpClient()` — concrete class ka `new`.
+
+Refactor ka pattern har baar same: responsibility ya variation ko ek **chhote focused type** me nikaalo, use **interface** ke peeche rakho, aur DI se inject karo.
+
+### Show it in our project — S: Single Responsibility
+
+Abhi `EmployeeService` aisa dikhta hai (simplified):
+
+```csharp
+public class EmployeeService : IEmployeeService
+{
+    private readonly IEmployeeRepository _repo;
+    private readonly HttpClient _http;          // PAN verification call
+    private readonly SmtpClient _smtp;          // welcome email
+    private readonly ILogger<EmployeeService> _logger;
+
+    public async Task<EmployeeDto> CreateAsync(CreateEmployeeRequest req)
+    {
+        // 1. validation
+        if (string.IsNullOrWhiteSpace(req.Email) || !req.Email.Contains('@'))
+            throw new ValidationException("Invalid email");
+        if (await _repo.EmailExistsAsync(req.Email))
+            throw new ValidationException("Duplicate email");
+
+        // 2. external PAN verification
+        var panResponse = await _http.GetAsync($"/verify/{req.PanNumber}");
+        if (!panResponse.IsSuccessStatusCode)
+            throw new ValidationException("PAN verification failed");
+
+        // 3. mapping
+        var employee = new Employee
+        {
+            FullName = req.FullName,
+            Email = req.Email,
+            PanNumber = req.PanNumber,
+            Salary = req.Salary,
+            DepartmentId = req.DepartmentId,
+            DateOfJoining = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        // 4. persistence
+        await _repo.AddAsync(employee);
+        await _repo.SaveChangesAsync();
+
+        // 5. notification
+        await _smtp.SendMailAsync(new MailMessage("hr@bank.com", req.Email,
+            "Welcome", "Welcome aboard!"));
+
+        // 6. mapping back
+        return new EmployeeDto(employee.Id, employee.FullName, employee.Email);
+    }
+}
+```
+
+Ye class ke paas badalne ki **paanch wajah** hain: validation rules badle, PAN API ka contract badla, mapping badla, DB badla, email template badla. Har ek alag team, alag reason.
+
+SRP refactor — focused collaborators nikaalo:
+
+```csharp
+public interface IEmployeeValidator
+{
+    Task ValidateForCreateAsync(CreateEmployeeRequest req);
+}
+
+public interface IPanVerificationClient
+{
+    Task<bool> IsValidPanAsync(string panNumber);
+}
+
+public interface IEmployeeNotifier
+{
+    Task SendWelcomeAsync(string email, string fullName);
+}
+```
+
+```csharp
+public class EmployeeService : IEmployeeService
+{
+    private readonly IEmployeeRepository _repo;
+    private readonly IEmployeeValidator _validator;
+    private readonly IPanVerificationClient _pan;
+    private readonly IEmployeeNotifier _notifier;
+    private readonly IMapper _mapper;
+
+    public EmployeeService(
+        IEmployeeRepository repo,
+        IEmployeeValidator validator,
+        IPanVerificationClient pan,
+        IEmployeeNotifier notifier,
+        IMapper mapper)
+    {
+        _repo = repo;
+        _validator = validator;
+        _pan = pan;
+        _notifier = notifier;
+        _mapper = mapper;
+    }
+
+    public async Task<EmployeeDto> CreateAsync(CreateEmployeeRequest req)
+    {
+        await _validator.ValidateForCreateAsync(req);
+
+        if (!await _pan.IsValidPanAsync(req.PanNumber))
+            throw new ValidationException("PAN verification failed");
+
+        var employee = _mapper.Map<Employee>(req);
+        employee.DateOfJoining = DateTime.UtcNow;
+        employee.IsActive = true;
+
+        await _repo.AddAsync(employee);
+        await _repo.SaveChangesAsync();
+
+        await _notifier.SendWelcomeAsync(employee.Email, employee.FullName);
+
+        return _mapper.Map<EmployeeDto>(employee);
+    }
+}
+```
+
+Ab `EmployeeService` ek **orchestrator** hai — steps ko sequence me bulata hai, khud kuch "karta" nahi. Har collaborator ke paas apni ek responsibility hai.
+
+#### Code explained line by line
+
+- `IEmployeeValidator`, `IPanVerificationClient`, `IEmployeeNotifier` — teen chhote interfaces, har ek me ek-do method. Yeh **seams** hain jahan implementation swap ho sakti hai (real vs fake).
+- Constructor ab paanch abstractions leta hai. Har parameter DI container se aata hai — `Program.cs` me `builder.Services.AddScoped<IEmployeeValidator, EmployeeValidator>()` type registrations.
+- `_notifier.SendWelcomeAsync(...)` — agar email bhejna async background kaam banana ho (outbox pattern jo module 7 me aaya), to sirf `IEmployeeNotifier` ka implementation badlega, `EmployeeService` nahi.
+- `_mapper.Map<Employee>(req)` — mapping ab AutoMapper ke profile me, service ke andar 8 lines nahi.
+
+### O: Open/Closed — salary calculation
+
+Payroll module me allowance calculation aisa likha hua tha:
+
+```csharp
+public decimal CalculateGrossSalary(Employee e)
+{
+    decimal hra, special;
+    if (e.Grade == "L1")       { hra = e.Salary * 0.20m; special = 1000m; }
+    else if (e.Grade == "L2")  { hra = e.Salary * 0.25m; special = 3000m; }
+    else if (e.Grade == "L3")  { hra = e.Salary * 0.30m; special = 6000m; }
+    else if (e.Grade == "L4")  { hra = e.Salary * 0.40m; special = 12000m; }
+    else                        { hra = e.Salary * 0.15m; special = 0m; }
+    return e.Salary + hra + special;
+}
+```
+
+Har naya grade — "L5", "Contractor", "Intern" — ka matlab is method ko **edit** karna, aur regression ka risk. OCP kehta hai: naya grade add karna existing code ko chhue bina ho sake.
+
+OCP refactor — strategy per grade:
+
+```csharp
+public interface ISalaryRule
+{
+    string Grade { get; }
+    decimal CalculateGross(Employee employee);
+}
+
+public class GradeL1SalaryRule : ISalaryRule
+{
+    public string Grade => "L1";
+    public decimal CalculateGross(Employee e) => e.Salary + e.Salary * 0.20m + 1000m;
+}
+
+public class GradeL2SalaryRule : ISalaryRule
+{
+    public string Grade => "L2";
+    public decimal CalculateGross(Employee e) => e.Salary + e.Salary * 0.25m + 3000m;
+}
+// GradeL3SalaryRule, GradeL4SalaryRule similar...
+```
+
+```csharp
+public class SalaryCalculator
+{
+    private readonly IReadOnlyDictionary<string, ISalaryRule> _rules;
+
+    public SalaryCalculator(IEnumerable<ISalaryRule> rules)
+        => _rules = rules.ToDictionary(r => r.Grade);
+
+    public decimal CalculateGross(Employee employee)
+    {
+        if (!_rules.TryGetValue(employee.Grade, out var rule))
+            throw new InvalidOperationException($"No salary rule for grade {employee.Grade}");
+        return rule.CalculateGross(employee);
+    }
+}
+```
+
+`Program.cs`:
+
+```csharp
+builder.Services.AddSingleton<ISalaryRule, GradeL1SalaryRule>();
+builder.Services.AddSingleton<ISalaryRule, GradeL2SalaryRule>();
+builder.Services.AddSingleton<ISalaryRule, GradeL3SalaryRule>();
+builder.Services.AddSingleton<ISalaryRule, GradeL4SalaryRule>();
+builder.Services.AddSingleton<SalaryCalculator>();
+```
+
+Ab "L5" add karna = ek nayi `GradeL5SalaryRule` file + ek registration line. `SalaryCalculator` aur baaki rules **bilkul untouched**. Ye OCP hai: naya behaviour add hua, purana code closed raha.
+
+#### Line by line
+
+- `IEnumerable<ISalaryRule> rules` — DI container **saari** registered `ISalaryRule` implementations ko ek collection me inject kar deta hai. Ye .NET DI ka built-in feature hai.
+- `rules.ToDictionary(r => r.Grade)` — grade string se rule ka fast lookup.
+- `TryGetValue(...)` false — unknown grade pe fail-fast, silent galat number nahi.
+
+<Callout type="warning">
+
+OCP ka matlab "kabhi purani class edit mat karo" nahi hai. Bug fix karne ke liye edit karna theek hai. OCP tab lagao jab tumhe **pehle se pata ho** ek axis pe variation aata rahega (yahan: naye grades). Har cheez ko abhi se pluggable banana over-engineering hai.
+
+</Callout>
+
+### L: Liskov Substitution — the read-only repository trap
+
+Kisi ne reporting ke liye ek "read-only" repository banaya, `IEmployeeRepository` ko hi implement karke:
+
+```csharp
+public class ReadOnlyEmployeeRepository : IEmployeeRepository
+{
+    public Task<Employee?> GetByIdAsync(int id) => /* real read */;
+    public Task<List<Employee>> GetAllAsync() => /* real read */;
+
+    public Task AddAsync(Employee e)
+        => throw new NotSupportedException("This repository is read-only");
+
+    public Task UpdateAsync(Employee e)
+        => throw new NotSupportedException("This repository is read-only");
+
+    public Task SaveChangesAsync()
+        => throw new NotSupportedException("This repository is read-only");
+}
+```
+
+Ye LSP **violate** karta hai: koi bhi code jo `IEmployeeRepository` leta hai wo `AddAsync` call karne ke liye haqdaar hai — contract ne promise kiya hai. Agar `EmployeeService` ko galti se `ReadOnlyEmployeeRepository` inject ho gaya, `CreateAsync` runtime pe `NotSupportedException` ke saath crash karega. Compile-time pe sab theek dikhta hai — yahi khatarnaak hai.
+
+LSP fix — interface ko wahi banao jo sach me guarantee ho sakta hai (ISP se juda hua):
+
+```csharp
+public interface IEmployeeReader
+{
+    Task<Employee?> GetByIdAsync(int id);
+    Task<List<Employee>> GetAllAsync();
+}
+
+public interface IEmployeeWriter
+{
+    Task AddAsync(Employee employee);
+    Task UpdateAsync(Employee employee);
+    Task SaveChangesAsync();
+}
+
+// full repo still supports both
+public interface IEmployeeRepository : IEmployeeReader, IEmployeeWriter { }
+```
+
+```csharp
+public class ReadOnlyEmployeeRepository : IEmployeeReader
+{
+    public Task<Employee?> GetByIdAsync(int id) => /* real read */;
+    public Task<List<Employee>> GetAllAsync() => /* real read */;
+}
+```
+
+Ab reporting service `IEmployeeReader` maangti hai. `ReadOnlyEmployeeRepository` sirf wahi promise karta hai jo wo nibha sakta hai — koi `throw` nahi. Substitution safe hai: `IEmployeeReader` ki koi bhi implementation bina surprise chalegi.
+
+### I: Interface Segregation — splitting the fat repository
+
+Time ke saath `IEmployeeRepository` phool gaya:
+
+```csharp
+public interface IEmployeeRepository
+{
+    Task<Employee?> GetByIdAsync(int id);
+    Task<List<Employee>> GetAllAsync();
+    Task<List<Employee>> GetByDepartmentAsync(int departmentId);
+    Task<bool> EmailExistsAsync(string email);
+    Task<PagedResult<Employee>> GetPagedAsync(int page, int size);
+    Task AddAsync(Employee e);
+    Task AddRangeAsync(IEnumerable<Employee> employees);
+    Task UpdateAsync(Employee e);
+    Task DeleteAsync(int id);
+    Task SoftDeleteAsync(int id);
+    Task SaveChangesAsync();
+    Task<int> CountActiveAsync();
+    Task<decimal> TotalPayrollAsync();
+    Task BulkDeactivateAsync(int departmentId);
+    Task<List<Employee>> SearchAsync(string term);
+}
+```
+
+15 methods. `ReportingService` ko sirf `CountActiveAsync` aur `TotalPayrollAsync` chahiye, lekin uske unit test me poora 15-method interface mock karna padta hai. Test me `Mock<IEmployeeRepository>` banao aur 13 unused methods bhi setup ke laayak baithe rehte hain.
+
+ISP refactor — role-based interfaces:
+
+```csharp
+public interface IEmployeeReader
+{
+    Task<Employee?> GetByIdAsync(int id);
+    Task<List<Employee>> GetAllAsync();
+    Task<bool> EmailExistsAsync(string email);
+}
+
+public interface IEmployeeWriter
+{
+    Task AddAsync(Employee employee);
+    Task UpdateAsync(Employee employee);
+    Task SaveChangesAsync();
+}
+
+public interface IEmployeeStatsReader
+{
+    Task<int> CountActiveAsync();
+    Task<decimal> TotalPayrollAsync();
+}
+```
+
+`EmployeeService` ab `IEmployeeReader` + `IEmployeeWriter` leta hai. `ReportingService` sirf `IEmployeeStatsReader` leta hai. `EfEmployeeRepository` teeno implement karta hai — ek hi class, par consumers ko sirf apna slice dikhta hai. Test chhote, coupling kam.
+
+### D: Dependency Inversion — we already do this, name it
+
+DIP humne project ke shuru se follow kiya hai — bas naam nahi diya:
+
+- `EmployeesController` `IEmployeeService` pe depend karta hai, `EmployeeService` (concrete) pe nahi.
+- `EmployeeService` `IEmployeeRepository` pe depend karta hai, `EfEmployeeRepository` pe nahi.
+- `EfEmployeeRepository` `IEmployeeRepository` ko **implement** karta hai — arrow **upar** ki taraf, abstraction ki taraf.
+
+Dependency direction:
+
+```text
+Controller ──▶ IEmployeeService ◀── EmployeeService
+EmployeeService ──▶ IEmployeeRepository ◀── EfEmployeeRepository
+```
+
+High-level policy (Controller, Service) aur low-level detail (EF Core repo) — dono **beech me rakhe interface** pe depend karte hain. Compile-time dependency detail se abstraction ki taraf "invert" ho gayi. Isi wajah se hum `EfEmployeeRepository` ko `DapperEmployeeRepository` se badal sakte hain bina Service chhue, aur test me `Mock<IEmployeeRepository>` daal sakte hain.
+
+DIP violation dikhta kaisa hai:
+
+```csharp
+public class EmployeeService
+{
+    private readonly EfEmployeeRepository _repo = new EfEmployeeRepository(); // concrete new
+    private readonly HttpClient _http = new HttpClient();                     // concrete new
+}
+```
+
+`new` = compile-time coupling to a concrete class. Fix hamesha same: interface banao, constructor me inject karo, `Program.cs` me wire karo.
+
+### Where is it used in day-to-day development
+
+- **Code review** me reviewer likhta hai "SRP violation — is method me validation aur persistence dono hai, split karo."
+- **PR templates** me checkbox: "New variation added via new class, not by editing a switch?"
+- **Refactoring tickets** — legacy "God service" ko tod-tod ke collaborators banana, sprint-by-sprint.
+- **Interview** me: "Tell me about SOLID with an example from your project" — ye topic hi wo answer hai.
+- Test likhte waqt dard hona (10 mocks chahiye) — ye SRP/ISP violation ka sabse imaandaar signal hai.
+
+### Pros and cons
+
+Fayde: chhote focused classes, aasan tests, naya behaviour add karna safe, parallel team work possible (alag class = alag file = kam merge conflict).
+
+Nuksan: zyada files aur interfaces, indirection — ek flow samajhne ke liye 4 files kholni padti hain. Chhote CRUD app ya throwaway prototype me poora SOLID lagana over-engineering hai. Judgement chahiye.
+
+### When to use / when NOT to use
+
+- **Use** jab class 200+ lines ki ho rahi ho, jab ek axis pe baar-baar variation aa raha ho (grades, payment providers, document types), jab test setup dard de raha ho.
+- **Don't** jab requirement stable ho aur ek hi implementation kabhi rahegi — tab ek interface + ek class ceremony hai, value nahi.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Chhote, single-purpose classes — padhna aur badalna aasan", "Naya behaviour = nayi class, existing code untouched (kam regression)", "Test me sirf zaroori seam mock karo, poori duniya nahi", "Team parallel kaam kar sakti hai, merge conflicts kam"]}
+  cons={["Zyada files, interfaces, aur indirection", "Ek request flow trace karne me 4-5 files kholni padti hain", "Chhote/stable feature pe over-engineering ban jaata hai", "Naye developer ko 'itni classes kyun' samajhne me time lagta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ke loan-origination service me `LoanApplicationService` 900 lines ka tha — eligibility rules, credit-bureau API call, document checks, SMS/email, aur DB writes sab andar. Har naye lending product (personal loan, gold loan, BNPL) ke liye ek aur `if (product == ...)` branch add hota tha, aur har release me kuch purana tootta tha. Team ne OCP-style refactor kiya: `ILoanProductPolicy` interface, per-product ek class, DI se `IEnumerable<ILoanProductPolicy>` inject. Naya product ab ek nayi class + ek registration line — release-day regressions lagbhag khatam ho gaye.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking integration project me `IAccountRepository` me 20+ methods the. Reporting team ke unit tests har baar 20-method mock ke saath aate the aur reviewers ghante bitate the. Architecture guild ne ISP mandate kiya — `IAccountReader`, `IAccountWriter`, `IAccountStatsReader`. Ek hi EF repository class ne teeno implement kiye, par consumers ko sirf apna slice mila. Test files ~40% chhoti ho gayin aur naye joiners ko "is service ko kya-kya chahiye" ek line me dikh jaata tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 5 principles: S, O, L, I, D — S aur D sabse zyada interview me poochhe jaate hain
+- SRP ka practical trigger: class ~200 lines se upar, ya description me "and" — split karne ka time
+- .NET DI `IEnumerable<TService>` inject karta hai jab ek interface ke multiple implementations registered hon — OCP strategy pattern ki backbone
+- ISP ke baad ek typical repository interface 3-5 methods ka role-interface ban jaata hai, 15 ka fat interface nahi
+- DIP: dependency arrows detail se abstraction ki taraf — Controller/Service → interface ← Infrastructure
+- Rule of thumb: 2-3 se zyada baar same shape ka `if/switch` branch add karo → OCP refactor consider karo
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye interview me lagbhag guaranteed hai — "Explain SOLID with a real example from your code." Ratta-maara definitions dena weak signal hai. Strong answer: ek principle pick karo aur apne project ka before/after batao. Jaise: "Hamare `EmployeeService` me create-employee ke andar validation, external PAN call, aur welcome email sab tha — SRP violation. Humne `IEmployeeValidator`, `IPanVerificationClient`, `IEmployeeNotifier` nikaale aur service ko orchestrator bana diya. Result: PAN client ke liye ek fake likh ke service ko isolate test kar paaye." 30 second me ye batata hai ki tumne principle **use** kiya hai, sirf padha nahi. Follow-up aksar: "SRP aur ISP me farak?" (SRP class ke baare me, ISP interface ke baare me) aur "OCP ka matlab kya kabhi edit na karo?" (nahi — bug fix theek, OCP known variation axis ke liye).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+SRP ko "ek class me ek method" samajh lena. SRP ka matlab ek **badalne ki wajah** — ek class me 10 chhote helper methods ho sakte hain agar sab ek hi responsibility serve karte hain.
+
+</Mistake>
+
+<Mistake>
+
+OCP ke naam pe har cheez ko interface + factory + strategy bana dena, jabki us axis pe kabhi doosri implementation aayegi hi nahi. Ye over-engineering hai — YAGNI yaad rakho.
+
+</Mistake>
+
+<Mistake>
+
+LSP violation ko "bas exception mat phenko" tak simplify kar dena. LSP tab bhi tootta hai jab derived type precondition strong kar de, postcondition weak kar de, ya base ke invariant tod de — chup-chaap galat result de.
+
+</Mistake>
+
+<Mistake>
+
+ISP ke chakkar me har method ka apna interface bana dena (`IEmployeeAdder`, `IEmployeeUpdater`, `IEmployeeDeleter`). Interfaces **role/client** ke hisaab se todo, per-method nahi — warna 15 method ki jagah 15 interface ka mess ban jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+DIP ko "har jagah interface laga do" maan lena. DIP dependency **direction** ke baare me hai — high-level policy ko low-level detail pe depend nahi karna chahiye. `string` ya `List<T>` ke liye interface banana DIP nahi hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    A["BEFORE: fat EmployeeService<br/>validation + PAN call + mapping + email + DB"] --> B["SRP refactor"]
+    B --> C["EmployeeService<br/>(orchestrator only)"]
+    C --> D["IEmployeeValidator"]
+    C --> E["IPanVerificationClient"]
+    C --> F["IEmployeeNotifier"]
+    C --> G["IMapper"]
+    C --> H["IEmployeeRepository"]
+    D -.->|"real / fake swappable"| I["each: one reason to change"]
+`}
+  caption="SRP as a refactor: one class that did five jobs becomes a thin orchestrator plus four focused collaborators, each behind an interface so it can be swapped or faked in tests."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **SRP** — ek class, ek badalne ki wajah. Smell: class ka kaam batane me "and" aata hai. Fix: focused collaborators nikaalo (`IEmployeeValidator`, `IPanVerificationClient`, `IEmployeeNotifier`), service ko orchestrator banao.
+- **OCP** — extension ke liye open, modification ke liye closed. Smell: naya case = existing `if/switch` edit. Fix: `ISalaryRule` per grade, DI se `IEnumerable<ISalaryRule>` inject, naya grade = nayi class + ek registration line.
+- **LSP** — derived type base ki jagah bina surprise chale. Smell: override me `NotSupportedException`/`null`. Fix: interface ko wahi banao jo har implementation sach me nibha sake (`IEmployeeReader` alag).
+- **ISP** — client ko unused methods implement karne pe majboor mat karo. Smell: 15-method interface, aadhe `NotImplementedException`. Fix: role-based interfaces — `IEmployeeReader` / `IEmployeeWriter` / `IEmployeeStatsReader`.
+- **DIP** — high-level aur low-level dono abstraction pe depend karein. Smell: service ke andar `new EfEmployeeRepository()`. Hum already karte hain: Controller → `IEmployeeService`, Service → `IEmployeeRepository`, Infrastructure implements upar ki taraf.
+- SRP class-level hai, ISP interface-level — alag cheez.
+- OCP ka matlab bug fix na karna nahi; known variation axis ke liye hai.
+- SOLID ka cost = zyada files/indirection; chhote stable feature pe skip karna theek.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeService.CreateAsync` se welcome-email wale do-teen line ko ek `IEmployeeNotifier` interface + `SmtpEmployeeNotifier` class me nikaalo, constructor me inject karo, `Program.cs` me register karo. Behaviour same, responsibility alag.
+
+**Medium:** Payroll ki `CalculateGrossSalary` `if-else` chain ko `ISalaryRule` strategies me convert karo — grades L1-L4 ke liye chaar classes, ek `SalaryCalculator` jo `IEnumerable<ISalaryRule>` leta hai, aur `Program.cs` registrations. Phir ek nayi `GradeL5SalaryRule` add karo bina kisi purani class ko chhue aur ek quick test likho jo dono grades ka gross verify kare.
+
+**Bada (large):** `IEmployeeRepository` ko ISP ke hisaab se `IEmployeeReader` / `IEmployeeWriter` / `IEmployeeStatsReader` me todo. `EfEmployeeRepository` ko teeno implement karwao. `EmployeeService` ko reader+writer pe, ek naya `ReportingService` ko sirf stats-reader pe shift karo. Ek `ReadOnlyEmployeeRepository : IEmployeeReader` bhi banao (LSP-safe, koi `throw` nahi) aur `ReportingService` me use karo. Build green rakho aur affected tests update karo.
+
+</Callout>

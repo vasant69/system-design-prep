@@ -1,0 +1,272 @@
+---
+slug: "routing-in-web-api"
+title: "Attribute Routing, End to End"
+section: "code-flow"
+module: "crud-in-memory"
+order: 2
+difficulty: "beginner"
+readingTime: 16
+prerequisites: ["the-employee-model", "create-the-project-and-walk-the-structure"]
+tags: ["dotnet", "aspnet-core", "web-api", "routing", "attribute-routing", "rest", "employee-management"]
+englishDefinition: "Routing is how ASP.NET Core decides which controller action runs for an incoming HTTP method and URL. Web API uses attribute routing: route templates declared with [Route], [HttpGet], [HttpPost] and friends directly on the controller and its actions, with optional inline constraints like :int on route parameters."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Routing is how ASP.NET Core decides which controller action runs for an incoming HTTP method and URL. Web API uses attribute routing: route templates declared with `[Route]`, `[HttpGet]`, `[HttpPost]` and friends directly on the controller and its actions, with optional inline constraints like `:int` on route parameters.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Module 1 me humne `EmployeesController` banaya aur uspe `[Route("api/employees")]` laga diya bina zyada socha. Ab jab is module me GET/POST/PUT/DELETE — chaaron verbs aayenge — routing ko theek se samajhna zaroori hai, warna "ye URL kis method pe jaayega" hamesha guesswork rahega.
+
+### What is it — routing kya hai
+
+Ek HTTP request ke do pehchaan ke hisse hote hain: **method** (`GET`, `POST`, ...) aur **path** (`/api/employees/5`). Routing ASP.NET Core ka wo hissa hai jo in dono ko dekh kar decide karta hai: "is request ke liye kaunsi controller class ka kaunsa method chalega". Web API me hum ye mapping **attributes** se likhte hain — isliye naam **attribute routing**.
+
+### Why do we need it — iske bina kya
+
+Routing ke bina framework ko pata hi nahi chalega ki `GET /api/employees/5` ke liye `GetById(5)` chalana hai. Do purane options the: (1) **conventional routing** — ek central pattern `"{controller}/{action}/{id?}"` `Program.cs` me, URL se action ka naam guess hota hai. MVC views ke liye theek hai. (2) **attribute routing** — har action pe uska exact URL likha hota hai. REST APIs ke liye yahi standard hai kyunki RESTful URLs (`/api/employees/5/documents`) kisi `{controller}/{action}` pattern me fit nahi baithte, aur ek hi resource pe alag-alag verbs alag actions pe jaate hain.
+
+`[ApiController]` attribute lagi controllers me attribute routing **mandatory** hai — conventional routing waha kaam hi nahi karti.
+
+### How does it work — step by step
+
+1. App start pe framework saari controllers scan karta hai aur ek **route table** banata hai: har entry = (HTTP method, URL template, action).
+2. Request aati hai. Framework URL ko templates se match karta hai. `[Route("api/employees")]` + `[HttpGet("{id:int}")]` milke template `api/employees/{id:int}` banate hain.
+3. `:int` ek **route constraint** hai — `/api/employees/abc` is template se match hi nahi karega (`abc` int nahi hai), framework aage doosre templates dekhega ya `404` dega.
+4. Match milne pe framework URL ke `{id}` wale hisse ko action parameter `int id` me daal deta hai (model binding), phir action call karta hai.
+
+### Show it in our project — `EmployeesController` ka routing
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using EmployeeManagement.Api.Models;
+
+namespace EmployeeManagement.Api.Controllers;
+
+[ApiController]
+[Route("api/employees")]
+public class EmployeesController : ControllerBase
+{
+    private static readonly List<Employee> _employees = SeedData.Employees;
+
+    // GET /api/employees
+    [HttpGet]
+    public ActionResult<IEnumerable<Employee>> GetAll() => Ok(_employees);
+
+    // GET /api/employees/5
+    [HttpGet("{id:int}")]
+    public ActionResult<Employee> GetById(int id)
+    {
+        var employee = _employees.FirstOrDefault(e => e.Id == id);
+        return employee is null ? NotFound() : Ok(employee);
+    }
+
+    // GET /api/employees/by-pan/ABCPS1234K
+    [HttpGet("by-pan/{pan}")]
+    public ActionResult<Employee> GetByPan(string pan)
+    {
+        var employee = _employees.FirstOrDefault(e => e.PanNumber == pan);
+        return employee is null ? NotFound() : Ok(employee);
+    }
+
+    // GET /api/employees/5/documents   (preview of nested routing — module 7)
+    [HttpGet("{id:int}/documents")]
+    public ActionResult<IEnumerable<string>> GetDocuments(int id)
+    {
+        if (_employees.All(e => e.Id != id)) return NotFound();
+        return Ok(Array.Empty<string>()); // real list comes in the file-upload module
+    }
+}
+```
+
+### Code explained line by line
+
+- `[ApiController]` — ye attribute batati hai "ye ek Web API controller hai". Iske do bade side-effects: attribute routing **mandatory** ho jaati hai, aur invalid model pe automatic `400` (agla topic).
+- `[Route("api/employees")]` — **controller-level** base template. Is class ki har action ka URL isse shuru hoga. `api` prefix convention hai taaki API routes UI routes se alag dikhein.
+- `[HttpGet]` — bina template ke. URL = controller base = `GET /api/employees`. Method `GET` bhi yahi attribute fix karta hai.
+- `[HttpGet("{id:int}")]` — controller base ke aage `/{id:int}` jodta hai. Final: `GET /api/employees/{id:int}`. `{id}` ek **route parameter** hai, `:int` uski **constraint**.
+- `int id` parameter — naam `{id}` template se match karta hai, isliye framework khud value bhar deta hai. `[FromRoute]` implied hai simple types ke liye.
+- `[HttpGet("by-pan/{pan}")]` — ek literal segment (`by-pan`) plus ek parameter. Isse hum ek hi resource ke alag "lookup" endpoints bana sakte hain bina route clash ke — `by-pan/ABC` kabhi `{id:int}` se match nahi karega kyunki `by-pan` int nahi hai.
+- `[HttpGet("{id:int}/documents")]` — **nested / hierarchical route**. "Is employee ke andar ke documents". Ye RESTful nesting ka preview hai; asli implementation module 7 me.
+
+### `[controller]` token
+
+Tumne dusri jagah `[Route("api/[controller]")]` bhi dekha hoga. `[controller]` ek **token** hai jo class ke naam se `Controller` suffix hata kar lowercase kar deta hai — `EmployeesController` se `employees`. To `api/[controller]` bhi `api/employees` hi banta hai. Fayda: class rename karo to route apne aap update. Nuksan: URL grep karne pe file nahi milti, aur rename se URL silently badalna production me risky hai. **Is course me hum explicit `"api/employees"` likhenge** — thoda zyada type, lekin URL hamesha aankhon ke saamne.
+
+### Route vs query string
+
+- **Route parameter** — resource ki **pehchaan** ka hissa. `GET /api/employees/5` — "employee number 5". `{id}` template me hai.
+- **Query string** — us resource ki list ko **filter/sort/paginate** karne ke liye. `GET /api/employees?department=10&active=true&page=2`. Template me nahi, action me `[FromQuery]` se aata hai.
+- Rule: agar value badalne se **doosra resource** milta hai to route; agar **same collection ka subset** milta hai to query string.
+
+### Multiple routes to one action
+
+```csharp
+[HttpGet("{id:int}")]
+[HttpGet("details/{id:int}")]
+public ActionResult<Employee> GetById(int id) { /* ... */ }
+```
+
+Dono URLs same action pe jaayenge. Use-case: purana URL deprecate kar rahe ho par abhi todna nahi. Warna avoid karo — ek resource ka ek canonical URL better hai.
+
+### Route constraints
+
+- `{id:int}` — sirf integers.
+- `{id:guid}` — sirf GUIDs (jaise `3f2504e0-...`). Agar id `int` na ho ke GUID ho (module 4+ me kabhi), tab.
+- `{code:alpha}` — sirf letters. `{code:length(10)}` — exactly 10 chars (PAN ke liye kaam ka).
+- `{page:int:min(1)}` — int aur `>= 1`.
+
+Constraint ek **filter** hai, validation nahi — match na hone pe `404` milta hai, `400` nahi. "PAN 10 chars ka hai" jaisi cheez proper validation (module 5) me karo, constraint pe nirbhar mat raho.
+
+### When to use / when NOT to use nested routes
+
+Nested route (`/api/employees/5/documents`) tab jab child resource **sirf parent ke context me** meaningful ho — ek document kisi employee ke bina bemaani hai. Jab child apne aap me independent ho (jaise `Department` — wo apna top-level resource hai `/api/departments`), to nesting mat karo. 2 level se zyada nesting (`/a/1/b/2/c/3`) almost hamesha smell hai.
+
+### Failure scenario — ambiguous route
+
+Agar tum galti se do actions ko **same method + same template** de do:
+
+```csharp
+[HttpGet("{id}")]
+public ActionResult<Employee> GetById(int id) { /* ... */ }
+
+[HttpGet("{name}")]
+public ActionResult<Employee> GetByName(string name) { /* ... */ }
+```
+
+App **start pe hi crash** karega: `AmbiguousMatchException: The request matched multiple endpoints`. Framework decide nahi kar sakta `GET /api/employees/5` kis pe jaaye. Fix: templates ko distinct banao — `{id:int}` aur `by-name/{name}` — constraint ya literal segment se.
+
+### Where is it used in day-to-day development
+
+- Har naya endpoint = pehle uska URL + verb decide karna, phir `[HttpX("...")]` likhna.
+- API design review me sabse zyada bahes URLs pe hoti hai — plural/singular, nesting, verbs URL me nahi.
+- Frontend/mobile team routes se apne API client generate karti hai.
+- Postman/Swagger collection routes ka mirror hota hai.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Explicit \"api/employees\" — URL hamesha code me dikhta hai, grep-able", "Rename controller se route accidental change nahi hota", "Onboarding easy — file kholo, URL saamne"]}
+  cons={["[controller] token se thoda zyada typing", "Do jagah update karna padta hai agar sach me path badalna ho"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending API me team ne shuru me `[Route("api/[controller]")]` use kiya. 6 mahine baad `LoansController` ko `LoanApplicationsController` rename kiya — sabhi URLs `/api/loans` se `/api/loanapplications` ho gaye chup-chaap, mobile app tut gaya production me. Postmortem ke baad rule bana: har controller me explicit literal route string, `[controller]` token banned.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Bade bank projects me API URLs ek published contract hote hain jo partner banks aur internal apps consume karte hain. Ek naya route add karna change-advisory-board se pass hota hai. Isliye routing attributes ko utni hi seriousness se review kiya jaata hai jitna DB schema — kyunki URL badalna ek breaking change hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 2 routing styles: conventional (MVC/views) aur attribute (Web API) — `[ApiController]` ke saath attribute mandatory
+- 4 common HTTP verb attributes: `[HttpGet]`, `[HttpPost]`, `[HttpPut]`, `[HttpDelete]` (plus `[HttpPatch]`)
+- Common constraints: `:int`, `:guid`, `:alpha`, `:bool`, `:length(n)`, `:min(n)`, `:max(n)`, `:regex(...)`
+- Route mismatch = `404`; constraint mismatch = `404` (validation `400` nahi)
+- Ambiguous route = app **startup** crash (`AmbiguousMatchException`), request time nahi
+- Nesting depth 2 se zyada = design smell (`/api/employees/5/documents` theek, usse gehra nahi)
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Attribute routing aur conventional routing me kya farq hai, aur Web API kaunsa use karta hai?" Strong jawaab: "Conventional routing ek central `controller/action/id` pattern hota hai, MVC views ke liye. Attribute routing me har action pe uska exact URL aur verb likha hota hai — `[HttpGet("{id:int}")]`. Web API attribute routing use karti hai kyunki RESTful URLs aur ek resource pe multiple verbs central pattern me fit nahi hote, aur `[ApiController]` ke saath conventional routing kaam hi nahi karti." Follow-ups: "route parameter vs query string?" (identity vs filter), "`:int` constraint fail hone pe kya status?" (`404`, `400` nahi), "ambiguous route kab pata chalta hai?" (app startup pe). Interviewer dekh raha hai ki tum URLs ko design karte ho, framework pe chhodhte nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Query-string-type cheezein route me daalna: `GET /api/employees/department/10/active/true/page/2`. Filter/sort/paginate hamesha query string me — `?department=10&active=true&page=2`. Route sirf resource identity ke liye.
+
+</Mistake>
+
+<Mistake>
+
+URL me verb likhna: `POST /api/employees/create`, `GET /api/getAllEmployees`. HTTP method hi verb hai. URL me sirf noun (resource) — `POST /api/employees`, `GET /api/employees`.
+
+</Mistake>
+
+<Mistake>
+
+`:int` constraint ko validation samajhna. Wo sirf route match ka filter hai — fail pe `404` deta hai. "Id positive hona chahiye", "PAN 10 char ka ho" jaisi rules proper validation layer me (module 5), constraint pe nahi.
+
+</Mistake>
+
+<Mistake>
+
+Do actions ko same verb + same template dena aur expect karna ki framework "samajh jaayega". App startup pe `AmbiguousMatchException` se crash hoga. Templates ko constraint ya literal segment se distinct banao.
+
+</Mistake>
+
+<Mistake>
+
+Har cheez ko nest kar dena: `/api/departments/10/employees/5/documents/3/history`. 2 level se zyada nesting maintain karna dukh hai. Deep child ko apna top-level route do — `/api/documents/3`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart TD
+    R["Incoming request: METHOD + /path"] --> T{"Match route table"}
+    T -->|"GET /api/employees"| A["GetAll()"]
+    T -->|"GET /api/employees/5"| B["GetById(int id)  [id:int]"]
+    T -->|"GET /api/employees/by-pan/ABCPS1234K"| C["GetByPan(string pan)"]
+    T -->|"GET /api/employees/5/documents"| D["GetDocuments(int id)  (nested)"]
+    T -->|"no template matches"| E["404 Not Found"]
+`}
+  caption="One route table, built at startup. Method + path together pick exactly one action; :int on GetById keeps /by-pan/... from ever landing there."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Routing = (HTTP method + URL path) se ek exact controller action chunna; Web API me ye **attribute routing** hai (`[Route]`, `[HttpGet]`, ...)
+- `[ApiController]` ke saath attribute routing **mandatory** — conventional routing (`{controller}/{action}`) MVC views ke liye hai
+- Controller pe `[Route("api/employees")]` base; action pe `[HttpGet("{id:int}")]` — dono milke final template
+- **Route parameter** = resource identity (`/employees/5`); **query string** = filter/sort/paginate (`?department=10&page=2`)
+- Constraints (`:int`, `:guid`, `:alpha`, `:length(10)`) route match ka **filter** hain — fail pe `404`, validation nahi
+- `[controller]` token route ko class-name se banata hai — is course me hum **explicit literal** likhte hain (grep-able, rename-safe)
+- URL me verb kabhi nahi (`/create`, `/getAll` galat) — method hi verb hai, URL noun
+- Same verb + same template do actions pe = **app startup crash** (`AmbiguousMatchException`); nesting 2 level tak theek
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeesController` me `[HttpGet("by-pan/{pan}")]` endpoint add karo jo seed list me PAN se employee dhoondhe, mile to `Ok`, na mile to `NotFound`. Swagger me dono cases test karo.
+
+**Medium:** `GetById` pe `{id:int}` constraint hata do aur ek `[HttpGet("{name:alpha}")]` `GetByName` action add karo. Dekho ki `GET /api/employees/5` ab bhi `GetById` pe jaata hai aur `GET /api/employees/aarti` `GetByName` pe — constraints hi dono ko distinguish kar rahe hain. Phir constraint dono se hata do aur observe karo app startup pe kaise crash hota hai.
+
+**Bada (large):** `EmployeesController` ke liye poora RESTful URL map design karo (kaagaz pe ya README me): list, by-id, create, replace, delete, plus nested `/{id}/documents` (list + by-doc-id). Har row: method, URL template, action name, expected success status, expected failure status. Phir sabhi actions ke `[HttpX]` attributes stub kar do (body me `return Ok();` chalega) aur Swagger me pura surface ek baar me dikhaao — koi ambiguous-route crash nahi hona chahiye.
+
+</Callout>

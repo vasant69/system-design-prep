@@ -1,0 +1,384 @@
+---
+slug: "restructure-into-clean-architecture"
+title: "Restructure Into Clean Architecture, Project by Project"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 4
+difficulty: "advanced"
+readingTime: 20
+prerequisites: ["solid-principles-in-our-api", "layered-architecture-controller-service-repository", "ef-core-dbcontext-and-dbset"]
+tags: ["dotnet", "aspnet-core", "clean-architecture", "onion-architecture", "cqrs", "mediatr", "architecture"]
+englishDefinition: "Clean Architecture is a way of splitting a solution into concentric layers — Domain at the centre, then Application, then Infrastructure and the API host on the outside — where all source-code dependencies point inward toward the Domain, which itself depends on no framework. In practice this means four projects: Domain, Application, Infrastructure, and Api, wired together only at the Api composition root."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Clean Architecture is a way of splitting a solution into concentric layers — Domain at the centre, then Application, then Infrastructure and the API host on the outside — where all source-code dependencies point inward toward the Domain, which itself depends on no framework. In practice this means four projects: `EmployeeManagement.Domain`, `EmployeeManagement.Application`, `EmployeeManagement.Infrastructure`, and `EmployeeManagement.Api`, wired together only at the Api composition root.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Abhi tak hamara poora Employee Management API **ek hi project** `EmployeeManagement.Api` me hai, bas folders me bata hua: `Controllers/`, `Services/`, `Repositories/`, `Models/`, `Data/`. Ye theek chal raha hai. Ab hum ise **chaar alag projects** me tod rahe hain. Ye topic samjhata hai: kyun todna hai, kaunsa code kahan jaata hai, aur kab ye split karna waqt ki barbaadi hai.
+
+### What is it — Clean Architecture kya hai
+
+Clean Architecture ek **project structure rule** hai, ek framework nahi. Rule sirf ek hai — **Dependency Rule**: source code ki dependencies hamesha **andar ki taraf** point karti hain. Sabse andar **Domain** hota hai (business ka dil), uske bahar **Application** (use-cases), uske bahar **Infrastructure** (database, external APIs, file storage) aur **Api** (HTTP host). Bahar wali layer andar wali ko jaanti hai; andar wali layer ko bahar ka kuch pata nahi.
+
+Concretely, chaar projects:
+
+```text
+EmployeeManagement.sln
+├── EmployeeManagement.Domain          (zero framework refs)
+├── EmployeeManagement.Application     (refs: Domain)
+├── EmployeeManagement.Infrastructure  (refs: Application, Domain)
+└── EmployeeManagement.Api             (refs: Application, Infrastructure)
+```
+
+- **Domain** — `Employee`, `Department`, `User`, `EmployeeDocument` entities; value objects jaise `PanNumber`; domain exceptions jaise `InactiveEmployeeException`; aur **repository interfaces** `IEmployeeRepository`, `IDepartmentRepository`. Yahan `using Microsoft.EntityFrameworkCore` **bilkul mana hai**. Ye project sirf `net8.0` class library hai, koi NuGet nahi (ya sirf ek chhota validation helper).
+- **Application** — use-case services (`EmployeeService`), DTOs (`EmployeeDto`, `CreateEmployeeRequest`), FluentValidation validators, aur **ports** — bahar ki duniya se baat karne ke interfaces jaise `IPanVerificationClient`, `IFileStorage`, `IUnitOfWork`. Ye Domain ko ref karta hai, aur bas.
+- **Infrastructure** — `AppDbContext` (EF Core), `EmployeeRepository : IEmployeeRepository` (interface Domain me, implementation yahan), `PanVerificationClient : IPanVerificationClient` (real `HttpClient` call), `LocalFileStorage : IFileStorage`. Yahan saare "gande" framework details rehte hain.
+- **Api** — `Controllers/`, `Program.cs`, middleware, aur **composition root** — woh jagah jahan DI container me interface-to-implementation mapping hoti hai. Sirf yahi project jaanta hai ki `IEmployeeRepository` ka matlab `EmployeeRepository` hai jo EF Core use karta hai.
+
+### Why do we need it — single project me kya toota
+
+Single project me kuch **structural problem** hain jo chhote app me dikhte nahi, lekin team badhne par kaatte hain:
+
+1. **Koi cheez rok nahi rahi galat dependency ko.** Ek naya developer `EmployeeService` me seedha `new AppDbContext()` likh sakta hai, ya controller me seedha SQL. Compiler khush hai. Alag projects me `Application` project ke paas `AppDbContext` ka reference hi nahi hai — galti **compile hi nahi hogi**. Architecture ab "documentation" nahi, "enforced" hai.
+2. **Domain framework ke saath chipak jaata hai.** Agar `Employee` entity par EF Core ke `[Column]`, `[Table]` attributes lag gaye, ya `Salary` ka type EF ke hisaab se decide hone laga, to business rules aur persistence ghul-mil jaate hain. Kal SQL Server se PostgreSQL, ya EF se Dapper — poora Domain touch karna padega.
+3. **Test karna bhaari ho jaata hai.** `Application` ko akele test karne ke liye tumhe pura web project load karna padta hai. Alag project me `Application.Tests` sirf `Application` + `Domain` reference karta hai — chhota, tez.
+
+<Callout type="warning">
+
+Clean Architecture **problem tabhi solve karti hai jab woh problem tumhe hai**. Ek 5-endpoint internal tool ke liye chaar projects overkill hai — usme ye sirf `dotnet build` slow karega aur "ye DTO kahan rakhoon" ke sawaal badha dega.
+
+</Callout>
+
+### How does it work — Dependency Rule step by step
+
+Socho ek request aati hai `POST /api/employees`:
+
+1. **Api** ka `EmployeesController` request leta hai, DTO bind karta hai, `IEmployeeService` (jo Application me define hai) call karta hai.
+2. **Application** ka `EmployeeService` business rule chalata hai: PAN format check, department active hai ki nahi. Bahar se PAN verify karna hai to `IPanVerificationClient` **port** call karta hai — interface Application me, implementation ka usse pata nahi.
+3. **Infrastructure** ka `PanVerificationClient` actual `HttpClient` se external BFSI API hit karta hai; `EmployeeRepository` `AppDbContext` se row insert karta hai.
+4. Result DTO ban ke Api tak wapas — HTTP `201 Created`.
+
+Har arrow **andar ki taraf** hai: Api -> Application -> Domain. Infrastructure bhi Application/Domain ko point karta hai, ulta nahi. Isko **Dependency Inversion** deta hai: interface (abstraction) andar, implementation (detail) bahar.
+
+### Show it in our project — the four `.csproj` files
+
+```bash
+dotnet new classlib -n EmployeeManagement.Domain
+dotnet new classlib -n EmployeeManagement.Application
+dotnet new classlib -n EmployeeManagement.Infrastructure
+# Api project already hai
+
+dotnet add EmployeeManagement.Application reference EmployeeManagement.Domain
+dotnet add EmployeeManagement.Infrastructure reference EmployeeManagement.Application
+dotnet add EmployeeManagement.Api reference EmployeeManagement.Application
+dotnet add EmployeeManagement.Api reference EmployeeManagement.Infrastructure
+
+dotnet sln add EmployeeManagement.Domain EmployeeManagement.Application EmployeeManagement.Infrastructure
+```
+
+**Domain** — `EmployeeManagement.Domain/Entities/Employee.cs`:
+
+```csharp
+namespace EmployeeManagement.Domain.Entities;
+
+public class Employee
+{
+    public int Id { get; private set; }
+    public string FullName { get; private set; } = default!;
+    public string Email { get; private set; } = default!;
+    public int DepartmentId { get; private set; }
+    public decimal Salary { get; private set; }
+    public string PanNumber { get; private set; } = default!;
+    public bool IsActive { get; private set; }
+
+    public void Deactivate()
+    {
+        if (!IsActive)
+            throw new DomainException("Employee already inactive.");
+        IsActive = false;
+    }
+}
+```
+
+`EmployeeManagement.Domain/Repositories/IEmployeeRepository.cs`:
+
+```csharp
+namespace EmployeeManagement.Domain.Repositories;
+
+public interface IEmployeeRepository
+{
+    Task<Employee?> GetByIdAsync(int id, CancellationToken ct);
+    Task AddAsync(Employee employee, CancellationToken ct);
+}
+```
+
+**Application** — `EmployeeManagement.Application/Abstractions/IPanVerificationClient.cs`:
+
+```csharp
+namespace EmployeeManagement.Application.Abstractions;
+
+public interface IPanVerificationClient
+{
+    Task<bool> IsValidAsync(string panNumber, CancellationToken ct);
+}
+```
+
+`EmployeeManagement.Application/Employees/EmployeeService.cs`:
+
+```csharp
+public class EmployeeService : IEmployeeService
+{
+    private readonly IEmployeeRepository _repo;
+    private readonly IPanVerificationClient _pan;
+    private readonly IUnitOfWork _uow;
+
+    public EmployeeService(IEmployeeRepository repo, IPanVerificationClient pan, IUnitOfWork uow)
+    {
+        _repo = repo;
+        _pan = pan;
+        _uow = uow;
+    }
+
+    public async Task<int> CreateAsync(CreateEmployeeRequest req, CancellationToken ct)
+    {
+        if (!await _pan.IsValidAsync(req.PanNumber, ct))
+            throw new ValidationException("PAN verification failed.");
+
+        var employee = Employee.Create(req.FullName, req.Email, req.DepartmentId, req.Salary, req.PanNumber);
+        await _repo.AddAsync(employee, ct);
+        await _uow.SaveChangesAsync(ct);
+        return employee.Id;
+    }
+}
+```
+
+**Infrastructure** — `EmployeeManagement.Infrastructure/Persistence/EmployeeRepository.cs`:
+
+```csharp
+public class EmployeeRepository : IEmployeeRepository
+{
+    private readonly AppDbContext _db;
+    public EmployeeRepository(AppDbContext db) => _db = db;
+
+    public Task<Employee?> GetByIdAsync(int id, CancellationToken ct) =>
+        _db.Employees.FirstOrDefaultAsync(e => e.Id == id, ct);
+
+    public async Task AddAsync(Employee employee, CancellationToken ct) =>
+        await _db.Employees.AddAsync(employee, ct);
+}
+```
+
+**Api** — `EmployeeManagement.Api/Program.cs` (composition root):
+
+```csharp
+// Infrastructure ke andar hi ek extension method rakhna clean hota hai:
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddApplication();
+```
+
+`EmployeeManagement.Infrastructure/DependencyInjection.cs`:
+
+```csharp
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration config)
+    {
+        services.AddDbContext<AppDbContext>(o =>
+            o.UseSqlServer(config.GetConnectionString("Default")));
+
+        services.AddScoped<IEmployeeRepository, EmployeeRepository>();
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddHttpClient<IPanVerificationClient, PanVerificationClient>();
+        services.AddSingleton<IFileStorage, LocalFileStorage>();
+        return services;
+    }
+}
+```
+
+### Code explained line by line
+
+- `Id { get; private set; }` — Domain entity apna state khud control karta hai; bahar se koi seedha `employee.Salary = 0` nahi kar sakta. Isse invariants (business rules jo hamesha sach hone chahiye) tootne se bachte hain.
+- `throw new DomainException(...)` — ye exception type **Domain project** me hai, `System` ke alawa kisi ref ke bina. Business rule ka violation business ki bhaasha me express hota hai.
+- `IEmployeeRepository` **Domain me**, `EmployeeRepository` **Infrastructure me** — yahi Dependency Inversion hai. Application/Domain ko sirf interface dikhta hai; kaun implement kar raha hai (EF Core? Dapper? in-memory fake?) unhe farq nahi padta.
+- `IPanVerificationClient` ek **port** hai — Application ki taraf se ek "socket" jisme Infrastructure ka "plug" (`PanVerificationClient`) lagta hai. Isiliye isko **Ports and Adapters** bhi kehte hain.
+- `AddInfrastructure` / `AddApplication` extension methods — har project apni DI registration khud declare karta hai, aur `Program.cs` sirf unhe compose karta hai. Api ko ye jaanne ki zaroorat nahi ki Infrastructure ke andar kaunse concrete classes hain.
+- `AddScoped<IUnitOfWork, UnitOfWork>()` — `UnitOfWork` bas `AppDbContext.SaveChangesAsync` ko wrap karta hai, taaki Application ko `DbContext` type dikhe bina hi "save" trigger karne ka tareeka mile.
+- `CancellationToken ct` har method me — request cancel hone par (client chala gaya) DB query bhi ruk jaati hai. Clean layers me isko upar se neeche pass karna standard hai.
+
+### Onion, Hexagonal, Ports and Adapters — sab ek hi cheez
+
+Ye teen naam alag kitaabon se aaye hain lekin **same idea** hain:
+
+- **Onion Architecture** — concentric rings, Domain centre me. Yahi Clean Architecture ka picture hai.
+- **Hexagonal / Ports and Adapters** — app ke chaaron taraf "ports" (interfaces), unme "adapters" (implementations) plug hote hain. Left side driving adapters (controllers), right side driven adapters (DB, APIs).
+- **Clean Architecture** — Uncle Bob ne in dono ko ek naam de diya, plus "use case" ko explicit layer bana diya.
+
+Interview me agar teeno me se koi bhi poocha jaaye, jawaab same hai: **dependencies inward, framework bahar, business rules framework se azaad.**
+
+### MediatR + CQRS — optional agla step
+
+Abhi `EmployeeService` me saare use-cases (`CreateAsync`, `UpdateAsync`, `GetByIdAsync`) ek class me hain. **CQRS** (Command Query Responsibility Segregation) ke saath har use-case apni chhoti class ban jaata hai:
+
+```csharp
+public record CreateEmployeeCommand(string FullName, string Email, int DepartmentId,
+    decimal Salary, string PanNumber) : IRequest<int>;
+
+public class CreateEmployeeHandler : IRequestHandler<CreateEmployeeCommand, int>
+{
+    // wahi logic jo pehle EmployeeService.CreateAsync me tha
+}
+```
+
+Controller ab service inject nahi karta, `IMediator` inject karta hai: `await _mediator.Send(new CreateEmployeeCommand(...))`. MediatR command ko sahi handler tak route karta hai.
+
+**Fayda:** har use-case ek chhoti focused class; cross-cutting concerns (logging, validation, transaction) **pipeline behaviors** me ek jagah; controllers patle.
+
+**Nuksaan:** ek extra indirection layer — `Send()` se handler tak jaana "go to definition" me seedha nahi dikhta; chhoti team me ye "kahan gaya control flow" confusion badhata hai; har chhote read ke liye ek command + handler + response teen files.
+
+**Honest take:** CQRS + MediatR tab lo jab use-cases ki ginti (40+) aur cross-cutting logic itni ho ki ek `EmployeeService` 800 lines ka ho gaya ho. Chhote API me `EmployeeService` hi kaafi hai.
+
+### Where is it used in day-to-day development
+
+- **Naya BFSI microservice** — team lead pehle din hi Domain/Application/Infrastructure/Api split kar deta hai, kyunki compliance ke chalte persistence badal sakta hai aur audit-able business rules alag rakhne padte hain.
+- **Legacy monolith ka strangler refactor** — ek bade `Api` project me se Domain ko dheere-dheere alag project me nikaalna, taaki naye features clean side me likhe jaayein.
+- **PR review** — reviewer dekhta hai kisi ne `Application` me `Microsoft.EntityFrameworkCore` ka `using` add kiya to nahi; ye red flag hai.
+- **Onboarding** — naye dev ko "business logic dhoondhni hai to `Application`/`Domain` dekho, `Api` sirf plumbing hai" — navigation aasan.
+
+### When to use / when NOT to use
+
+**Use it when:** multiple entry points (API + background worker + scheduled job) same business logic share karte hain; persistence ya external providers badalne ka realistic chance hai; team 4+ log; app lambe samay tak chalega; compliance/audit ke liye business rules isolate karne hain.
+
+**Skip it when:** proof of concept ya 2-week throwaway; solo developer, chhota CRUD; deadline tight aur domain simple. Aise me single project + folders bilkul theek hai — hamara course zyadatar isi tarah bana hai.
+
+### Failure scenario — "agar aisa kiya to ye tootega"
+
+Ek team ne Clean Architecture apnaya lekin **Domain me EF Core navigation properties** rakh diye (`public Department Department { get; set; }`) aur `Domain.csproj` me `Microsoft.EntityFrameworkCore` package add kar diya "bas thoda sa". Chhe mahine baad unhone reporting ke liye Dapper add karna chaha — ab Domain entities EF ke lazy-loading proxies maangte the, `Department` kabhi `null` nahi ho sakta tha model ke hisaab se, aur Dapper se aaya object un rules ko satisfy nahi karta tha. Fix: Domain ko sach me framework-free karna pada — har navigation property hataana, mapping `Infrastructure` ke `IEntityTypeConfiguration` me le jaana. Jo shuru me 1 din ka kaam tha, woh baad me 2 hafte ka.
+
+</Hinglish>
+
+<Tradeoff
+  pros={["Architecture compile-time enforced hai, sirf convention nahi", "Domain framework se azaad — persistence/provider badalna localized", "Application ko akele, tezi se test kiya ja sakta hai", "Naye dev ke liye code navigation predictable"]}
+  cons={["Chaar projects = zyada boilerplate, slow build, zyada 'ye kahan rakhoon' sawaal", "Chhote app me clear over-engineering", "DTO <-> entity mapping har boundary par likhni padti hai", "Team ko discipline chahiye warna layers leak ho jaati hain"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ne apne loan-origination service ko din 1 se Clean Architecture me banaya. Domain me `LoanApplication`, `Applicant`, `CreditDecision` entities aur rules ("under-18 reject", "PAN mandatory") the — koi framework ref nahi. Jab RBI ke naye norms aaye aur unhe credit-bureau provider CIBIL se Experian shift karna pada, change sirf `Infrastructure` ke ek adapter class me hua — `ICreditBureauClient` ka naya implementation — Domain aur Application ki ek line nahi badli. Yahi payoff hai jiske liye upfront boilerplate jhela jaata hai.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bade integrator ne ek chhote internal "employee cafeteria booking" tool ko bhi full Clean Architecture template se bana diya — 4 projects, MediatR, 3 endpoints. Result: naye joiners har chhote change ke liye 5 files chhoo rahe the, build 40 seconds le raha tha, aur koi bhi "ye validator kahan jaata hai" par 10 minute bahes karta tha. 6 mahine baad use ek single project me collapse kiya gaya. Sabak: architecture problem ke size se match karni chahiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 4 projects standard Clean Architecture split: Domain, Application, Infrastructure, Api
+- Domain project me ideally **0** NuGet packages (max 1-2: ek validation ya `MediatR.Contracts` type helper)
+- Dependency arrows sab **1 direction**: bahar se andar; Domain ka out-degree 0 hona chahiye
+- `dotnet build` time single -> 4 projects: roughly 2-4x, kyunki har project alag compile hota hai
+- CQRS ke saath ek "create" use-case = 3 files (command, handler, validator) vs service method me 1
+- Rule of thumb: 4+ team members ya 2+ entry points -> split worth it; solo + 1 host -> usually nahi
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye ek favourite senior/architect-round topic hai. Interviewer aksar poochta hai "explain Clean Architecture" aur phir chain karta hai "Domain project me kya nahi hona chahiye?" aur "IEmployeeRepository interface kahan rakhoge aur kyun?". Strong 20-second jawaab: "Chaar concentric layers — Domain, Application, Infrastructure, Api — jisme sabhi source dependencies andar Domain ki taraf point karti hain. Domain me pure business entities aur rules, koi framework nahi. Repository aur external-service interfaces Domain/Application me define hote hain, unke implementations Infrastructure me — Dependency Inversion. Api sabko compose karta hai apne DI root par. Onion aur Hexagonal isi ka doosra naam hain." Bonus: bina poochhe bhi bol dena ki "chhote service me main ye split nahi karta, single project plus folders kaafi hai" — ye maturity dikhata hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Domain project me `Microsoft.EntityFrameworkCore` ya `Microsoft.AspNetCore.*` ka reference add karna "bas thodi si mapping ke liye". Ek baar framework ghusa, Domain framework-bound ho gaya — poora point khatam. Mapping `Infrastructure` ke `IEntityTypeConfiguration` classes me rakho.
+
+</Mistake>
+
+<Mistake>
+
+Repository interface ko `Infrastructure` me rakhna jahan implementation hai. Tab `Application` ko `Infrastructure` reference karna padega — dependency **bahar** ki taraf ho gayi, Dependency Rule ulti. Interface hamesha andar (Domain/Application), implementation bahar.
+
+</Mistake>
+
+<Mistake>
+
+DTOs ko `Api` project me rakhna aur `Application` services me unhe return karna. Ab `Application` ko `Api` chahiye — circular ya ulta reference. DTOs `Application` me rehte hain; `Api` unhe consume karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Har chhote CRUD app ke liye seedha 4-project template clone kar dena. Agar ek hi host hai, ek team hai, aur logic simple hai, ye sirf friction hai. Simplest cheez (single project + folders) pehle, split tab jab dard mehsoos ho.
+
+</Mistake>
+
+<Mistake>
+
+MediatR add kar dena bina CQRS ki zaroorat ke, sirf "controllers thin dikhein" ke liye. Ab har feature 3 files aur ek extra indirection — go-to-definition seedha nahi jaata. `EmployeeService` inject karna 40-endpoint app tak bilkul theek hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+---
+config:
+  look: handDrawn
+  fontFamily: "Comic Sans MS, Segoe Print, Bradley Hand, Chilanka, cursive"
+---
+flowchart LR
+    API["Api<br/>controllers, Program.cs, DI root"] --> APP["Application<br/>use-cases, DTOs, ports"]
+    INFRA["Infrastructure<br/>AppDbContext, repos, HttpClient"] --> APP
+    INFRA --> DOM
+    APP --> DOM["Domain<br/>entities, rules, interfaces<br/>(zero framework)"]
+`}
+  caption="All four arrows point inward toward Domain. Infrastructure and Api sit on the outside; Domain references nothing."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Clean Architecture = 4 projects (Domain, Application, Infrastructure, Api) with the Dependency Rule: all source dependencies point inward toward Domain
+- Domain: entities, value objects, domain exceptions, repository/service **interfaces** — zero framework references, ideally zero NuGet
+- Application: use-case services, DTOs, validators, ports like `IPanVerificationClient`, `IUnitOfWork` — references Domain only
+- Infrastructure: `AppDbContext`, repository implementations, external API clients, file storage — references Application + Domain
+- Api: controllers, `Program.cs`, middleware, and the composition root where interfaces are mapped to implementations
+- Interfaces live inward, implementations live outward — this is Dependency Inversion and is what makes provider swaps localized
+- Onion, Hexagonal, and Ports-and-Adapters are the same idea under different names
+- CQRS + MediatR (commands/queries/handlers) is an optional next step; it adds indirection, so use it only when use-case count and cross-cutting logic justify it
+- Honest rule: split when you have multiple entry points, a real chance of changing persistence, or a 4+ person team; otherwise single project + folders is correct
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeeManagement.Domain` classlib banao, usme `Employee` entity aur `IEmployeeRepository` interface move karo. `Domain.csproj` kholo aur confirm karo usme koi `PackageReference` nahi hai. `dotnet build` chalao.
+
+**Medium:** `Application` aur `Infrastructure` projects add karo with correct references. `EmployeeService` ko `Application` me le jao, `EmployeeRepository` + `AppDbContext` ko `Infrastructure` me. `Infrastructure` me ek `AddInfrastructure` DI extension method likho aur `Program.cs` se call karo. Sab endpoints pehle jaise chalne chahiye.
+
+**Bada (large):** `IPanVerificationClient` port `Application` me banao aur `PanVerificationClient` (real `HttpClient`) `Infrastructure` me implement karo. `EmployeeService.CreateAsync` me PAN verify step add karo. Phir `Application.Tests` project banao jo sirf `Application` + `Domain` reference kare, `IPanVerificationClient` aur `IEmployeeRepository` ke fakes se `CreateAsync` ke 3 cases test karo (valid PAN, invalid PAN, inactive department) — bina koi web ya DB project load kiye.
+
+</Callout>

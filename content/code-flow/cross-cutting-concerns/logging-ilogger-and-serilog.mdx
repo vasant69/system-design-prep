@@ -1,0 +1,391 @@
+---
+slug: "logging-ilogger-and-serilog"
+title: "Logging: ILogger, Structured Logs, and Serilog, Line by Line"
+section: "code-flow"
+module: "cross-cutting-concerns"
+order: 5
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["middleware-and-the-request-pipeline", "global-exception-handling", "configuration-appsettings-ioptions-secrets"]
+tags: ["dotnet", "aspnet-core", "web-api", "logging", "serilog", "structured-logging", "intermediate", "employee-management"]
+englishDefinition: "Logging is the practice of recording structured, timestamped records of what an application is doing so behaviour can be diagnosed after the fact. ASP.NET Core ships a built-in logging abstraction, ILogger of T, that is injected anywhere and writes through configurable providers such as Console and Debug, using message templates with named placeholders rather than string interpolation. Serilog is a structured-logging library that plugs into the same abstraction and adds rich sinks such as rolling files, Seq, and Elasticsearch, plus enrichers and request logging for production use."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Wipro", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Logging is the practice of recording structured, timestamped records of what an application is doing so behaviour can be diagnosed after the fact. ASP.NET Core ships a built-in logging abstraction, `ILogger<T>`, that is injected anywhere and writes through configurable providers such as Console and Debug, using message templates with named placeholders rather than string interpolation. Serilog is a structured-logging library that plugs into the same abstraction and adds rich sinks such as rolling files, Seq, and Elasticsearch, plus enrichers and request logging for production use.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Humare `EmployeeManagement.Api` me abhi tak jab kuch galat hota hai — ek employee create fail hua, PAN duplicate nikla, DB timeout — to hume pata kaise chalta hai? Development me to `Console` pe kuch dikh jaata hai. Lekin production me app ek server pe chal rahi hai, koi console nahi dekh raha. Log hi ekmaatra tareeka hai "raat 2 baje kya hua tha" jaanne ka. Is topic me pehle **built-in `ILogger<T>`** — simplest cheez, jo already available hai — phir **Serilog** — jo real production setups me lagta hai.
+
+### What is it — plain definition
+
+Logging matlab: code ke important moments pe ek **record** likhna — timestamp, ek level (kitna serious hai), ek message, aur kuch data. Ye records "logs" hote hain aur kahin jaate hain: console, file, ya ek central log server. `ILogger<T>` .NET ka built-in interface hai jise tum kisi bhi class ke constructor me inject karte ho aur `_logger.LogInformation(...)`, `_logger.LogError(...)` jaise methods call karte ho.
+
+Ek zaroori distinction: **structured logging** vs plain text. Plain text me tum ek ready string banate ho. Structured logging me tum ek **template** dete ho named placeholders ke saath, aur values alag pass karte ho — to log system message aur uske data ko alag-alag store kar sakta hai, aur baad me `EmployeeId = 42` pe filter/search kar sakte ho.
+
+### Why do we need it — bina iske kya tootega
+
+- **No visibility in production** — exception `IExceptionHandler` ne `500` me convert kar diya aur `traceId` bhej diya. Ab support ke paas `traceId` hai — par agar us request ka koi log hi nahi likha, to `traceId` kis cheez se match karoge? Log ke bina `traceId` bekaar hai.
+- **Can't answer "how often"** — "PAN verification API kitni baar timeout hota hai?" Iska jawaab sirf logs se aata hai.
+- **Debugging by guesswork** — log ke bina developer code padh kar andaaza lagata hai ki flow kahan t"ka. Ek achha log line 30 minute bacha deta hai.
+
+Failure scenario: ek digital-lending team ne saare logs `_logger.LogInformation($"Processing loan for {applicantPan}")` ki tarah **string interpolation** se likhe. Do problem hui — (1) PAN number har log line me chala gaya, compliance violation; (2) jab "kitne applications processed" count karna tha, har line ka PAN alag tha to log tool unhe ek hi event ke roop me group nahi kar paaya. Sahi tareeka: `_logger.LogInformation("Processing loan application {ApplicationId}", applicationId)` — PAN nahi, aur `ApplicationId` ek queryable field.
+
+### How does it work — the mechanism
+
+1. Tum `ILogger<EmployeesController>` inject karte ho. Woh `T` (yahan `EmployeesController`) **category** ban jaata hai — har log line ka source tag.
+2. Tum `_logger.LogInformation("Employee {EmployeeId} created by {User}", id, user)` call karte ho. Ye ek **message template** hai, `string.Format` nahi. `.NET` isse ek structured event banata hai: template string + `EmployeeId` key + `User` key + timestamp + level + category.
+3. Ye event ek **filter** se guzarta hai — `appsettings.json` ke `Logging:LogLevel` section ke hisaab se, is category ke liye minimum level kya hai. Agar event ka level us minimum se neeche hai, event yahin drop ho jaata hai (koi cost nahi).
+4. Jo events pass hote hain, wo har registered **provider** ko jaate hain — default me `Console`, `Debug`, `EventSource`. Har provider apne tareeke se format karke likhta hai.
+
+### Log levels — kab kaunsa
+
+| Level | Kab use karein |
+| --- | --- |
+| `Trace` | Sabse detailed, har chhoti step. Sirf deep local debugging. Kabhi production me nahi. |
+| `Debug` | Development diagnostics — variable values, branch decisions. |
+| `Information` | Normal business events — "employee created", "report generated", app started. |
+| `Warning` | Kuch unexpected hua par app chal rahi hai — retry laga, fallback use hua, deprecated endpoint hit. |
+| `Error` | Ek operation fail ho gaya — unhandled exception, `500`. Kisi ek request/job ko nuksan. |
+| `Critical` | App ya subsystem down — DB reachable nahi, disk full, startup fail. Aadmi ko raat me uthana pade. |
+
+Rule of thumb: `Information` normal flow ka narrative hai; `Warning` "dekh lena kabhi"; `Error` "abhi dekho, ek cheez tooti"; `Critical` "sab ruk gaya".
+
+### Show it in our project — built-in ILogger first
+
+`EmployeesController` me:
+
+```csharp
+public sealed class EmployeesController : ControllerBase
+{
+    private readonly IEmployeeService _service;
+    private readonly ILogger<EmployeesController> _logger;
+
+    public EmployeesController(
+        IEmployeeService service,
+        ILogger<EmployeesController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<EmployeeDto>> Create(CreateEmployeeDto dto)
+    {
+        var created = await _service.CreateAsync(dto);
+
+        _logger.LogInformation(
+            "Employee {EmployeeId} created in department {DepartmentId}",
+            created.Id, created.DepartmentId);
+
+        return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<EmployeeDto>> GetById(int id)
+    {
+        using var scope = _logger.BeginScope("EmployeeLookup {EmployeeId}", id);
+
+        _logger.LogDebug("Looking up employee");
+        var employee = await _service.GetByIdAsync(id);
+        _logger.LogInformation("Employee lookup completed");
+
+        return Ok(employee);
+    }
+}
+```
+
+`appsettings.json` filtering:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore.Database.Command": "Warning",
+      "EmployeeManagement.Api.Controllers.EmployeesController": "Debug"
+    }
+  }
+}
+```
+
+### Code explained line by line
+
+- `ILogger<EmployeesController> logger` in the constructor — DI already registers the whole logging system, so `ILogger<T>` is injectable everywhere with no extra wiring. The generic `T` sets the **category** string, usually the full type name.
+- `_logger.LogInformation("Employee {EmployeeId} created in department {DepartmentId}", created.Id, created.DepartmentId)` — the string is a **template**, not an interpolated string. `{EmployeeId}` and `{DepartmentId}` are named holes; the two arguments fill them **positionally, in order**. A structured sink stores `EmployeeId` and `DepartmentId` as real fields you can query on.
+- Never write `` _logger.LogInformation($"Employee {created.Id} created") ``. The `$""` builds the string before the logger sees it, so the level filter still allocated the string, and there are no named fields to search later.
+- `using var scope = _logger.BeginScope("EmployeeLookup {EmployeeId}", id)` — a **log scope**. Every log line written inside the `using` block automatically carries `EmployeeId`, so you do not repeat it in each call. The scope ends when `scope` is disposed at the end of the method.
+- `_logger.LogDebug("Looking up employee")` — with the `EmployeesController` category set to `Debug` in config, this line is written; with the default `Information` it would be silently filtered out before formatting.
+- In `appsettings.json`, keys under `Logging:LogLevel` are **category prefixes**. `"Microsoft.AspNetCore": "Warning"` silences the framework's per-request `Information` noise; `"Microsoft.EntityFrameworkCore.Database.Command": "Warning"` stops EF Core from logging every SQL statement; the last key raises just our controller to `Debug`. Longest matching prefix wins.
+
+### Default providers
+
+`WebApplication.CreateBuilder(args)` already adds: **Console** (stdout, what you see in the terminal and what Docker/Kubernetes capture), **Debug** (the IDE Output window), and **EventSource** (for `dotnet-trace` / ETW). That is all you get out of the box — no file, no database, no central server. That gap is why production needs Serilog.
+
+### Then production — Serilog
+
+Built-in `ILogger` ka console output ek server pe kahin scroll ho kar chala jaata hai. Chahiye: **rolling files** (har din nayi file, purani auto-delete), ek **central searchable dashboard** (Seq / Elasticsearch), aur **JSON output** taaki tools parse kar sakein. Serilog ye sab deta hai aur **usi `ILogger<T>` ke peeche** plug hota hai — tumhara controller code ek line nahi badalta.
+
+```bash
+dotnet add package Serilog.AspNetCore
+dotnet add package Serilog.Sinks.Seq
+```
+
+`Program.cs`:
+
+```csharp
+using Serilog;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "EmployeeManagement.Api"));
+
+// ... AddControllers, AddSwaggerGen, etc.
+
+var app = builder.Build();
+
+app.UseSerilogRequestLogging();   // one tidy line per HTTP request
+
+app.UseExceptionHandler();
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+```
+
+`appsettings.json`:
+
+```json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft.AspNetCore": "Warning",
+        "Microsoft.EntityFrameworkCore": "Warning"
+      }
+    },
+    "WriteTo": [
+      { "Name": "Console" },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "logs/log-.txt",
+          "rollingInterval": "Day",
+          "retainedFileCountLimit": 14
+        }
+      },
+      {
+        "Name": "Seq",
+        "Args": { "serverUrl": "http://localhost:5341" }
+      }
+    ],
+    "Enrich": ["FromLogContext", "WithMachineName", "WithThreadId"]
+  }
+}
+```
+
+Line by line:
+
+- `builder.Host.UseSerilog(...)` — replaces the default logging providers with Serilog for the whole app. Everything logged through `ILogger<T>` now flows into Serilog's pipeline.
+- `.ReadFrom.Configuration(context.Configuration)` — reads the `Serilog` section above, so sinks and levels are config, not code. Ops can add a sink in production without a rebuild.
+- `.ReadFrom.Services(services)` — lets DI-registered enrichers participate.
+- `.Enrich.FromLogContext()` — allows `LogContext.PushProperty("CorrelationId", id)` values to attach to every log line within that context (used below for correlation ids).
+- `.Enrich.WithProperty("Application", "EmployeeManagement.Api")` — stamps a constant field on every event, so a shared Seq instance can separate this API's logs from other services.
+- `app.UseSerilogRequestLogging()` — replaces the framework's noisy multi-line per-request logs with **one** structured summary line: method, path, status code, elapsed ms. Put it early in the pipeline so it wraps the rest.
+- `WriteTo` sinks: **Console** for Docker capture, **File** with `rollingInterval: "Day"` (new file each day, `retainedFileCountLimit: 14` auto-deletes older than two weeks), **Seq** for a searchable web dashboard where you filter by `EmployeeId = 42` or `StatusCode = 500`.
+- `Enrich` — `WithMachineName` (which server), `WithThreadId` (concurrency debugging).
+
+### Correlation / trace id
+
+Ek request 3 services se guzarti hai — sabko ek hi id se jodna chahiye taaki Seq me poori journey ek filter me dikhe. Ek chhota middleware:
+
+```csharp
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault()
+        ?? context.TraceIdentifier;
+
+    using (Serilog.Context.LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        context.Response.Headers["X-Correlation-ID"] = correlationId;
+        await next();
+    }
+});
+```
+
+Har log line ab `CorrelationId` field carry karti hai (`Enrich.FromLogContext()` ki wajah se). Client ko response header me wahi id wapas milti hai — support ticket me user woh id paste karta hai, engineer Seq me `CorrelationId = "..."` search karta hai, poori request ki har line ek jagah.
+
+### What NOT to log — BFSI angle
+
+Kabhi log mat karo: **PAN number, Aadhaar, full salary figures, passwords / password hashes, JWT tokens, API keys, card numbers, OTPs, full request bodies of KYC endpoints.** Logs aksar kai teams, third-party tools (Seq, Elasticsearch, Datadog), aur backups me chale jaate hain — wahan PII rakhna ek audit finding aur ek data-breach surface hai. Instead log **ids and outcomes**: `EmployeeId`, `DepartmentId`, `"PAN verification failed"` (bina PAN ke), masked values (`"XXXXXX1234"`) agar zaroori ho. Ek quick guard: agar field ka naam `Password`, `Pan`, `Aadhaar`, `Salary`, `Token`, `Secret` me se kuch hai — log line me nahi.
+
+### Where is it used in day-to-day development
+
+- Har naya feature: entry/exit `Information` log plus `Warning`/`Error` on the failure branches.
+- Production incident: pehla kaam Seq / Kibana kholna aur `CorrelationId` ya `StatusCode = 500` pe filter lagana.
+- Log-based alerts: "5 minute me 10 se zyada `Error`" pe Slack/PagerDuty alert.
+- Code review me reviewer poochta hai "yahan ek log line chahiye" ya "ye log line PII leak kar rahi hai".
+
+### When to use / when NOT to use
+
+Log tab jab woh event baad me kisi kaam aayega — business milestone, failure, slow call, retry. **Mat** log karo: har method entry `Information` pe (log noise, cost), tight loops ke andar, ya ek hi event ko dono jagah (service aur controller). Aur `Trace`/`Debug` production me band — warna log volume aur bill dono badh jaate hain aur real signal dab jaata hai.
+
+### Pros and cons
+
+Fayde: production visibility, `traceId`/`CorrelationId` correlation, queryable structured fields, config-driven sinks (rebuild ke bina badlo), alerting ka base. Nuksan: over-logging se cost aur noise, PII leak ka risk agar discipline na ho, Serilog ek dependency aur thoda setup, aur async sinks (Seq) network hiccup pe events buffer/drop kar sakte hain agar configure na kiya jaaye.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`_logger.LogInformation($"Employee {id} created")` — string interpolation — structured logging ko tod deta hai: koi named field nahi banta, filter se pehle string allocate ho jaati hai, aur PII aksar isi tarah log me ghus jaati hai. Hamesha template: `_logger.LogInformation("Employee {EmployeeId} created", id)`.
+
+</Callout>
+
+<Tradeoff
+  pros={[
+    "Built-in ILogger<T> zero setup — DI se har jagah inject",
+    "Message templates = queryable fields (EmployeeId=42 pe filter)",
+    "Serilog: rolling files, Seq/Elasticsearch, enrichers, config-driven",
+    "CorrelationId enricher se ek request ki poori journey ek filter me",
+  ]}
+  cons={[
+    "Over-logging se cost, noise, aur real errors chhup jaate hain",
+    "String interpolation ka habit PII leak aur lost structure deta hai",
+    "Serilog ek extra dependency + Program.cs/appsettings setup",
+    "Network sinks (Seq) hiccup pe buffering/drop — tune karna padta hai",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending platform ne shuru me sirf `Console` logging rakha. Ek raat loan-disbursal service silently fail hone lagi — koi alert nahi, kyunki console kahin capture hi nahi ho raha tha. Subah pata chala 6 ghante ka data missing hai. Uske baad team ne Serilog + Seq lagaya: `UseSerilogRequestLogging`, ek `CorrelationId` enricher, aur Seq pe "5 min me 10+ Error" ka alert. Agle failure pe PagerDuty ne 90 second me team ko utha diya, aur engineer ne `CorrelationId` filter se exact failing request 2 minute me dhoondh li.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank project me security audit ne logs me PAN aur salary fields pakde — developers ne poore `CreateEmployeeDto` ko `_logger.LogInformation("Creating employee {@Dto}", dto)` se log kiya tha. Fix: destructuring hataya, sirf `EmployeeId` aur `DepartmentId` log kiye, aur ek code-review checklist item add kiya — "koi log line `Pan`, `Salary`, `Password`, `Token` field touch na kare". CI me ek simple regex check bhi laga di jo in field-names ko log calls ke aas-paas flag karti hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 6 log levels: `Trace` (0), `Debug` (1), `Information` (2), `Warning` (3), `Error` (4), `Critical` (5); `None` (6) sab band
+- Default minimum level `Information` — `Trace`/`Debug` production me off
+- 3 default providers: Console, Debug, EventSource — koi file/DB/server sink nahi
+- `appsettings.json` `Logging:LogLevel` me longest matching category prefix jeetta hai
+- Serilog file sink: `rollingInterval: "Day"` + `retainedFileCountLimit: 14` = 2 hafte ki files
+- Seq default local port `5341`
+- Never-log list: PAN, Aadhaar, salary, password/hash, JWT token, API key, card number, OTP
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common opener: "How do you do logging in ASP.NET Core?" Strong 20-second answer: "Built-in `ILogger<T>` inject karta hoon har class me, message templates use karta hoon — `_logger.LogInformation("Employee {EmployeeId} created", id)` — string interpolation kabhi nahi, taaki fields queryable rahein. Levels: `Information` normal flow, `Warning` recoverable, `Error` failed operation, `Critical` system down. Filtering `appsettings.json` ke `Logging:LogLevel` se per-category. Production me Serilog plug karta hoon — `builder.Host.UseSerilog`, `ReadFrom.Configuration`, sinks Console + rolling File + Seq, `UseSerilogRequestLogging`, aur ek `CorrelationId` enricher. PII — PAN, salary, tokens — kabhi log nahi karta." Guaranteed follow-ups: "template vs interpolation kyun?" aur "PAN/password log karna theek hai kya?".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+String interpolation se log likhna: `_logger.LogInformation($"Employee {id} created")`. Isse koi structured field nahi banta, filter se pehle string allocate hoti hai, aur PII chupke se log me chali jaati hai. Hamesha template + args.
+
+</Mistake>
+
+<Mistake>
+
+PII log karna — PAN number, salary, password hash, JWT token, poora request body. Logs multiple tools aur backups me jaate hain; ye audit finding aur breach surface hai. Sirf ids aur outcomes log karo.
+
+</Mistake>
+
+<Mistake>
+
+Production me `Trace`/`Debug` level chhod dena. Log volume phat jaata hai, cost badhta hai, aur real `Error` lines noise me dab jaati hain. Production default `Information`, framework categories `Warning`.
+
+</Mistake>
+
+<Mistake>
+
+`_logger.LogError("Something failed")` likhna bina exception object pass kiye. Sahi: `_logger.LogError(ex, "Employee {EmployeeId} update failed", id)` — pehla argument exception hota hai to sink stack trace bhi capture karta hai.
+
+</Mistake>
+
+<Mistake>
+
+Ek hi event ko service aur controller dono me log karna. Double lines, confusing counts. Ek event, ek jagah — usually jahan decision/outcome hota hai.
+
+</Mistake>
+
+<Mistake>
+
+Serilog add karke `builder.Host.UseSerilog(...)` call karna bhool jaana, sirf `Log.Logger = ...` set karna. Phir `ILogger<T>` abhi bhi default providers pe jaata hai aur naye sinks kuch nahi paate.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Call site: _logger.LogInformation with template Employee EmployeeId created"] --> B["ILogger of T abstraction"]
+    B --> C["Level filter from appsettings plus enrichers CorrelationId and MachineName"]
+    C --> D["Console sink"]
+    C --> E["Rolling File sink logs/log-.txt daily"]
+    C --> F["Seq sink searchable dashboard port 5341"]
+`}
+  caption="One log call goes through the ILogger abstraction, gets level-filtered and enriched once, then fans out to every configured sink. Swapping providers never touches the call site."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Inject `ILogger<T>` anywhere — DI wires the whole logging system, `T` is the category
+- Use **message templates**: `_logger.LogInformation("Employee {EmployeeId} created", id)` — never `$"..."` interpolation; named holes become queryable fields
+- Levels: `Trace`/`Debug` (dev only), `Information` (normal flow), `Warning` (recoverable), `Error` (operation failed), `Critical` (system down)
+- Pass the exception first on errors: `_logger.LogError(ex, "…", args)` — captures the stack trace
+- Filter per category in `appsettings.json` `Logging:LogLevel`; longest matching prefix wins
+- Default providers: Console, Debug, EventSource — no file/DB/central sink out of the box
+- Production: Serilog — `builder.Host.UseSerilog`, `ReadFrom.Configuration`, sinks Console + rolling File + Seq/Elasticsearch, `app.UseSerilogRequestLogging()`, enrichers
+- Add a `CorrelationId` via `LogContext.PushProperty` in middleware + return it in a response header for support correlation
+- Never log PII: PAN, Aadhaar, salary, passwords/hashes, tokens, API keys, OTPs — log ids and outcomes instead
+- Log scopes (`_logger.BeginScope`) attach shared fields to every line inside a block
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `EmployeesController.Create` aur `GetById` me `ILogger<EmployeesController>` inject karo aur ek `Information` log add karo jo `EmployeeId` aur `DepartmentId` message template se log kare (interpolation nahi). Swagger se ek employee create karke terminal me structured line dekho.
+
+**Medium:** `EmployeeService.CreateAsync` me duplicate-PAN branch pe `_logger.LogWarning("Employee create rejected: duplicate PAN for department {DepartmentId}", dto.DepartmentId)` add karo — PAN value log nahi. `appsettings.json` me `EmployeeManagement.Api.Services` category ko `Debug` set karo aur `Microsoft.EntityFrameworkCore.Database.Command` ko `Warning` — restart karke confirm karo ki EF ka SQL noise band ho gaya par service ke `Debug` logs dikh rahe hain.
+
+**Bada (large):** Serilog end to end wire karo: `Serilog.AspNetCore` + `Serilog.Sinks.Seq` add karo, `builder.Host.UseSerilog(... ReadFrom.Configuration ...)`, `appsettings.json` me Console + daily rolling File (`retainedFileCountLimit: 14`) + Seq sinks, `app.UseSerilogRequestLogging()`. Ek `CorrelationId` middleware likho jo `X-Correlation-ID` header padhe ya `TraceIdentifier` use kare, `LogContext.PushProperty` se attach kare, aur response header me wapas de. Local Seq (Docker) chala kar ek request bhejo aur Seq me `CorrelationId` filter se us request ki saari lines dhoondo. Phir ek code-review checklist banao: kaunse fields kabhi log nahi hone chahiye.
+
+</Callout>

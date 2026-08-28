@@ -48,6 +48,8 @@ import {
   Webhook,
   LayoutTemplate,
   GitCommit,
+  Workflow,
+  Rocket,
   type LucideIcon,
 } from "lucide-react";
 
@@ -61,6 +63,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Boxes,
   Terminal,
   GraduationCap,
+  Workflow,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -107,4 +110,13 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "aws-s3-deep-dive": HardDrive,
   "aws-lambda-deep-dive": Zap,
   "github-commands": GitCommit,
+  "foundations-first-run": Rocket,
+  "crud-in-memory": Boxes,
+  "layered-architecture": Layers,
+  "data-access-efcore": Database,
+  "cross-cutting-concerns": Cog,
+  security: ShieldCheck,
+  "real-world-features": Puzzle,
+  "quality-and-architecture": TestTube2,
+  deployment: Cloud,
 };

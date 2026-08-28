@@ -434,4 +434,77 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "code-flow",
+    title: "Code Flow",
+    description:
+      "One project, start to production. We build a single BFSI-flavored Employee Management Web API from an empty folder to a Dockerized, tested, secured service — every concept lands in the same codebase, explained line by line, with the thinking behind each change.",
+    icon: "Workflow",
+    enabled: true,
+    modules: [
+      {
+        id: "foundations-first-run",
+        title: "Foundations & First Run",
+        description:
+          "The C# you actually need for a Web API, the HTTP/REST/JSON mental model, creating the project with dotnet new, walking Program.cs and the .csproj line by line, and the first GET endpoint running in Swagger.",
+        order: 1,
+      },
+      {
+        id: "crud-in-memory",
+        title: "CRUD with In-Memory Data",
+        description:
+          "The Employee model, attribute routing, all four verbs (GET/POST/PUT/DELETE) with correct status codes, and why you never expose the entity — Models vs DTOs and mapping, manual then AutoMapper.",
+        order: 2,
+      },
+      {
+        id: "layered-architecture",
+        title: "Layering: Controller → Service → Repository",
+        description:
+          "The thinking behind layers, interfaces and why they exist, extracting the service layer, the repository pattern, dependency injection, and service lifetimes with the captive-dependency trap.",
+        order: 3,
+      },
+      {
+        id: "data-access-efcore",
+        title: "Database: EF Core + SQL Server",
+        description:
+          "DbContext and DbSet, connection strings and config, migrations, the repository backed by EF Core, LINQ queries, async/await end to end and why, a related Department entity with relationships and the N+1 problem, and transactions.",
+        order: 4,
+      },
+      {
+        id: "cross-cutting-concerns",
+        title: "Cross-Cutting Concerns",
+        description:
+          "Middleware and the request pipeline, global exception handling, validation from DataAnnotations to FluentValidation, configuration and appsettings and IOptions and secrets, logging with ILogger and Serilog, and customizing Swagger.",
+        order: 5,
+      },
+      {
+        id: "security",
+        title: "Security",
+        description:
+          "Authentication vs authorization, JWT end to end and issuing tokens, [Authorize] with roles/policies/claims, password hashing and the user store, and hardening: HTTPS, CORS, rate limiting, and security headers.",
+        order: 6,
+      },
+      {
+        id: "real-world-features",
+        title: "Real-World Features",
+        description:
+          "Pagination, filtering and sorting, KYC document file upload, calling an external PAN-verification API with IHttpClientFactory, background services with BackgroundService and an outbox, and caching with IMemoryCache then Redis.",
+        order: 7,
+      },
+      {
+        id: "quality-and-architecture",
+        title: "Quality & Architecture",
+        description:
+          "SOLID as real refactors of our code, unit testing the service layer with xUnit and Moq, integration testing with WebApplicationFactory, restructuring into Clean Architecture, API versioning, and performance tuning.",
+        order: 8,
+      },
+      {
+        id: "deployment",
+        title: "Deployment",
+        description:
+          "Production configuration and environments, Docker with a Dockerfile and docker-compose plus SQL Server, health checks, and a CI/CD and hosting overview.",
+        order: 9,
+      },
+    ],
+  },
 ];

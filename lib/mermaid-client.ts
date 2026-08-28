@@ -16,6 +16,10 @@ export function getMermaid() {
       mermaid.initialize({
         startOnLoad: false,
         theme: "dark",
+        // Every diagram on the site renders in a sketchy, hand-drawn style
+        // (rough.js under the hood) — it reads as "notes on paper" rather
+        // than a formal architecture render, which suits a study site.
+        look: "handDrawn",
         securityLevel: "strict",
         fontFamily: "var(--font-sans), system-ui, sans-serif",
         // Without this, a genuine parse error doesn't reject render() — it

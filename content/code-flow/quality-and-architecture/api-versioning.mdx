@@ -1,0 +1,370 @@
+---
+slug: "api-versioning"
+title: "API Versioning, From Why to v1-and-v2 Side by Side"
+section: "code-flow"
+module: "quality-and-architecture"
+order: 5
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["restructure-into-clean-architecture", "layered-architecture-controller-service-repository"]
+tags: ["dotnet", "aspnet-core", "web-api", "api-versioning", "asp-versioning", "swagger", "employee-management"]
+englishDefinition: "API versioning is the practice of exposing more than one shape of the same API at the same time so that a breaking change can ship without forcing every existing client to update on the same day. In ASP.NET Core it is done with the Asp.Versioning.Mvc packages, which resolve a requested version from the URL segment, a query string, a header, or the media type, route the request to the matching controller or action, advertise supported and deprecated versions in response headers, and produce one Swagger document per version."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+API versioning is the practice of exposing more than one shape of the same API at the same time so that a breaking change can ship without forcing every existing client to update on the same day. In ASP.NET Core it is done with the `Asp.Versioning.Mvc` packages, which resolve a requested version from the URL segment, a query string, a header, or the media type, route the request to the matching controller or action, advertise supported and deprecated versions in response headers, and produce one Swagger document per version.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hamara `EmployeeManagement.Api` ab live hai aur teen mobile apps plus ek partner BFSI system usse consume kar rahe hain. Ab product bolta hai: employee response me `FullName` ki jagah alag `FirstName` aur `LastName` chahiye. Ye ek **breaking change** hai — jaise hi hum field ka naam badlenge, purane clients ka parsing toot jaayega. API versioning wahi tareeka hai jisse naya shape (`v2`) aur purana shape (`v1`) **ek saath** chalte hain, aur clients apni marzi se migrate karte hain.
+
+### What is it — API versioning kya hai
+
+Versioning ka matlab hai: ek hi logical API ke **do ya zyada contracts** ek server par ek saath expose karna. Client request me batata hai use kaunsa version chahiye, aur framework us request ko us version ke controller/action tak route kar deta hai. `.NET` me ye kaam `Asp.Versioning.Mvc` (routing aur attributes) aur `Asp.Versioning.Mvc.ApiExplorer` (per-version Swagger docs) packages karte hain. Purana package naam `Microsoft.AspNetCore.Mvc.Versioning` tha — ab wo rename hokar `Asp.Versioning.*` ho gaya hai.
+
+### Why do we need it — bina iske kya tootta hai
+
+Ek public ya partner-facing API ke saath tumhare control me sirf server hota hai, client nahi. Agar tum `FullName` ko hata kar `FirstName`/`LastName` kar do:
+
+- Partner ka batch job jo raat 2 baje chalta hai, agli subah `NullReferenceException` ya "field not found" de dega — aur tumhe production incident ki call aayegi.
+- Mobile app ka purana version jo abhi bhi 30% users ke phone me hai, employee list screen par crash karega.
+
+Versioning is problem ko solve karta hai: `v1` bilkul waise ka waisa chalta rehta hai jab tak sab clients `v2` par nahi aa jaate. Tum `v1` ko **deprecated** mark karte ho, ek sunset date announce karte ho, aur phir hata dete ho.
+
+### How does it work — step by step
+
+1. Request aati hai, jaise `GET /api/v1/employees` ya `GET /api/employees?api-version=2.0`.
+2. **API version reader** request se version nikalta hai — URL segment se, query string se, `X-Api-Version` header se, ya `Accept` header ke media type se.
+3. Agar kuch nahi mila aur `AssumeDefaultVersionWhenUnspecified` on hai, to `DefaultApiVersion` maan liya jaata hai.
+4. Routing us `ApiVersion` ko match karta hai us controller/action se jispe `[ApiVersion("...")]` ya `[MapToApiVersion("...")]` laga hai.
+5. Response me, agar `ReportApiVersions` on hai, do headers add hote hain: `api-supported-versions` aur (agar koi version deprecated hai) `api-deprecated-versions`.
+6. Agar client ne aisa version maanga jo exist nahi karta, framework `400 Bad Request` deta hai code `UnsupportedApiVersion` ke saath.
+
+### Strategies — chaar tareeke aur unke trade-offs
+
+- **URL segment** — `/api/v1/employees`. Sabse saaf, browser me test karna aasan, caching-friendly (URL hi cache key hai). Nuksaan: "same resource, same URL" REST purists ko chubhta hai, aur version badalne par saare client URLs badalte hain. **Ye hamari default choice hai.**
+- **Query string** — `/api/employees?api-version=2.0`. URL structure same rehta hai, add karna aasan. Nuksaan: log/analytics me miss ho jaata hai, aur query params kabhi-kabhi proxies strip kar dete hain.
+- **Header** — `X-Api-Version: 2.0`. URL bilkul clean rehta hai. Nuksaan: browser se test nahi kar sakte, `curl` me hamesha extra flag, aur CDN caching ke liye `Vary` header set karna padta hai.
+- **Media type** — `Accept: application/json;v=2.0`. Sabse "RESTful" maana jaata hai (content negotiation ka hissa). Nuksaan: sabse kam log samajhte hain, tooling weak hai, debugging painful.
+
+Production advice: **ek primary strategy chuno** (aksar URL segment for external, header for internal), lekin `ApiVersionReader.Combine(...)` se ek se zyada readers accept kar sakte ho taaki clients ko flexibility mile.
+
+### Show it in our project — packages aur Program.cs
+
+`EmployeeManagement.Api.csproj`:
+
+```xml
+<ItemGroup>
+  <PackageReference Include="Asp.Versioning.Mvc" Version="8.1.0" />
+  <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.0" />
+</ItemGroup>
+```
+
+`Program.cs`:
+
+```csharp
+builder.Services.AddApiVersioning(options =>
+{
+    options.DefaultApiVersion = new ApiVersion(1, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true;
+    options.ReportApiVersions = true;
+    options.ApiVersionReader = ApiVersionReader.Combine(
+        new UrlSegmentApiVersionReader(),
+        new QueryStringApiVersionReader("api-version"),
+        new HeaderApiVersionReader("X-Api-Version"),
+        new MediaTypeApiVersionReader("v"));
+})
+.AddApiExplorer(options =>
+{
+    options.GroupNameFormat = "'v'VVV";
+    options.SubstituteApiVersionInUrl = true;
+});
+```
+
+### Show it in our project — v1 and v2 controllers side by side
+
+DTOs — yahi asli change hai:
+
+```csharp
+public record EmployeeV1Dto(int Id, string FullName, string Email);
+
+public record EmployeeV2Dto(int Id, string FirstName, string LastName, string Email);
+```
+
+`Controllers/V1/EmployeesController.cs`:
+
+```csharp
+[ApiController]
+[ApiVersion("1.0", Deprecated = true)]
+[Route("api/v{version:apiVersion}/employees")]
+public class EmployeesController : ControllerBase
+{
+    private readonly IEmployeeService _service;
+    public EmployeesController(IEmployeeService service) => _service = service;
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<EmployeeV1Dto>>> GetAll(CancellationToken ct)
+    {
+        var employees = await _service.GetAllAsync(ct);
+        return Ok(employees.Select(e => new EmployeeV1Dto(e.Id, e.FullName, e.Email)));
+    }
+}
+```
+
+`Controllers/V2/EmployeesV2Controller.cs`:
+
+```csharp
+[ApiController]
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/employees")]
+public class EmployeesV2Controller : ControllerBase
+{
+    private readonly IEmployeeService _service;
+    public EmployeesV2Controller(IEmployeeService service) => _service = service;
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<EmployeeV2Dto>>> GetAll(CancellationToken ct)
+    {
+        var employees = await _service.GetAllAsync(ct);
+        return Ok(employees.Select(e =>
+        {
+            var (first, last) = SplitName(e.FullName);
+            return new EmployeeV2Dto(e.Id, first, last, e.Email);
+        }));
+    }
+
+    private static (string First, string Last) SplitName(string fullName)
+    {
+        var parts = fullName.Split(' ', 2, StringSplitOptions.TrimEntries);
+        return parts.Length == 2 ? (parts[0], parts[1]) : (fullName, string.Empty);
+    }
+}
+```
+
+Agar tum dono versions **ek hi controller** me rakhna chaho (jab overlap zyada ho), to `[MapToApiVersion]` use karo:
+
+```csharp
+[ApiController]
+[ApiVersion("1.0", Deprecated = true)]
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/employees")]
+public class EmployeesController : ControllerBase
+{
+    [HttpGet("{id:int}")]
+    [MapToApiVersion("1.0")]
+    public Task<ActionResult<EmployeeV1Dto>> GetV1(int id, CancellationToken ct) { /* ... */ }
+
+    [HttpGet("{id:int}")]
+    [MapToApiVersion("2.0")]
+    public Task<ActionResult<EmployeeV2Dto>> GetV2(int id, CancellationToken ct) { /* ... */ }
+}
+```
+
+### Code explained line by line
+
+- `new ApiVersion(1, 0)` — major 1, minor 0, yaani `1.0`. `ApiVersion` ek struct hai jo comparison aur formatting handle karta hai.
+- `AssumeDefaultVersionWhenUnspecified = true` — jis client ne version nahi bheja (purana caller jo versioning se pehle likha gaya tha) usse `1.0` maan lo. Isse versioning add karna **backward compatible** ban jaata hai.
+- `ReportApiVersions = true` — har response me `api-supported-versions: 1.0, 2.0` header lagta hai, aur deprecated version ke liye `api-deprecated-versions: 1.0`. Client tooling isse warn kar sakta hai.
+- `ApiVersionReader.Combine(...)` — ek se zyada readers ko OR karta hai. Pehla jo match kare, wahi jeetta hai. Ise chhota rakho — har reader ek ambiguity ka source hai.
+- `GroupNameFormat = "'v'VVV"` — ApiExplorer ke group names `v1`, `v2`, `v1.1` jaise banate hain. `VVV` ka matlab "minor aur status sirf tab dikhao jab zaroori ho".
+- `SubstituteApiVersionInUrl = true` — Swagger UI me `/api/v{version}/employees` ki jagah asli `/api/v1/employees` dikhata hai, taaki "Try it out" seedha kaam kare.
+- `[Route("api/v{version:apiVersion}/employees")]` — `{version:apiVersion}` ek route constraint hai jo `Asp.Versioning` register karta hai; ye URL segment ko `ApiVersion` me parse karta hai.
+- `[ApiVersion("1.0", Deprecated = true)]` — version ab bhi kaam karta hai, lekin response header aur Swagger me "deprecated" flag lagta hai. Ye **hataana nahi** hai, sirf signal hai.
+
+### Versioned Swagger docs
+
+`AddApiExplorer` ke baad, ek `IConfigureOptions<SwaggerGenOptions>` banao jo har discovered version ke liye ek doc register kare:
+
+```csharp
+public class ConfigureSwaggerOptions : IConfigureOptions<SwaggerGenOptions>
+{
+    private readonly IApiVersionDescriptionProvider _provider;
+    public ConfigureSwaggerOptions(IApiVersionDescriptionProvider provider) => _provider = provider;
+
+    public void Configure(SwaggerGenOptions options)
+    {
+        foreach (var desc in _provider.ApiVersionDescriptions)
+        {
+            options.SwaggerDoc(desc.GroupName, new OpenApiInfo
+            {
+                Title = "Employee Management API",
+                Version = desc.ApiVersion.ToString(),
+                Description = desc.IsDeprecated ? "This version is deprecated." : null
+            });
+        }
+    }
+}
+```
+
+```csharp
+builder.Services.AddSwaggerGen();
+builder.Services.ConfigureOptions<ConfigureSwaggerOptions>();
+
+// ...
+app.UseSwaggerUI(ui =>
+{
+    foreach (var desc in app.DescribeApiVersions())
+        ui.SwaggerEndpoint($"/swagger/{desc.GroupName}/swagger.json", desc.GroupName.ToUpperInvariant());
+});
+```
+
+Ab Swagger UI ke top-right dropdown me `V1` aur `V2` do entries dikhengi, har ek apne endpoints ke saath.
+
+### Where is it used in day-to-day development
+
+- **Public / partner APIs** — koi bhi API jise tum control nahi karte usse breaking change dena hai to pehle version banao.
+- **Mobile backends** — purana app version months tak users ke phone me rehta hai; server ko dono support karne padte hain.
+- **BFSI integrations** — bank aur NBFC partners ka change-management slow hota hai; version sunset 6-12 months notice ke saath hota hai.
+- **Contract tests / CI** — `v1` ka OpenAPI doc snapshot me rakha jaata hai; agar `v1` ka shape galti se badla to CI fail hota hai.
+
+### When to use / when NOT to use
+
+**Use it when:** clients tumhare control me nahi hain, ya deploy alag-alag hote hain (mobile, partners, other teams). **Skip it when:** ek hi frontend hai jo tumhari hi team same repo/deploy me ship karti hai — waha versioning sirf ceremony hai, frontend aur backend saath badal jaate hain.
+
+### What NOT to version-bump — additive changes
+
+Har change breaking nahi hota. Ye changes **bina version bump** ke bhej sakte ho:
+
+- Response me ek **naya field** add karna (purane clients use ignore karte hain).
+- Ek **naya optional** query parameter ya request field add karna.
+- Ek **naya endpoint** add karna.
+- Error response me ek extra detail field.
+
+Version bump sirf tab jab: field **rename** ya **remove**, field ka **type** ya **meaning** badla, koi field ab **required** ho gaya jo pehle optional tha, ya default behaviour badla (jaise page size 20 se 50). Rule: "kya koi existing client bina code badle toot sakta hai?" — haan to bump, nahi to mat karo.
+
+### Failure scenario — "agar aisa kiya to ye tootega"
+
+Ek team ne `v2` banaya lekin `v1` controller ka code delete kar diya "kyunki logic same hai, bas DTO different hai". Unhone socha `[MapToApiVersion]` se ek hi action dono serve kar dega. Lekin unhone `v1` DTO class bhi delete kar di aur `v1` action ko `v2` DTO return karwa diya "temporarily". Ek partner ka reconciliation job jo `FullName` field padhta tha, chup-chaap `null` padhne laga aur galat data audit table me likh diya — teen din baad discover hua jab numbers match nahi hue. Sabak: `v1` ka **exact byte-level shape** freeze karo. Naya version = naya DTO, purana DTO chhua nahi jaata jab tak version retire na ho.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Version bump ka matlab hai ek naya contract **hamesha** ke liye maintain karna jab tak wo retire na ho. Har bump ka ek maintenance, testing, aur documentation cost hai. Isliye additive changes ko additive rakho aur bump se bacho jab tak sach me breaking na ho.
+
+</Callout>
+
+<Tradeoff
+  pros={["Breaking changes ship ho sakte hain bina existing clients ko tode", "Clients apni speed se migrate karte hain, ek forced 'flag day' nahi", "Deprecated versions ko headers aur Swagger me clearly signal kar sakte ho", "Har version ka apna Swagger doc — clients ko exact contract dikhta hai"]}
+  cons={["Har live version ka apna maintenance, test suite, aur doc — cost linear badhta hai", "Controllers aur DTOs duplicate ho jaate hain jab tak carefully share na karo", "Purana version 'thoda aur' chalta rehta hai — retire karna hamesha political hota hai", "Galat strategy (headers) CDN caching aur browser testing tod deti hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ka loan-status API mobile app aur do DSA (direct selling agent) partners use karte the. Unhe `status` field ke enum values badalne the (`"in_review"` se structured object `{ code, label, stage }`). Unhone `/api/v2/loans/{id}/status` banaya naye shape ke saath, `v1` ko `Deprecated = true` mark kiya, aur `api-deprecated-versions` header partners ke dashboards me surface kiya. 90 din ka sunset window diya. Din 60 tak 95% traffic `v2` par shift ho gaya; din 100 par `v1` controller delete hua. Zero incidents.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek integrator ne ek bank ke internal HR API me har chhote field addition ke liye version bump kiya — 8 mahine me `v1` se `v7`. Har version ka apna controller, DTO set, aur test suite tha. Team ka aadha time versions sync rakhne me jaata tha. Audit me pata chala `v2` se `v7` sab **additive** changes the — koi bump zaroori hi nahi tha. Unhone `v2`-`v7` collapse karke ek `v2` banaya aur rule likha: "additive = no bump". Sabak: versioning discipline maangi hai, warna wo khud ek maintenance monster ban jaati hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `Asp.Versioning.Mvc` 8.x line `.NET 8` ke liye hai; ye purane `Microsoft.AspNetCore.Mvc.Versioning` package ka rename hai
+- 4 built-in version readers: URL segment, query string, header, media type — `ApiVersionReader.Combine` se mila ke use kar sakte ho
+- `ReportApiVersions = true` do response headers deta hai: `api-supported-versions` aur `api-deprecated-versions`
+- Default version tab lagta hai jab `DefaultApiVersion` set ho aur `AssumeDefaultVersionWhenUnspecified = true` ho
+- `GroupNameFormat = "'v'VVV"` group names `v1`, `v2`, `v1.1` banata hai — ek per Swagger dropdown entry
+- Unsupported version request ka result: HTTP `400` with error code `UnsupportedApiVersion`
+- Typical BFSI version sunset window: 90 se 365 din ka advance notice
+- Additive changes (naya field / naya endpoint / naya optional param) = 0 version bumps
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye ek reliable mid-to-senior question hai, aksar is chain me: "How do you version an API?" -> "Which strategy and why?" -> "What counts as a breaking change?" -> "How do you retire an old version?". Strong 20-second jawaab: "Main `Asp.Versioning.Mvc` use karta hoon. Default strategy URL segment — `/api/v1/...` — external clients ke liye, kyunki wo cache-friendly aur test karne me aasan hai. `DefaultApiVersion` plus `AssumeDefaultVersionWhenUnspecified` se versioning add karna backward compatible rehta hai. Breaking change matlab field rename/remove, type change, ya kuch required ho jaana — additive changes pe main bump nahi karta. Purana version `Deprecated = true` se mark hota hai, `ReportApiVersions` se header me signal jaata hai, ek sunset date announce hoti hai, phir controller delete." Bonus: `Asp.Versioning.Mvc.ApiExplorer` se per-version Swagger docs mention karna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Har chhote additive change (naya optional field) pe version bump kar dena. Isse `v7` tak pahunch jaate ho, har version ka alag maintenance cost, aur 90% bumps zaroori hi nahi the. Additive ko additive rakho.
+
+</Mistake>
+
+<Mistake>
+
+`v1` DTO ya controller ka code "temporarily" chhoo dena jab `v2` bana rahe ho. Purana version byte-level frozen hona chahiye — naya version = naya DTO class, purana untouched jab tak retire na ho.
+
+</Mistake>
+
+<Mistake>
+
+Sirf header-based versioning use karna bina `Vary: X-Api-Version` set kiye. CDN/proxy ek version ka response doosre version ke client ko cache karke de dega — silent data corruption.
+
+</Mistake>
+
+<Mistake>
+
+`AssumeDefaultVersionWhenUnspecified` on kiye bina versioning add karna. Purane callers jinhone kabhi version nahi bheja, sab ek din me `400 UnsupportedApiVersion` khaane lagenge — ye khud ek breaking change ban jaata hai.
+
+</Mistake>
+
+<Mistake>
+
+Version deprecate karna lekin `ReportApiVersions` off rakhna aur koi sunset communication na karna. Clients ko pata hi nahi chalta ki migrate karna hai, aur retire ke din bade pemane pe breakage hota hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    R["Incoming request<br/>GET /api/v1/employees"] --> RES["API version reader<br/>URL segment / query / X-Api-Version / media type"]
+    RES --> D{"Version resolved?"}
+    D -->|"1.0"| V1["EmployeesController v1<br/>returns FullName"]
+    D -->|"2.0"| V2["EmployeesV2Controller<br/>returns FirstName + LastName"]
+    D -->|"none"| DEF["DefaultApiVersion 1.0"]
+    DEF --> V1
+    V1 --> H["Response + api-supported-versions<br/>+ api-deprecated-versions headers"]
+    V2 --> H
+`}
+  caption="One reader resolves the version, routing picks the matching controller, and ReportApiVersions stamps the supported/deprecated headers on the way out."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- API versioning = ek server par purana aur naya contract ek saath, taaki breaking change bina forced flag-day ke ship ho
+- Packages: `Asp.Versioning.Mvc` (routing + attributes) aur `Asp.Versioning.Mvc.ApiExplorer` (per-version Swagger); purana naam `Microsoft.AspNetCore.Mvc.Versioning`
+- 4 strategies: URL segment (default, cache-friendly), query string (simple, log-invisible), header (clean URL, breaks browser test + needs `Vary`), media type (most RESTful, worst tooling)
+- `AddApiVersioning`: `DefaultApiVersion`, `AssumeDefaultVersionWhenUnspecified` (keeps it backward compatible), `ReportApiVersions` (adds `api-supported-versions` / `api-deprecated-versions` headers), `ApiVersionReader.Combine(...)`
+- `[ApiVersion("1.0")]` / `[ApiVersion("2.0")]` on controllers; `[MapToApiVersion("...")]` on actions when one controller serves both
+- `[ApiVersion("1.0", Deprecated = true)]` signals deprecation without removing the version
+- Concrete change here: `v2` splits `FullName` into `FirstName` + `LastName` via separate `EmployeeV2Dto`, v1 keeps `EmployeeV1Dto` untouched
+- Do NOT bump for additive changes (new field, new endpoint, new optional param); bump only for rename/remove/type-change/newly-required/changed-default
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `Asp.Versioning.Mvc` aur `Asp.Versioning.Mvc.ApiExplorer` add karo, `Program.cs` me `AddApiVersioning` configure karo with `DefaultApiVersion = 1.0` aur `ReportApiVersions = true`. Existing `EmployeesController` par `[ApiVersion("1.0")]` aur `[Route("api/v{version:apiVersion}/employees")]` lagao. `curl -i` se ek GET maar ke `api-supported-versions` header confirm karo.
+
+**Medium:** `EmployeeV1Dto` aur `EmployeeV2Dto` banao (v2 me `FirstName`/`LastName`). Ek `EmployeesV2Controller` add karo `[ApiVersion("2.0")]` ke saath jo `FullName` ko split karke `v2` shape return kare. `v1` ko `Deprecated = true` mark karo. Dono `/api/v1/employees` aur `/api/v2/employees` browser/`curl` se verify karo.
+
+**Bada (large):** Per-version Swagger wire karo — `AddApiExplorer` with `GroupNameFormat = "'v'VVV"` aur `SubstituteApiVersionInUrl = true`, ek `ConfigureSwaggerOptions : IConfigureOptions<SwaggerGenOptions>` jo har `ApiVersionDescription` ke liye `SwaggerDoc` register kare, aur `UseSwaggerUI` me `app.DescribeApiVersions()` loop. Swagger UI ke dropdown me `V1` aur `V2` dono aane chahiye. Phir ek `v1` OpenAPI JSON snapshot test likho jo fail ho agar `v1` ka response shape kabhi galti se badla.
+
+</Callout>

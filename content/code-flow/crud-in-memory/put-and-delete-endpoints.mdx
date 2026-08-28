@@ -1,0 +1,226 @@
+---
+slug: "put-and-delete-endpoints"
+title: "PUT and DELETE: Update and Remove, With the Right Status Codes"
+section: "code-flow"
+module: "crud-in-memory"
+order: 5
+difficulty: "beginner"
+readingTime: 14
+prerequisites: ["post-endpoint-and-status-codes", "get-endpoints-list-and-by-id"]
+tags: ["dotnet", "aspnet-core", "web-api", "rest", "http", "crud", "idempotency"]
+englishDefinition: "PUT replaces an existing resource in full and DELETE removes it. Both are idempotent — calling them once or five times leaves the server in the same state — and both must return 404 when the target id does not exist, 204 No Content on success, and never a stale copy of what was changed."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+PUT replaces an existing resource in full and DELETE removes it. Both are idempotent — calling them once or five times leaves the server in the same state — and both must return 404 when the target id does not exist, 204 No Content on success, and never a stale copy of what was changed.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne `EmployeesController` me `GET` (list + by id) aur `POST` (create) likh liya hai, ek `private static readonly List<Employee>` in-memory store ke against. Is topic me hum CRUD ke last do verbs — `PUT` (update) aur `DELETE` (remove) — add karenge, aur har response ka **status code** deliberately choose karenge. Yahan DTOs abhi introduce nahi kiye (wo agla topic hai), isliye request body me abhi `Employee` hi le rahe hain — agle topic me ise theek karenge.
+
+### What is it — PUT aur DELETE ka matlab
+
+- **`PUT /api/employees/{id}`** — "is id wale employee ko **poori tarah is naye version se replace kar do**." PUT partial update nahi hai — jo body me aaya wahi final state hai. Agar body me `Email` missing hai, to matlab `Email` khaali ho jaana chahiye (partial update `PATCH` ka kaam hai).
+- **`DELETE /api/employees/{id}`** — "is id wale employee ko hata do."
+
+### Why do we need it — aur idempotency kyun important hai
+
+CRUD ka "U" aur "D" inke bina adhoora hai. Lekin asli seekhne wali baat **idempotency** hai: ek request ko **ek baar bhejo ya paanch baar**, server ka final state same rehna chahiye.
+
+- `PUT` idempotent hai — same body se 5 PUT calls ke baad bhi employee wahi ek final version me hai.
+- `DELETE` idempotent hai — pehli call delete kar deti hai, agli calls "already gaya" dekhti hain; state nahi badalta.
+- `POST` idempotent **nahi** hai — 5 POST calls = 5 naye employees.
+
+Ye is liye matter karta hai kyunki network flaky hota hai. Client ne `PUT` bheja, response nahi aaya (timeout), client retry karta hai. Agar `PUT` idempotent hai to retry safe hai. Isiliye retry-heavy systems (mobile apps, payment flows) `PUT` prefer karte hain jahan possible ho.
+
+### How does it work — step by step
+
+1. Request aati hai `PUT /api/employees/7` body ke saath.
+2. Model binder body (JSON) ko `Employee` object me convert karta hai.
+3. Hum store me id `7` dhoondte hain. Nahi mila → `404 Not Found`, aage kuch nahi.
+4. Mila → uski saari fields ko incoming values se overwrite karte hain (id chhod ke — id route se aata hai, body se nahi).
+5. `204 No Content` return — "ho gaya, bhejne ke liye body nahi hai."
+
+`DELETE` bhi wahi shape: dhoondo → nahi mila to `404` → mila to list se hata do → `204`.
+
+### Show it in our project
+
+`Controllers/EmployeesController.cs` me ye do actions add karo (`GET`/`POST` pehle se hain):
+
+```csharp
+[HttpPut("{id:int}")]
+public IActionResult Update(int id, [FromBody] Employee incoming)
+{
+    var existing = _employees.FirstOrDefault(e => e.Id == id);
+    if (existing is null)
+        return NotFound();
+
+    existing.FullName = incoming.FullName;
+    existing.Email = incoming.Email;
+    existing.DepartmentId = incoming.DepartmentId;
+    existing.Department = incoming.Department;
+    existing.DateOfJoining = incoming.DateOfJoining;
+    existing.Salary = incoming.Salary;
+    existing.PanNumber = incoming.PanNumber;
+    existing.IsActive = incoming.IsActive;
+
+    return NoContent();
+}
+
+[HttpDelete("{id:int}")]
+public IActionResult Delete(int id)
+{
+    var existing = _employees.FirstOrDefault(e => e.Id == id);
+    if (existing is null)
+        return NotFound();
+
+    _employees.Remove(existing);
+    return NoContent();
+}
+```
+
+### Code explained line by line
+
+- `[HttpPut("{id:int}")]` — ye action `PUT` verb + route `api/employees/{id}` handle karega. `:int` route constraint hai — `PUT /api/employees/abc` yahan match hi nahi karega (framework `400`/`404` de dega uska), aur `id` param already parsed `int` hota hai.
+- `public IActionResult Update(int id, [FromBody] Employee incoming)` — return type `IActionResult` kyunki ye method kabhi `NotFound()` return karta hai kabhi `NoContent()` — dono alag types hain, `IActionResult` common base hai. `id` route se, `incoming` request body se (`[FromBody]`).
+- `var existing = _employees.FirstOrDefault(e => e.Id == id);` — store me se woh employee dhoondo jiska `Id` match kare. `FirstOrDefault` match na hone par `null` deta hai (exception nahi).
+- `if (existing is null) return NotFound();` — id exist nahi karti → `404`. Ye "upsert" nahi hai (PUT create bhi kar sakta hai spec me, par hum simple rakh rahe hain: PUT sirf existing update kare).
+- Agli 8 lines — `existing` ki har field ko `incoming` se overwrite. **`Id` ko nahi chhua** — id identity hai, PUT se badalni nahi chahiye. Kyunki `existing` list ke andar ka wahi object hai (reference type), fields set karte hi list update ho jaati hai.
+- `return NoContent();` — `204 No Content`. Success, aur response body ki zaroorat nahi (client ke paas already updated version hai — usi ne bheja tha).
+- `DELETE` me `_employees.Remove(existing);` — list se object hata do. `Remove` `bool` return karta hai (mila/nahi mila) par humne already `null` check kar liya.
+
+### Where is it used in day-to-day development
+
+Har entity ke CRUD me PUT/DELETE lagta hai. Real projects me:
+- **DELETE aksar "soft delete" hota hai** — actually row nahi hatate, ek `IsDeleted`/`DeletedAtUtc` flag set karte hain. BFSI me audit aur regulation ke liye data delete karna allowed hi nahi hota — isliye `DELETE /api/employees/{id}` internally `IsActive = false` kar deta hai.
+- **PUT vs PATCH** — full replace UI forms ke liye theek hai (poora form submit hota hai). Mobile/partial updates ke liye teams `PATCH` (JSON Merge Patch ya JSON Patch) use karti hain taaki sirf changed fields bhejein.
+
+### Pros and cons
+
+<Tradeoff
+  pros={["PUT/DELETE dono idempotent — retry-safe, jo flaky networks pe bada plus hai", "204 No Content response chhota aur clear hai — 'ho gaya, aur kuch nahi'", "Full-replace semantics predictable hai — koi 'kaunsi field update hui' guesswork nahi"]}
+  cons={["PUT me poora object bhejna padta hai har chhoti change ke liye — bandwidth aur race-condition risk", "Full replace me agar client purana version bhej de to doosre ki concurrent change overwrite ho jaati hai (lost update)", "Hard DELETE se audit trail gayab — production me lagbhag hamesha soft delete chahiye"]}
+/>
+
+### When to use / when NOT to use
+
+- **PUT use karo** jab client ke paas poora resource ho aur wo pura replace karna chahta ho (settings form save).
+- **PUT mat use karo** partial update ke liye — `PATCH` better hai. Aur PUT ko "create if not exists" mat banao jab tak API contract explicitly upsert na maange.
+- **DELETE (hard)** sirf throwaway/non-audited data pe. Baaki jagah soft delete.
+
+### Failure scenario
+
+Do users ne same employee ka form khola. User A ne `Salary` badla aur PUT kiya. User B ne (jiske paas purana `Salary` tha) sirf `Email` badla aur PUT kiya — B ke PUT me purana `Salary` tha, to A ki change **overwrite** ho gayi bina kisi error ke. Ye "lost update" problem hai. Fix: optimistic concurrency (ek `RowVersion` field jo PUT me match hona chahiye) — ye hum EF Core module me karenge.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`PUT` ke response me updated employee ko `Ok(existing)` karke wapas bhejna galat nahi hai, par zaroori bhi nahi — client ke paas already wo data hai. `204 No Content` cleaner default hai. `200 + body` tab do jab server ne kuch add kiya ho jo client ko nahi pata tha (jaise ek computed field ya `UpdatedAtUtc`).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Loan-application service me `DELETE /api/applications/{id}` ko literally row delete karne diya gaya tha. Ek support engineer ne galat id delete kar di, aur audit ke waqt regulator ko wo application dikhani thi — ab gone. Uske baad poore codebase me hard delete ban kar diya gaya: har `DELETE` ab `Status = Withdrawn` + `WithdrawnAtUtc` set karta hai, aur list endpoints by default withdrawn ko filter kar dete hain.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-HR API me PUT endpoint bina `404` check ke likha gaya tha — agar id na mile to naya employee `Add` kar deta tha (naive upsert). QA me ek typo id (`/api/employees/99999`) se ek ghost employee ban gaya jiska koi department nahi tha, aur payroll batch us par crash kar gaya. Fix: PUT sirf existing update kare, warna `404`.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `PUT` success: `204 No Content` (ya `200` with body agar server ne fields add kiye)
+- `DELETE` success: `204 No Content`
+- `PUT`/`DELETE` on missing id: `404 Not Found`
+- Both idempotent: N identical calls = same final state as 1 call
+- `POST` is NOT idempotent: N calls = N resources
+- Bad id format (`/api/employees/abc`) with `{id:int}` constraint: route does not match → framework `404`
+- Soft delete is the BFSI default — hard `DELETE` of audited data is effectively never allowed
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Classic question: "PUT aur PATCH me kya farq hai?" Strong answer: "PUT poora resource replace karta hai — jo body me nahi hai wo cleared maana jaata hai — aur idempotent hai. PATCH partial update hai, sirf bheji hui fields badalte hain, aur JSON Patch ya JSON Merge Patch format use karta hai." Follow-up aksar: "Kaunse status codes?" → `204` on success, `404` on missing id, `400` on invalid body. Aur "DELETE idempotent hai kya?" → "Haan — pehli call hataati hai, baaki calls state nahi badalti; response `204` ya `404` dono acceptable hain."
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+PUT me `404` check bhool jaana aur missing id par naya record `Add` kar dena — ghost records ban jaate hain. PUT ko upsert tabhi banao jab contract explicitly maange.
+
+</Mistake>
+
+<Mistake>
+
+PUT me body se aayi `Id` ko `existing.Id` me set kar dena — id route se aati hai, identity hai, PUT se kabhi nahi badalni chahiye.
+
+</Mistake>
+
+<Mistake>
+
+PUT ko partial update ki tarah treat karna — sirf non-null fields copy karna. Ye PUT ki full-replace semantics todta hai; clients confuse ho jaate hain ki empty field bhejne se kuch hota hai ya nahi. Partial ke liye `PATCH` likho.
+
+</Mistake>
+
+<Mistake>
+
+`DELETE` success par `200 OK` with a body like `{ "message": "deleted" }` bhejna. `204 No Content` standard hai; wrapper messages non-standard clients ko confuse karte hain.
+
+</Mistake>
+
+<Mistake>
+
+Hard delete karna audited data ka. Production me `IsActive = false` / `DeletedAtUtc` soft delete, aur list queries me by default exclude.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["PUT or DELETE /api/employees/{id}"] --> B{"id store me hai?"}
+    B -- "nahi" --> C["404 Not Found"]
+    B -- "haan (PUT)" --> D["saari fields overwrite (Id chhod ke)"]
+    D --> E["204 No Content"]
+    B -- "haan (DELETE)" --> F["list se remove (ya IsActive=false)"]
+    F --> E
+`}
+  caption="Both verbs share the same shape: find by id, 404 if missing, otherwise mutate and return 204."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `PUT /api/employees/{id}` = full replace of an existing resource; `DELETE /api/employees/{id}` = remove it
+- Both are idempotent — N identical calls leave the same final state; safe to retry
+- Missing id → `404 Not Found`; success → `204 No Content`
+- Never change `Id` from the body — identity comes from the route
+- PUT replaces everything; for partial updates use `PATCH` (JSON Merge Patch / JSON Patch)
+- Prefer soft delete (`IsActive = false` / `DeletedAtUtc`) for anything audited — hard delete only for throwaway data
+- Full-replace PUT is vulnerable to lost updates under concurrency — add a `RowVersion` check later (EF Core module)
+- `{id:int}` route constraint makes bad-format ids not match the route at all
+
+</QuickRevision>

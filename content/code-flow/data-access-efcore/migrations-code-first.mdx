@@ -1,0 +1,339 @@
+---
+slug: "migrations-code-first"
+title: "EF Core Migrations: Code-First, add, update, and Rollback"
+section: "code-flow"
+module: "data-access-efcore"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["ef-core-dbcontext-and-dbset", "connection-strings-and-appsettings"]
+tags: ["dotnet", "ef-core", "migrations", "code-first", "sql-server", "employee-management"]
+englishDefinition: "EF Core migrations are the code-first workflow for evolving a database schema from your C# model. You change the entity classes or DbContext configuration, run dotnet ef migrations add to generate a versioned C# migration with Up and Down methods plus a model snapshot, and run dotnet ef database update to apply the pending migrations to the database, which records each applied migration in the __EFMigrationsHistory table."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Cognizant", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+EF Core migrations are the code-first workflow for evolving a database schema from your C# model. You change the entity classes or `DbContext` configuration, run `dotnet ef migrations add` to generate a versioned C# migration with `Up` and `Down` methods plus a model snapshot, and run `dotnet ef database update` to apply the pending migrations to the database, which records each applied migration in the `__EFMigrationsHistory` table.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topics me humne `AppDbContext` aur `DbSet<Employee>` bana liye, connection string bhi wire kar di. Lekin database me abhi **koi table nahi** hai — `Employees` table exist hi nahi karti. Migrations wahi missing kadam hai: C# model ko dekh kar actual SQL Server tables banana, aur baad me jab model badle to schema ko safely aage badhana.
+
+### What is it — code-first migrations
+
+Do approaches hote hain database ke saath kaam karne ke:
+
+- **Database-first** — pehle DBA SQL me tables banata hai, phir tum us schema se C# entity classes **generate** karte ho (`dotnet ef dbcontext scaffold`). Legacy DB, ya jahan DB team alag se schema own karti hai, wahan chalta hai.
+- **Code-first** — C# entity classes **source of truth** hain. Tum classes likhte ho, EF Core us se schema nikaal deta hai migrations ke through. Naye greenfield projects me yahi default hai.
+
+Hum **code-first** use karenge kyunki: schema git me version-controlled rehta hai (har migration ek commit), har developer ko same schema milta hai ek command se, aur schema change ka review code review me hi ho jaata hai. Database-first me schema aur code ke beech drift aasani se ho jaata hai.
+
+Ek "migration" ek timestamped C# class hai jo batati hai: is version me schema me kya **add/change/drop** karna hai (`Up`), aur agar rollback karna pade to kya **ulta** karna hai (`Down`).
+
+### Why do we need it — iske bina kya tootega
+
+Bina migrations ke tumhe schema changes haath se manage karne padte:
+
+- Har developer ki local DB alag state me — "mere paas to chal raha hai" wali classic problem.
+- Production pe deploy karte waqt koi ek `ALTER TABLE` script chalana bhool gaya — app naye column ko expect karti hai, DB me hai nahi, runtime crash.
+- Rollback ka koi structured tareeka nahi — bas yaad karke ulta SQL likho.
+
+Migrations ye sab ek **ordered, versioned, repeatable** cheez bana deti hain. `__EFMigrationsHistory` table DB me record rakhti hai ki kaunsi migrations already apply ho chuki hain, isliye `database update` sirf **pending** wali chalata hai — dobara chalane pe kuch nahi tootata (idempotent).
+
+### How does it work — step by step
+
+1. **Tooling install** — `dotnet ef` ek global tool hai, ek baar install:
+
+```bash
+dotnet tool install --global dotnet-ef
+dotnet tool update --global dotnet-ef
+```
+
+Project me `Microsoft.EntityFrameworkCore.Design` package bhi chahiye (Tools package aksar ise le aata hai).
+
+2. **Pehli migration banao** — `EmployeeManagement.Api` folder me:
+
+```bash
+dotnet ef migrations add InitialCreate
+```
+
+Ye ek `Migrations/` folder banata hai teen cheezon ke saath:
+
+```text
+Migrations/
+├── 20260828101500_InitialCreate.cs          <- Up() + Down()
+├── 20260828101500_InitialCreate.Designer.cs <- migration metadata
+└── AppDbContextModelSnapshot.cs             <- poore model ka current snapshot
+```
+
+3. **Generated migration padho** (ye step skip mat karna):
+
+```csharp
+public partial class InitialCreate : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.CreateTable(
+            name: "Employees",
+            columns: table => new
+            {
+                Id = table.Column<int>(nullable: false)
+                    .Annotation("SqlServer:Identity", "1, 1"),
+                FullName = table.Column<string>(maxLength: 150, nullable: false),
+                Email = table.Column<string>(maxLength: 200, nullable: false),
+                PanNumber = table.Column<string>(fixedLength: true, maxLength: 10, nullable: false),
+                Salary = table.Column<decimal>(precision: 18, scale: 2, nullable: false),
+                DepartmentId = table.Column<int>(nullable: false),
+                DateOfJoining = table.Column<DateTime>(nullable: false),
+                IsActive = table.Column<bool>(nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_Employees", x => x.Id);
+            });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_Employees_Email",
+            table: "Employees",
+            column: "Email",
+            unique: true);
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.DropTable(name: "Employees");
+    }
+}
+```
+
+4. **Database pe apply karo**:
+
+```bash
+dotnet ef database update
+```
+
+Ye connection string se DB pe connect karta hai, `__EFMigrationsHistory` table banata hai (agar nahi hai), pending migrations ko order me chalata hai, aur har ek ke baad us migration ka Id `__EFMigrationsHistory` me insert karta hai.
+
+### Show it in our project — ek naya column add karna
+
+Client bola: "har employee ka **last working date** bhi store karo (resignation ke baad)." Steps:
+
+Pehle `Models/Employee.cs` me property add karo:
+
+```csharp
+public DateTime? LastWorkingDate { get; set; }
+```
+
+`DateTime?` (nullable) rakha kyunki active employees ke paas ye value nahi hoti. Ab nayi migration:
+
+```bash
+dotnet ef migrations add AddLastWorkingDateToEmployee
+```
+
+Generated `Up` sirf **difference** hoga, poori table dobara nahi:
+
+```csharp
+protected override void Up(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.AddColumn<DateTime>(
+        name: "LastWorkingDate",
+        table: "Employees",
+        nullable: true);
+}
+
+protected override void Down(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.DropColumn(name: "LastWorkingDate", table: "Employees");
+}
+```
+
+Apply:
+
+```bash
+dotnet ef database update
+```
+
+EF ne `AppDbContextModelSnapshot.cs` bhi update kiya — snapshot hamesha "current expected model" rakhta hai, aur agli migration diff isi se nikalti hai.
+
+### Code explained line by line
+
+- `dotnet tool install --global dotnet-ef` — CLI commands (`migrations`, `database`, `dbcontext`) ke liye tool. `--global` matlab poore machine pe available; alternative `dotnet tool install --local` ek `.config/dotnet-tools.json` manifest ke saath (team ke liye better, version pin hota hai).
+- `migrations add <Name>` — `<Name>` sirf ek human label hai jo filename me lagta hai; describe karo kya change hua (`AddLastWorkingDateToEmployee`), `Migration1` jaisa mat likho.
+- `Up(MigrationBuilder)` — forward change. `CreateTable`, `AddColumn`, `CreateIndex`, `AlterColumn`, `Sql("...")` raw SQL ke liye.
+- `Down(MigrationBuilder)` — exact reverse. `database update <PreviousMigration>` isi ko chalata hai rollback ke liye. Agar `Down` galat hai to rollback data kho sakta hai.
+- `AppDbContextModelSnapshot.cs` — **generated, kabhi haath se edit mat karo**. Ye poore model ka current picture hai; iske bina EF ko nahi pata "pehle kya tha" vs "ab kya hai".
+- `__EFMigrationsHistory` — DB me ek chhoti table, sirf ek column `MigrationId` (+ EF version). Isi se `database update` decide karta hai kya pending hai.
+
+### Rolling back aur unapplied migration hataana
+
+**Applied migration ko rollback karna** — target ek pehli wali migration ho:
+
+```bash
+dotnet ef database update AddLastWorkingDateToEmployee
+```
+
+Ye us naamwali migration tak **wapas** le aata hai — beech ki saari baad wali migrations ka `Down()` reverse order me chalta hai. Ekdum shuru tak jaana ho:
+
+```bash
+dotnet ef database update 0
+```
+
+**Migration jo abhi DB pe apply nahi hui, use hataana**:
+
+```bash
+dotnet ef migrations remove
+```
+
+Ye aakhri migration ki files delete karta hai aur snapshot ko pichhli state me le aata hai. **Sirf tab safe hai jab wo migration `database update` se apply nahi hui.** Agar apply ho chuki hai to pehle `database update <previous>` se rollback karo, phir `migrations remove`. Apply hui migration ki file ko haath se delete karna snapshot ko de-sync kar deta hai — agli migration ka diff galat niklega.
+
+### Migrations kab apply karein — startup vs pipeline vs separate step
+
+Teen options, har ek ka trade-off:
+
+- **App startup pe** (`db.Database.Migrate()` in `Program.cs`) — sabse aasan, local dev aur chhote single-instance apps ke liye theek. Problem: multiple instances ek saath start honge (Kubernetes rolling deploy) to do process ek saath migrate karne ki koshish karenge — race, ya lock. Aur app ke paas DDL permission chahiye production DB pe, jo BFSI me security team allow nahi karti.
+- **CI/CD pipeline step** — deploy se pehle pipeline `dotnet ef database update` ya ek generated SQL script chalati hai (`dotnet ef migrations script --idempotent -o migrate.sql`). App ke paas sirf DML permission. Ye production standard hai. Trade-off: pipeline ko DB access chahiye, aur schema change + code deploy ko coordinate karna padta hai (backward-compatible migrations).
+- **Alag manual step / DBA** — regulated environments me DBA generated SQL script review karke khud chalata hai maintenance window me. Sabse safe, sabse slow.
+
+**Rule of thumb:** local pe `Migrate()` on startup theek; production me generated idempotent SQL script + pipeline ya DBA. Startup migration multi-instance production me kabhi nahi.
+
+### Where is it used in day-to-day development
+
+- Har feature jo naya field/table/index laata hai — ek migration us PR ka hissa hota hai.
+- Naya developer onboard — `git clone`, `dotnet ef database update`, DB ready.
+- Production release — pipeline `migrations script --idempotent` se SQL banati hai, DBA review karta hai, window me chalta hai.
+- Incident — "column missing" error aata hai to pehla check: `dotnet ef migrations list` dekho kaunsi pending hai.
+
+### Pros and cons
+
+Pros: schema version-controlled aur reviewable, ek command se koi bhi environment sync, rollback structured (`Down`), team drift khatam. Cons: `Down` methods aksar galat ya untested hote hain (data-loss risk), do developers ki parallel migrations merge pe snapshot conflict deti hain (resolve karna seekhna padta hai), auto-generated migration destructive change (column drop, type narrow) ko blindly likh deta hai — review na karo to data chala jaata hai.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Har `migrations add` ke baad generated `Up()`/`Down()` **padho** commit karne se pehle. EF khushi se `DropColumn` ya `AlterColumn` (jo data truncate kar de) likh dega. Ek unwanted destructive line milte hi `migrations remove` karo, model theek karo, dobara `add` karo.
+
+</Callout>
+
+<Tradeoff
+  pros={["Schema git me — har change ek reviewable migration", "Ek command (database update) se koi bhi environment sync", "Rollback structured — target migration tak Down() chalta hai", "__EFMigrationsHistory se apply idempotent — dobara chalane pe no-op"]}
+  cons={["Down() aksar untested — rollback pe data loss ho sakta hai", "Parallel migrations pe ModelSnapshot merge conflict", "Auto-generated migration destructive SQL blindly likh deta hai", "Startup pe Migrate() multi-instance deploy me race karta hai"]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek lending startup ne `db.Database.Migrate()` `Program.cs` me daala tha "convenience" ke liye. Jab wo AWS ECS pe 4 tasks ke saath deploy hue, chaaron tasks ne ek saath startup pe migrate karne ki koshish ki — ek ne `__EFMigrationsHistory` lock liya, baaki teen 30s timeout ke baad crash, ECS ne unhe restart-loop me daal diya, aur deploy 20 minute atka raha. Fix: startup migration hata kar ek dedicated pipeline stage banaya jo `dotnet ef database update` sirf ek baar chalata hai, phir app tasks deploy hote hain.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek core-banking-adjacent project me app service account ke paas production DB pe sirf `db_datareader` + `db_datawriter` tha — koi DDL nahi, security policy. Team ne har release pe `dotnet ef migrations script --idempotent --from <last> --to <current> -o release_migrate.sql` generate kiya, wo SQL change-management ticket me attach hua, DBA ne review karke maintenance window me chalaya. App ne kabhi schema change nahi kiya — sirf DBA ne, reviewed script se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 1 command install: `dotnet tool install --global dotnet-ef`
+- 3 files per `migrations add`: the migration (`Up`/`Down`), its `.Designer.cs`, and the updated `AppDbContextModelSnapshot.cs`
+- 1 history table: `__EFMigrationsHistory`, one `MigrationId` row per applied migration
+- `dotnet ef database update 0` rolls the schema all the way back to empty
+- `dotnet ef migrations remove` only safe when the last migration is **not** yet applied
+- `--idempotent` SQL script can be run on a DB at any migration state — it checks `__EFMigrationsHistory` per statement
+- Migration name prefix is a UTC timestamp (`20260828101500_`) — this is what orders them, not the file name text
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Explain EF Core migrations" ya "code-first vs database-first." Strong 20-second answer: "Code-first me C# entity classes source of truth hain. `dotnet ef migrations add` model aur pichhle snapshot ka diff nikaal kar ek versioned migration banata hai jisme `Up` aur `Down` methods hote hain. `dotnet ef database update` pending migrations DB pe apply karta hai aur `__EFMigrationsHistory` table me record rakhta hai, jisse apply idempotent hota hai. Rollback ke liye `database update <previousMigration>` — wo `Down` methods chalata hai. Production me main startup pe migrate nahi karta — pipeline ya DBA ek idempotent SQL script chalata hai." Follow-ups: "startup pe Migrate() ka kya problem hai" (multi-instance race, DDL permission), "do developers ki migrations conflict kare to" (snapshot merge, ek migration re-generate), "destructive change kaise pakadte ho" (generated Up padho).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+Generated migration ko bina padhe commit kar dena. EF `DropColumn`, `AlterColumn` (type narrow), ya column rename ko drop+add likh sakta hai — data silently chala jaata hai. Har `Up`/`Down` review karo.
+
+</Mistake>
+
+<Mistake>
+
+Applied migration ki `.cs` file ko haath se delete karna. `AppDbContextModelSnapshot.cs` purani state me atka rehta hai, agli `migrations add` ka diff galat niklega. Sahi tareeka: `database update <previous>` phir `migrations remove`.
+
+</Mistake>
+
+<Mistake>
+
+`db.Database.Migrate()` ko `Program.cs` me chhod dena aur multi-instance production me deploy karna. Do instances ek saath migrate karenge — race ya lock timeout, deploy fail.
+
+</Mistake>
+
+<Mistake>
+
+Migration ko `Migration1`, `Update2` jaise naam dena. Chhe mahine baad koi nahi bata sakta kaunsi migration ne kya kiya. Naam change describe kare: `AddLastWorkingDateToEmployee`.
+
+</Mistake>
+
+<Mistake>
+
+`dotnet ef` tool install kiye bina ya galat folder se command chalana. Command project folder (jahan `.csproj` hai) se chalao, ya `--project` / `--startup-project` explicitly do.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Change entity / DbContext config"] --> B["dotnet ef migrations add AddLastWorkingDate"]
+    B --> C["Review generated Up() / Down()"]
+    C -->|"looks wrong"| D["dotnet ef migrations remove, fix model"]
+    D --> B
+    C -->|"looks right"| E["dotnet ef database update"]
+    E --> F["Schema changed + row added to __EFMigrationsHistory"]
+    F -->|"need rollback"| G["dotnet ef database update PreviousMigration"]
+`}
+  caption="The code-first loop: change model, add migration, review it, apply it. The history table is what makes update idempotent and rollback targeted."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Code-first = C# entities are the source of truth; migrations carry the schema. Database-first = scaffold C# from an existing DB.
+- `dotnet tool install --global dotnet-ef` once; project needs `Microsoft.EntityFrameworkCore.Design`.
+- `dotnet ef migrations add <Name>` generates the migration (`Up`/`Down`), its `.Designer.cs`, and updates `AppDbContextModelSnapshot.cs` (the diff base — never hand-edit it).
+- `dotnet ef database update` applies pending migrations and writes each to `__EFMigrationsHistory`, so re-running is a no-op.
+- Add a column: add the C# property, `migrations add`, review, `database update`. Generated `Up` is just the delta (`AddColumn`), not the whole table.
+- Rollback: `dotnet ef database update <PreviousMigration>` runs the `Down` methods in reverse; `... update 0` goes back to empty.
+- Remove an unapplied migration: `dotnet ef migrations remove`. If it is already applied, roll back first.
+- Applying migrations: startup `Migrate()` for local/single-instance only; production uses a pipeline step or a DBA-run `--idempotent` SQL script (app has no DDL rights).
+- Always read the generated `Up`/`Down` before committing — EF will happily write destructive SQL.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `dotnet-ef` tool install karo, phir `dotnet ef migrations add InitialCreate` chala kar `Migrations/` folder ke teen files kholo. `Up()` me `CreateTable("Employees", ...)` aur unique `IX_Employees_Email` index dhoondho. Abhi `database update` mat karo.
+
+**Medium:** `Employee` me `DateTime? LastWorkingDate` property add karo, `dotnet ef migrations add AddLastWorkingDateToEmployee` chalao, generated `Up` (`AddColumn`) aur `Down` (`DropColumn`) verify karo, phir `dotnet ef database update`. SQL Server me confirm karo column bhi aaya aur `__EFMigrationsHistory` me do rows hain. Phir `dotnet ef database update InitialCreate` se rollback karo aur column gayab hote dekho.
+
+**Bada (large):** `EmployeeManagement.Api` me startup migration ko production-safe banao: `Program.cs` se `Migrate()` hata do (ya sirf `IsDevelopment()` me rakho), aur ek script `scripts/generate-migration-sql.sh` banao jo `dotnet ef migrations script --idempotent -o artifacts/migrate.sql` chalaye. README me document karo ki release pipeline me ye SQL kaise apply hoti hai aur app service account ke paas sirf datareader/datawriter kyun hona chahiye.
+
+</Callout>

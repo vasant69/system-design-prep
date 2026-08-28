@@ -1,0 +1,368 @@
+---
+slug: "validation-dataannotations-to-fluentvalidation"
+title: "Validation: DataAnnotations to FluentValidation, Line by Line"
+section: "code-flow"
+module: "cross-cutting-concerns"
+order: 3
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["global-exception-handling", "dto-and-automapper-the-mapping-layer", "extracting-the-service-layer"]
+tags: ["dotnet", "aspnet-core", "web-api", "validation", "dataannotations", "fluentvalidation", "intermediate", "employee-management"]
+englishDefinition: "Input validation is the boundary check that rejects malformed or business-invalid requests before they reach your domain logic. In ASP.NET Core the simplest form is DataAnnotations attributes on DTOs, which an [ApiController] turns into an automatic 400 ValidationProblemDetails; the production-grade form is FluentValidation, where rules live in a separate testable AbstractValidator class that supports cross-field checks, async database lookups, and conditional logic."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Capgemini", "Wipro", "Cognizant", "Microsoft", "a BFSI client"]
+---
+
+<SimpleDefinition>
+
+Input validation is the boundary check that rejects malformed or business-invalid requests before they reach your domain logic. In ASP.NET Core the simplest form is DataAnnotations attributes on DTOs, which an `[ApiController]` turns into an automatic 400 `ValidationProblemDetails`; the production-grade form is FluentValidation, where rules live in a separate testable `AbstractValidator` class that supports cross-field checks, async database lookups, and conditional logic.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Humare `EmployeeManagement.Api` me `POST /api/employees` ek `CreateEmployeeDto` leta hai. Abhi tak humne maan liya ki client sahi data bhejega. Reality: client `Email` me `"abc"` bhejega, `Salary` me `-5000`, `PanNumber` me `"hello"`, `DateOfJoining` me `2049-01-01`. Bina validation ke ye sab seedha service aur database tak pahunch jaata hai — ya to `SaveChangesAsync` par ganda exception, ya galat data table me chup-chaap save.
+
+### What is it — plain definition
+
+Validation ka matlab: request ke andar aaye data ko **use karne se pehle** check karna ki wo (a) structurally sahi hai (required fields present, sahi type, sahi format) aur (b) business rules follow karta hai (salary non-negative, joining date future me nahi). Fail hone par request ko turant `400 Bad Request` ke saath reject karo, ek machine-readable error body ke saath — service kabhi call hi na ho.
+
+### Why do we need it — bina iske kya tootega
+
+- **Bad data persist ho jaata hai** — `Salary = -5000` DB me chala gaya, mahine baad payroll report galat.
+- **Ugly 500s** — malformed input `SaveChangesAsync` ya kisi parsing line par crash karta hai; client ko generic `500`.
+- **Security** — over-posting, injection-style payloads, oversized strings bina length limit ke.
+- **Har action me duplicate `if` checks** — 40 endpoints, har jagah wahi manual null/format checks.
+
+Failure scenario: ek digital-lending onboarding API me `PanNumber` par koi format check nahi tha. Ops team ne 3000 employees import kiye jisme 200 ke PAN me spaces aur lowercase the. Baad me jab PAN-verification external API call hui, wo 200 saare fail hue aur reconciliation me do din lage. Ek `[RegularExpression]` line ye rok deti.
+
+### How does it work — the mechanism
+
+ASP.NET Core ka request flow: **model binding** JSON ko `CreateEmployeeDto` object me badalta hai, phir **validation** chalti hai (`ModelState` populate hoti hai), phir action method. Agar controller par `[ApiController]` attribute hai, to `ModelState.IsValid == false` hone par framework **khud** action ko call kiye bina `400` return karta hai, body me RFC 7807 `ValidationProblemDetails` (`errors` object with field to messages).
+
+Do rule sources plug hote hain isi `ModelState` step me:
+
+1. **DataAnnotations** — DTO properties par attributes (`[Required]`, `[EmailAddress]`, ...). Built-in, zero setup.
+2. **FluentValidation** — ek alag `AbstractValidator` class; ek adapter use `ModelState` me feed karta hai (ya tum `IValidator` khud inject karke manually chalate ho).
+
+### Show it in our project — simplest first: DataAnnotations
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace EmployeeManagement.Api.Dtos;
+
+public class CreateEmployeeDto
+{
+    [Required]
+    [StringLength(120, MinimumLength = 2)]
+    public string FullName { get; set; } = string.Empty;
+
+    [Required]
+    [EmailAddress]
+    public string Email { get; set; } = string.Empty;
+
+    [Required]
+    [RegularExpression(
+        "^[A-Z]{5}[0-9]{4}[A-Z]$",
+        ErrorMessage = "PAN must be 5 letters, 4 digits, 1 letter, all uppercase.")]
+    public string PanNumber { get; set; } = string.Empty;
+
+    [Range(0, 100_000_000)]
+    public decimal Salary { get; set; }
+
+    [Required]
+    [NotFutureDate(ErrorMessage = "Date of joining cannot be in the future.")]
+    public DateOnly DateOfJoining { get; set; }
+
+    [Required]
+    public int DepartmentId { get; set; }
+}
+```
+
+A custom attribute for the rule DataAnnotations does not ship:
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace EmployeeManagement.Api.Validation;
+
+public sealed class NotFutureDateAttribute : ValidationAttribute
+{
+    protected override ValidationResult? IsValid(
+        object? value, ValidationContext context)
+    {
+        if (value is null) return ValidationResult.Success;
+
+        var date = value switch
+        {
+            DateOnly d => d,
+            DateTime dt => DateOnly.FromDateTime(dt),
+            _ => throw new InvalidOperationException(
+                     $"{context.MemberName} is not a date."),
+        };
+
+        return date <= DateOnly.FromDateTime(DateTime.UtcNow)
+            ? ValidationResult.Success
+            : new ValidationResult(ErrorMessage ?? "Date cannot be in the future.");
+    }
+}
+```
+
+Controller ko kuch nahi karna — `[ApiController]` already `400` de raha hai:
+
+```csharp
+[HttpPost]
+public async Task<ActionResult<EmployeeDto>> Create(CreateEmployeeDto dto)
+    => Ok(await _service.CreateAsync(dto)); // invalid dto yahan pahunchta hi nahi
+```
+
+### Code explained line by line
+
+- `[Required]` on a `string` — null aur (default) empty string dono reject. Value types (`int`, `decimal`) par `[Required]` ka fayda tabhi jab wo nullable (`int?`) ho, warna `0` bhi "present" maana jaata hai.
+- `[StringLength(120, MinimumLength = 2)]` — upper aur lower bound; DB column `nvarchar(120)` se match rakho taaki truncation exception na aaye.
+- `[EmailAddress]` — ek lightweight format check (`@` aur domain-ish). Ye deliverability verify nahi karta.
+- `[RegularExpression("^[A-Z]{5}[0-9]{4}[A-Z]$")]` — Indian PAN ka exact shape. `^` aur `$` poore string ko anchor karte hain, warna `"XXXXX1234X junk"` bhi pass ho jaata.
+- `[Range(0, 100_000_000)]` — `Salary` non-negative aur ek sane upper cap. `_` sirf digit separator hai.
+- `NotFutureDateAttribute : ValidationAttribute` — `IsValid` override; `ValidationResult.Success` ya error message wala `ValidationResult` return karta hai. `context.MemberName` se pata chalta hai konsi property check ho rahi hai.
+- Custom attribute stateless hona chahiye — har request pe reuse hota hai; usme mutable field mat rakho.
+
+### Production approach: FluentValidation
+
+Install:
+
+```bash
+dotnet add package FluentValidation.AspNetCore
+```
+
+Rules ek alag class me:
+
+```csharp
+using FluentValidation;
+using EmployeeManagement.Api.Dtos;
+using EmployeeManagement.Api.Repositories;
+
+namespace EmployeeManagement.Api.Validation;
+
+public class CreateEmployeeDtoValidator : AbstractValidator<CreateEmployeeDto>
+{
+    private static readonly DateOnly Today =
+        DateOnly.FromDateTime(DateTime.UtcNow);
+
+    public CreateEmployeeDtoValidator(IEmployeeRepository repository)
+    {
+        RuleFor(x => x.FullName)
+            .NotEmpty().Length(2, 120);
+
+        RuleFor(x => x.Email)
+            .NotEmpty().EmailAddress()
+            .MustAsync(async (email, ct) =>
+                !await repository.EmailExistsAsync(email))
+            .WithMessage("An employee with this email already exists.");
+
+        RuleFor(x => x.PanNumber)
+            .NotEmpty()
+            .Matches("^[A-Z]{5}[0-9]{4}[A-Z]$")
+            .WithMessage("PAN must be 5 letters, 4 digits, 1 letter, uppercase.");
+
+        RuleFor(x => x.Salary)
+            .GreaterThanOrEqualTo(0)
+            .LessThanOrEqualTo(100_000_000);
+
+        RuleFor(x => x.DateOfJoining)
+            .NotEmpty()
+            .LessThanOrEqualTo(Today)
+            .WithMessage("Date of joining cannot be in the future.");
+
+        // cross-field rule
+        RuleFor(x => x.Salary)
+            .GreaterThanOrEqualTo(50_000)
+            .When(x => x.DepartmentId == 1) // e.g. "Executive" dept
+            .WithMessage("Executive department salary must be at least 50000.");
+    }
+}
+```
+
+Register + auto-validate in `Program.cs`:
+
+```csharp
+builder.Services.AddValidatorsFromAssemblyContaining<CreateEmployeeDtoValidator>();
+builder.Services.AddFluentValidationAutoValidation();
+```
+
+- `AddValidatorsFromAssemblyContaining<T>()` — us assembly ke saare `AbstractValidator` classes ko DI me `scoped` register karta hai. Isliye validator constructor me `IEmployeeRepository` inject ho paata hai.
+- `AddFluentValidationAutoValidation()` — ek MVC filter lagata hai jo model binding ke baad matching `IValidator<T>` dhoondh kar chalata hai aur failures ko `ModelState` me daal deta hai — phir wahi `[ApiController]` `400 ValidationProblemDetails` bhejta hai. Controller code same rehta hai.
+- `MustAsync(...)` — async rule; yahan repo hit karke email uniqueness check hoti hai. Async rules ke liye pipeline ko async validation support chahiye (auto-validation deta hai).
+- `.When(x => ...)` — conditional rule; sirf tab evaluate hoti hai jab predicate true ho.
+
+**Alternative: manual `IValidator<T>` injection** (jab tumhe control chahiye, jaise service layer me):
+
+```csharp
+public class EmployeeService
+{
+    private readonly IValidator<CreateEmployeeDto> _validator;
+
+    public async Task<EmployeeDto> CreateAsync(CreateEmployeeDto dto)
+    {
+        var result = await _validator.ValidateAsync(dto);
+        if (!result.IsValid)
+            throw new DomainValidationException(result.ToDictionary());
+        // ... proceed
+    }
+}
+```
+
+Yahan `DomainValidationException` humare global exception handler (previous topic) se `400` ban jaata hai. Bahut teams auto-validation band rakhti hain aur yahi explicit style use karti hain — flow dikhta hai, magic kam.
+
+### Where is it used in day-to-day development
+
+- Har naya `Create*Dto` / `Update*Dto` ke saath ek validator likhna standard task hai.
+- Uniqueness checks (email, PAN, username), reference existence (`DepartmentId` valid hai?), cross-field rules (start date < end date).
+- QA bug "negative salary save ho gaya" ka fix aksar ek `RuleFor` line hoti hai + ek unit test.
+- Validators ka unit test suite CI me chalta hai — regression ke against sabse sasta safety net.
+
+### When to use / when NOT to use
+
+- **DataAnnotations** — chhota project, simple DTOs, koi async rule nahi, koi cross-field logic nahi. In-model attributes padhne me turant clear.
+- **FluentValidation** — jaise hi tumhe async DB lookup, conditional rules, complex cross-field logic, ya validators ka proper unit test chahiye. Extra dependency worth it hai.
+- **Domain invariants (`Employee` entity ke andar ke rules)** DTO validator me mat daalo — wo service/domain me belong karte hain. DTO validation = "request shape sahi hai?"; domain validation = "ye operation business ke hisaab se allowed hai?" (jaise "inactive employee ko promote nahi kar sakte").
+
+### Pros and cons
+
+DataAnnotations ke fayde: zero setup, rules data ke bagal me, framework native. Nuksan: async/cross-field/DI-dependent rules mushkil ya impossible, testing ke liye poora model bind karna padta hai, attributes clutter kar dete hain. FluentValidation ke fayde: fully testable, powerful (async, conditional, collection rules), rules model se alag. Nuksan: ek aur NuGet dependency, rules dhoondhne ke liye alag file kholni padti hai, chhote projects me overkill.
+
+</Hinglish>
+
+<Tradeoff
+  pros={[
+    "DataAnnotations: zero setup, rules DTO ke saath hi dikhti hain",
+    "[ApiController] automatic 400 ValidationProblemDetails deta hai — controller code untouched",
+    "FluentValidation: async DB rules, cross-field, conditional — sab possible",
+    "FluentValidation validators plain classes hain — fast unit tests",
+  ]}
+  cons={[
+    "DataAnnotations async ya cross-field rules practically nahi kar sakta",
+    "DataAnnotations rules test karna = poora model bind karna",
+    "FluentValidation ek extra dependency aur rules alag file me",
+    "Dono ka mix ek project me confusing ho sakta hai — ek convention pick karo",
+  ]}
+/>
+
+## Real World Example
+
+<RealWorld company="A digital-lending startup">
+
+Ek loan-origination API me `CreateApplicantDto` par 14 DataAnnotation attributes the. Jab "same PAN se dobara apply nahi kar sakte" rule aaya, wo async DB check DataAnnotations me fit nahi hua — devs ne wo check controller me `if` se add kiya, phir woh 3 aur endpoints me copy hua aur ek jagah purana reh gaya (bug). Team ne `FluentValidation` adopt kiya: ek `ApplicantDtoValidator` jisme `MustAsync` se uniqueness, `.When()` se product-specific income rules. Controllers ke saare manual `if` hat gaye, aur validator ka 40-case unit test suite CI me chala.
+
+</RealWorld>
+
+<RealWorld company="A BFSI systems integrator (TCS / Infosys style)">
+
+Ek bank onboarding module me client team ne bola "validation errors ka ek fixed JSON contract chahiye mobile ke liye." Solution: `[ApiController]` ka default `ValidationProblemDetails` (`errors` field-wise map) hi standard bana diya, aur FluentValidation auto-validation isi shape me feed karta hai. DataAnnotations aur FluentValidation dono ka output ek jaisa dikhta hai, isliye mobile side ek hi parser.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `[ApiController]` invalid `ModelState` par automatic **400** deta hai — status `Status400BadRequest`
+- Response shape: RFC **7807** `ValidationProblemDetails`, content type `application/problem+json`, `errors` object field to string array
+- DataAnnotations built-in hai — **0** extra packages; FluentValidation = **1** NuGet (`FluentValidation.AspNetCore`)
+- Indian PAN regex: `^[A-Z]{5}[0-9]{4}[A-Z]$` — exactly **10** chars
+- FluentValidation validators DI me **scoped** register hote hain (`AddValidatorsFromAssemblyContaining`)
+- Async rules (`MustAsync`) sirf async validation pipeline me chalte hain — sync `Validate()` call unpe throw karti hai
+- `[Required]` non-nullable value type (`int`, `decimal`) par lagbhag bekaar — `0` ko "present" maana jaata hai
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common opener: "How do you validate incoming requests in a Web API?" Strong jawaab: "Simple cases me DataAnnotations DTO par, aur `[ApiController]` automatically `400 ValidationProblemDetails` deta hai bina action call kiye. Jaise hi async DB checks (unique email), cross-field ya conditional rules aate hain, main FluentValidation use karta hoon — `AbstractValidator<T>` me `RuleFor(...)`, DI se repository inject, `AddValidatorsFromAssemblyContaining` + `AddFluentValidationAutoValidation`. Validators plain classes hain to unit-test easy. DTO validation shape ke liye; domain invariants service layer me." Follow-ups jo chain hote hain: "`[Required]` `int` par kaam karta hai?" (nahi, `int?` chahiye), "async rule DataAnnotations me kyun nahi?" (attribute instantiation ka context sync hai, DI/`await` nahi), "validation kahan — controller, DTO, ya domain?" (dono: DTO boundary check + domain invariant service me).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+`[Required]` ko non-nullable value type (`public int DepartmentId`) par laga kar maan lena ki `0` reject hoga. Nahi — `0` default value hai aur "present" count hoti hai. `[Range(1, int.MaxValue)]` use karo ya property ko `int?` banao.
+
+</Mistake>
+
+<Mistake>
+
+PAN / phone / pincode regex me `^` aur `$` anchors bhool jaana. `[RegularExpression("[A-Z]{5}[0-9]{4}[A-Z]")]` bina anchors ke `"junk ABCDE1234F more"` ko bhi pass kar deta hai kyunki wo sirf ek substring match dhoondhta hai.
+
+</Mistake>
+
+<Mistake>
+
+Async uniqueness check (unique email/PAN) ko DataAnnotations custom attribute me `.Result` ya `.GetAwaiter().GetResult()` se karne ki koshish. Ye deadlock / thread-pool starvation ka rasta hai. Async rule = FluentValidation `MustAsync`.
+
+</Mistake>
+
+<Mistake>
+
+Business/domain rules (jaise "inactive employee transfer nahi ho sakta", "department cost-centre ke saath salary band match kare") ko `CreateEmployeeDtoValidator` me thoos dena. DTO validator sirf request shape ke liye; ye rules service/domain layer me, jahan poora entity aur DB state available hai.
+
+</Mistake>
+
+<Mistake>
+
+FluentValidation validator likhne ke baad `AddValidatorsFromAssemblyContaining<...>()` register karna bhool jaana. Validator kabhi resolve hi nahi hota, auto-validation chup-chaap skip ho jaati hai, aur invalid requests service tak pahunch jaati hain — koi error nahi, bas galat data.
+
+</Mistake>
+
+<Mistake>
+
+DataAnnotations aur FluentValidation dono ko ek hi DTO par laga dena. Dono chalte hain, error messages duplicate ya conflicting aate hain, aur maintainer confuse — kaunsa rule kahan hai. Ek DTO, ek validation approach.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["POST /api/employees with JSON body"] --> B["Model binding: JSON to CreateEmployeeDto"]
+    B --> C["Validation: DataAnnotations + FluentValidation to ModelState"]
+    C --> D{"ModelState.IsValid?"}
+    D -->|No| E["[ApiController] returns 400 ValidationProblemDetails — action NOT called"]
+    D -->|Yes| F["Controller action runs to Service.CreateAsync(dto)"]
+`}
+  caption="Validation sits between model binding and the action; on failure [ApiController] short-circuits to a 400 and the service is never reached."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Request flow: model binding to validation (`ModelState`) to action; `[ApiController]` auto-returns `400 ValidationProblemDetails` when `ModelState` invalid
+- DataAnnotations = simplest: `[Required]`, `[EmailAddress]`, `[StringLength]`, `[Range]`, `[RegularExpression]` on DTO props; built-in, no package
+- Custom rule DataAnnotations lacks: subclass `ValidationAttribute`, override `IsValid` (e.g. `NotFutureDateAttribute` for `DateOfJoining`)
+- Anchor every format regex with `^...$`; PAN = `^[A-Z]{5}[0-9]{4}[A-Z]$`
+- `[Required]` on non-nullable `int`/`decimal` is near-useless — use `[Range]` or make it nullable
+- FluentValidation = production: `AbstractValidator<CreateEmployeeDto>`, `RuleFor(x => x.Email).NotEmpty().EmailAddress()`, `MustAsync` for DB uniqueness, `.When()` for conditional, cross-field rules
+- Wire it: `AddValidatorsFromAssemblyContaining<T>()` (registers validators scoped, enables DI) + `AddFluentValidationAutoValidation()` (feeds failures into `ModelState`)
+- Or inject `IValidator<T>` manually and `throw new DomainValidationException(result.ToDictionary())` — the global handler turns it into a `400`
+- DTO validation = "is the request shape valid?"; domain invariants belong in the service, not the DTO validator
+- Pick one approach per DTO — don't stack DataAnnotations and FluentValidation on the same type
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota (small):** `CreateEmployeeDto` par DataAnnotations lagao — `[Required]` + `[StringLength(120, MinimumLength = 2)]` on `FullName`, `[EmailAddress]` on `Email`, `[RegularExpression("^[A-Z]{5}[0-9]{4}[A-Z]$")]` on `PanNumber`, `[Range(0, 100_000_000)]` on `Salary`. Swagger se ek invalid body bhejo aur `400` ke `errors` object me har field ka message dekho.
+
+**Medium:** Ek `NotFutureDateAttribute : ValidationAttribute` likho aur `DateOfJoining` par lagao. Phir isi rule ko FluentValidation me port karo: `CreateEmployeeDtoValidator : AbstractValidator<CreateEmployeeDto>` banao with `RuleFor(x => x.DateOfJoining).LessThanOrEqualTo(today)`, register karo (`AddValidatorsFromAssemblyContaining` + `AddFluentValidationAutoValidation`), aur confirm karo dono approaches ka `400` shape same hai.
+
+**Bada (large):** `CreateEmployeeDtoValidator` ko full production banao: `MustAsync` se `IEmployeeRepository.EmailExistsAsync` aur `PanExistsAsync` hit karke uniqueness, `.When(x => x.DepartmentId == executiveDeptId)` se minimum-salary rule, aur `DepartmentId` ke liye ek `MustAsync` existence check. Repo me `EmailExistsAsync`/`PanExistsAsync` add karo. Ek `UpdateEmployeeDtoValidator` bhi likho jo self ko uniqueness check se exclude kare (`id` ke sivaay). Phir xUnit me 10+ test cases likho (valid, har rule ka fail case, edge boundaries) — no HTTP, seedha `validator.TestValidate(dto)`.
+
+</Callout>

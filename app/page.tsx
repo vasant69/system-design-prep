@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, BookOpen, GitBranch as DiagramIcon, Globe2, Languages, Lock, MessageSquareText } from "lucide-react";
+import { ArrowRight, BookOpen, GitBranch as DiagramIcon, Globe2, Languages, Lock, MessageSquareText, Workflow } from "lucide-react";
 import { getAllSections } from "@/lib/sections";
 import { getAllTopicsMeta } from "@/lib/content";
 import { sectionIconMap } from "@/components/icon-map";
@@ -34,6 +34,11 @@ const FEATURES = [
 export default function HomePage() {
   const sections = getAllSections();
   const systemDesignTopics = getAllTopicsMeta("system-design").length;
+  // Code Flow renders as its own card *after* the Dictionary card (see below),
+  // so it's pulled out of the main sections loop.
+  const codeFlow = sections.find((s) => s.slug === "code-flow");
+  const codeFlowTheme = getSectionTheme("code-flow");
+  const codeFlowTopics = codeFlow?.enabled ? getAllTopicsMeta("code-flow").length : 0;
 
   return (
     <div>
@@ -96,6 +101,7 @@ export default function HomePage() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Choose a track</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           {sections.map((section) => {
+            if (section.slug === "code-flow") return null;
             const Icon = sectionIconMap[section.icon];
             const theme = getSectionTheme(section.slug);
             const topicCount = section.enabled ? getAllTopicsMeta(section.slug).length : 0;
@@ -181,6 +187,36 @@ export default function HomePage() {
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
             </div>
           </Link>
+
+          {/* Code Flow — one continuous build project, deliberately placed after Dictionary */}
+          {codeFlow?.enabled && (
+            <Link
+              href="/code-flow"
+              className={cn(
+                "group relative overflow-hidden rounded-xl border border-border bg-card p-6 transition-colors",
+                "hover:border-rose-500/40",
+              )}
+            >
+              <div
+                aria-hidden
+                className={cn(
+                  "absolute inset-x-0 top-0 h-24 bg-gradient-to-b opacity-0 transition-opacity group-hover:opacity-100",
+                  codeFlowTheme.gradient,
+                )}
+              />
+              <div className="relative flex items-start justify-between">
+                <span className={cn("flex h-11 w-11 items-center justify-center rounded-xl", codeFlowTheme.iconBg)}>
+                  <Workflow className={cn("h-5 w-5", codeFlowTheme.iconColor)} />
+                </span>
+              </div>
+              <h3 className="relative mt-4 text-xl font-semibold tracking-tight">{codeFlow.title}</h3>
+              <p className="relative mt-1.5 text-sm leading-relaxed text-muted-foreground">{codeFlow.description}</p>
+              <div className={cn("relative mt-4 flex items-center gap-1.5 text-sm font-medium", codeFlowTheme.text)}>
+                {codeFlowTopics} {codeFlowTopics === 1 ? "topic" : "topics"}
+                <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+              </div>
+            </Link>
+          )}
         </div>
       </div>
     </div>
