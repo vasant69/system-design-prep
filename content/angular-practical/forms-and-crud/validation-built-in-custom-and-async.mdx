@@ -1,0 +1,261 @@
+---
+slug: "validation-built-in-custom-and-async"
+title: "Validation: Built-in, Custom, Cross-Field and Async"
+section: "angular-practical"
+module: "forms-and-crud"
+order: 3
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["reactive-forms-fundamentals"]
+tags: ["angular", "forms", "validation", "validators", "async-validators", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "Angular validators are functions returning a validation-errors object or null. Built-in ones (required, email, min, minLength, pattern) cover basics; custom sync validators encode business rules; group validators handle cross-field rules; async validators (returning an Observable) check server-side things like uniqueness with a debounce."
+---
+
+<SimpleDefinition>
+
+A validator is a function that receives a control and returns a `ValidationErrors` object (`{ someKey: true }`) if invalid, or `null` if valid. **Built-in**: `required`, `email`, `min`/`max`, `minLength`/`maxLength`, `pattern`. **Custom sync**: encode a business rule. **Group/cross-field**: attached to a `FormGroup` to compare controls. **Async**: returns an `Observable<ValidationErrors | null>` for server checks like uniqueness, usually debounced.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Validation = "ye value acceptable hai ya nahi, aur kyun nahi". Angular me ye sab **functions** hain.
+
+### Built-in validators
+
+```ts
+form = this.fb.nonNullable.group({
+  firstName: ["", [Validators.required, Validators.maxLength(50)]],
+  email: ["", [Validators.required, Validators.email]],
+  salary: [0, [Validators.required, Validators.min(1), Validators.max(10_000_000)]],
+  pan: ["", Validators.pattern(/^[A-Z]{5}[0-9]{4}[A-Z]$/)],
+});
+```
+
+Each sets an error key when it fails: `{ required: true }`, `{ email: true }`, `{ min: { min: 1, actual: 0 } }`, `{ maxlength: {...} }`, `{ pattern: {...} }`.
+
+### Showing errors
+
+```html
+@let fn = form.controls.firstName;
+@if (fn.invalid && fn.touched) {
+  @if (fn.hasError('required')) { <small>First name is required.</small> }
+  @if (fn.hasError('maxlength')) { <small>Max 50 characters.</small> }
+}
+```
+
+A reusable `<app-field-error [control]="fn">` component keeps this DRY across a big form.
+
+### Custom sync validator
+
+```ts
+export function noWhitespace(control: AbstractControl): ValidationErrors | null {
+  const v = control.value as string;
+  return v && v.trim().length === 0 ? { whitespace: true } : null;
+}
+
+// with a parameter -> a factory
+export function minAge(min: number): ValidatorFn {
+  return (control) => {
+    if (!control.value) return null;
+    const age = yearsSince(new Date(control.value));
+    return age < min ? { minAge: { required: min, actual: age } } : null;
+  };
+}
+
+// use
+joinDate: ["", [Validators.required, minAge(18)]],
+```
+
+- A validator: `(control) => ValidationErrors | null`. Pure, synchronous.
+- A parameterised validator is a **factory** returning a `ValidatorFn`.
+- Return `null` when the control is empty — let `required` handle emptiness.
+
+### Cross-field (group) validator
+
+```ts
+export const joinDateNotFuture: ValidatorFn = (group) => {
+  const d = group.get("joinDate")?.value;
+  return d && new Date(d) > new Date() ? { joinDateFuture: true } : null;
+};
+
+form = this.fb.nonNullable.group({ /* controls */ }, { validators: [joinDateNotFuture] });
+```
+
+Group errors live on the group: `form.hasError('joinDateFuture')`. Decide where to *show* it (near a field, or a form-level summary).
+
+### Async validator — server check
+
+```ts
+export function emailUnique(api: EmployeeApi): AsyncValidatorFn {
+  return (control) => {
+    if (!control.value) return of(null);
+    return timer(400).pipe(                      // debounce
+      switchMap(() => api.isEmailTaken(control.value)),
+      map(taken => (taken ? { emailTaken: true } : null)),
+      catchError(() => of(null)),                // don't block on a failed check
+    );
+  };
+}
+
+// use — 3rd argument slot of a control
+email: ["", { validators: [Validators.required, Validators.email], asyncValidators: [emailUnique(this.api)] }],
+```
+
+- Returns an `Observable` (or `Promise`) of `ValidationErrors | null`.
+- While it runs, `control.pending === true` and `control.status === "PENDING"`.
+- Debounce inside the validator (a `timer`) so you don't hit the server on every keystroke.
+- Disable submit on `form.invalid || form.pending`.
+
+### Show it in our project
+
+The EMS employee form: built-in validators on every field; `minAge(18)` and `panFormat` custom validators; a `joinDateNotFuture` group validator; an `emailUnique` async validator hitting `GET /employees/email-available`. A shared `<app-field-error>` renders messages from a central `errorMessages` map.
+
+### Where is it used in day-to-day development
+
+Every form. Business rules ("salary within band", "PAN format", "leave dates don't overlap"), server checks (unique email/username/code), and "this only matters if that is set" conditional rules.
+
+### Pros and cons
+
+**Pros**
+
+- Validators are pure functions — trivially unit-testable and reusable.
+- Built-ins cover the basics; custom + group + async cover everything else.
+- `errors` object drives messages declaratively; `pending` gives async UX for free.
+
+**Cons**
+
+- Message rendering is verbose without a shared error component.
+- Async validators need debounce and careful "don't block on failure" handling.
+- Conditional validators require `setValidators` + `updateValueAndValidity()` (easy to forget the second).
+- Group errors need a deliberate display decision.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Async validator ko har keystroke par server hit karne se bachao — validator ke andar ek `timer(400)` / `debounce` rakho. Aur async check fail ho (network) to `catchError(() => of(null))` — warna user ka form ek network blip ki wajah se permanently invalid ho jaayega.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employee form validation">
+
+Creating an employee runs: `required` + `maxLength` on names, `email` format, `min(1)` on salary, a `pattern` PAN check, a `minAge(18)` custom validator on `joinDate`, a `joinDateNotFuture` group validator, and an `emailUnique` async validator that debounces 400ms and calls `GET /employees/email-available?email=`. The submit button is disabled on `form.invalid || form.pending`, so you can't submit mid-check. A `<app-field-error [control]="...">` component maps every error key to a message from one config object, so 10 fields don't mean 30 hand-written `<small>` tags.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A validator returns `ValidationErrors` (`{ key: value }`) when invalid, `null` when valid.
+- Custom validators should return `null` for empty values — leave emptiness to `Validators.required`.
+- Async validators return `Observable<ValidationErrors | null>`; the control is `PENDING` while they run.
+- Debounce async validators (~300–500ms) inside the validator, and `catchError(() => of(null))` on failure.
+- Conditional validators need `setValidators(...)` **then** `updateValueAndValidity()`.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "custom validator kaise likhte ho?", "cross-field validation?", "async validator?", "`pending` state?", "conditional required?".
+
+Strong answer:
+
+1. Validator = `(control) => ValidationErrors | null`; parameterised = a factory returning `ValidatorFn`. Pure & testable.
+2. Return `null` for empty — `required` owns emptiness.
+3. Cross-field: a validator on the `FormGroup` comparing `group.get(...)`.
+4. Async: returns `Observable<ValidationErrors | null>`, debounced inside, `catchError(of(null))`; control is `PENDING`; disable submit on `form.pending`.
+5. Conditional: `setValidators` + `updateValueAndValidity()`.
+
+Red flag: "async validator har keystroke par server call karta hai bina debounce" — hammers the API and races.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Custom validator empty value par error deta hai.** Then `required` is redundant and the message is wrong on a fresh field. Return `null` when empty.
+
+</Mistake>
+
+<Mistake>
+
+**Async validator bina debounce.** Every keystroke = a request; responses race. Debounce inside the validator.
+
+</Mistake>
+
+<Mistake>
+
+**Async check failure par control ko invalid chhodna.** `catchError(() => of(null))` — a network blip shouldn't permanently block the form.
+
+</Mistake>
+
+<Mistake>
+
+**`setValidators` ke baad `updateValueAndValidity()` bhoolna.** The new validators don't take effect until you call it.
+
+</Mistake>
+
+<Mistake>
+
+**Submit button ko sirf `form.invalid` par disable karna, `form.pending` par nahi.** User submits while the uniqueness check is still running.
+
+</Mistake>
+
+<Mistake>
+
+**Har field ke liye hand-written error `<small>`s.** 10 fields, 30 conditions. A `<app-field-error [control]>` + a message map.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    IN[control value] --> SYNC["sync validators: required, email, min, custom minAge"]
+    SYNC -->|errors| E1["control.errors merged"]
+    IN --> ASYNC["async validators (run after sync passes): emailUnique (debounced)"]
+    ASYNC -->|PENDING then errors/null| E1
+    GRP["group validator: joinDateNotFuture"] --> EG[form.errors]
+    E1 --> UI["field-error component reads errors -> message"]
+    EG --> UI
+`}
+  caption="Sync validators run first; async run when sync passes; group validators sit on the FormGroup."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Validator: `(control) => ValidationErrors | null`. Parameterised = a factory returning `ValidatorFn`. Pure, unit-testable.
+- Built-in: `required`, `email`, `min`/`max`, `minLength`/`maxLength`, `pattern`.
+- Custom validators: return `null` for empty values (let `required` handle emptiness).
+- Cross-field: a validator on the `FormGroup`; error lives on the group (`form.hasError('x')`).
+- Async: returns `Observable<ValidationErrors | null>`; debounce inside; `catchError(() => of(null))`; control is `PENDING` while running; disable submit on `form.pending`.
+- Conditional validators: `setValidators(...)` then `updateValueAndValidity()`.
+- Use a shared `<app-field-error [control]>` + a message map instead of hand-written `<small>`s.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `minAge(18)` custom validator likho (factory returning `ValidatorFn`). `joinDate` control par lagao. Ek `.spec.ts`: 17-year date -> `{ minAge: {...} }`, 20-year -> `null`, empty -> `null`.
+
+**Medium:** `joinDateNotFuture` group validator banake `fb.group({...}, { validators: [joinDateNotFuture] })` me lagao. Form-level error ko ek summary banner me dikhao. Ek `<app-field-error [control]>` component banao jo error key -> message map se render kare.
+
+**Bada:** `emailUnique` async validator: `timer(400)` debounce + `switchMap(api.isEmailTaken)` + `catchError(of(null))`. `email` control ke `asyncValidators` me lagao. Submit button `form.invalid || form.pending` par disable. Fast typing karke network tab me confirm sirf ek (debounced) request. Network fail karke confirm form permanently invalid nahi hota. 6-line note.
+
+</Callout>

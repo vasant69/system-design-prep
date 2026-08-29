@@ -1,0 +1,327 @@
+---
+slug: "add-employee-form"
+title: "Building the Add Employee Form End to End"
+section: "angular-practical"
+module: "forms-and-crud"
+order: 4
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["validation-built-in-custom-and-async"]
+tags: ["angular", "forms", "reactive-forms", "crud", "create", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "A full walkthrough of the Add Employee screen: a typed reactive form with built-in, custom, cross-field and async validators; a dependent department to role dropdown; submit that maps the form to a request DTO, POSTs it, shows loading and server field errors, then navigates to the new record with a success toast."
+---
+
+<SimpleDefinition>
+
+The complete Add Employee screen: a typed reactive form (`fb.nonNullable.group`) with built-in, custom, cross-field, and async validators; a department → role dependent dropdown driven by `valueChanges`; a submit handler that reveals errors, maps the form to a request DTO, calls `EmployeeService.create`, shows a loading state, binds server field errors back onto controls, and on success navigates to `/employees/:id` with a success toast.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab humne forms ke saare pieces sikhe. Chaliye ek pura "Add Employee" screen banate hain — jaisa production me hota hai.
+
+### Requirements
+
+- Fields: first name, last name, email, department, role, salary, join date, active, skills (dynamic).
+- Validation: required/format/range; `minAge(18)` on join date; join date not in the future (group); email uniqueness (async).
+- Role dropdown depends on the selected department.
+- Submit: disabled while invalid/pending/saving; reveals all errors on click; maps to a DTO; POSTs; handles server `422` field errors; on success -> details page + toast.
+
+### The component
+
+```ts
+@Component({
+  selector: "app-add-employee-page",
+  imports: [ReactiveFormsModule, FieldErrorComponent],
+  templateUrl: "./add-employee-page.html",
+})
+export class AddEmployeePage {
+  private fb = inject(FormBuilder);
+  private api = inject(EmployeeService);
+  private lookups = inject(LookupService);
+  private router = inject(Router);
+  private toast = inject(ToastService);
+
+  saving = signal(false);
+  formError = signal<string | null>(null);
+
+  departments = toSignal(this.lookups.getDepartments(), { initialValue: [] });
+  roles = signal<Role[]>([]);
+
+  form = this.fb.nonNullable.group(
+    {
+      firstName: ["", [Validators.required, Validators.maxLength(50)]],
+      lastName: ["", [Validators.required, Validators.maxLength(50)]],
+      email: [
+        "",
+        { validators: [Validators.required, Validators.email],
+          asyncValidators: [emailUnique(this.api)] },
+      ],
+      departmentId: [null as number | null, Validators.required],
+      roleId: [{ value: null as number | null, disabled: true }, Validators.required],
+      salary: [0, [Validators.required, Validators.min(1)]],
+      joinDate: ["", [Validators.required, minAge(18)]],
+      isActive: [true],
+      skills: this.fb.array<string>([]),
+    },
+    { validators: [joinDateNotFuture] },
+  );
+
+  constructor() {
+    // dependent dropdown
+    this.form.controls.departmentId.valueChanges
+      .pipe(takeUntilDestroyed())
+      .subscribe(deptId => {
+        this.form.controls.roleId.reset({ value: null, disabled: !deptId });
+        this.roles.set([]);
+        if (deptId) {
+          this.lookups.getRoles(deptId).subscribe(rs => {
+            this.roles.set(rs);
+            this.form.controls.roleId.enable();
+          });
+        }
+      });
+  }
+
+  get skills() { return this.form.controls.skills; }
+  addSkill() { this.skills.push(this.fb.control("", Validators.required)); }
+  removeSkill(i: number) { this.skills.removeAt(i); }
+
+  submit() {
+    this.formError.set(null);
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.saving.set(true);
+    const dto = toCreateEmployeeDto(this.form.getRawValue());
+    this.api.create(dto).pipe(finalize(() => this.saving.set(false))).subscribe({
+      next: created => {
+        this.toast.success("Employee created");
+        this.router.navigate(["/employees", created.id]);
+      },
+      error: (err: AppError) => {
+        if (err.fieldErrors) {
+          for (const [field, msgs] of Object.entries(err.fieldErrors)) {
+            this.form.get(field)?.setErrors({ server: msgs[0] });
+          }
+        } else {
+          this.formError.set(err.message);
+        }
+      },
+    });
+  }
+}
+```
+
+### The template (key parts)
+
+```html
+<form [formGroup]="form" (ngSubmit)="submit()">
+  <input formControlName="firstName" placeholder="First name" />
+  <app-field-error [control]="form.controls.firstName" label="First name" />
+
+  <input formControlName="email" placeholder="Email" />
+  @if (form.controls.email.pending) { <small>Checking availability…</small> }
+  <app-field-error [control]="form.controls.email" label="Email" />
+
+  <select formControlName="departmentId">
+    <option [ngValue]="null" disabled>Select department</option>
+    @for (d of departments(); track d.id) { <option [ngValue]="d.id">{{ d.name }}</option> }
+  </select>
+
+  <select formControlName="roleId">
+    <option [ngValue]="null" disabled>Select role</option>
+    @for (r of roles(); track r.id) { <option [ngValue]="r.id">{{ r.name }}</option> }
+  </select>
+
+  <input type="number" formControlName="salary" />
+  <input type="date" formControlName="joinDate" />
+  @if (form.hasError('joinDateFuture')) { <small>Join date can't be in the future.</small> }
+
+  <label><input type="checkbox" formControlName="isActive" /> Active</label>
+
+  <div formArrayName="skills">
+    @for (ctrl of skills.controls; track $index) {
+      <div>
+        <input [formControlName]="$index" placeholder="Skill" />
+        <button type="button" (click)="removeSkill($index)">Remove</button>
+      </div>
+    }
+  </div>
+  <button type="button" (click)="addSkill()">+ Add skill</button>
+
+  @if (formError()) { <p class="form-error">{{ formError() }}</p> }
+
+  <button type="submit" [disabled]="form.invalid || form.pending || saving()">
+    {{ saving() ? "Saving…" : "Create employee" }}
+  </button>
+</form>
+```
+
+### The thinking behind each decision
+
+- **`fb.nonNullable`** — so `roleId` is `number | null` (I typed it) not `string | null`, and `reset` returns proper defaults.
+- **`roleId` starts `disabled`** — no department chosen yet, so no roles. A disabled control's value isn't in `form.value`; that's why `submit()` uses `getRawValue()`.
+- **Dependent dropdown in the constructor** — `departmentId.valueChanges` resets and re-enables `roleId` and fetches roles. `takeUntilDestroyed()` for cleanup.
+- **`markAllAsTouched()` on invalid submit** — reveal every error at once (fields the user never focused).
+- **`toCreateEmployeeDto`** — the form shape isn't the API shape (dates as ISO, no `skills` control wrappers, maybe `fullName` dropped). Map before sending.
+- **`finalize`** — `saving` goes false on success *and* error.
+- **Server field errors** — `422` with `{ errors: { email: ["already registered"] } }` -> `setErrors({ server: msg })` on the control so it shows inline, not as a toast.
+- **Navigate on success** — straight to the new record; a toast confirms.
+
+### Show it in our project
+
+This is the EMS "Add Employee" route (`/employees/new`), a child of the employees layout. `LookupService` caches departments (they rarely change). The same `AddEmployeePage` shape is reused for "Edit" with small changes (next topic).
+
+### Where is it used in day-to-day development
+
+This *is* the day-to-day: a validated form, a dependent field, a mapped submit, loading + error UX, and a redirect. Almost every "create X" screen in a business app is this pattern.
+
+### Pros and cons
+
+**Pros**
+
+- One cohesive screen showing every forms concept working together.
+- Reusable pieces: `FieldErrorComponent`, `emailUnique`, `minAge`, `toCreateEmployeeDto`.
+- Server errors land where the user is looking.
+
+**Cons**
+
+- Dependent-dropdown logic in the constructor grows; a small form-state helper or store can tidy it.
+- `FormArray` in the template is verbose.
+- The DTO mapper is another file to keep in sync with the form.
+- Manual `subscribe` for lookups — could be signals/`resource` for consistency.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Submit par pehla kaam: `if (form.invalid) { form.markAllAsTouched(); return; }`. Isse user ko turant dikhta hai kaunse fields galat hain — chahe usne unhe kabhi touch na kiya ho. `markAllAsTouched()` ke bina invalid-but-untouched fields chup rehte hain aur user confused hota hai ki submit kyun kaam nahi kar raha.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS Add Employee">
+
+The `/employees/new` page: pick "Engineering" and the Role dropdown enables and loads engineering roles; type an email that exists and after 400ms it shows "already registered" inline while the submit button stays disabled; pick a join date in 2010 and `minAge` is fine but set it to next month and the form-level `joinDateFuture` error appears; click Create with a blank last name and every error reveals at once. On success you land on `/employees/42` with a green "Employee created" toast. Every piece — typed form, dependent field, async validator, group validator, DTO mapping, server-error binding, redirect — is doing exactly one job.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A disabled control's value is **excluded** from `form.value` — use `form.getRawValue()` on submit if you need it.
+- `form.markAllAsTouched()` on invalid submit reveals errors on fields the user never focused.
+- `finalize` clears `saving` on both success and error — one place, always.
+- Server `422` field errors map to `control.setErrors({ server: msg })` so they show inline.
+- The form shape ≠ the API shape — a `toCreateEmployeeDto` mapper sits between them.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "ek create form end-to-end kaise banaoge?", "dependent dropdown?", "server validation errors ko form me kaise?", "submit disable conditions?".
+
+Strong answer:
+
+1. Typed `fb.nonNullable.group` with built-in + custom + group + async validators.
+2. Dependent field: `deptId.valueChanges` -> reset/enable `roleId`, fetch roles.
+3. Submit: `if (invalid) { markAllAsTouched(); return; }` -> map to DTO -> `create()` -> `finalize` clears `saving`.
+4. Server `422` -> `control.setErrors({ server: msg })` (inline, not a toast); non-field -> a form-level banner.
+5. Success -> navigate to `/employees/:id` + toast. Disable submit on `invalid || pending || saving`.
+
+Red flag: "submit par form.value bhejta hoon directly" — form shape ≠ API shape, and disabled controls are missing.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`form.value` ko API ko directly bhejna.** Disabled controls missing, dates as raw strings, `skills` wrapper noise. Map via `toCreateEmployeeDto(form.getRawValue())`.
+
+</Mistake>
+
+<Mistake>
+
+**Invalid submit par `markAllAsTouched()` na karna.** Untouched-but-invalid fields stay silent; the user can't tell why submit does nothing.
+
+</Mistake>
+
+<Mistake>
+
+**Dependent dropdown reset na karna.** Change department but keep the old `roleId` -> an invalid role for the new department slips through.
+
+</Mistake>
+
+<Mistake>
+
+**Server field errors ko toast me dikhana.** "Save failed" toast is useless; `setErrors({ server: msg })` on `email` shows exactly what's wrong where the user is looking.
+
+</Mistake>
+
+<Mistake>
+
+**`saving` ko sirf `next` me `false` karna.** On error it stays `true` -> stuck button. Use `finalize`.
+
+</Mistake>
+
+<Mistake>
+
+**Submit button ko `form.pending` par disable na karna.** User submits mid async check; the uniqueness result arrives after the POST.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    U[User fills form] --> DEP["departmentId change -> reset/enable roleId + fetch roles"]
+    U --> S{submit()}
+    S -->|form.invalid| MK["markAllAsTouched() + return"]
+    S -->|valid| MAP["toCreateEmployeeDto(getRawValue())"]
+    MAP --> POST["EmployeeService.create() (saving = true)"]
+    POST -->|success| NAV["toast + navigate /employees/:id"]
+    POST -->|422 field errors| SE["control.setErrors({ server }) inline"]
+    POST -->|other error| BAN["formError banner"]
+    POST --> FIN["finalize: saving = false"]
+`}
+  caption="One submit flow: guard on invalid, map to DTO, POST, then success-navigate or bind errors — with saving always cleared."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Typed `fb.nonNullable.group({...}, { validators: [groupValidator] })` with built-in + custom + async validators.
+- Dependent field: `sourceControl.valueChanges` (+ `takeUntilDestroyed`) -> reset/enable the dependent control + fetch its options.
+- A disabled control is missing from `form.value` — use `form.getRawValue()` on submit.
+- Submit: `if (form.invalid) { form.markAllAsTouched(); return; }` -> map to a request DTO -> `create()` -> `finalize(() => saving.set(false))`.
+- Server `422` field errors -> `control.setErrors({ server: msg })` (inline); non-field -> a form-level banner.
+- On success -> navigate to `/employees/:id` + success toast. Disable submit on `form.invalid || form.pending || saving()`.
+- The form shape ≠ the API shape — keep a `toCreateEmployeeDto` mapper.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `AddEmployeePage` ka `fb.nonNullable.group` banao 6 fields + validators ke saath. Template `[formGroup]` + `formControlName` + `<app-field-error>`. Submit `if (form.invalid) { markAllAsTouched(); return; }` se guard karo. Blank form submit karke saare errors reveal hote dekho.
+
+**Medium:** Department -> Role dependent dropdown wire karo: `departmentId.valueChanges` par `roleId` reset + disable/enable + `getRoles(deptId)`. `roleId` ko `disabled` se shuru karo. Confirm `form.value` me `roleId` nahi aata jab disabled, par `getRawValue()` me aata hai.
+
+**Bada:** Full `submit()`: `toCreateEmployeeDto(getRawValue())` -> `api.create()` -> `finalize(saving false)` -> success par `router.navigate(['/employees', id])` + toast. Server ko `422 { errors: { email: ["already registered"] } }` se fail karke `email` control par inline error dekho. `skills` `FormArray` add/remove buttons ke saath. 6-line note on why `getRawValue` + a DTO mapper.
+
+</Callout>

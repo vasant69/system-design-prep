@@ -1,0 +1,284 @@
+---
+slug: "edit-employee-and-patchvalue"
+title: "Edit Employee: Loading, patchValue and Dirty Tracking"
+section: "angular-practical"
+module: "forms-and-crud"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["add-employee-form"]
+tags: ["angular", "forms", "reactive-forms", "patchvalue", "crud", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "The Edit screen reuses the Add form: load the employee by route id, patchValue the form, handle the department to role dependency without a race, track dirtiness for an unsaved-changes guard, and PUT the changes. Optionally send only changed fields with a PATCH."
+---
+
+<SimpleDefinition>
+
+The Edit Employee screen reuses the Add form component with three additions: load the employee via the route `:id`, `patchValue` the form (handling the department → role dependency without a reset race), track dirtiness so a `CanDeactivate` guard can warn about unsaved changes, and on submit map to a DTO and `PUT` (or `PATCH` only the changed fields). Mark the form pristine after a successful save.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Edit form ~90% Add form jaisa hi hai. Farak: data load karna, form me bharна (`patchValue`), dirty tracking, aur `PUT`.
+
+### Reuse the Add form
+
+Best: ek shared `EmployeeFormComponent` (dumb-ish) jo `mode` (`'create' | 'edit'`) aur optional `initial: Employee` inputs le, aur `save = output<EmployeeFormValue>()` emit kare. `AddEmployeePage` aur `EditEmployeePage` (smart) wrap it. Simpler start: ek hi page component, route `data.mode` se branch.
+
+### Load and patch
+
+```ts
+export class EditEmployeePage {
+  id = input.required<string>();                 // via withComponentInputBinding
+  private api = inject(EmployeeService);
+  private lookups = inject(LookupService);
+
+  loading = signal(true);
+  form = buildEmployeeForm(this.fb);             // same builder as Add
+
+  constructor() {
+    // load once when id resolves
+    effect(() => {
+      const id = Number(this.id());
+      this.loading.set(true);
+      this.api.getById(id).subscribe(emp => {
+        this.hydrate(emp);
+        this.loading.set(false);
+      });
+    });
+  }
+
+  private hydrate(emp: Employee) {
+    // 1) load roles for the employee's department FIRST
+    this.lookups.getRoles(emp.departmentId).subscribe(roles => {
+      this.roles.set(roles);
+      this.form.controls.roleId.enable();
+      // 2) THEN patch both dept and role, suppressing the valueChanges reset
+      this.form.patchValue(
+        {
+          firstName: emp.firstName,
+          lastName: emp.lastName,
+          email: emp.email,
+          departmentId: emp.departmentId,
+          roleId: emp.roleId,
+          salary: emp.salary,
+          joinDate: toDateInput(emp.joinDate),   // Date -> "yyyy-MM-dd"
+          isActive: emp.isActive,
+        },
+        { emitEvent: false },
+      );
+      this.form.controls.skills.clear();
+      emp.skills.forEach(s => this.form.controls.skills.push(this.fb.control(s)));
+      this.form.markAsPristine();                // freshly loaded = not dirty
+    });
+  }
+}
+```
+
+### The department → role race (the classic edit bug)
+
+If you just `patchValue({ departmentId, roleId })`, the `departmentId.valueChanges` handler fires and **resets `roleId` to null**. Fixes:
+
+1. **Load roles first, then patch** (above) — and patch with `{ emitEvent: false }` so the dependency handler doesn't run during hydration.
+2. Or set `departmentId` first (let roles load), then `patchValue({ roleId })` after the roles arrive.
+
+`{ emitEvent: false }` suppresses `valueChanges` for that patch — perfect for programmatic hydration, dangerous if you rely on those events for other logic.
+
+### `patchValue` vs `setValue`
+
+- `patchValue({ firstName })` — set some fields, ignore the rest. Use for hydration (the form may have more controls than the API returns).
+- `setValue({ ...every field... })` — set all; throws on a missing/extra key. Use when you truly control the whole shape.
+
+### Dirty tracking + unsaved-changes guard
+
+```ts
+export const unsavedChangesGuard: CanDeactivateFn<{ form: FormGroup }> = (c) =>
+  c.form.pristine || confirm("Discard unsaved changes?");
+
+{ path: ":id/edit", component: EditEmployeePage, canDeactivate: [unsavedChangesGuard] }
+```
+
+- After `hydrate`, `markAsPristine()` — a loaded form isn't "changed".
+- User edits -> `form.dirty` becomes true.
+- The guard blocks navigation if `form.dirty` (unless confirmed).
+- **After a successful save**, `form.markAsPristine()` again — otherwise the guard fires on the post-save redirect.
+
+### Submit — PUT or PATCH
+
+```ts
+submit() {
+  if (this.form.invalid) { this.form.markAllAsTouched(); return; }
+  this.saving.set(true);
+  const raw = this.form.getRawValue();
+
+  // PUT (full replace)
+  const dto = toUpdateEmployeeDto(raw);
+  this.api.update(Number(this.id()), dto)
+
+  // OR PATCH (only changed) — derive from dirty controls:
+  // const changed = onlyDirty(this.form); this.api.patch(id, changed)
+
+    .pipe(finalize(() => this.saving.set(false)))
+    .subscribe({
+      next: updated => {
+        this.form.markAsPristine();
+        this.toast.success("Saved");
+        this.router.navigate(["/employees", updated.id]);
+      },
+      error: (err: AppError) => this.bindServerErrors(err),
+    });
+}
+```
+
+### Show it in our project
+
+`/employees/:id/edit` reuses `buildEmployeeForm` and `toUpdateEmployeeDto`, loads via `EmployeeService.getById`, hydrates roles-first, `markAsPristine` on load and on save, and has `canDeactivate: [unsavedChangesGuard]`.
+
+### Where is it used in day-to-day development
+
+Every "edit X" screen. The load → patch → dirty-track → save loop, and the dependent-field hydration race, are things you hit on almost every edit form.
+
+### Pros and cons
+
+**Pros**
+
+- Reuses the Add form's model, validators, and DTO logic.
+- `markAsPristine` + `CanDeactivate` = solid unsaved-changes UX.
+- `{ emitEvent: false }` cleanly separates hydration from user edits.
+
+**Cons**
+
+- The dependent-field hydration race needs deliberate handling every time.
+- `PATCH`-only-changed needs a "diff the dirty controls" helper.
+- `Date` ↔ `"yyyy-MM-dd"` conversions for `<input type="date">` are fiddly.
+- Sharing one component for Add + Edit vs two pages is a real design call.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Successful save ke **baad** `form.markAsPristine()` call karна mat bhoolo. Warna aap `router.navigate(...)` karte ho, `CanDeactivate` guard `form.dirty` dekhta hai (kyunki save se pehle user ne edit kiya tha), aur user ko "Discard unsaved changes?" prompt milta hai — jabki wo just-saved hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS Edit Employee">
+
+Open `/employees/42/edit`: a spinner while `getById(42)` loads; then roles for the employee's department load, `roleId` enables, and the whole form is `patchValue`'d with `{ emitEvent: false }` and `markAsPristine()`. Change the salary and the "Save" button enables and the browser back button now prompts "Discard unsaved changes?". Save -> `PUT /employees/42` -> `markAsPristine()` -> navigate to `/employees/42` with no false prompt. Change the department and the role dropdown reloads and `roleId` clears — because now the user *did* change it, so the reset is correct.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `patchValue(x, { emitEvent: false })` suppresses `valueChanges` for that update — ideal for hydration.
+- On hydration: `markAsPristine()`. On successful save: `markAsPristine()` again (else the `CanDeactivate` guard misfires).
+- The dependent field must be populated **before** patching its value, or its `valueChanges` handler resets it.
+- `patchValue` ignores missing/extra keys; `setValue` throws on them.
+- `<input type="date">` needs `"yyyy-MM-dd"` strings — convert to/from `Date`.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "edit form me data kaise load/patch karte ho?", "`patchValue` vs `setValue`?", "dependent field hydration bug?", "unsaved-changes guard?", "PUT vs PATCH for edit?".
+
+Strong answer:
+
+1. Load by route `id`, then `patchValue` (partial-friendly; form may have more controls than the API returns).
+2. Hydrate dependent fields **options-first**, and patch with `{ emitEvent: false }` so the dependency handler doesn't reset the value.
+3. `markAsPristine()` after load; user edits set `dirty`; a `CanDeactivate` guard checks `dirty`.
+4. **`markAsPristine()` again after a successful save** or the guard fires on the redirect.
+5. `PUT` = full DTO from `getRawValue()`; `PATCH` = diff the dirty controls.
+
+Red flag: "edit form me `patchValue({ departmentId, roleId })` seedha" — the `valueChanges` reset wipes `roleId`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`patchValue({ departmentId, roleId })` without options.** The `departmentId.valueChanges` handler resets `roleId`. Load options first + `{ emitEvent: false }`.
+
+</Mistake>
+
+<Mistake>
+
+**No `markAsPristine()` after load.** The freshly-loaded form is `dirty`, so the unsaved-changes guard fires immediately.
+
+</Mistake>
+
+<Mistake>
+
+**No `markAsPristine()` after save.** The `CanDeactivate` guard prompts on the post-save redirect.
+
+</Mistake>
+
+<Mistake>
+
+**`setValue` for hydration.** If the form has a control the API response doesn't include, `setValue` throws. Use `patchValue`.
+
+</Mistake>
+
+<Mistake>
+
+**Passing a `Date` to `<input type="date">`.** It needs `"yyyy-MM-dd"`. Convert on hydrate and on submit.
+
+</Mistake>
+
+<Mistake>
+
+**`PUT` with only the changed fields.** `PUT` replaces the whole resource — omitted fields may become null. Send the full DTO, or use `PATCH`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    R["route /employees/42/edit"] --> LD["getById(42) (loading spinner)"]
+    LD --> ROLES["load roles for emp.departmentId, enable roleId"]
+    ROLES --> PATCH["form.patchValue(emp, { emitEvent: false })"]
+    PATCH --> PRIS["form.markAsPristine()"]
+    PRIS --> EDIT[user edits -> form.dirty = true]
+    EDIT --> GUARD["CanDeactivate: prompt if dirty"]
+    EDIT --> SAVE["submit -> PUT -> markAsPristine() -> navigate"]
+`}
+  caption="Load, then options-first patch with emitEvent:false, then markAsPristine — and markAsPristine again after save."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Reuse the Add form's builder, validators, and DTO mapper; the Edit page loads and hydrates.
+- Load by route `id`, then `patchValue` (partial-friendly). `setValue` throws on missing/extra keys.
+- Hydrate dependent fields **options-first**, and `patchValue(..., { emitEvent: false })` so `valueChanges` handlers don't reset values.
+- `markAsPristine()` after hydration; user edits set `form.dirty`; a `CanDeactivate` guard checks `dirty`.
+- **`markAsPristine()` again after a successful save** or the guard fires on the redirect.
+- Submit: `getRawValue()` -> `toUpdateEmployeeDto` -> `PUT` (full), or diff the dirty controls -> `PATCH` (partial).
+- `<input type="date">` needs `"yyyy-MM-dd"` — convert to/from `Date`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EditEmployeePage` with `id = input.required<string>()`. In an `effect`, `getById(Number(id()))`, then `form.patchValue(emp)` and `form.markAsPristine()`. Show a spinner while `loading()`.
+
+**Medium:** Hydrate the department → role dependency correctly: load roles for `emp.departmentId` first, enable `roleId`, then `patchValue({ departmentId, roleId }, { emitEvent: false })`. Reproduce the bug first (patch without options -> `roleId` becomes null), then fix it.
+
+**Bada:** Add `canDeactivate: [unsavedChangesGuard]` to the route. `markAsPristine()` on load and after a successful `PUT`. Test: edit a field -> back button prompts; save -> navigate with no prompt; reload edit and press back without editing -> no prompt. Then implement a `PATCH` variant that sends only dirty controls (`onlyDirty(form)`). 6-line note on PUT vs PATCH here.
+
+</Callout>

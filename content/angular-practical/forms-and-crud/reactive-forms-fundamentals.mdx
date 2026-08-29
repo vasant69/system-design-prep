@@ -1,0 +1,274 @@
+---
+slug: "reactive-forms-fundamentals"
+title: "Reactive Forms Fundamentals"
+section: "angular-practical"
+module: "forms-and-crud"
+order: 2
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["template-driven-forms"]
+tags: ["angular", "forms", "reactive-forms", "formbuilder", "formgroup", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "Reactive forms define the form model explicitly in the component with FormControl, FormGroup, FormArray (usually via FormBuilder). The template binds to it with formGroup, formControlName, and formArrayName. The model exposes value, valid/status, and valueChanges/statusChanges observables for full programmatic control."
+---
+
+<SimpleDefinition>
+
+Reactive forms define the form model **explicitly in the component**: `FormControl`, `FormGroup`, `FormArray` (usually built with `FormBuilder` / the typed `NonNullableFormBuilder`). The template wires to it with `[formGroup]`, `formControlName`, `formGroupName`, and `formArrayName`. The model exposes `value`, `valid`/`status`, `errors`, and the `valueChanges` / `statusChanges` observables — giving you full, testable, programmatic control.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Reactive forms me form ki poori shape aap class me likhte ho. Ye zyada code hai par har bade form ke liye worth it.
+
+### The building blocks
+
+```ts
+import { FormBuilder, Validators, ReactiveFormsModule } from "@angular/forms";
+
+@Component({
+  selector: "app-employee-form",
+  imports: [ReactiveFormsModule],
+  templateUrl: "./employee-form.html",
+})
+export class EmployeeForm {
+  private fb = inject(FormBuilder);
+
+  form = this.fb.nonNullable.group({
+    firstName: ["", [Validators.required, Validators.maxLength(50)]],
+    lastName: ["", Validators.required],
+    email: ["", [Validators.required, Validators.email]],
+    departmentId: [null as number | null, Validators.required],
+    salary: [0, [Validators.required, Validators.min(1)]],
+    joinDate: ["", Validators.required],
+    isActive: [true],
+    skills: this.fb.array<string>([]),          // FormArray
+  });
+}
+```
+
+- `FormControl` — one field: `["initialValue", validators]`.
+- `FormGroup` — a fixed set of named controls (an object).
+- `FormArray` — a dynamic list of controls (add/remove rows).
+- `FormBuilder` — a shorthand factory; `fb.nonNullable` makes controls non-nullable and reset back to their initial value (not `null`).
+
+### The template
+
+```html
+<form [formGroup]="form" (ngSubmit)="submit()">
+  <input formControlName="firstName" />
+  @if (form.controls.firstName.invalid && form.controls.firstName.touched) {
+    <small>First name is required.</small>
+  }
+
+  <select formControlName="departmentId">
+    @for (d of departments(); track d.id) { <option [ngValue]="d.id">{{ d.name }}</option> }
+  </select>
+
+  <label><input type="checkbox" formControlName="isActive" /> Active</label>
+
+  <div formArrayName="skills">
+    @for (ctrl of skills.controls; track $index) {
+      <input [formControlName]="$index" />
+    }
+  </div>
+  <button type="button" (click)="addSkill()">+ Skill</button>
+
+  <button type="submit" [disabled]="form.invalid || form.pending">Save</button>
+</form>
+```
+
+```ts
+get skills() { return this.form.controls.skills; }
+addSkill() { this.skills.push(this.fb.control("")); }
+```
+
+- `[formGroup]="form"` on the `<form>`.
+- `formControlName="x"` binds a child control (string, matches the key).
+- `formArrayName` / `[formControlName]="$index"` for arrays.
+- `[ngValue]` (not `[value]`) for non-string option values (numbers, objects).
+
+### Reading and reacting
+
+```ts
+this.form.value;              // typed object of current values (disabled controls omitted)
+this.form.getRawValue();      // includes disabled controls
+this.form.valid;              // boolean
+this.form.controls.email.errors;   // { required: true } | { email: true } | null
+
+this.form.controls.departmentId.valueChanges
+  .pipe(takeUntilDestroyed())
+  .subscribe(id => this.loadRoles(id));       // react to one field
+
+this.form.valueChanges.pipe(debounceTime(500), takeUntilDestroyed())
+  .subscribe(v => this.autosave(v));          // react to the whole form
+```
+
+### Programmatic control
+
+```ts
+this.form.patchValue({ firstName: "Aarav" });      // set some fields
+this.form.setValue({ /* every field */ });         // set all (strict)
+this.form.reset();                                  // back to initial (nonNullable) or null
+this.form.controls.salary.disable();               // disable one control
+this.form.controls.email.setErrors({ taken: true });
+this.form.markAllAsTouched();                       // reveal all errors on submit
+```
+
+### Typed forms
+
+Since Angular 14 reactive forms are **strictly typed**: `form.value` is a typed object, `form.controls.email` is a `FormControl<string>`. `fb.nonNullable.group({...})` gives non-nullable control types (no `string | null` everywhere).
+
+### Show it in our project
+
+Add Employee, Edit Employee, Leave Request, and the filters bar (with async checks) are all reactive forms via `fb.nonNullable.group(...)`. `valueChanges` drives dependent dropdowns (department -> roles) and autosave drafts.
+
+### Where is it used in day-to-day development
+
+Every real business form. Building the `FormGroup`, wiring `formControlName`, adding validators, reacting to `valueChanges`, and patching from an API on edit are daily tasks.
+
+### Pros and cons
+
+**Pros**
+
+- Model is explicit, typed, and visible in code — easy to reason about and test.
+- Cross-field, async, and dynamic (`FormArray`) validation are natural.
+- `valueChanges` / `statusChanges` give reactive, composable control.
+- Programmatic patch/reset/disable/setErrors.
+
+**Cons**
+
+- More boilerplate than template-driven for tiny forms.
+- Template must stay in sync with control names (a typo = silent no-bind).
+- `FormArray` in templates is a bit verbose (`[formControlName]="$index"`).
+- Two `valueChanges` subscriptions (control + form) can cause redundant work if not careful.
+
+</Hinglish>
+
+<Callout type="tip">
+
+`fb.nonNullable.group(...)` (or `new FormControl('', { nonNullable: true })`) use karo — bina iske har control `T | null` hota hai aur `reset()` sab kuch `null` kar deta hai, jo `patchValue`/mapping ko peeda deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employee form">
+
+The Add/Edit Employee form is one `fb.nonNullable.group({...})` with ~10 controls, a `skills` `FormArray`, `Validators` on each field, a group validator ("join date not in the future"), and an async validator on `email` (uniqueness). `form.controls.departmentId.valueChanges` reloads the role dropdown. On edit, `form.patchValue(employee)` loads the record. On submit, `form.markAllAsTouched()` reveals errors, then `form.getRawValue()` is mapped to the request DTO. None of this is expressible cleanly in a template-driven form.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Reactive forms need `ReactiveFormsModule` in the component's `imports`.
+- Three building blocks: `FormControl` (field), `FormGroup` (object), `FormArray` (dynamic list).
+- `form.value` omits disabled controls; `form.getRawValue()` includes them.
+- Angular 14+ reactive forms are **strictly typed**; `fb.nonNullable` avoids `T | null` everywhere.
+- `valueChanges` emits on **every** keystroke — pair with `debounceTime` for autosave/search.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "reactive form kaise banate ho?", "`FormBuilder` kya karta hai?", "`FormArray` kab?", "`valueChanges` use case?", "`setValue` vs `patchValue`?", "typed forms?".
+
+Strong answer:
+
+1. Build the model in the class: `fb.nonNullable.group({ field: [initial, validators] })`; bind with `[formGroup]` + `formControlName`.
+2. `FormControl`/`FormGroup`/`FormArray`; `FormArray` for dynamic rows.
+3. `valueChanges`/`statusChanges` observables for reactive logic (dependent fields, autosave).
+4. `patchValue` (partial), `setValue` (all, strict), `reset`, `disable`, `setErrors`, `markAllAsTouched`.
+5. Typed since v14; `fb.nonNullable` avoids null noise.
+
+Red flag: "reactive form me `[(ngModel)]` use karta hoon" — mixing the two models; use `formControlName`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`ReactiveFormsModule` import bhoolna**, or importing `FormsModule` instead. `formControlName` won't bind.
+
+</Mistake>
+
+<Mistake>
+
+**`formControlName` string ka typo.** `formControlName="frstName"` silently binds to nothing. Use `form.controls.firstName` in the template (typed) to catch it.
+
+</Mistake>
+
+<Mistake>
+
+**`[value]` on `<option>` for non-string values.** `departmentId` becomes the string `"4"`. Use `[ngValue]="d.id"`.
+
+</Mistake>
+
+<Mistake>
+
+**Not using `fb.nonNullable`.** Every control is `T | null`; `reset()` nukes to `null`; mapping code fills with `?? ''` everywhere.
+
+</Mistake>
+
+<Mistake>
+
+**Subscribing to `valueChanges` without `takeUntilDestroyed()` / `async`.** Leaks, and autosave keeps firing after the component is gone.
+
+</Mistake>
+
+<Mistake>
+
+**`setValue` with a partial object.** It throws — it requires *every* control. Use `patchValue` for partial updates.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    FB["FormBuilder.nonNullable.group({...})"] --> FG["FormGroup (typed model in the class)"]
+    FG --> FC[FormControl per field + validators]
+    FG --> FA["FormArray skills (dynamic rows)"]
+    FG -->|"[formGroup] / formControlName"| TPL[template inputs]
+    FG --> VC["valueChanges / statusChanges observables"]
+    VC --> LOGIC["dependent fields, autosave, live validation"]
+    FG --> API["patchValue on edit; getRawValue -> DTO on submit"]
+`}
+  caption="The class owns the typed form model; the template just binds to it by name; observables drive reactive behaviour."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Reactive forms: model built in the class with `FormControl`/`FormGroup`/`FormArray`, usually via `fb.nonNullable.group({ field: [initial, validators] })`. Needs `ReactiveFormsModule`.
+- Template: `[formGroup]="form"`, `formControlName="x"`, `formGroupName`, `formArrayName` + `[formControlName]="$index"`. Use `[ngValue]` for non-string option values.
+- Read: `form.value` (omits disabled), `form.getRawValue()` (includes disabled), `form.valid`, `control.errors`.
+- React: `control.valueChanges` / `form.valueChanges` / `statusChanges` (with `takeUntilDestroyed()` / `debounceTime`).
+- Control: `patchValue` (partial), `setValue` (all, strict), `reset`, `disable`, `setErrors`, `markAllAsTouched` (on submit).
+- Strictly typed since v14; `fb.nonNullable` avoids `T | null` everywhere.
+- Don't mix with `[(ngModel)]`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeForm` banao `fb.nonNullable.group` se — `firstName`, `lastName`, `email`, `departmentId`, `salary` with `Validators`. Template `[formGroup]` + `formControlName`. Submit button disabled on `form.invalid`. `form.value` console me dekho.
+
+**Medium:** `departmentId` `valueChanges` par `console.log("dept changed", id)` (with `takeUntilDestroyed()`). `<select>` me `[ngValue]="d.id"` use karo — confirm `departmentId` ek number aata hai, string `"4"` nahi. `patchValue({ firstName: "Aarav" })` se ek field set karke dekho.
+
+**Bada:** `skills` `FormArray` add karo with `addSkill()` / `removeSkill(i)` buttons and `formArrayName` + `[formControlName]="$index"` in the template. `setValue` ko ek partial object ke saath call karke error dekho, phir `patchValue` se fix. `form.getRawValue()` aur `form.value` ko compare karo ek disabled control ke saath. 5-line note.
+
+</Callout>
