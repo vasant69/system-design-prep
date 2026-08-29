@@ -1,0 +1,243 @@
+---
+slug: "route-parameters"
+title: "Route Parameters"
+section: "angular-practical"
+module: "ng-routing"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["navigation-with-routerlink-and-router"]
+tags: ["angular", "routing", "route-params", "activatedroute", "component-input-binding", "employee-management"]
+englishDefinition: "Route parameters are dynamic segments of a URL like /employees/:id. You read them via ActivatedRoute (paramMap observable or snapshot), or, with withComponentInputBinding, directly as a component input. Using the observable is important when the same component stays mounted while only the id changes."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+Route parameters are dynamic parts of a URL, declared with a colon: `/employees/:id`. You read them through `ActivatedRoute` — either the `paramMap` Observable (reactive, updates when the URL changes) or `snapshot.paramMap` (one-time read) — or, with `withComponentInputBinding()`, directly as a matching `@Input()` / `input()` on the routed component.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`/employees/42` — yahan `42` ek **route parameter** hai. Details page ko pata hona chahiye kaunsa employee. Ye value URL se kaise nikaalte hain.
+
+### Declaring the parameter
+
+```ts
+{ path: "employees/:id", component: EmployeeDetailsPage },
+{ path: "employees/:id/edit", component: EditEmployeePage },
+```
+
+`:id` — koi bhi ek segment. `/employees/42` -> `id = "42"` (string, hamesha).
+
+### Reading — 3 ways
+
+**1. `withComponentInputBinding()` (modern, cleanest):**
+
+```ts
+// app.config.ts
+provideRouter(routes, withComponentInputBinding())
+```
+
+```ts
+export class EmployeeDetailsPage {
+  id = input.required<string>();               // matches :id
+  // or classic: @Input() id!: string;
+  employee = /* load using this.id() */;
+}
+```
+
+Router `:id` ko component ke `id` input me daal deta hai. `input()` signal — `computed`/`resource` me directly.
+
+**2. `paramMap` Observable (reactive):**
+
+```ts
+export class EmployeeDetailsPage {
+  private route = inject(ActivatedRoute);
+  employee$ = this.route.paramMap.pipe(
+    map(pm => pm.get("id")!),
+    switchMap(id => this.service.getById(+id)),
+  );
+}
+```
+
+`paramMap` **emits again** jab param badle without the component being recreated — details page se next employee pe `[routerLink]` karo aur `id` badal jaaye, component wahi rehta hai.
+
+**3. `snapshot` (one-time):**
+
+```ts
+ngOnInit() {
+  const id = this.route.snapshot.paramMap.get("id")!;
+  this.service.getById(+id).subscribe(e => this.employee = e);
+}
+```
+
+Simple, par **snapshot dobara nahi update hota** — agar same component me `id` badle to stale.
+
+### The stale-snapshot trap
+
+```text
+/employees/42  -> details page mounts, snapshot id = "42"  ✓
+click "next employee" -> /employees/43
+   component NOT recreated (same route config)
+   snapshot still "42"  ✗   -> shows wrong employee
+```
+
+Fix: `paramMap` Observable (ya `withComponentInputBinding` + `effect`/`computed`). Snapshot sirf tab safe jab component har navigation par recreate hota ho (usually alag routes ke beech).
+
+### Types — params are strings
+
+`pm.get("id")` -> `"42"` (string). Number chahiye -> `+id` / `Number(id)`. `withComponentInputBinding` ke saath bhi string aata hai unless you add a param transform / resolver.
+
+### `data` and static config
+
+```ts
+{ path: "employees/:id", component: EmployeeDetailsPage, data: { mode: "view" } }
+```
+
+`route.snapshot.data['mode']` — static per-route config (permissions, layout flags).
+
+### Show it in our project
+
+- `EmployeeDetailsPage`: `id = input.required<string>()` + `employeeResource` keyed on `id()`.
+- `EditEmployeePage`: same `:id`, loads then patches the form.
+- "Prev/Next employee" buttons on the details page navigate to `/employees/:id` with a different id — `paramMap`/`input` reactivity means the page updates without remount.
+
+### Where is it used in day-to-day development
+
+Every details/edit screen. Every "resource by id" page. Master-detail layouts. Wizard steps (`/onboarding/:step`). Reading a route param is one of the most common routing tasks.
+
+### Pros and cons
+
+**Pros**
+
+- Deep-linkable resource pages (`/employees/42` shareable).
+- `withComponentInputBinding` removes most `ActivatedRoute` boilerplate.
+- `paramMap` reactivity handles "same component, new id" cleanly.
+
+**Cons**
+
+- Snapshot stale bug when the component is reused.
+- Params are always strings — manual coercion.
+- Over-using `snapshot` "because it's simpler" causes subtle bugs.
+- `withComponentInputBinding` + `OnPush` needs signal inputs or an `effect` to react.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`this.route.snapshot.paramMap.get('id')` sirf tab reliable hai jab component har navigation par **naya banta hai**. Agar `/employees/42` se `/employees/43` jaane par component reuse hota hai (same route), snapshot purana `42` rakhega. `paramMap` Observable ya `input()` signal use karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Master-detail employee screen">
+
+EMS Employees area: left me list, right me `<router-outlet />` jahan `/employees/:id` details render hota hai. User list me alag-alag rows click karta hai — URL `:id` badalta hai par `EmployeeDetailsPage` remount nahi hota (performance + smooth). Isliye details page `id` ko `input()` signal se leta hai aur `employeeResource = resource({ params: () => ({ id: this.id() }), loader: ... })` — `id()` badalte hi purana request cancel, naya fire, loading state. Agar `snapshot` use karta to har baar galat (pehla) employee dikhta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Route params are **always strings** — `+id` or `Number(id)` to get a number.
+- `paramMap` **re-emits** on param change without recreating the component; `snapshot` does **not** update.
+- `withComponentInputBinding()` maps `:id` -> an input named `id` (also query params and resolver `data`).
+- `route.snapshot.data` holds static per-route config; `route.data` is the Observable form.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Extremely common: "route param kaise padhte ho?", "`paramMap` vs `snapshot`?", "same component me id badle to?", "params ka type?".
+
+Strong answer:
+
+1. Declare `:id`; read via `ActivatedRoute.paramMap` (Observable), `snapshot.paramMap` (once), or `withComponentInputBinding()` -> input.
+2. `paramMap` re-emits on change without remount; `snapshot` is a one-time read -> stale if the component is reused.
+3. Params are strings -> coerce.
+4. Prefer `input()` / `paramMap` + `switchMap` for id-driven data loading.
+5. `route.data` for static per-route config.
+
+Red flag: "hamesha `snapshot` use karta hoon, simple hai" — breaks on master-detail reuse.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`snapshot.paramMap` on a reused component.** `/x/1` -> `/x/2` same route -> snapshot stuck at `1`. Use `paramMap` Observable or `input()` signal.
+
+</Mistake>
+
+<Mistake>
+
+**Param ko number maan lena.** `pm.get("id") === 42` -> false (`"42" !== 42`). Coerce: `+pm.get("id")!`.
+
+</Mistake>
+
+<Mistake>
+
+**`paramMap` subscribe karke unsubscribe na karna.** Route param stream component ke saath tied hai but still — `async` pipe / `takeUntilDestroyed()` / `switchMap` chain.
+
+</Mistake>
+
+<Mistake>
+
+**Nested `subscribe`: `paramMap.subscribe(p => service.get(p).subscribe(...))`.** `switchMap` — id badle par purana request cancel.
+
+</Mistake>
+
+<Mistake>
+
+**`withComponentInputBinding` ke saath `ngOnChanges` bhoolna (classic input) ya `effect` (signal input) — id change par reload nahi hota.** Signal input + `computed`/`resource`/`effect`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    URL["/employees/43"] --> R["route: employees/:id"]
+    R --> PM["ActivatedRoute.paramMap emits { id: '43' }"]
+    PM --> SM["switchMap(id => service.getById(+id))"]
+    SM --> V["details view updates - no remount"]
+    R -.->|"withComponentInputBinding"| IN["id = input() on the component"]
+`}
+  caption="paramMap re-emits on id change so the same component reloads; snapshot would stay on the old id."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Declare dynamic segments with `:name` (`/employees/:id`); values are **always strings**.
+- Read via: `ActivatedRoute.paramMap` (Observable, re-emits on change), `snapshot.paramMap` (one-time), or `withComponentInputBinding()` -> a matching input.
+- `snapshot` does NOT update — stale when the same component is reused across `:id` changes (master-detail).
+- id-driven loading: `paramMap.pipe(switchMap(id => api.getById(+id)))` or an `input()` signal feeding `resource()` / `computed`.
+- Coerce numbers: `+id`.
+- `route.data` / `snapshot.data` = static per-route config.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `employees/:id` route banao -> `EmployeeDetailsPage`. `withComponentInputBinding()` add karke `id = input.required<string>()`. Template me `{{ id() }}` dikhao. `/employees/7` aur `/employees/9` kholkar value change dekho.
+
+**Medium:** Details page par `employee$ = this.route.paramMap.pipe(map(p => +p.get('id')!), switchMap(id => this.service.getById(id)))`. Template `employee$ | async`. "Next" button `[routerLink]="['/employees', id() + 1]"` — confirm same component me employee update hota hai bina flicker/remount ke.
+
+**Bada:** Wahi details page `snapshot.paramMap.get('id')` se banao (`ngOnInit` me ek baar). "Next" button se navigate karke dekho page pehla employee hi dikhata rehta hai (stale). Phir `paramMap` Observable pe switch karke fix. Master-detail me snapshot kyun fail hota hai — 4 line me.
+
+</Callout>

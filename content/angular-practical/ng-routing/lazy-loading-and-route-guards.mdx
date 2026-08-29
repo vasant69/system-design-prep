@@ -1,0 +1,265 @@
+---
+slug: "lazy-loading-and-route-guards"
+title: "Lazy Loading and Route Guards"
+section: "angular-practical"
+module: "ng-routing"
+order: 6
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["nested-and-child-routes"]
+tags: ["angular", "routing", "lazy-loading", "guards", "canactivate", "resolvers", "employee-management"]
+englishDefinition: "Lazy loading defers a feature's code until its route is visited, using loadComponent or loadChildren. Route guards are functions that decide whether navigation may proceed: CanActivate/CanMatch for access, CanDeactivate for unsaved-changes prompts. Resolvers pre-fetch data before a route activates."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree", "HCLTech"]
+---
+
+<SimpleDefinition>
+
+**Lazy loading** defers a feature's JavaScript until its route is first visited, via `loadComponent` (one component) or `loadChildren` (a route file). **Route guards** are functions returning `boolean | UrlTree | Observable<...>` that decide if navigation proceeds: `CanActivate`/`CanMatch` for access control, `CanDeactivate` for unsaved-changes prompts. **Resolvers** pre-fetch data so a route's component gets it ready on activation.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne routes wire kiye. Do production concerns baaki: har feature ka code initial bundle me na aaye (**lazy loading**), aur kuch routes protected hon / navigation controlled ho (**guards**).
+
+### Lazy loading — `loadComponent` / `loadChildren`
+
+```ts
+export const routes: Routes = [
+  { path: "dashboard", component: DashboardPage },   // eager
+
+  // lazy: one component
+  { path: "reports", loadComponent: () => import("./features/reports/reports-page").then(m => m.ReportsPage) },
+
+  // lazy: a whole feature area (its own routes file)
+  { path: "employees", loadChildren: () => import("./features/employees/employees.routes").then(m => m.EMPLOYEE_ROUTES) },
+];
+```
+
+- `import()` — dynamic import; ye code ek **separate chunk** me chala jata hai.
+- Chunk tab download hota hai jab user pehli baar `/reports` ya `/employees` pe jaata hai.
+- Initial bundle chhota -> first load tez.
+- `loadChildren` -> ek `Routes` array; `loadComponent` -> ek standalone component.
+
+### Preloading — best of both
+
+```ts
+provideRouter(routes, withPreloading(PreloadAllModules))
+```
+
+Initial load fast (lazy), phir background me baaki chunks preload -> subsequent navigation instant. Custom strategy se sirf "likely" routes preload kar sakte ho.
+
+### Route guards — the functional form
+
+```ts
+import { CanActivateFn, Router } from "@angular/router";
+import { inject } from "@angular/core";
+
+export const authGuard: CanActivateFn = (route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+  return auth.isLoggedIn() ? true : router.parseUrl(`/login?returnUrl=${state.url}`);
+};
+```
+
+- Return `true` -> allow.
+- Return `false` -> block (stay put).
+- Return a `UrlTree` (`router.parseUrl(...)`) -> **redirect**. Cleaner than a side-effect `router.navigate`.
+- Can return `Observable`/`Promise` of the above (async check).
+
+Usage:
+
+```ts
+{ path: "settings", component: SettingsPage, canActivate: [authGuard, adminGuard] }
+```
+
+### Guard types
+
+| Guard | Fires | Use for |
+|---|---|---|
+| `CanActivate` | Before activating a route | Auth, role check |
+| `CanActivateChild` | Before activating any child | Guard a whole area |
+| `CanMatch` | Before the route is even matched | Feature flags, role-based route swapping, skip loading a lazy chunk |
+| `CanDeactivate` | Before leaving a route | "Unsaved changes — leave?" |
+
+`CanMatch` is powerful: if it returns `false`, the router acts as if that route doesn't exist and tries the next one — and it **won't download** the lazy chunk.
+
+### CanDeactivate — unsaved changes
+
+```ts
+export const unsavedChangesGuard: CanDeactivateFn<EditEmployeePage> = (component) => {
+  return component.form.pristine || confirm("Discard unsaved changes?");
+};
+
+{ path: ":id/edit", component: EditEmployeePage, canDeactivate: [unsavedChangesGuard] }
+```
+
+### Resolvers — data before activation
+
+```ts
+export const employeeResolver: ResolveFn<Employee> = (route) => {
+  return inject(EmployeeService).getById(+route.paramMap.get("id")!);
+};
+
+{ path: ":id", component: EmployeeDetailsPage, resolve: { employee: employeeResolver } }
+```
+
+Component: `employee = this.route.snapshot.data['employee']` (or via `withComponentInputBinding` -> an `employee` input). Route activates only after the resolver completes — no "loading" flash, but navigation feels slower if the fetch is slow. Modern alternative: activate immediately and load in the component with a signal `resource()` + a skeleton.
+
+### Show it in our project
+
+- `authGuard` (`CanActivate` on the pathless shell route) — every authenticated area.
+- `adminGuard` on `settings`, `roles`.
+- `permissionGuard('employee.delete')` factory for specific routes.
+- `unsavedChangesGuard` on Add/Edit Employee.
+- `employees`, `departments`, `documents` all `loadChildren` (lazy).
+- `withPreloading(PreloadAllModules)` so navigation after first load is instant.
+
+### Where is it used in day-to-day development
+
+Every feature area is lazy. Every app with login has an auth guard. Role-gated sections use `CanActivate`/`CanMatch`. Every non-trivial form gets an unsaved-changes guard. Resolvers on detail pages (or their signal-`resource` replacement).
+
+### Pros and cons
+
+**Pros**
+
+- Lazy loading: smaller initial bundle, faster first paint; feature code isolation.
+- Guards: centralised access control, clean redirects via `UrlTree`.
+- `CanMatch`: role/flag-based routing without even loading the chunk.
+- Resolvers: component gets data ready; no empty-state flash.
+
+**Cons**
+
+- Lazy chunk on first visit = a brief load (mitigate with preloading + a loading indicator).
+- Guards that do heavy async work delay navigation — keep them fast or show progress.
+- Resolvers block navigation — a slow API makes the app feel frozen; often a skeleton + in-component load is better UX.
+- Guard ordering and multiple guards on one route need thought (all must pass).
+
+</Hinglish>
+
+<Callout type="tip">
+
+`CanActivate` blocks activation but the lazy chunk may still download. `CanMatch` is better for "this route shouldn't exist for this user" — it prevents both the match and the download, and lets a fallback route take over.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Role-based lazy admin app">
+
+EMS loads only the shell + dashboard on first paint (~small). Visiting `/employees` downloads the employees chunk; `withPreloading(PreloadAllModules)` then quietly preloads departments, documents, etc. so later clicks are instant. `authGuard` on the pathless shell protects everything; `settings` additionally has `adminGuard` as a `CanMatch` — a non-admin who somehow hits `/settings` never even downloads that chunk, and the router falls through to `**` (not-found). Edit Employee has `canDeactivate: [unsavedChangesGuard]` so a half-filled form isn't lost by a mis-click on the sidebar.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Lazy routes use `import()` -> each becomes a **separate JS chunk**, downloaded on first navigation to that route.
+- `withPreloading(PreloadAllModules)` fetches remaining chunks **after** the initial load, in the background.
+- Guards can return `boolean | UrlTree | Observable<...> | Promise<...>`; a `UrlTree` = a redirect.
+- `CanMatch` returning `false` skips both the route match **and** the lazy download; `CanActivate` only blocks activation.
+- Resolvers **block** navigation until they complete — a slow resolver = a frozen-feeling app.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common, often deep: "lazy loading kaise karte ho?", "`loadComponent` vs `loadChildren`?", "guard kaise banate ho (functional)?", "`CanActivate` vs `CanMatch`?", "`CanDeactivate` use case?", "resolver vs load-in-component?".
+
+Strong answer:
+
+1. Lazy: `loadComponent: () => import(...)` / `loadChildren: () => import(...)` — separate chunk per route.
+2. `withPreloading(PreloadAllModules)` for instant later navigation.
+3. Functional guard: `const x: CanActivateFn = () => { inject(...); return boolean | UrlTree | Observable<...> }`. Return a `UrlTree` to redirect.
+4. `CanActivate` blocks activation; `CanMatch` prevents match + download (role/flag routing).
+5. `CanDeactivate` for unsaved-changes prompts.
+6. Resolver pre-fetches (no empty flash, but blocks nav); signal `resource()` + skeleton is the modern alternative.
+
+Red flag: "class-based guards with `implements CanActivate`" — functional guards are the current standard; class guards are effectively legacy.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Sab kuch eager import karna.** Har feature `component:` se directly imported -> giant initial bundle. Feature areas ko `loadChildren`/`loadComponent`.
+
+</Mistake>
+
+<Mistake>
+
+**`CanActivate` for "route shouldn't exist for this role" jab `CanMatch` chahiye tha.** `CanActivate` block karta hai but chunk download ho jata hai aur fallback route nahi milta. `CanMatch`.
+
+</Mistake>
+
+<Mistake>
+
+**Guard me side-effect `router.navigate` return `false` ke saath.** Race conditions. Ek `UrlTree` return karo (`router.parseUrl(...)` / `createUrlTree(...)`) — router handle karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Heavy async in a resolver.** 3-second API in a resolver = 3 seconds of frozen navigation. Fast resolver, ya component me `resource()` + skeleton.
+
+</Mistake>
+
+<Mistake>
+
+**`CanDeactivate` guard bhoolna on edit forms.** User sidebar click karta hai, form data gaya. Add the guard.
+
+</Mistake>
+
+<Mistake>
+
+**`import()` path ko interpolate karna** — jaise ek template literal me ek variable daal kar dynamic path banana. Bundler static analysis fail -> chunk nahi banta / sab bundle. Path hamesha ek literal string hona chahiye: `import("./features/reports/reports-page")`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    NAV["navigate to /settings"] --> CM{CanMatch: adminGuard}
+    CM -->|false| FALL["route skipped, chunk NOT downloaded -> ** not-found"]
+    CM -->|true| DL["download settings chunk (lazy)"]
+    DL --> CA{CanActivate: authGuard}
+    CA -->|UrlTree| RED["redirect to /login"]
+    CA -->|true| RES[resolve: settingsResolver fetches data]
+    RES --> ACT["activate SettingsPage with data ready"]
+`}
+  caption="CanMatch gates the match and download; CanActivate gates activation; resolvers pre-fetch before the component shows."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Lazy load: `loadComponent: () => import("...").then(m => m.X)` or `loadChildren: () => import("...")` — one JS chunk per route, downloaded on first visit.
+- `withPreloading(PreloadAllModules)` — background-fetch remaining chunks after initial load.
+- Functional guards: `const g: CanActivateFn = (route, state) => { inject(...); return boolean | UrlTree | Observable<...> }`. Return a `UrlTree` to redirect (don't side-effect `navigate`).
+- `CanActivate` blocks activation; `CanMatch` prevents the match AND the lazy download (role/feature-flag routing); `CanActivateChild` guards a whole subtree; `CanDeactivate` for unsaved-changes prompts.
+- Resolvers pre-fetch and block navigation until done — no empty flash, but slow API = frozen feel. Alternative: activate now + `resource()` + skeleton.
+- Keep `import()` paths static (no template literals) so the bundler can split.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `employees` route ko `loadChildren: () => import("./features/employees/employees.routes").then(m => m.EMPLOYEE_ROUTES)` se lazy banao. `ng build` karke `dist/` me alag `employees` chunk dekho. Network tab me confirm wo chunk sirf `/employees` visit par load hota hai.
+
+**Medium:** `authGuard: CanActivateFn` banao jo `AuthService.isLoggedIn()` check kare aur na hone par `router.parseUrl('/login?returnUrl=' + state.url)` return kare. Pathless shell route par `canActivate: [authGuard]`. Logged-out state me `/employees` try karke login redirect + returnUrl dekho.
+
+**Bada:** (1) `adminGuard` ko `CanActivate` se banao `settings` par — logout/non-admin me block hota hai par network tab me settings chunk download ho jaata hai. (2) Ab `adminGuard` ko `CanMatch` bana do — ab chunk download hi nahi hota aur `**` not-found dikhta hai. (3) `EditEmployeePage` par `canDeactivate: [unsavedChangesGuard]` add karke dirty form se navigate karke confirm prompt dekho. Teenon ke findings 6 line me.
+
+</Callout>
