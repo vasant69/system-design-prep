@@ -1,0 +1,260 @@
+---
+slug: "server-side-pagination"
+title: "Server-Side Pagination"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 1
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["delete-with-confirm-and-optimistic-update"]
+tags: ["angular", "pagination", "list", "paginator", "query-params", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "Server-side pagination sends page and pageSize to the API and gets back one page plus a total count. The front-end keeps page/pageSize in signals (mirrored to query params), a reusable Paginator component emits pageChange, and the list re-queries. Client-side pagination only works for small, already-loaded datasets."
+---
+
+<SimpleDefinition>
+
+Server-side pagination sends `page` and `pageSize` to the API and receives one page of rows plus a `total` count (`Paged<T>`). The front-end keeps `page`/`pageSize` in signals (usually mirrored to the URL's query params), a reusable `Paginator` component renders controls and emits `pageChange`, and the list re-queries on change. Client-side pagination (slicing an in-memory array) only works for small datasets you can afford to load whole.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+10,000 employees ek saath load karna — bad idea (slow, memory, DOM). Solution: ek page (20 rows) laao, aur "total" count lelo taaki paginator bana sako.
+
+### The API contract
+
+```text
+GET /employees?page=3&pageSize=20&search=&sort=name
+-> { items: Employee[], total: 842, page: 3, pageSize: 20 }
+```
+
+`Paged<T> = { items: T[]; total: number; page: number; pageSize: number }`.
+
+### The list component (signals + query params)
+
+```ts
+export class EmployeeListPage {
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+  private api = inject(EmployeeService);
+
+  page = signal(1);
+  pageSize = signal(20);
+
+  // hydrate from URL on load
+  constructor() {
+    const qp = this.route.snapshot.queryParamMap;
+    this.page.set(+(qp.get("page") ?? 1));
+    this.pageSize.set(+(qp.get("pageSize") ?? 20));
+  }
+
+  private query = computed(() => ({ page: this.page(), pageSize: this.pageSize() }));
+
+  result = toSignal(
+    toObservable(this.query).pipe(
+      switchMap(q => this.api.getAll(q)),
+    ),
+    { initialValue: null },
+  );
+
+  rows = computed(() => this.result()?.items ?? []);
+  total = computed(() => this.result()?.total ?? 0);
+  totalPages = computed(() => Math.ceil(this.total() / this.pageSize()));
+
+  goToPage(p: number) {
+    this.page.set(p);
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { page: p },
+      queryParamsHandling: "merge",
+    });
+  }
+}
+```
+
+### A reusable Paginator (dumb component)
+
+```ts
+@Component({
+  selector: "app-paginator",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <button [disabled]="page() <= 1" (click)="pageChange.emit(page() - 1)">Prev</button>
+    <span>Page {{ page() }} of {{ totalPages() }} · {{ total() }} items</span>
+    <button [disabled]="page() >= totalPages()" (click)="pageChange.emit(page() + 1)">Next</button>
+
+    <select [value]="pageSize()" (change)="pageSizeChange.emit(+$any($event.target).value)">
+      @for (s of [10, 20, 50, 100]; track s) { <option [value]="s">{{ s }} / page</option> }
+    </select>
+  `,
+})
+export class Paginator {
+  page = input.required<number>();
+  pageSize = input.required<number>();
+  total = input.required<number>();
+  totalPages = computed(() => Math.max(1, Math.ceil(this.total() / this.pageSize())));
+  pageChange = output<number>();
+  pageSizeChange = output<number>();
+}
+```
+
+Used: `<app-paginator [page]="page()" [pageSize]="pageSize()" [total]="total()" (pageChange)="goToPage($event)" (pageSizeChange)="setPageSize($event)" />`.
+
+### Key decisions
+
+- **`page`/`pageSize` in the URL** — shareable, refresh-safe, back-button correct (see the query-params topic).
+- **`switchMap`** — changing the page cancels an in-flight previous request (no stale page render).
+- **Reset `page` to 1** when a filter/search/sort changes (fewer results -> old page may be empty).
+- **`totalPages` from `total`** — the API must return `total`; a "load more" / infinite scroll API returns a cursor instead.
+- **Loading state** — keep the previous rows visible with a subtle overlay, or show skeletons; don't blank the table on every page change.
+- **`pageSize` bounds** — cap it (e.g. max 100) so a user can't request 10,000.
+
+### Cursor pagination (alternative)
+
+Some APIs return `{ items, nextCursor }` instead of `total`. Better for large/streaming datasets and "load more" UIs, but you can't jump to "page 50" or show "page X of Y". Choose based on the API and the UX you need.
+
+### Show it in our project
+
+`EmployeeListPage` uses page/pageSize signals mirrored to query params, a `switchMap` pipeline to `EmployeeService.getAll`, and the shared `Paginator`. The same `Paginator` serves Departments, Roles, Leave Requests.
+
+### Where is it used in day-to-day development
+
+Every list of more than ~50 rows. Wiring page state to the URL, resetting page on filter change, and keeping the table from flashing on navigation are the recurring details.
+
+### Pros and cons
+
+**Server-side — Pros:** scales to millions of rows, small payloads, fast first render. **Cons:** a round-trip per page, needs a `total` (or cursor), more moving parts.
+
+**Client-side — Pros:** instant page switches, trivial code. **Cons:** must load the whole dataset first — only viable for small, bounded lists.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Filter ya search change hone par `page` ko `1` par reset karna mat bhoolo. User page 7 par hai, naya search karta hai jiske sirf 2 pages hain — page 7 empty aayega aur user ko lagega "no results" jabki data hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employee list">
+
+`/employees?page=3&pageSize=20&search=aar` loads exactly 20 rows and shows "Page 3 of 12 · 231 items". Clicking Next sets `page=4` in the URL, the `switchMap` cancels any in-flight request and fetches page 4, and the table swaps its 20 rows while the paginator updates. Typing a new search resets `page` to 1. Sharing that URL shows a colleague the exact same page. Departments and Leave Requests reuse the identical `Paginator` component with their own data.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `Paged<T>` = `{ items, total, page, pageSize }` — `total` is what makes "page X of Y" possible.
+- `totalPages = Math.ceil(total / pageSize)`.
+- Reset `page` to **1** on any filter/search/sort change.
+- `switchMap` on the page/query signal cancels the previous request — no stale page render.
+- Cap `pageSize` (e.g. **≤ 100**) so a client can't request the entire table.
+- Cursor pagination (`{ items, nextCursor }`) suits large/streaming data and "load more", but can't jump to an arbitrary page.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "server-side vs client-side pagination?", "page state kahan rakhte ho?", "filter change par page?", "cursor vs offset pagination?".
+
+Strong answer:
+
+1. Server-side: send `page`/`pageSize`, get `Paged<T>` with `total`; client-side only for small preloaded lists.
+2. Keep `page`/`pageSize` in signals mirrored to query params (shareable, refresh-safe).
+3. `switchMap` on the query so page changes cancel stale requests.
+4. Reset `page` to 1 on filter/search/sort change.
+5. Offset (`page/pageSize` + `total`) allows jumping to a page; cursor (`nextCursor`) suits large/streaming data and "load more".
+
+Red flag: "poora data laata hoon aur client par slice karta hoon" — doesn't scale.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Filter/search change par `page` reset na karna.** Stale high page -> empty results -> user thinks there's no data.
+
+</Mistake>
+
+<Mistake>
+
+**No `switchMap` — fast Next clicks race.** Page 4's response can arrive after page 5's and render the wrong rows.
+
+</Mistake>
+
+<Mistake>
+
+**Blanking the table on every page change.** Keep previous rows with an overlay, or use skeletons — a full flash feels broken.
+
+</Mistake>
+
+<Mistake>
+
+**Client-side pagination for a big list.** Loading 50,000 rows to slice 20 kills first render and memory.
+
+</Mistake>
+
+<Mistake>
+
+**Not mirroring page to the URL.** Refresh or share -> back to page 1; the back button doesn't undo a page change.
+
+</Mistake>
+
+<Mistake>
+
+**Uncapped `pageSize` from the UI.** A user (or a bug) requests `pageSize=100000`. Validate/cap it.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    P["page/pageSize signals (mirrored to query params)"] --> Q["query = computed({ page, pageSize, ...filters })"]
+    Q --> SM["switchMap(q => api.getAll(q))"]
+    SM --> R["Paged<T>: items + total"]
+    R --> ROWS[table renders items]
+    R --> PAG["Paginator: page X of ceil(total/pageSize)"]
+    PAG -->|pageChange| P
+    FILTER[filter/search change] -->|reset page = 1| P
+`}
+  caption="Page state drives a switchMap query; the API returns one page plus a total for the paginator."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Server-side: send `page`/`pageSize` (+ filters/sort), receive `Paged<T>` = `{ items, total, page, pageSize }`.
+- Keep `page`/`pageSize` in signals mirrored to query params (shareable, refresh-safe, back-button correct).
+- Drive the fetch with `switchMap` on the query signal so page changes cancel stale requests.
+- `totalPages = Math.ceil(total / pageSize)`; reset `page` to 1 on any filter/search/sort change.
+- Reusable dumb `Paginator` (inputs: `page`, `pageSize`, `total`; outputs: `pageChange`, `pageSizeChange`).
+- Don't blank the table on page change — overlay or skeletons. Cap `pageSize`.
+- Cursor pagination (`nextCursor`) for large/streaming data and "load more"; offset for arbitrary page jumps.
+- Client-side pagination only for small, fully-loaded datasets.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeListPage` me `page`/`pageSize` signals + a `computed` `query` + `toSignal(toObservable(query).pipe(switchMap(api.getAll)))`. `rows`, `total`, `totalPages` computeds. Render rows + "Page X of Y".
+
+**Medium:** Reusable `Paginator` dumb component (`page`/`pageSize`/`total` inputs, `pageChange`/`pageSizeChange` outputs, OnPush). Wire it. `page`/`pageSize` ko query params me mirror karo aur URL se hydrate karo.
+
+**Bada:** `switchMap` ke saath fast Prev/Next clicks test karo — network throttle karke confirm stale responses render nahi hote. Search box add karke `page` ko 1 par reset karo on search change. `pageSize` selector (10/20/50/100). Table ko page change par blank hone ke bajaye ek overlay/skeleton do. 6-line note on offset vs cursor.
+
+</Callout>

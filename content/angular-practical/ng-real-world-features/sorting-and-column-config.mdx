@@ -1,0 +1,266 @@
+---
+slug: "sorting-and-column-config"
+title: "Sorting and Column Configuration"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["filtering-and-debounced-search"]
+tags: ["angular", "table", "sorting", "column-config", "data-table", "employee-management"]
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+englishDefinition: "Column-driven tables use a Column[] config (key, label, sortable, formatter) so one reusable DataTable renders any entity. Sorting is server-side: a sort signal (field + direction) joins the query, cycles through asc/desc/none on header click, and is mirrored to the URL."
+---
+
+<SimpleDefinition>
+
+A column-driven table takes a `Column[]` config — `{ key, label, sortable, align, format }` — so one reusable `DataTable` renders any entity's list. Sorting is server-side: a `sort` signal (`{ field, dir: 'asc' | 'desc' }` or `null`) joins the query, cycles asc → desc → none on a sortable header click, shows a direction indicator, and is mirrored to the URL like the other list state.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har list screen ke liye alag `<table>` likhна repetition hai. Ek **column config** se ek `DataTable` sab entities render kar sakti hai. Aur sorting server-side hoti hai (jaise pagination/filtering).
+
+### Column config
+
+```ts
+export interface Column<T> {
+  key: keyof T & string;
+  label: string;
+  sortable?: boolean;
+  align?: "left" | "right";
+  format?: (row: T) => string;          // display transform
+}
+
+// EmployeeListPage
+columns: Column<Employee>[] = [
+  { key: "fullName", label: "Name", sortable: true },
+  { key: "email", label: "Email" },
+  { key: "departmentId", label: "Department", format: r => this.deptName(r.departmentId) },
+  { key: "salary", label: "CTC", sortable: true, align: "right",
+    format: r => this.currency(r.salary) },
+  { key: "joinDate", label: "Joined", sortable: true, format: r => this.date(r.joinDate) },
+  { key: "isActive", label: "Status", format: r => (r.isActive ? "Active" : "Inactive") },
+];
+```
+
+### The DataTable (dumb, reusable)
+
+```ts
+@Component({
+  selector: "app-data-table",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <table>
+      <thead>
+        <tr>
+          @for (col of columns(); track col.key) {
+            <th [class.right]="col.align === 'right'"
+                [class.sortable]="col.sortable"
+                (click)="col.sortable && onSort(col.key)">
+              {{ col.label }}
+              @if (sort()?.field === col.key) {
+                <span>{{ sort()!.dir === "asc" ? "▲" : "▼" }}</span>
+              }
+            </th>
+          }
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of rows(); track row.id) {
+          <tr (click)="rowClick.emit(row)">
+            @for (col of columns(); track col.key) {
+              <td [class.right]="col.align === 'right'">
+                {{ col.format ? col.format(row) : row[col.key] }}
+              </td>
+            }
+          </tr>
+        } @empty {
+          <tr><td [attr.colspan]="columns().length">No data</td></tr>
+        }
+      </tbody>
+    </table>
+  `,
+})
+export class DataTable<T extends { id: number }> {
+  columns = input.required<Column<T>[]>();
+  rows = input.required<T[]>();
+  sort = input<{ field: string; dir: "asc" | "desc" } | null>(null);
+  sortChange = output<string>();
+  rowClick = output<T>();
+  onSort(key: string) { this.sortChange.emit(key); }
+}
+```
+
+### Server-side sort — the cycle
+
+```ts
+// EmployeeListPage
+sort = signal<{ field: string; dir: "asc" | "desc" } | null>(readSortFromUrl(...));
+
+onSortChange(field: string) {
+  this.sort.update(s => {
+    if (!s || s.field !== field) return { field, dir: "asc" };   // new column -> asc
+    if (s.dir === "asc") return { field, dir: "desc" };          // asc -> desc
+    return null;                                                 // desc -> unsorted
+  });
+  this.syncUrl();      // ?sort=salary:desc  (or remove the param)
+}
+
+// query includes: sort: this.sort() ? `${this.sort()!.field}:${this.sort()!.dir}` : undefined
+```
+
+- **Server-side** — the API sorts the whole dataset (`?sort=salary:desc`), so it's correct across pages. Client-side sorting a paginated page only sorts 20 rows.
+- **Cycle** — asc → desc → none is the common pattern; some UIs skip "none".
+- **URL** — `?sort=salary:desc`; refresh/share keeps it.
+- **Page reset on sort change?** — usually **no** (same result set, different order) — but debatable if you're deep in pagination.
+
+### Custom sort keys
+
+Sorting by a computed/formatted column (`fullName`, `deptName`) needs the **server** to understand that key. Either the API accepts `sort=fullName` (and sorts by `first_name, last_name`), or you disable `sortable` on columns the API can't sort.
+
+### Show it in our project
+
+`EmployeeListPage` passes `columns` + `rows` + `sort` to `DataTable` and handles `sortChange`. Departments, Roles, Leave Requests each define their own `Column[]` and reuse the same `DataTable`. The `sort` signal joins the same query pipeline as filters and pagination.
+
+### Where is it used in day-to-day development
+
+Every data table. A column config + a reusable table means a new list screen is "define columns, wire the store" instead of hand-writing `<table>` markup each time.
+
+### Pros and cons
+
+**Pros**
+
+- One `DataTable` for every entity — consistent look, less markup, one place to fix a table bug.
+- `format` keeps display logic in config, not scattered in templates.
+- Server-side sort is correct across pagination.
+
+**Cons**
+
+- Generic typing (`DataTable<T>`) and `keyof T` constraints add friction.
+- Sorting formatted/computed columns needs server support or must be disabled.
+- Very custom cells (buttons, badges, nested components) need a cell-template escape hatch (`ng-template` per column).
+- A too-generic table grows options until it's as complex as writing the table by hand.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Server-side pagination ke saath sorting **hamesha server-side** karo. Client par sirf current page (20 rows) sort karne se list "galat" dikhti hai — page 1 par "highest salary" wo hai jo page 1 me hai, poore dataset ka nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS reusable table">
+
+`EmployeeListPage`, `DepartmentListPage`, and `LeaveRequestListPage` all render `<app-data-table [columns]="columns" [rows]="rows()" [sort]="sort()" (sortChange)="onSortChange($event)" (rowClick)="open($event)">`. Each defines its own `Column[]` (with `format` for currency/dates/status). Clicking the "CTC" header sets `?sort=salary:asc`, then `:desc`, then removes it; the arrow indicator follows. Because sort is server-side, "highest CTC" is genuinely the highest across all 842 employees, not just the visible 20.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- One `DataTable` + a `Column[]` per entity replaces N hand-written `<table>` blocks.
+- Sort cycle: **asc → desc → none** (3 states) on repeated header clicks.
+- Server-side sort (`?sort=field:dir`) is correct across pagination; client-side sort only orders the current page.
+- Sort change usually does **not** reset `page` (same result set, new order).
+- Formatted/computed columns are only sortable if the **API** understands that sort key.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "reusable table kaise banate ho?", "server-side vs client-side sort?", "sort state kahan?", "custom cell rendering?".
+
+Strong answer:
+
+1. A `Column[]` config (`key`, `label`, `sortable`, `format`) + one generic `DataTable<T>`.
+2. Server-side sort — `?sort=field:dir` — correct across pagination; client-side only orders one page.
+3. `sort` signal in the query pipeline + URL, cycling asc → desc → none.
+4. Custom cells: an `ng-template` per column (a cell-template map) as an escape hatch.
+5. Don't reset `page` on sort (same set, new order).
+
+Red flag: "table par sort function client par run karta hoon" — with pagination that's just sorting 20 rows.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Client-side sort on a paginated table.** You reorder 20 rows, not the dataset. Send `?sort=` to the API.
+
+</Mistake>
+
+<Mistake>
+
+**Sorting a `format`ted/computed column the API can't sort by.** Either the API maps that key, or disable `sortable` on it.
+
+</Mistake>
+
+<Mistake>
+
+**Resetting `page` to 1 on every sort change.** Usually unnecessary — it's the same result set.
+
+</Mistake>
+
+<Mistake>
+
+**No sort direction indicator.** The user can't tell if "Name" is ascending or descending. Show an arrow on the active column.
+
+</Mistake>
+
+<Mistake>
+
+**A table so generic it needs 20 inputs.** Beyond columns + rows + sort + a cell-template hook, you're often better hand-writing that specific table.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    COLS["Column[] config (key, label, sortable, format)"] --> DT["DataTable<T> (reusable, OnPush)"]
+    ROWS[rows signal] --> DT
+    SORT["sort signal { field, dir }"] --> DT
+    DT -->|"header click on sortable col"| SC["sortChange -> cycle asc/desc/none"]
+    SC --> SORT
+    SORT --> Q["joins query: ?sort=field:dir"]
+    Q --> API[(server sorts the full dataset)]
+`}
+  caption="A column config drives a reusable table; sorting is a signal that joins the server query."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `Column<T>[]` config (`key`, `label`, `sortable`, `align`, `format`) + one generic reusable `DataTable<T>` (OnPush).
+- Sorting is **server-side**: a `sort` signal (`{ field, dir }` | `null`) joins the query as `?sort=field:dir`; client-side sort only orders the visible page.
+- Header click cycles asc → desc → none; show a direction arrow on the active column.
+- Mirror `sort` to the URL; usually **don't** reset `page` on sort change.
+- Formatted/computed columns are sortable only if the API understands that sort key — otherwise disable `sortable`.
+- Custom cells (badges, buttons): an `ng-template` per column as an escape hatch.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `Column<Employee>[]` config banao (name/email/dept/CTC/joined/status) with `sortable` on name/CTC/joined and `format` for currency/date/status. Render a plain `<table>` from it.
+
+**Medium:** Extract a generic `DataTable<T extends { id: number }>` dumb component (`columns`/`rows`/`sort` inputs, `sortChange`/`rowClick` outputs, OnPush). Reuse it for a dummy `DepartmentList` with different columns.
+
+**Bada:** Server-side sort: `sort` signal cycling asc → desc → none, joined into the query as `?sort=salary:desc`, mirrored to the URL. Confirm on a paginated list that "CTC desc" shows the true top earners (from the API), not a re-sorted page. Add a per-column `ng-template` escape hatch for a "Status" badge cell. 6-line note on server vs client sort with pagination.
+
+</Callout>

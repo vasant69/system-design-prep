@@ -1,0 +1,245 @@
+---
+slug: "departments-roles-and-leave-screens"
+title: "Departments, Roles & Permissions, and Leave Requests"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 6
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["notifications-feed"]
+tags: ["angular", "crud", "rbac", "reuse", "feature-slice", "employee-management"]
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "Three more feature areas built by reusing the patterns already established: Departments is plain CRUD, Roles & Permissions adds a permission matrix and drives the appHasPermission directive and role guards, and Leave Requests adds a status workflow (pending to approved/rejected) with role-gated actions."
+---
+
+<SimpleDefinition>
+
+Three more feature areas, built almost entirely by **reusing** what already exists. **Departments**: plain CRUD (list, form, delete) on the shared `DataTable` + `Paginator` + `ConfirmModal`. **Roles & Permissions**: CRUD plus a permission matrix (checkbox grid), whose data drives the `appHasPermission` directive and role guards. **Leave Requests**: CRUD plus a status workflow (`pending → approved | rejected`) with actions gated by the current user's role.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne saare building blocks bana liye: reusable table/paginator/modal, list store pattern (page/filter/sort/URL), reactive forms with validation, CRUD services, RBAC directive. Ye teen features us sab ka **assembly** hain — naya concept kam, reuse zyada.
+
+### Departments — plain CRUD (the template)
+
+```ts
+// department.routes.ts
+export const DEPARTMENT_ROUTES: Routes = [
+  { path: "", component: DepartmentListPage },
+  { path: "new", component: DepartmentFormPage, data: { mode: "create" } },
+  { path: ":id/edit", component: DepartmentFormPage, data: { mode: "edit" }, canDeactivate: [unsavedChangesGuard] },
+];
+```
+
+- `DepartmentListPage` = a `DepartmentsStore` (page/filter/sort + URL) + `<app-data-table [columns]="columns">` + `<app-paginator>` + `<app-confirm-modal>`.
+- `DepartmentFormPage` = a small reactive form (`name`, `code`, `headId`), `create`/`update`, `markAsPristine` on save.
+- `columns` = `[{ key: 'name', sortable: true }, { key: 'code' }, { key: 'headName', format: ... }, { key: 'employeeCount' }]`.
+
+**Almost nothing new.** A new entity is: a `Column[]`, a `Store` (via the `createListState` factory), a form, and 3 routes.
+
+### Roles & Permissions — CRUD + a matrix
+
+```ts
+interface Role { id: number; name: string; permissions: string[]; }
+const ALL_PERMISSIONS = [
+  "employee.view", "employee.create", "employee.edit", "employee.delete",
+  "leave.approve", "department.manage", "role.manage", "report.export",
+] as const;
+```
+
+The editor is a **permission matrix**: rows = permissions, one column of checkboxes for the role being edited (or rows = permissions, columns = roles for a global view).
+
+```ts
+form = this.fb.group({
+  name: ["", Validators.required],
+  permissions: this.fb.nonNullable.control<string[]>([]),
+});
+
+toggle(perm: string, checked: boolean) {
+  const set = new Set(this.form.controls.permissions.value);
+  checked ? set.add(perm) : set.delete(perm);
+  this.form.controls.permissions.setValue([...set]);
+  this.form.markAsDirty();
+}
+```
+
+This role data is what powers the rest of the app:
+
+- `AuthService` stores the current user's effective `permissions` (from roles) in a signal.
+- `*appHasPermission="'employee.delete'"` (the structural directive from Module 3) shows/hides actions.
+- `permissionGuard('role.manage')` (a `CanMatch` factory from Module 6) gates routes.
+
+**Front-end permission checks are UX only** — every API endpoint must authorize independently.
+
+### Leave Requests — CRUD + a status workflow
+
+```ts
+type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
+interface LeaveRequest {
+  id: number; employeeId: number; from: string; to: string;
+  reason: string; status: LeaveStatus; decidedBy?: number;
+}
+```
+
+- **Create** (any employee): a reactive form with a **date-range group validator** (`to >= from`, no overlap with an existing approved leave — an async check), and a computed "working days" count.
+- **List**: the same store/table pattern, with a `status` filter and a `<app-status-badge [status]>` cell.
+- **Workflow actions**: on a `pending` request, an approver sees **Approve** / **Reject** buttons — gated by `*appHasPermission="'leave.approve'"` **and** `status === 'pending'`. The employee sees **Cancel** on their own pending request.
+- Approve/Reject calls `PATCH /leave/:id { status }` and refetches (or updates optimistically). A rejected request can carry a reason.
+
+```html
+@if (canApprove() && req.status === "pending") {
+  <button (click)="decide(req, 'approved')">Approve</button>
+  <button (click)="decide(req, 'rejected')">Reject</button>
+}
+```
+
+### Show it in our project
+
+`features/departments/`, `features/roles/`, `features/leave/` — each a lazy-loaded route file, a store, a `Column[]`, a form, and (for leave) a small workflow. They share `DataTable`, `Paginator`, `ConfirmModal`, `StatusBadge`, `FieldError`, the `createListState` factory, the CRUD service shape, `appHasPermission`, and `permissionGuard`. The "new feature" cost is small because the platform underneath is done.
+
+### Where is it used in day-to-day development
+
+This *is* most of building a business app after the foundation is laid: slice a feature into list + form + workflow, reuse the shared components and store pattern, add the entity-specific rules. The skill is recognising how little is actually new.
+
+### Pros and cons
+
+**Pros**
+
+- Each feature is a thin assembly of proven pieces — fast to build, consistent, easy to review.
+- RBAC data lives in one place and drives directive + guards + service checks.
+- A status workflow is just a `status` field + gated actions + a `PATCH`.
+
+**Cons**
+
+- The permission list is a shared constant that the backend must agree on (drift = silent bugs).
+- Role/permission changes don't reflect until the user's token/permissions signal refreshes.
+- Status workflows grow (more states, transitions, side effects) — a small state machine helps before it sprawls.
+- Over-generalising the shared `Store`/`DataTable` to fit every feature eventually makes them harder than bespoke.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`*appHasPermission` aur `permissionGuard` sirf **UX** hain — button chhupana ya route hide karna. Har sensitive API endpoint (approve leave, delete employee, manage roles) ko **server par independently authorize** karna hi hoga. Ek user Postman se seedha `PATCH /leave/88 { status: "approved" }` bhej sakta hai chahe UI me button dikha ho ya nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS admin areas">
+
+**Departments** took an afternoon: a `Column[]`, `DepartmentsStore` from the factory, a 3-field form, done — it looks and behaves exactly like Employees because it's the same components. **Roles** added a checkbox matrix; toggling `leave.approve` on the "Manager" role means every Manager now sees Approve/Reject buttons on pending leave (via `appHasPermission`) and can reach `/roles` (via `permissionGuard`). **Leave Requests**: an employee submits Jan 10–14 (the async validator flags an overlap with their approved Dec leave... no overlap, it passes); a Manager sees it as `pending` with Approve/Reject; approving `PATCH`es the status, fires a notification to the employee, and the badge on the employee's bell increments.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A new plain-CRUD feature = roughly **1 `Column[]` + 1 store + 1 form + 3 routes**, reusing all shared components.
+- Permissions are one shared string constant list the front-end and back-end must both know.
+- A status workflow = a `status` enum + actions gated by `role AND current status` + a `PATCH`.
+- Frontend permission checks are **UX only** — every endpoint authorizes server-side too.
+- Role changes reflect in the UI only after the user's `permissions` signal (from the token / a refresh) updates.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "ek nayi CRUD feature kitna kaam hai jab foundation bana ho?", "RBAC front-end me kaise?", "status workflow (approve/reject) kaise model karoge?", "frontend permission check trust?".
+
+Strong answer:
+
+1. A new feature is an assembly: `Column[]` + store (list-state factory) + reactive form + routes; reuse `DataTable`/`Paginator`/`ConfirmModal`.
+2. RBAC: current user's effective `permissions` in a signal -> `*appHasPermission` directive + `permissionGuard` (`CanMatch`) + optional service checks. UX only.
+3. Workflow: a `status` enum, actions shown when `hasPermission(...) && status === 'pending'`, `PATCH /x/:id { status }`, refetch/optimistic.
+4. **Every endpoint authorizes server-side** regardless of the UI.
+
+Red flag: "frontend guard/directive se hi authorization ho jata hai" — that's client-side, bypassable.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Treating `*appHasPermission` / guards as security.** They hide UI; the server must authorize every action.
+
+</Mistake>
+
+<Mistake>
+
+**Duplicating the list/table/form logic per feature.** Departments should reuse the exact Employees pieces. If it can't, fix the shared component, don't fork it.
+
+</Mistake>
+
+<Mistake>
+
+**Permission strings as magic literals scattered everywhere.** One `PERMISSIONS` const (shared shape with the backend); a typo elsewhere is a silent no-op.
+
+</Mistake>
+
+<Mistake>
+
+**Workflow actions gated only by role, not by status.** Showing "Approve" on an already-approved request. Gate on `role AND status`.
+
+</Mistake>
+
+<Mistake>
+
+**No cross-field/async validation on leave dates.** `to < from`, or overlapping an approved leave, slips through. A group validator + an async overlap check.
+
+</Mistake>
+
+<Mistake>
+
+**Assuming a role change updates the UI immediately.** The user's `permissions` signal only changes on the next token refresh / login. Communicate that, or force a refresh.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    SHARED["shared: DataTable, Paginator, ConfirmModal, StatusBadge, createListState, CRUD service shape, appHasPermission, permissionGuard"]
+    SHARED --> DEP["Departments: Column[] + store + form + routes (plain CRUD)"]
+    SHARED --> ROL["Roles: CRUD + permission matrix -> feeds AuthService.permissions signal"]
+    ROL --> DIR["appHasPermission directive + permissionGuard"]
+    SHARED --> LV["Leave: CRUD + status workflow (pending -> approved/rejected)"]
+    LV --> ACT["actions gated by hasPermission('leave.approve') AND status === 'pending'"]
+`}
+  caption="Each feature is a thin assembly of shared pieces; Roles' data drives the app-wide permission checks."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- With the foundation done, a new CRUD feature ≈ `Column[]` + a store (from `createListState`) + a reactive form + 3 lazy routes, reusing `DataTable`/`Paginator`/`ConfirmModal`/`StatusBadge`/`FieldError`.
+- Roles & Permissions: CRUD + a checkbox matrix; the data populates `AuthService.permissions` (a signal) which drives `*appHasPermission` and `permissionGuard` (`CanMatch`).
+- Leave Requests: a `status` enum workflow; actions gated by `hasPermission(...) && status === 'pending'`; `PATCH /leave/:id { status }`; date-range group validator + async overlap check.
+- Frontend permission checks are **UX only** — every endpoint authorizes server-side.
+- Keep permission strings in one shared constant; a typo elsewhere silently fails.
+- Role changes reflect only after the user's permissions signal refreshes.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Build `DepartmentListPage` purely by reuse: a `Column[]`, `DepartmentsStore` (page/filter/sort + URL from your factory), `<app-data-table>` + `<app-paginator>` + `<app-confirm-modal>`. Notice how little new code it is.
+
+**Medium:** Roles editor: a `permissions: string[]` reactive control + a checkbox grid over `ALL_PERMISSIONS`, `toggle(perm, checked)` maintaining a `Set`. Wire the saved role data into `AuthService.permissions` and confirm `*appHasPermission="'x'"` reacts.
+
+**Bada:** Leave Requests: a create form with a date-range group validator (`to >= from`) and an async "no overlap with approved leave" check; a list with a `status` filter and a `StatusBadge` cell; Approve/Reject buttons gated by `hasPermission('leave.approve') && req.status === 'pending'` calling `PATCH /leave/:id { status }`. Then try `PATCH`ing directly (curl/Postman) to prove the frontend guard isn't security. 6-line note.
+
+</Callout>

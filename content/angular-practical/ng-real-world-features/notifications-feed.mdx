@@ -1,0 +1,254 @@
+---
+slug: "notifications-feed"
+title: "The Notifications Feed"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["file-upload-for-documents"]
+tags: ["angular", "notifications", "polling", "sse", "signals", "employee-management"]
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+englishDefinition: "A notifications feature has two parts: transient in-app toasts (a Subject-based service + a toast host) and a persistent feed with an unread badge (a store holding items + unread count, refreshed by polling, SSE, or WebSocket, with mark-as-read). Choose the transport by how real-time it must be."
+---
+
+<SimpleDefinition>
+
+A notifications feature has two distinct parts. **Toasts**: transient, in-app success/error messages — a `Subject<Toast>` service plus a `<toast-host>` component. **The feed**: a persistent list with an unread badge — a store holding `items` and an `unread` count, refreshed by **polling** (simple), **SSE** (server push, one-way), or **WebSocket** (bidirectional), with `markAsRead` / `markAllRead`. Pick the transport by how real-time it truly needs to be.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Notifications" me do alag cheezein hain — inhe alag rakho:
+
+### Part 1 — Toasts (transient, client-only)
+
+```ts
+@Injectable({ providedIn: "root" })
+export class ToastService {
+  private _toasts$ = new Subject<Toast>();
+  toasts$ = this._toasts$.asObservable();
+  success(msg: string) { this._toasts$.next({ id: crypto.randomUUID(), kind: "success", msg }); }
+  error(msg: string) { this._toasts$.next({ id: crypto.randomUUID(), kind: "error", msg }); }
+}
+```
+
+```ts
+// ToastHost component
+private toasts = signal<Toast[]>([]);
+constructor() {
+  inject(ToastService).toasts$.pipe(takeUntilDestroyed()).subscribe(t => {
+    this.toasts.update(list => [...list, t]);
+    setTimeout(() => this.dismiss(t.id), 4000);      // auto-dismiss
+  });
+}
+```
+
+- `Subject` (not `BehaviorSubject`) — a toast is a fire-and-forget event; a late-mounted host shouldn't replay old toasts.
+- One `<app-toast-host>` near the app root.
+
+### Part 2 — The persistent feed + unread badge
+
+```ts
+@Injectable({ providedIn: "root" })
+export class NotificationStore {
+  private api = inject(NotificationService);
+  private state = signal<{ items: Notification[]; unread: number }>({ items: [], unread: 0 });
+
+  readonly items = computed(() => this.state().items);
+  readonly unread = computed(() => this.state().unread);
+
+  constructor() {
+    // poll every 30s while the tab is visible
+    interval(30_000).pipe(
+      startWith(0),
+      filter(() => document.visibilityState === "visible"),
+      switchMap(() => this.api.getFeed()),
+      takeUntilDestroyed(),
+    ).subscribe(feed => this.state.set({ items: feed.items, unread: feed.unread }));
+  }
+
+  markRead(id: string) {
+    this.state.update(s => ({
+      items: s.items.map(n => n.id === id ? { ...n, read: true } : n),
+      unread: Math.max(0, s.unread - 1),
+    }));
+    this.api.markRead(id).subscribe();               // fire-and-forget (optimistic)
+  }
+  markAllRead() { /* optimistic clear + api call */ }
+}
+```
+
+Header badge: `@if (store.unread() > 0) { <span class="badge">{{ store.unread() }}</span> }`.
+
+### Transport choice
+
+| Transport | Direction | Real-time | Complexity | Use when |
+|---|---|---|---|---|
+| **Polling** (`interval` + `switchMap`) | pull | seconds delay | low | "good enough" freshness; simple infra |
+| **SSE** (`EventSource`) | server → client | instant | medium | server push, one-way, auto-reconnect built in |
+| **WebSocket** | both ways | instant | higher | chat, presence, collaborative editing |
+
+Most notification feeds are fine with **polling every 20–60s**, paused when the tab is hidden (`document.visibilityState`) or on a slow network. Start there; upgrade to SSE only if "instant" is a real requirement.
+
+### SSE sketch
+
+```ts
+getStream(): Observable<Notification> {
+  return new Observable(sub => {
+    const es = new EventSource(`${this.base}/notifications/stream`, { withCredentials: true });
+    es.onmessage = e => sub.next(JSON.parse(e.data));
+    es.onerror = e => sub.error(e);
+    return () => es.close();          // teardown on unsubscribe
+  });
+}
+```
+
+`EventSource` reconnects automatically; wrap it in an Observable so `takeUntilDestroyed()` / `retry` compose.
+
+### Show it in our project
+
+EMS: `ToastService` + one `<app-toast-host>` for save/delete/error feedback. `NotificationStore` (root) polls `/notifications` every 30s (paused when hidden), drives the header bell badge, and a dropdown feed with `markRead` on click and `markAllRead`. Clicking an item navigates to its target (e.g. a leave request awaiting approval).
+
+### Where is it used in day-to-day development
+
+Every app has toasts. Most internal apps have a feed with a badge. The recurring bits: pause polling when hidden, optimistic mark-as-read, and keeping the badge count and the list in sync from one store.
+
+### Pros and cons
+
+**Polling — Pros:** trivial, works everywhere, no special infra. **Cons:** delay, wasted requests when nothing changed (mitigate with `If-Modified-Since` / a cheap `?since=` endpoint).
+
+**SSE — Pros:** instant, one connection, auto-reconnect. **Cons:** one-way, connection limits per domain (HTTP/1.1), proxies can buffer.
+
+**WebSocket — Pros:** bidirectional, lowest latency. **Cons:** more infra, auth/reconnect/heartbeat logic you own.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Polling ko tab hidden hone par **pause** karo (`document.visibilityState !== "visible"`). Ek background tab har 30s me request bhejta rahe to server load aur user ki battery dono waste hoti hain — aur wapas aane par ek fresh fetch trigger kar do.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS bell + toasts">
+
+Saving an employee fires `toast.success("Saved")` — a green toast slides in near the top-right and auto-dismisses after 4s (a `Subject` event, one `ToastHost`). Separately, the header bell shows "3" from `NotificationStore.unread()`. The store polls `/notifications` every 30s, but only while the tab is visible; switching back to the tab triggers an immediate refresh. Opening the dropdown and clicking "Leave request from Diya needs approval" optimistically marks it read (badge → 2), navigates to `/leave/88`, and fires `markRead` in the background.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Two separate concerns: transient **toasts** (`Subject` + host) and a persistent **feed** (store + badge).
+- Typical polling interval: **20–60s**, paused when `document.visibilityState !== "visible"`.
+- Toasts: `Subject`, not `BehaviorSubject` — no replay of old toasts to a new host.
+- Optimistic `markRead`: update the store first, fire the API call fire-and-forget.
+- SSE `EventSource` auto-reconnects; WebSocket reconnect/heartbeat is your code.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "notifications kaise implement karoge?", "polling vs SSE vs WebSocket?", "unread badge aur list sync?", "toast service?".
+
+Strong answer:
+
+1. Split toasts (transient, `Subject` + host) from the feed (persistent, store + badge).
+2. Feed refresh: polling (`interval` + `switchMap`, paused when hidden) is the sensible default; SSE for server-push one-way; WebSocket for bidirectional/low-latency.
+3. One store holds `items` + `unread` so the badge and list can't drift.
+4. `markRead` optimistically (update store, fire API in background).
+5. Toasts use `Subject` (no replay), one host near the root.
+
+Red flag: "`setInterval` in every component that shows the badge" — one store, one poller.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Polling that never pauses.** A hidden tab hammering the server every 30s. Gate on `document.visibilityState`.
+
+</Mistake>
+
+<Mistake>
+
+**`BehaviorSubject`/`ReplaySubject` for toasts.** A newly-mounted host replays old, already-dismissed toasts. Use `Subject`.
+
+</Mistake>
+
+<Mistake>
+
+**Badge count and list from different sources.** They drift ("badge says 3, list shows 5 unread"). One store, derived `unread`.
+
+</Mistake>
+
+<Mistake>
+
+**Blocking on `markRead`.** The UI shouldn't wait for a round-trip to grey out an item. Optimistic update, background call.
+
+</Mistake>
+
+<Mistake>
+
+**Jumping straight to WebSocket.** Most feeds don't need it. Polling first; upgrade only if "instant" is a genuine requirement.
+
+</Mistake>
+
+<Mistake>
+
+**Not tearing down SSE/WebSocket.** `EventSource`/`WebSocket` keep the connection open. Close it in the Observable's teardown / `ngOnDestroy`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Toasts
+      TS["ToastService (Subject)"] -->|"success()/error()"| TH["ToastHost: list + auto-dismiss"]
+    end
+    subgraph Feed
+      POLL["interval(30s) + visibility filter + switchMap(api.getFeed)"] --> ST["NotificationStore: items + unread"]
+      ST --> BADGE[header bell badge = unread()]
+      ST --> LIST[dropdown feed]
+      LIST -->|click item| MR["markRead optimistic + api call + navigate"]
+    end
+`}
+  caption="Toasts are fire-and-forget events; the feed is one store fed by a paused-when-hidden poller."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Two concerns: **toasts** (transient — `Subject<Toast>` service + one `<toast-host>`, auto-dismiss) and the **feed** (persistent — a store with `items` + derived `unread`, plus `markRead`/`markAllRead`).
+- Feed refresh transports: **polling** (`interval` + `switchMap`, paused on `visibilityState`) is the default; **SSE** (`EventSource`, one-way, auto-reconnect) for server push; **WebSocket** for bidirectional/low-latency.
+- One store so the badge count and the list never drift.
+- `markRead` optimistically: update the store, then fire the API call fire-and-forget.
+- Toasts use `Subject` (no replay); a `BehaviorSubject` would re-show old toasts.
+- Always tear down SSE/WebSocket connections.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `ToastService` with a `Subject<Toast>` and `success`/`error` methods. A `<app-toast-host>` subscribes, appends to a `toasts` signal, and `setTimeout`s an auto-dismiss. Trigger a toast from a button.
+
+**Medium:** `NotificationStore` (root): `state = signal({ items, unread })`, `interval(30_000).pipe(startWith(0), filter(visible), switchMap(api.getFeed))`. Header badge from `store.unread()`. Confirm the poll pauses when you switch tabs and refetches when you return.
+
+**Bada:** Add `markRead(id)` (optimistic: update the store, then `api.markRead(id).subscribe()`) and `markAllRead()`. Clicking an item navigates to its target. Then swap polling for an SSE stream: wrap `EventSource` in an `Observable` with a teardown that calls `es.close()`, and merge its events into the store. 6-line note comparing polling / SSE / WebSocket.
+
+</Callout>

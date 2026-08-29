@@ -1,0 +1,252 @@
+---
+slug: "filtering-and-debounced-search"
+title: "Filtering and Debounced Search"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 2
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["server-side-pagination"]
+tags: ["angular", "search", "filter", "debounce", "switchmap", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "Server-side search and filtering: a search box and filter controls feed one combined query signal; the pipeline debounces, dedupes, resets the page, and switchMaps to the API. All filter state lives in the URL query params so filtered views are shareable and refresh-safe."
+---
+
+<SimpleDefinition>
+
+Server-side search and filtering: a search box plus filter controls (department, status, date range) feed one combined **query signal**. The fetch pipeline `debounceTime`s typing, `distinctUntilChanged`s no-op changes, resets `page` to 1, and `switchMap`s to the API (cancelling the previous request). All filter state is mirrored to the URL's query params, so a filtered view is shareable, bookmarkable, and refresh-safe.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Search aur filters ~90% list screens ka core hain. Client par filter karna sirf chhote datasets ke liye — bade ke liye server ko `?search=&departmentId=` bhejo.
+
+### One combined query signal
+
+```ts
+type Filters = { search: string; departmentId: number | null; activeOnly: boolean };
+
+export class EmployeeListPage {
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+  private api = inject(EmployeeService);
+
+  filters = signal<Filters>(readFiltersFromUrl(this.route.snapshot.queryParamMap));
+  page = signal(1);
+  pageSize = signal(20);
+
+  private query = computed(() => ({ ...this.filters(), page: this.page(), pageSize: this.pageSize() }));
+
+  result = toSignal(
+    toObservable(this.query).pipe(
+      debounceTime(250),
+      distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+      switchMap(q => this.api.getAll(q)),
+    ),
+    { initialValue: null },
+  );
+
+  setSearch(search: string) { this.patch({ search }); }
+  setDepartment(departmentId: number | null) { this.patch({ departmentId }); }
+  toggleActiveOnly(activeOnly: boolean) { this.patch({ activeOnly }); }
+
+  private patch(part: Partial<Filters>) {
+    this.filters.update(f => ({ ...f, ...part }));
+    this.page.set(1);                                   // reset page on filter change
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: toQueryParams({ ...this.filters(), page: 1 }),
+      queryParamsHandling: "merge",
+      replaceUrl: true,                                 // no history spam while typing
+    });
+  }
+}
+```
+
+### The template
+
+```html
+<input
+  [value]="filters().search"
+  (input)="setSearch($any($event.target).value)"
+  placeholder="Search name or email" />
+
+<select [ngModel]="filters().departmentId" (ngModelChange)="setDepartment($event)">
+  <option [ngValue]="null">All departments</option>
+  @for (d of departments(); track d.id) { <option [ngValue]="d.id">{{ d.name }}</option> }
+</select>
+
+<label><input type="checkbox" [checked]="filters().activeOnly"
+  (change)="toggleActiveOnly($any($event.target).checked)" /> Active only</label>
+
+<!-- active filter chips -->
+@if (filters().departmentId) {
+  <span class="chip">{{ departmentName(filters().departmentId) }} <button (click)="setDepartment(null)">×</button></span>
+}
+```
+
+### Why each pipeline step
+
+- **`debounceTime(250)`** — don't hit the API on every keystroke; wait for a pause.
+- **`distinctUntilChanged`** — selecting the same department, or `debounce` re-emitting the same object, shouldn't re-query.
+- **`switchMap`** — a new query cancels the in-flight one -> no stale results (the classic "type fast, wrong results" bug).
+- **Reset `page` to 1** — a narrower filter's results may not have your current page.
+- **`replaceUrl: true`** — one history entry per search session, not per keystroke.
+
+### Client-side vs server-side filtering
+
+- **Client-side** (filter an in-memory array with a `computed`): instant, zero requests — only for small, fully-loaded lists (≤ a few hundred rows).
+- **Server-side** (send params): scales, works with pagination — the default for real data. Don't try to combine "load page 3" with "filter client-side" — you'd only be filtering 20 rows.
+
+### Show it in our project
+
+`EmployeeListPage` has search + department + active-only + (later) date-range filters, all in one `filters` signal, all mirrored to query params, all resetting `page`. "Active filter" chips let the user see and clear each one. Departments/Leave Requests reuse the same shape.
+
+### Where is it used in day-to-day development
+
+Every searchable list. The recurring details: debounce value, dedupe, page reset, URL sync, and cancelling stale requests.
+
+### Pros and cons
+
+**Pros**
+
+- One query signal -> one pipeline -> easy to reason about.
+- URL-as-state: shareable, refresh-safe, back-button correct.
+- `debounce` + `switchMap` = smooth, no stale results, kind to the API.
+
+**Cons**
+
+- More RxJS ceremony than a naive `(input)` -> `getAll`.
+- Every filter setter must remember to reset `page` and sync the URL — extract a helper.
+- Client vs server filtering is an easy thing to get wrong when pagination is involved.
+- Deep-equality dedupe (`JSON.stringify`) is a blunt tool for big filter objects.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Search me `mergeMap`/`concatMap` mat use karo. `mergeMap` se purani requests cancel nahi hoti — ek slow purani response nayi ke baad aake galat results dikha deti hai. Search hamesha `switchMap` (latest-wins).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employee search">
+
+An HR manager types "aar" -> after 250ms one request fires for `?search=aar&page=1`; they pick "Engineering" -> `?search=aar&departmentId=4&page=1` (page reset); they tick "Active only" -> another param. Each change replaces the URL (no history spam) and cancels any in-flight request. The result: `/employees?search=aar&departmentId=4&activeOnly=true` — pasteable into chat, and pressing back removes "Active only". Active-filter chips above the table let them clear "Engineering" with one click.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical search debounce: **200–400 ms**.
+- `switchMap` cancels the previous request immediately on a new query.
+- Every filter change resets `page` to **1**.
+- `replaceUrl: true` + debounce = **one** meaningful history entry per search session.
+- Client-side filtering is viable only up to roughly a **few hundred** fully-loaded rows.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "debounced search pipeline?", "`switchMap` vs `debounceTime` — dono kyun?", "filter state kahan?", "client vs server filtering?".
+
+Strong answer:
+
+1. One combined query signal; pipeline: `debounceTime` -> `distinctUntilChanged` -> `switchMap(api)`.
+2. `debounceTime` waits for a typing pause; `switchMap` cancels stale requests. Both needed.
+3. Filter state in query params (shareable/refresh-safe); every filter change resets `page` and `replaceUrl`s.
+4. Server-side for real data + pagination; client-side only for small preloaded lists.
+
+Red flag: "`(input)` par seedha `getAll` call karta hoon" — hammers the API and races.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**No debounce.** Every keystroke = a request; the server and the network suffer, and responses race.
+
+</Mistake>
+
+<Mistake>
+
+**`mergeMap` for search.** Stale slow responses overwrite fresh ones. Use `switchMap`.
+
+</Mistake>
+
+<Mistake>
+
+**Filter change without `page` reset.** Current page may be out of range for the new results.
+
+</Mistake>
+
+<Mistake>
+
+**Client-side filtering on a paginated list.** You're only filtering the 20 loaded rows, not the dataset.
+
+</Mistake>
+
+<Mistake>
+
+**No `distinctUntilChanged`.** `debounceTime` can re-emit an equal object; selecting the same value re-queries needlessly.
+
+</Mistake>
+
+<Mistake>
+
+**History spam.** No `replaceUrl` -> one history entry per keystroke -> the back button is unusable.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    S[search input] --> F["filters signal + page + pageSize"]
+    D[department / status / date filters] --> F
+    F --> Q["query = computed(...)"]
+    Q --> DB[debounceTime 250]
+    DB --> DUC[distinctUntilChanged]
+    DUC --> SM["switchMap(q => api.getAll(q))"]
+    SM --> LIST[table + paginator]
+    F -->|any change| RESET[page = 1 + replaceUrl query params]
+`}
+  caption="All filters feed one query signal; the pipeline debounces, dedupes, and switches to the latest request."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- All filters + `page`/`pageSize` feed one `computed` **query signal**.
+- Pipeline: `toObservable(query)` -> `debounceTime(~250)` -> `distinctUntilChanged` -> `switchMap(q => api.getAll(q))` -> `toSignal`.
+- `debounceTime` waits for a typing pause; `switchMap` cancels stale requests — you need both.
+- Every filter/search change: reset `page` to 1 and mirror to query params with `replaceUrl: true`.
+- Server-side filtering for real data (works with pagination); client-side `computed` filtering only for small, fully-loaded lists.
+- Never `mergeMap`/`concatMap` for search — `switchMap` (latest-wins).
+- Active-filter chips let users see and clear each filter.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Search input `(input)` -> `setSearch(value)` which updates a `filters` signal. Pipeline: `toObservable(query).pipe(debounceTime(300), switchMap(api.getAll))`. Type fast and confirm (network tab) only one request after you stop.
+
+**Medium:** Add department `<select>` and "Active only" checkbox to the same `filters` signal. Every setter resets `page` to 1 and `router.navigate([], { queryParams, queryParamsHandling: 'merge', replaceUrl: true })`. Refresh keeps filters; back button removes the last one.
+
+**Bada:** Add `distinctUntilChanged` and confirm re-selecting the same department doesn't re-query. Swap `switchMap` for `mergeMap` and reproduce the stale-results bug with a throttled network. Add active-filter chips with clear buttons. 6-line note on client-side vs server-side filtering when pagination is in play.
+
+</Callout>

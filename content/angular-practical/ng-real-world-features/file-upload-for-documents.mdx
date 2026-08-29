@@ -1,0 +1,267 @@
+---
+slug: "file-upload-for-documents"
+title: "File Upload for the Documents Screen"
+section: "angular-practical"
+module: "ng-real-world-features"
+order: 4
+difficulty: "advanced"
+readingTime: 14
+prerequisites: ["sorting-and-column-config"]
+tags: ["angular", "file-upload", "formdata", "http-events", "progress", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "File upload in Angular: an input type=file (or drag-drop) gives a File; validate type and size client-side; send it as multipart/form-data with FormData; use HttpClient with observe:'events' and reportProgress:true to show a progress bar; handle cancel, retry, and the finished document metadata."
+---
+
+<SimpleDefinition>
+
+File upload in Angular: an `<input type="file">` (or a drag-drop zone) produces a `File` object. Validate its type and size client-side, wrap it in `FormData` (`multipart/form-data`), and POST with `HttpClient` using `observe: "events"` + `reportProgress: true` to drive a progress bar. Handle cancel (unsubscribe), retry, and the returned document metadata. For big files or S3, use a pre-signed URL instead of proxying through your API.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Documents screen: employee ke KYC docs (PAN, Aadhaar, offer letter) upload karne hain. File upload me 4 cheezein: file lena, validate karna, progress ke saath bhejna, aur result handle karna.
+
+### 1. Get the file
+
+```html
+<input type="file" accept=".pdf,.png,.jpg" (change)="onPick($event)" />
+```
+
+```ts
+onPick(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  const error = validateFile(file);
+  if (error) { this.toast.error(error); return; }
+  this.upload(file);
+}
+
+function validateFile(f: File): string | null {
+  const MAX = 5 * 1024 * 1024;                       // 5 MB
+  const OK = ["application/pdf", "image/png", "image/jpeg"];
+  if (!OK.includes(f.type)) return "Only PDF, PNG, or JPG.";
+  if (f.size > MAX) return "Max 5 MB.";
+  return null;
+}
+```
+
+- `input.files` is a `FileList`; take `[0]` (or loop for multiple).
+- `accept` is a UX hint only — **always validate in code** (and on the server).
+- Client validation is convenience; the server must enforce type/size/virus-scan.
+
+### 2. Send it — `FormData` + progress events
+
+```ts
+// DocumentService
+upload(employeeId: number, file: File): Observable<HttpEvent<AppDocument>> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("employeeId", String(employeeId));
+  form.append("type", "kyc");
+
+  return this.http.post<AppDocument>(`${this.base}/documents`, form, {
+    observe: "events",
+    reportProgress: true,
+  });
+}
+```
+
+- **Don't set `Content-Type`** — the browser sets `multipart/form-data; boundary=...` automatically. Setting it manually breaks the boundary.
+- `observe: "events"` + `reportProgress: true` -> the Observable emits `HttpEvent`s, including `HttpUploadProgressEvent`.
+
+### 3. Progress bar in the component
+
+```ts
+uploadState = signal<{ progress: number; status: "idle" | "uploading" | "done" | "error" }>({
+  progress: 0, status: "idle",
+});
+private sub?: Subscription;
+
+upload(file: File) {
+  this.uploadState.set({ progress: 0, status: "uploading" });
+  this.sub = this.docs.upload(this.employeeId(), file).subscribe({
+    next: (event) => {
+      if (event.type === HttpEventType.UploadProgress && event.total) {
+        this.uploadState.update(s => ({ ...s, progress: Math.round(100 * event.loaded / event.total!) }));
+      } else if (event.type === HttpEventType.Response) {
+        this.uploadState.set({ progress: 100, status: "done" });
+        this.documents.update(list => [event.body!, ...list]);   // prepend the new doc
+      }
+    },
+    error: () => this.uploadState.set({ progress: 0, status: "error" }),
+  });
+}
+
+cancel() { this.sub?.unsubscribe(); this.uploadState.set({ progress: 0, status: "idle" }); }
+```
+
+`unsubscribe()` aborts the in-flight request (the browser cancels the upload).
+
+### 4. Drag and drop (optional)
+
+```ts
+@HostListener("dragover", ["$event"]) onOver(e: DragEvent) { e.preventDefault(); this.dragging.set(true); }
+@HostListener("drop", ["$event"]) onDrop(e: DragEvent) {
+  e.preventDefault(); this.dragging.set(false);
+  const file = e.dataTransfer?.files?.[0];
+  if (file) this.handle(file);
+}
+```
+
+### 5. Big files / S3 — pre-signed URL
+
+Proxying a 500 MB file through your API server wastes its bandwidth and memory. Instead: ask your API for a **pre-signed S3 URL**, `PUT` the file directly to S3 from the browser (still with progress events), then tell your API "upload done, here's the key". Same Angular code, different target URL.
+
+### Show it in our project
+
+The EMS Documents tab (`/employees/:id/documents`) has a drop zone + `<input type="file">`, client validation (PDF/PNG/JPG ≤ 5 MB), a per-upload progress bar with Cancel, and prepends the returned `AppDocument` to the list on success. A "Retry" appears on error.
+
+### Where is it used in day-to-day development
+
+Avatars, KYC/ID docs, attachments, CSV imports, bulk photo uploads. The `FormData` + `observe: 'events'` + progress + cancel pattern is the same each time.
+
+### Pros and cons
+
+**Pros**
+
+- `FormData` + `HttpClient` events give progress and cancel for free — no extra library.
+- Client validation is instant UX; the server stays the real gate.
+- Pre-signed URLs scale to huge files without loading your API.
+
+**Cons**
+
+- Must remember **not** to set `Content-Type` manually.
+- Progress event handling is verbose (an event-type `switch`).
+- Multiple/parallel uploads need per-file state and concurrency limits.
+- Retry/resume for large files needs chunked/multipart upload logic (or a library).
+
+</Hinglish>
+
+<Callout type="trap">
+
+`FormData` bhejte waqt `headers: { 'Content-Type': 'multipart/form-data' }` **mat set karo**. Browser khud `Content-Type` ko `multipart/form-data; boundary=----WebKit...` set karta hai — manually set karne se `boundary` missing ho jata hai aur server request parse nahi kar paata (400 / empty file).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS KYC documents">
+
+On `/employees/42/documents`, dragging a `pan-card.pdf` (2.1 MB) onto the drop zone: it's validated (PDF, under 5 MB), a `FormData` POST to `/documents` starts with `observe: 'events'`, and a progress bar fills 0 → 100% from `UploadProgress` events. On the `Response` event, the returned `{ id, name, sizeBytes, url, uploadedAt }` is prepended to the documents list. A "Cancel" button unsubscribes mid-upload (the browser aborts the request). Uploading a 12 MB `.exe` is rejected client-side instantly ("Only PDF, PNG, or JPG"), and the server rejects it again if it ever gets there.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `<input type="file">.files` is a `FileList` — `[0]` for single, iterate for multiple.
+- `accept="..."` is a **hint only**; validate type/size in code *and* on the server.
+- Never set `Content-Type` for `FormData` — the browser adds it with the required `boundary`.
+- `observe: "events"` + `reportProgress: true` -> `HttpEventType.UploadProgress` (`loaded`/`total`) then `HttpEventType.Response`.
+- `subscription.unsubscribe()` aborts an in-flight upload.
+- Files above roughly **tens of MB** -> pre-signed URL direct-to-storage, not through your API.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "file upload Angular me kaise?", "progress bar kaise?", "`Content-Type` kya set karoge?", "bade files?", "upload cancel?".
+
+Strong answer:
+
+1. `<input type="file">` -> `File`; validate type/size in code (server too); `FormData.append("file", file)`.
+2. `http.post(url, form, { observe: "events", reportProgress: true })` -> handle `UploadProgress` and `Response` events.
+3. **Never** set `Content-Type` manually for `FormData`.
+4. Cancel = `subscription.unsubscribe()`.
+5. Large files / S3 -> pre-signed URL, `PUT` direct to storage, then notify the API.
+
+Red flag: "`Content-Type: multipart/form-data` header set karta hoon" — breaks the boundary.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Setting `Content-Type: multipart/form-data` manually.** The `boundary` is missing; the server can't parse the body. Let the browser set it.
+
+</Mistake>
+
+<Mistake>
+
+**Trusting `accept` / client validation as security.** It's UX. The server must validate type, size, and scan for malware.
+
+</Mistake>
+
+<Mistake>
+
+**No progress or cancel on a large upload.** The user stares at a frozen screen. Use `observe: "events"` and expose a Cancel.
+
+</Mistake>
+
+<Mistake>
+
+**Proxying huge files through the API.** Wastes API memory/bandwidth. Pre-signed URL direct to storage.
+
+</Mistake>
+
+<Mistake>
+
+**Forgetting to unsubscribe on cancel / component destroy.** The upload keeps running. `unsubscribe()` aborts it.
+
+</Mistake>
+
+<Mistake>
+
+**Reading the whole file into memory (`FileReader`) just to send it.** `FormData.append(file)` streams it — no need to base64 or read it first (unless you need a preview).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    PICK["input type=file / drop -> File"] --> VAL{validate type + size}
+    VAL -->|fail| ERR[toast + stop]
+    VAL -->|ok| FD["FormData.append('file', file)"]
+    FD --> POST["http.post(url, form, { observe: 'events', reportProgress: true })"]
+    POST --> PE[UploadProgress events -> progress bar]
+    POST --> RES[Response event -> prepend AppDocument to list]
+    CANCEL[Cancel button] --> UNSUB["subscription.unsubscribe() aborts upload"]
+`}
+  caption="Pick, validate, FormData POST with event observing, then progress and the finished document — with cancel via unsubscribe."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `<input type="file">` -> `File`; validate type/size in code (and on the server); `accept` is only a hint.
+- `const form = new FormData(); form.append("file", file, file.name)` + extra fields.
+- `http.post(url, form, { observe: "events", reportProgress: true })` — handle `HttpEventType.UploadProgress` (`loaded`/`total`) and `HttpEventType.Response`.
+- **Never** set `Content-Type` for `FormData` — the browser sets it with the `boundary`.
+- Cancel an upload with `subscription.unsubscribe()`.
+- Big files / cloud storage: get a pre-signed URL from your API, `PUT` direct to storage (still with progress), then notify the API.
+- Multiple uploads: per-file state + a concurrency limit.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `<input type="file" accept=".pdf,.png,.jpg" (change)="onPick($event)">`. `onPick` reads `files[0]`, runs `validateFile` (type in an allowlist, size ≤ 5 MB), and toasts on failure.
+
+**Medium:** `DocumentService.upload(id, file)` builds `FormData` and returns `http.post(url, form, { observe: "events", reportProgress: true })`. Component handles `UploadProgress` -> a `progress` signal (0–100) -> a `<progress>` bar, and `Response` -> prepend the returned doc to the list. Confirm you did **not** set `Content-Type`.
+
+**Bada:** Add a Cancel button that `unsubscribe()`s mid-upload (throttle the network to see it). Add a drag-drop zone (`@HostListener` `dragover`/`drop`). Then sketch the pre-signed-URL flow: `GET /documents/upload-url` -> `PUT` file to the returned URL with progress -> `POST /documents { key }`. 6-line note on why not to proxy big files through the API.
+
+</Callout>
