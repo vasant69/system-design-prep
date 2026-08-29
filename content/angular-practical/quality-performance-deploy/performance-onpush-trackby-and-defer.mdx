@@ -1,0 +1,238 @@
+---
+slug: "performance-onpush-trackby-and-defer"
+title: "Performance: OnPush, track, @defer and Signals"
+section: "angular-practical"
+module: "quality-performance-deploy"
+order: 2
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["angular-material-and-cdk-concepts"]
+tags: ["angular", "performance", "onpush", "change-detection", "defer", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree", "HCLTech"]
+englishDefinition: "The main Angular performance levers: OnPush change detection with immutable/signal state, track in @for to reuse DOM nodes, no function calls or heavy pipes in templates, @defer to lazily load heavy sub-trees, trackBy-style keys, lazy routes, and measuring with the profiler before optimising."
+---
+
+<SimpleDefinition>
+
+The Angular performance toolkit, in order of impact: **`OnPush`** change detection paired with immutable or signal-based state (so Angular checks far fewer components); **`track`** in `@for` (reuse DOM nodes on list changes); **no function calls / heavy pipes in templates** (they run every cycle); **`@defer`** to lazily load and render heavy sub-trees on a trigger; **lazy routes**; and, first of all, **measuring** with the DevTools/Angular profiler so you optimise the real bottleneck.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"App slow hai" — pehla kaam **measure** karo (Angular DevTools profiler, Chrome Performance tab). Guess mat karo. Phir ye levers, impact ke order me:
+
+### 1. OnPush + signals/immutability (biggest lever)
+
+```ts
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush, /* ... */ })
+```
+
+Default CD har event par poore component tree ko check karta hai. `OnPush` component tabhi check hota hai jab: `@Input` **reference** badle, component se event fire ho, ek consumed **signal** badle, `async` pipe emit kare, ya `markForCheck()` call ho.
+
+- Har component ko OnPush banao (ek schematic hai: `ng g @angular/core:...`, ya just set it).
+- State ko **immutable** treat karo (`this.items = [...this.items, x]`, not `push`) — ya **signals** use karo, jinke saath OnPush automatically correct rehta hai.
+- Signals + zoneless (`provideZonelessChangeDetection()`) is the endgame — Angular sirf wahi views update karta hai jinka signal badla.
+
+### 2. `track` in `@for`
+
+```html
+@for (emp of employees(); track emp.id) { ... }
+```
+
+`track emp.id` -> Angular list change par DOM nodes ko match karke reuse/move karta hai instead of destroy-recreate. Bina proper `track`: full re-render, lost `<input>` focus/scroll, slow. (Syntactically required in the new `@for`.)
+
+### 3. No function calls / heavy work in templates
+
+```html
+<!-- BAD: runs every change-detection cycle -->
+{{ getActiveCount(employees) }}
+{{ employees | filterAndSort:term }}
+
+<!-- GOOD: computed once, only when inputs change -->
+{{ activeCount() }}
+```
+
+Template expressions re-evaluate every CD cycle. A function call or an impure pipe there is silent, repeated work. Move it to a `computed()` / a getter / a pure pipe.
+
+### 4. `@defer` — lazily render heavy sub-trees
+
+```html
+@defer (on viewport) {
+  <app-salary-chart [data]="chartData()" />
+} @placeholder {
+  <div class="skeleton"></div>
+} @loading (after 100ms) {
+  <app-spinner />
+} @error {
+  <p>Couldn't load the chart.</p>
+}
+```
+
+- The deferred block's code (and its dependencies) is a **separate chunk**, loaded on the trigger.
+- Triggers: `on viewport`, `on idle`, `on interaction`, `on hover`, `on timer(2s)`, `when condition`, or `prefetch on ...`.
+- Use for below-the-fold widgets, charts, rich editors, a comments section — anything heavy the user might not scroll to.
+
+### 5. Lazy routes + preloading
+
+`loadComponent` / `loadChildren` per feature (Module 6) + `withPreloading(PreloadAllModules)` -> small initial bundle, instant later navigation.
+
+### 6. Other levers
+
+- **`@Input` transforms / signal inputs** instead of `ngOnChanges` churn.
+- **Detach CD** for a truly static/ticking sub-tree (`ChangeDetectorRef.detach()` + manual `detectChanges()`) — rare.
+- **`NgZone.runOutsideAngular`** for high-frequency non-UI work (scroll math, animations, websockets) then re-enter for the UI bit.
+- **`trackBy`-style stable keys** everywhere lists render.
+- **Image `loading="lazy"`**, `NgOptimizedImage` (`ngSrc`) for responsive/lazy images.
+- **Bundle budgets** in `angular.json` to catch regressions in CI.
+
+### Show it in our project
+
+Every EMS component is `OnPush`; state is signals. The employee list uses `track emp.id`. Derived counts/filters/pagination are `computed()`, never template function calls. The dashboard's charts and the employee "Documents" tab are `@defer (on viewport)`. Feature areas are lazy routes with `PreloadAllModules`. A `budgets` block fails the build if the initial bundle grows past a threshold.
+
+### Where is it used in day-to-day development
+
+`OnPush` + signals is the default posture, not an optimisation you add later. `track`, no-template-functions, and `@defer` for heavy widgets are habits. Real profiling happens when a specific screen feels slow.
+
+### Pros and cons
+
+**Pros**
+
+- OnPush + signals: dramatically fewer CD checks; predictable; zoneless-ready.
+- `@defer` + lazy routes: small initial load, code split by need.
+- `track` + no-template-work: smooth lists, no wasted computation.
+
+**Cons**
+
+- OnPush with mutable state = stale views (discipline needed).
+- `@defer` boundaries need placeholders/loading/error states designed.
+- Over-optimising (detach CD, micro-tuning) without profiling wastes time and adds bugs.
+- Some wins (zoneless) are still stabilising in the ecosystem.
+
+</Hinglish>
+
+<Callout type="trap">
+
+Optimise karne se pehle **profile karo** (Angular DevTools "Profiler" tab, Chrome Performance). "App slow hai" ka 90% baar jawab hota hai: ek template function call jo har CD cycle me chal raha hai, ya ek `@for` bina proper `track`, ya ek giant list bina pagination/virtual-scroll. Guess-based "detach change detection everywhere" usually cheezein todta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS dashboard + employee list">
+
+The EMS dashboard felt janky. The profiler showed the 6 stat cards re-rendering on every mouse move because a parent used `Default` CD and one card bound `{{ computeTrend(data) }}` (a function). Fixes: every card `OnPush`, `computeTrend` -> a `computed()` signal, and the two heavy charts wrapped in `@defer (on viewport)` so they don't block the initial paint. The employee list added `track emp.id` (it had `track $index`, which broke row `<input>` focus during filtering). Result: initial render ~40% faster, and scrolling/typing smooth — none of it needed detaching CD or exotic tricks.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `OnPush` can skip **50–90%** of components in a change-detection cycle on a large tree.
+- Template expressions (`{{ f() }}`, impure pipes) run on **every** CD cycle — many times per second on a busy screen.
+- `@for` with proper `track` reuses DOM nodes; `track $index` on a reorder/filter causes wrong-row reuse and lost focus.
+- `@defer` puts the block + its deps in a **separate chunk**, loaded on the trigger (`viewport`, `idle`, `interaction`, `hover`, `timer`, `when`).
+- Always profile first — Angular DevTools "Profiler" shows per-component CD time.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Extremely common, often deep: "Angular app ko fast kaise karoge?", "OnPush kaise kaam karta hai?", "`track` kyun?", "`@defer` kya hai?", "template me function call kyun bura?".
+
+Strong answer:
+
+1. Measure first (Angular DevTools Profiler).
+2. `OnPush` everywhere + immutable/signal state -> Angular checks far fewer components.
+3. `track` in `@for` (stable id) -> DOM reuse; no template function calls / impure pipes -> no per-cycle work; move to `computed()`.
+4. `@defer` for heavy below-the-fold sub-trees; lazy routes + preloading for initial bundle.
+5. `runOutsideAngular` for high-frequency non-UI work; `NgOptimizedImage`; bundle budgets in CI.
+
+Red flag: "detach change detection everywhere" or optimising without profiling.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Function calls / impure pipes in templates.** `{{ getTotal(items) }}` runs every CD cycle. Use a `computed()` / getter / pure pipe.
+
+</Mistake>
+
+<Mistake>
+
+**`track $index` on a list that reorders or filters.** Angular reuses the wrong DOM node — `<input>` values and expanded states jump rows. Use `track item.id`.
+
+</Mistake>
+
+<Mistake>
+
+**OnPush with mutable state.** `this.data.items.push(x)` — same reference, no update. Replace the reference or use signals.
+
+</Mistake>
+
+<Mistake>
+
+**Optimising without profiling.** Time spent detaching CD or micro-tuning a fast path while the real cost is one function call or a 10k-row list.
+
+</Mistake>
+
+<Mistake>
+
+**Everything eager.** No lazy routes, no `@defer` — a huge initial bundle and a slow first paint.
+
+</Mistake>
+
+<Mistake>
+
+**High-frequency work inside the zone.** A `mousemove`/`scroll`/websocket handler triggering CD 60x/sec. `runOutsideAngular`, batch, re-enter for the UI update.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    M[1. Measure - Angular DevTools Profiler] --> A["2. OnPush + signals/immutable state"]
+    A --> B["3. track in @for (stable id)"]
+    B --> C["4. no function calls / impure pipes in templates -> computed()"]
+    C --> D["5. @defer heavy sub-trees; lazy routes + preloading"]
+    D --> E["6. runOutsideAngular, NgOptimizedImage, bundle budgets"]
+`}
+  caption="Profile first, then apply levers in order of impact — OnPush and signals do the most."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Measure first** — Angular DevTools Profiler / Chrome Performance. Don't guess.
+- **`OnPush` everywhere + signals/immutable state** — the biggest lever; Angular checks far fewer components.
+- **`track` in `@for`** with a stable id — reuse DOM nodes; `track $index` on reorder/filter is a bug.
+- **No function calls / impure pipes in templates** — they run every CD cycle; move to `computed()` / getters / pure pipes.
+- **`@defer`** (`on viewport`/`idle`/`interaction`/`hover`/`timer`/`when`) — code-split and lazily render heavy sub-trees; design placeholder/loading/error.
+- **Lazy routes + `PreloadAllModules`** — small initial bundle, instant later navigation.
+- `runOutsideAngular` for high-frequency non-UI work; `NgOptimizedImage`; bundle budgets in CI.
+- Zoneless (`provideZonelessChangeDetection`) is the direction — signals-first code is ready for it.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Take a list component with `{{ activeCount(rows) }}` (a function) in the template. Open Angular DevTools Profiler, interact, and see it recompute every cycle. Replace with `activeCount = computed(() => rows().filter(...).length)` and re-profile.
+
+**Medium:** Set `changeDetection: OnPush` on a parent + children. Find a place where a mutation (`arr.push`) no longer updates the view; fix it with an immutable update, then with a signal. Add `track item.id` to a `@for` that had `track $index` and confirm `<input>` focus survives filtering.
+
+**Bada:** Wrap a heavy widget (a chart, or a big table) in `@defer (on viewport) { } @placeholder { } @loading { } @error { }`. Confirm (network tab) its chunk loads only when scrolled into view. Add `@defer (prefetch on idle; on interaction)` variant and compare. 6-line note ranking the levers by impact for your app.
+
+</Callout>

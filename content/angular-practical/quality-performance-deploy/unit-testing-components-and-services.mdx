@@ -1,0 +1,277 @@
+---
+slug: "unit-testing-components-and-services"
+title: "Unit Testing Components and Services"
+section: "angular-practical"
+module: "quality-performance-deploy"
+order: 4
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["security-basics"]
+tags: ["angular", "testing", "testbed", "httptestingcontroller", "jasmine", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "Angular testing with TestBed: services are tested by providing fakes or using HttpTestingController to assert requests; components are tested via ComponentFixture — set inputs, detectChanges, query the DOM, and assert emitted outputs. Prefer testing dumb components and pure functions; keep heavy smart-component tests few."
+---
+
+<SimpleDefinition>
+
+Angular unit testing uses `TestBed` to configure a mini module for the thing under test. **Services**: provide fakes/spies or use `provideHttpClientTesting()` + `HttpTestingController` to assert URLs/methods/bodies and flush responses. **Components**: `TestBed.createComponent` → a `ComponentFixture`; set inputs (`fixture.componentRef.setInput`), `detectChanges()`, query the DOM, and assert emitted `@Output`s. Favour testing dumb components and pure functions; keep expensive smart-component tests few and focused.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular CLI Jasmine + Karma (ya modern Jest/Vitest) setup deta hai. `ng test` chalata hai. Core tool `TestBed` hai.
+
+### Testing a pure function / validator (cheapest, do the most)
+
+```ts
+describe("minAge", () => {
+  it("fails under the minimum", () => {
+    expect(minAge(18)(new FormControl("2015-01-01"))).toEqual({ minAge: jasmine.anything() });
+  });
+  it("passes at/above and for empty", () => {
+    expect(minAge(18)(new FormControl("1990-01-01"))).toBeNull();
+    expect(minAge(18)(new FormControl(""))).toBeNull();
+  });
+});
+```
+
+No `TestBed`, no DOM — just input → output. Mappers (`toEmployee`), formatters, and validators should have most of your tests.
+
+### Testing a service with HttpTestingController
+
+```ts
+describe("EmployeeService", () => {
+  let service: EmployeeService;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        EmployeeService,
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: API_BASE_URL, useValue: "http://test" },
+      ],
+    });
+    service = TestBed.inject(EmployeeService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => httpMock.verify());          // no unexpected/outstanding requests
+
+  it("getById maps the DTO", () => {
+    let result: Employee | undefined;
+    service.getById(42).subscribe(e => (result = e));
+
+    const req = httpMock.expectOne("http://test/employees/42");
+    expect(req.request.method).toBe("GET");
+    req.flush({ id: 42, first_name: "Aarav", last_name: "Sharma", salary: "85000", join_date: "2023-04-01", is_active: true });
+
+    expect(result!.firstName).toBe("Aarav");
+    expect(result!.salary).toBe(85000);        // mapped to number
+    expect(result!.joinDate instanceof Date).toBe(true);
+  });
+});
+```
+
+- `expectOne(url)` — asserts exactly one matching request; `req.flush(body)` supplies the response; `req.error(...)` simulates failure.
+- `httpMock.verify()` in `afterEach` fails the test if any request was unexpected or never flushed.
+
+### Testing a dumb (presentational) component
+
+```ts
+describe("EmployeeRow", () => {
+  it("emits delete with the id on click", () => {
+    const fixture = TestBed.createComponent(EmployeeRow);
+    fixture.componentRef.setInput("employee", { id: 7, firstName: "Diya" });
+    fixture.detectChanges();
+
+    let emitted: number | undefined;
+    fixture.componentInstance.delete.subscribe(id => (emitted = id));
+
+    fixture.nativeElement.querySelector("[data-test=delete]").click();
+    expect(emitted).toBe(7);
+  });
+});
+```
+
+- `setInput` for signal/`@Input` inputs (don't assign `component.input = x` for signal inputs).
+- `detectChanges()` after changing inputs to re-render.
+- Query with `data-test` attributes (stable) not CSS classes (styling churn).
+- No HTTP/router mocks needed — that's the point of a dumb component.
+
+### Testing a smart component
+
+```ts
+TestBed.configureTestingModule({
+  imports: [EmployeeListPage],
+  providers: [
+    { provide: EmployeeService, useValue: fakeService },      // spy with of(...) returns
+    { provide: Router, useValue: routerSpy },
+    provideRouter([]),                                         // or a routing harness
+  ],
+});
+```
+
+Then: patch state / trigger a method, `detectChanges()`, assert the DOM and that `fakeService.create` was called with the mapped DTO. These are heavier — write a few for the critical flows (submit, delete, load-error), not one per line.
+
+### Async testing
+
+- `fakeAsync` + `tick(ms)` / `flush()` — control timers and microtasks deterministically (great for `debounceTime`, async validators).
+- `waitForAsync` + `fixture.whenStable()` — wait for real promises.
+- `TestBed.inject(ApplicationRef).whenStable()` or signal `flushEffects` helpers for effect/CD timing.
+
+### Marble tests (RxJS)
+
+`TestScheduler` lets you assert stream behaviour with ASCII diagrams — useful for testing an operator pipeline (a search/debounce/switchMap chain) precisely.
+
+### Show it in our project
+
+EMS test spread: ~60% pure-function tests (`toEmployee`, validators, `normalizeHttpError`, list-state reducers), ~30% dumb-component tests (`DataTable`, `Paginator`, `EmployeeRow`, `ConfirmModal`), ~10% smart-component/integration tests (Add Employee submit + `422`, delete flow, list load error). Services all use `HttpTestingController`.
+
+### Where is it used in day-to-day development
+
+Writing a test alongside a validator/mapper is a habit. Dumb components get a spec when created. Smart flows get a spec for the risky path. CI runs `ng test --watch=false --browsers=ChromeHeadless` and fails the build on a red test.
+
+### Pros and cons
+
+**Pros**
+
+- `TestBed` + `HttpTestingController` make service tests fast and precise (no real network).
+- Dumb components test as pure input→output with no infra mocks.
+- `fakeAsync`/`tick` make async deterministic.
+- Reactive forms make form logic testable without the DOM.
+
+**Cons**
+
+- `TestBed` setup is verbose; smart-component tests need many providers.
+- Over-testing implementation details (private methods, exact call order) makes tests brittle.
+- Karma/browser tests are slow; migrating to Jest/Vitest is common but has quirks.
+- Change-detection/effect timing in tests trips people up (`detectChanges`, `whenStable`, `tick`).
+
+</Hinglish>
+
+<Callout type="tip">
+
+Test pyramid: **bahut se** pure-function tests (mappers, validators, reducers), **kaafi** dumb-component tests (inputs -> DOM, clicks -> emitted outputs), **thode** smart-component/integration tests (submit, delete, error paths). Ulta pyramid (har cheez ke liye ek heavy `TestBed` component test) slow aur brittle hota hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS test suite">
+
+`toEmployee.spec.ts` (10 cases: snake_case mapping, string→number salary, ISO→`Date`, nulls) runs in milliseconds with no `TestBed`. `EmployeeService.spec.ts` uses `HttpTestingController`: each method asserts the exact URL + method + params, flushes a DTO, and checks the mapped shape; `afterEach(() => httpMock.verify())` catches stray requests. `DataTable.spec.ts` sets `columns`/`rows` inputs, `detectChanges()`, asserts row count and that clicking a header emits `sortChange`. Only `AddEmployeePage.spec.ts` is a "heavy" test — it fakes the service, submits an invalid then valid form, and asserts `create` was called with the DTO and a `422` binds an `email` error. That single smart test plus dozens of cheap ones gives real confidence without a slow suite.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `provideHttpClientTesting()` + `HttpTestingController` — no real network; `expectOne` / `flush` / `verify`.
+- `fixture.componentRef.setInput('x', v)` for signal inputs (assigning the property doesn't work).
+- `detectChanges()` after input/state changes to re-render before asserting.
+- `fakeAsync` + `tick(ms)` / `flush()` for deterministic timer/microtask control.
+- Query the DOM by `data-test` attributes, not CSS classes.
+- Healthy split: ~60% pure functions, ~30% dumb components, ~10% smart/integration.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "Angular me service kaise test karte ho?", "`HttpTestingController`?", "component test me input kaise set karoge?", "`fakeAsync`/`tick`?", "kya test karo, kya nahi?".
+
+Strong answer:
+
+1. `TestBed` configures a test module; `TestBed.inject` gets instances.
+2. Services: `provideHttpClientTesting()` + `HttpTestingController` (`expectOne`/`flush`/`verify`), or fake dependencies.
+3. Components: `createComponent` → fixture; `setInput` for signal inputs; `detectChanges()`; query by `data-test`; assert emitted outputs.
+4. Async: `fakeAsync` + `tick`/`flush`; `whenStable()` for promises.
+5. Test mostly pure functions + dumb components; few heavy smart-component tests for critical flows.
+
+Red flag: "har private method ka test likhta hoon" — brittle; test behaviour, not implementation.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Assigning a signal input directly (`component.employee = x`).** For `input()` signals, use `fixture.componentRef.setInput('employee', x)`.
+
+</Mistake>
+
+<Mistake>
+
+**Forgetting `detectChanges()` after changing inputs/state.** The DOM assertion runs against the un-rendered view.
+
+</Mistake>
+
+<Mistake>
+
+**No `httpMock.verify()` in `afterEach`.** Stray or un-flushed requests go unnoticed.
+
+</Mistake>
+
+<Mistake>
+
+**Querying by CSS class.** A style refactor breaks the test. Use `data-test="..."`.
+
+</Mistake>
+
+<Mistake>
+
+**One heavy `TestBed` component test per feature line.** Slow, brittle. Push logic into pure functions/dumb components and test those.
+
+</Mistake>
+
+<Mistake>
+
+**Testing private methods / exact internal call order.** Test observable behaviour (rendered output, emitted events, service calls with expected args).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    PF["pure functions: mappers, validators, reducers (no TestBed) - MOST"] --> DC["dumb components: setInput + detectChanges + query data-test + assert outputs - MANY"]
+    DC --> SVC["services: provideHttpClientTesting + HttpTestingController (expectOne/flush/verify)"]
+    SVC --> SC["smart components: fake deps + critical-flow assertions - FEW"]
+`}
+  caption="A test pyramid: many cheap pure-function tests, fewer dumb-component tests, a small number of heavy smart-component tests."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `TestBed.configureTestingModule({...})` builds a test module; `TestBed.inject(X)` gets instances.
+- Services: `provideHttpClient()` + `provideHttpClientTesting()` + `HttpTestingController` — `expectOne(url)`, assert `req.request.method/params/body`, `req.flush(body)` / `req.error(...)`, `httpMock.verify()` in `afterEach`.
+- Components: `TestBed.createComponent` → fixture; `fixture.componentRef.setInput('x', v)` for signal inputs; `detectChanges()`; query by `data-test`; subscribe to outputs and assert emissions.
+- Dumb components need **no** HTTP/router mocks; smart components fake their services + router.
+- Async: `fakeAsync` + `tick(ms)`/`flush()` for timers/microtasks; `whenStable()` for promises.
+- Test split ≈ 60% pure functions, 30% dumb components, 10% smart/integration.
+- Test behaviour, not private methods or exact call order.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Write a `toEmployee.spec.ts` with 5 cases (snake_case → camelCase, `salary` string → number, `join_date` → `Date`, missing optional field, null input). No `TestBed`.
+
+**Medium:** `EmployeeService.spec.ts` with `HttpTestingController`: test `getAll(filters)` builds the right URL + params, `flush` a `Paged<EmployeeDto>`, assert the mapped `items` shape. `getById` maps a single DTO. Add `afterEach(() => httpMock.verify())`.
+
+**Bada:** `DataTable.spec.ts` (dumb): `setInput('columns', ...)` + `setInput('rows', ...)`, `detectChanges()`, assert `<tr>` count and that clicking a `[data-test=sort-name]` header emits `sortChange` with `'name'`. Then one smart test: `AddEmployeePage` with a fake service — invalid submit doesn't call `create`; valid submit calls `create` with the DTO; a `422` flush sets a `server` error on the `email` control. Use `fakeAsync` for the async validator with `tick(400)`. 6-line note on the test pyramid.
+
+</Callout>

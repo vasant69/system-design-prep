@@ -1,0 +1,246 @@
+---
+slug: "production-build-and-deployment"
+title: "Production Build and Deployment"
+section: "angular-practical"
+module: "quality-performance-deploy"
+order: 5
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["unit-testing-components-and-services"]
+tags: ["angular", "build", "deployment", "ci-cd", "spa-hosting", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+englishDefinition: "ng build produces an optimized static bundle in dist/<app>/browser: minified, tree-shaken, content-hashed, with budgets enforced. Deploy those files to any static host or CDN, configure a SPA fallback rewrite to index.html, set base-href if under a sub-path, add caching and security headers, and run build plus test in CI."
+---
+
+<SimpleDefinition>
+
+`ng build` (production by default) outputs an optimized static bundle in `dist/<app>/browser/`: minified, tree-shaken, content-hashed filenames, dead code removed, with `budgets` failing the build on size regressions. Deploy those files to any static host or CDN. You must: configure a **SPA fallback** (all unknown paths → `index.html`), set `--base-href` if served under a sub-path, add cache + security headers, and run `ng build` + `ng test` in CI on every push.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Angular app "compile" hoti hai ek folder me static files me. Wo files ek web server / CDN par host hoti hain.
+
+### The build
+
+```bash
+ng build            # production configuration by default (modern Angular)
+```
+
+Output: `dist/ems-frontend/browser/` — `index.html`, `main-<hash>.js`, `polyfills-<hash>.js`, `styles-<hash>.css`, `chunk-<hash>.js` (lazy routes / `@defer`), and `assets`/`public` copied.
+
+Production build does:
+
+- **Minification** + **tree-shaking** (unused code removed).
+- **Content hashing** (`main.abc123.js`) so a new deploy busts the cache; `index.html` (unhashed) points at the current hashes.
+- **Optimization**: `optimization: true`, `namedChunks: false`, `sourceMap: false` (or `hidden`), AOT compilation.
+- **Budgets** — from `angular.json`:
+
+```jsonc
+"budgets": [
+  { "type": "initial", "maximumWarning": "500kb", "maximumError": "1mb" },
+  { "type": "anyComponentStyle", "maximumWarning": "4kb", "maximumError": "8kb" }
+]
+```
+
+A regression past `maximumError` **fails the build**.
+
+### The SPA fallback — the #1 deploy gotcha
+
+A SPA has one real HTML file. `GET /employees/42` on a refresh hits the *server*, which has no such file → 404. Fix: configure the host to serve `index.html` for any path that isn't a real file:
+
+- **Nginx**: `try_files $uri $uri/ /index.html;`
+- **Apache**: a `.htaccess` `RewriteRule` to `index.html`.
+- **Netlify**: `/* /index.html 200` in `_redirects`.
+- **Vercel**: a rewrite `{ "source": "/(.*)", "destination": "/index.html" }` (or it's automatic for a detected SPA).
+- **S3 + CloudFront**: set the error document to `index.html` (403/404 → `index.html` 200).
+
+### `base-href`
+
+If the app is served at `example.com/ems/` (not the root), build with `ng build --base-href /ems/` so router links and assets resolve. Root deploy → leave it `/`.
+
+### Caching headers
+
+- Hashed assets (`main.abc123.js`, `styles.abc123.css`, chunks): `Cache-Control: public, max-age=31536000, immutable` — cache forever; a new deploy has new hashes.
+- `index.html`: `Cache-Control: no-cache` (or short) — it must always be re-fetched to pick up new hashes.
+- Enable **gzip/brotli** compression on the host.
+
+### Security headers (from the security topic)
+
+`Content-Security-Policy`, `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `X-Frame-Options: DENY` (or CSP `frame-ancestors`).
+
+### Environment config at deploy time
+
+Build-time (`fileReplacements` per configuration) or runtime (`config.json` fetched on boot) — from the environment-configuration topic. For "build once, deploy anywhere", use runtime config.
+
+### CI/CD pipeline (typical)
+
+```text
+on push:
+  npm ci
+  npm run lint
+  npm test -- --watch=false --browsers=ChromeHeadless
+  ng build            # fails on budget errors / template errors
+  deploy dist/<app>/browser to the host   (on main only)
+```
+
+`npm ci` (not `install`) for a clean, lockfile-exact install. Cache `~/.npm` and `node_modules` between runs.
+
+### SSR / prerender (optional)
+
+`ng add @angular/ssr` adds server-side rendering + hydration for better first paint and SEO on content-heavy/public pages. Internal admin apps (behind login) usually don't need it. Prerendering (`ng build` with routes) generates static HTML for known routes.
+
+### Show it in our project
+
+EMS: `ng build` → `dist/ems-frontend/browser/`. Deployed as static files behind a CDN with a SPA fallback rewrite, `immutable` caching on hashed assets, `no-cache` on `index.html`, brotli, and the security headers. A GitHub Actions workflow runs `npm ci`, lint, test, `ng build` (budgets on), and deploys on `main`. Runtime `config.json` supplies the API base URL per environment.
+
+### Where is it used in day-to-day development
+
+`ng build` locally before a release to catch template/budget errors. Understanding the SPA fallback when "refresh gives a 404" on staging. Tuning caching/headers once. The CI pipeline runs on every PR.
+
+### Pros and cons
+
+**Pros**
+
+- Static output → deploy anywhere (CDN, S3, Netlify, Vercel, Nginx), cheap and scalable.
+- Content hashing + `immutable` caching → instant loads after the first visit, safe cache-busting on deploy.
+- Budgets catch size regressions in CI.
+
+**Cons**
+
+- The SPA fallback must be configured per host — the classic "works locally, 404 on refresh in prod" bug.
+- `base-href` under a sub-path is easy to forget.
+- No SSR → slower first paint and weak SEO for public pages (fixable with `@angular/ssr`).
+- Runtime config adds a blocking startup fetch.
+
+</Hinglish>
+
+<Callout type="trap">
+
+"Local pe kaam karta hai, deploy ke baad `/employees/42` refresh karne se 404 aata hai." — Ye **SPA fallback** missing hai. Host ko configure karo ki jo bhi path ek real file nahi hai, uske liye `index.html` (status 200) serve kare. Har host ka apna tareeka hai (Nginx `try_files`, Netlify `_redirects`, S3 error document, etc.).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS deploy pipeline">
+
+Pushing to `main` triggers GitHub Actions: `npm ci`, `npm run lint`, headless tests, then `ng build`. A PR that pushed the initial bundle over 1 MB failed on the budget error — caught before merge. The `dist/ems-frontend/browser/` output uploads to the CDN; hashed JS/CSS get `Cache-Control: immutable, max-age=31536000`, `index.html` gets `no-cache`, and everything is brotli-compressed. A rewrite rule serves `index.html` for non-file paths so `/employees/42` survives a refresh. The API base URL comes from a per-environment `config.json` the app fetches on boot, so the same build artifact runs in staging and production.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `ng build` output: `dist/<app>/browser/` — minified, tree-shaken, AOT-compiled, content-hashed.
+- `budgets` in `angular.json` fail the build past `maximumError` (e.g. initial > 1 MB).
+- SPA fallback: unknown paths → `index.html` **200** (not a redirect) — configured per host.
+- Cache hashed assets `immutable, max-age=31536000`; `index.html` `no-cache`.
+- CI uses `npm ci` (lockfile-exact) not `npm install`.
+- `--base-href /sub/` when served below the domain root.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "`ng build` kya deta hai?", "SPA ko host kaise karoge?", "refresh par 404 kyun aur fix?", "caching strategy?", "CI pipeline?".
+
+Strong answer:
+
+1. `ng build` → optimized static bundle in `dist/<app>/browser/` (minified, tree-shaken, hashed, budgets).
+2. Deploy static files to any CDN/host; configure a **SPA fallback** (unknown paths → `index.html` 200).
+3. `--base-href` if under a sub-path.
+4. Cache hashed assets `immutable`; `index.html` `no-cache`; gzip/brotli; security headers.
+5. CI: `npm ci` → lint → test → `ng build` (budgets) → deploy on `main`. SSR/prerender optional for public/SEO pages.
+
+Red flag: "deploy karke `ng serve` ka output daal deta hoon" — `ng serve` produces nothing on disk; deploy `ng build`'s `dist/`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**No SPA fallback.** Deep links and refreshes 404. Configure the host to serve `index.html` for non-file paths.
+
+</Mistake>
+
+<Mistake>
+
+**Deploying `ng serve` output (there is none) or the wrong folder.** Deploy `dist/<app>/browser/`.
+
+</Mistake>
+
+<Mistake>
+
+**Forgetting `--base-href` under a sub-path.** Assets and router links 404.
+
+</Mistake>
+
+<Mistake>
+
+**Caching `index.html` aggressively.** Users get stale hashes and a white screen after a deploy. `no-cache` on `index.html`, `immutable` on hashed assets.
+
+</Mistake>
+
+<Mistake>
+
+**No budgets.** A fat dependency silently doubles the bundle over a few PRs. Set `budgets` so CI fails.
+
+</Mistake>
+
+<Mistake>
+
+**`npm install` in CI instead of `npm ci`.** Non-reproducible builds; a transitive version can drift.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    SRC[source] --> CI["CI: npm ci -> lint -> test -> ng build (budgets)"]
+    CI --> DIST["dist/<app>/browser: index.html + hashed js/css/chunks + assets"]
+    DIST --> HOST[static host / CDN]
+    HOST --> FB["SPA fallback: unknown path -> index.html 200"]
+    HOST --> CACHE["hashed assets immutable; index.html no-cache; brotli"]
+    HOST --> SEC["CSP, HSTS, nosniff, Referrer-Policy"]
+    CFG["runtime config.json (per environment)"] --> HOST
+`}
+  caption="Build to static files, run it through CI with budgets, then serve with a SPA fallback and the right caching/security headers."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `ng build` → `dist/<app>/browser/`: minified, tree-shaken, AOT, content-hashed; `budgets` fail the build on size regressions.
+- Deploy the static files to any CDN/host. **SPA fallback**: serve `index.html` (200) for any path that isn't a real file — configured per host (Nginx `try_files`, Netlify `_redirects`, S3 error doc, Vercel rewrite).
+- `--base-href /sub/` when served below the domain root.
+- Cache hashed assets `immutable, max-age=31536000`; `index.html` `no-cache`; enable gzip/brotli.
+- Add security headers: CSP, HSTS, `X-Content-Type-Options: nosniff`, `Referrer-Policy`.
+- Environment values: build-time `fileReplacements` per configuration, or a runtime `config.json` for "build once, deploy anywhere".
+- CI: `npm ci` → lint → `ng test --watch=false --browsers=ChromeHeadless` → `ng build` → deploy on `main`.
+- SSR/prerender (`@angular/ssr`) optional — worth it for public/SEO pages, usually not for internal admin apps.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `ng build`, then inspect `dist/<app>/browser/` — note the hashed filenames, the lazy `chunk-*.js` files, and that `index.html` references the current hashes. Serve it locally with a static server and confirm the app loads.
+
+**Medium:** Break the SPA fallback on purpose: serve `dist` with a plain static server that 404s unknown paths, navigate to `/employees`, refresh → 404. Fix it (the server's SPA/history-fallback option, or a rewrite) so refresh works. Add a `budgets` `maximumError` and make the build fail by importing something large.
+
+**Bada:** Write a CI workflow (GitHub Actions): `npm ci`, `npm run lint`, headless tests, `ng build`, and a deploy step (to Netlify/Vercel/S3) that runs only on `main`. Configure `immutable` caching on hashed assets and `no-cache` on `index.html`, plus a CSP header. Deploy and verify: a deep link works on refresh, a second visit loads from cache instantly, and a new deploy invalidates only what changed. 6-line note on the SPA-fallback + hashing + caching triangle.
+
+</Callout>

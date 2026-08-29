@@ -1,0 +1,232 @@
+---
+slug: "security-basics"
+title: "Front-End Security Basics"
+section: "angular-practical"
+module: "quality-performance-deploy"
+order: 3
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["performance-onpush-trackby-and-defer"]
+tags: ["angular", "security", "xss", "sanitization", "csrf", "employee-management"]
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "Angular escapes interpolation and sanitizes bindings by default, so most XSS is prevented unless you use bypassSecurityTrust or feed raw HTML to innerHTML. Other front-end concerns: safe token storage, CSRF, CSP, dependency risk, no secrets in the bundle, and remembering the server is the real authorization boundary."
+---
+
+<SimpleDefinition>
+
+Angular is secure by default: `{{ }}` escapes HTML, and `[innerHTML]`, `[href]`, `[style]`, `[src]` are sanitized. XSS in an Angular app almost always comes from misusing `bypassSecurityTrust*` or piping unsanitized server HTML into `innerHTML`. The other front-end concerns: safe JWT storage (Module 7), CSRF for cookie auth, a Content-Security-Policy, dependency (supply-chain) risk, no secrets in the bundle, and the fact that **the server is the real authorization boundary** — every client check is bypassable.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Front-end security ke bare concerns:
+
+### 1. XSS — Angular ka default protection
+
+```html
+{{ userComment }}                 <!-- escaped: <b> shows as text, not bold -->
+<div [innerHTML]="userHtml"></div> <!-- sanitized: <script>, onclick etc. stripped -->
+<a [href]="userUrl">link</a>       <!-- sanitized: javascript: URLs blocked -->
+```
+
+- **Interpolation** never renders HTML — a `<script>` in `userComment` displays as text.
+- **`[innerHTML]`** runs the value through `DomSanitizer` — dangerous tags/attributes removed.
+- `[href]`, `[src]`, `[style]` are sanitized in their contexts.
+
+### 2. The escape hatch — `bypassSecurityTrust*`
+
+```ts
+this.sanitizer.bypassSecurityTrustHtml(html);   // "I promise this is safe"
+```
+
+This **disables** sanitization. Only use it for content **you fully control** (never user-generated, never a third-party feed). Misuse here is the #1 XSS source in Angular apps. If you must render rich user content, sanitize it server-side with a vetted library (DOMPurify) *and* keep Angular's sanitizer, or render it as structured data, not HTML.
+
+### 3. Token storage (recap from Module 7)
+
+- **Access token in memory** (a signal), **refresh token in an `httpOnly` Secure `SameSite` cookie**.
+- `localStorage` for tokens = any XSS (including a compromised dependency) reads them = account takeover. Only a fallback, hardened aggressively.
+
+### 4. CSRF
+
+- Relevant when auth is via **cookies** (the browser sends them automatically).
+- Defences: `SameSite=Strict/Lax` on the auth cookie + an anti-CSRF token for state-changing requests. Angular's `HttpClient` has built-in `XSRF-TOKEN` cookie → `X-XSRF-TOKEN` header support (`withXsrfConfiguration`).
+- Bearer-token-in-header auth isn't CSRF-vulnerable (the browser doesn't auto-attach headers) but *is* XSS-vulnerable if stored badly.
+
+### 5. Content Security Policy (CSP)
+
+A `Content-Security-Policy` header restricts what can load/execute: `script-src 'self'`, `object-src 'none'`, no inline scripts, an allowlist for APIs/CDNs. It's a strong second line of defence — even if an XSS slips through, injected scripts can't run or exfiltrate. Angular works with a strict CSP (nonce support for its inline styles).
+
+### 6. Dependency / supply-chain risk
+
+- Every npm package runs with your app's privileges. A malicious/compromised dependency can read `localStorage`, hijack requests, exfiltrate data.
+- Mitigations: `npm audit` in CI, pin versions + a lockfile, review new deps, minimise the tree, Subresource Integrity for any CDN scripts, Dependabot/Renovate for timely patches.
+
+### 7. No secrets in the bundle
+
+The browser bundle is public. API secrets, private keys, DB strings — backend only. OAuth **client IDs** and public API base URLs are fine.
+
+### 8. The server is the authorization boundary
+
+`*appHasPermission`, route guards, disabled buttons — all UX. A user can call any API directly (Postman, devtools). **Every endpoint must authenticate and authorize the request itself.** Front-end checks reduce accidental misuse and improve UX; they are not a control.
+
+### 9. Other hygiene
+
+- `target="_blank"` links -> add `rel="noopener noreferrer"` (Angular does `noopener` by default via the router, but check plain `<a>`).
+- Don't log tokens / PII to the console or a monitoring tool.
+- Validate/normalise redirect URLs (`returnUrl`) to prevent open redirects.
+- HTTPS everywhere; `Strict-Transport-Security` header.
+
+### Show it in our project
+
+EMS: user content (leave reasons, comments) is rendered via `{{ }}` (escaped), never `[innerHTML]`. Access token in memory, refresh token in an `httpOnly` cookie. A strict CSP header from the host. `npm audit` gate in CI. `returnUrl` validated to same-origin relative paths. Every API endpoint authorizes independently of what the UI showed.
+
+### Where is it used in day-to-day development
+
+Reviewing any `[innerHTML]` / `bypassSecurityTrust`, choosing token storage, handling redirects, adding a dependency, and remembering that a guard is not a lock.
+
+### Pros and cons
+
+**Pros of Angular's model**
+
+- Safe-by-default templates prevent the vast majority of XSS with zero effort.
+- Built-in sanitizer and XSRF support.
+- Works cleanly with a strict CSP.
+
+**Cons / gaps**
+
+- `bypassSecurityTrust*` is a foot-gun that looks innocuous.
+- Angular can't help with token storage, CSRF strategy, CSP, or dependency risk — those are yours.
+- Client-side "security" (guards, directives) is easily mistaken for real authorization.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`bypassSecurityTrustHtml()` (aur `bypassSecurityTrustResourceUrl` etc.) Angular ki sanitization ko **band** kar deta hai. Ise sirf us content par use karo jise aap **poori tarah control** karte ho — kabhi user-generated ya third-party content par nahi. Angular apps me XSS ka #1 source yahi misuse hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS user-content rendering">
+
+An EMS feature request: "let managers add rich-text notes to a leave request." The tempting implementation — a WYSIWYG editor producing HTML, stored raw, rendered with `[innerHTML]="note"` — is an XSS hole: a malicious note runs script in every approver's session. The safe version: sanitize on the server with DOMPurify (allowlist of tags/attributes), store the cleaned HTML, and still render through Angular's sanitizer (don't `bypassSecurityTrust`). Or store the note as structured blocks (a small JSON schema) and render with components — no HTML injection surface at all. Meanwhile the API's "approve leave" endpoint checks the caller's role server-side regardless of whether the UI showed the button.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Angular interpolation `{{ }}` never renders HTML — it's always escaped.
+- `[innerHTML]`, `[href]`, `[src]`, `[style]` are auto-sanitized by `DomSanitizer` per context.
+- `bypassSecurityTrust*` **disables** sanitization — safe only for fully-controlled content.
+- Every dependency runs with your app's full privileges (can read storage, alter requests).
+- A strict CSP (`script-src 'self'`, no inline) blocks injected scripts even if XSS slips through.
+- Every client-side authorization check is bypassable — the server must authorize independently.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "Angular XSS se kaise bachta hai?", "`bypassSecurityTrust` kab?", "token storage?", "CSRF vs XSS?", "frontend guard = security?".
+
+Strong answer:
+
+1. Templates are safe-by-default: `{{ }}` escapes, bindings are sanitized. XSS comes from `bypassSecurityTrust*` misuse or raw `innerHTML`.
+2. Rich user content: sanitize server-side (DOMPurify) + keep Angular's sanitizer, or use structured data.
+3. Tokens: access in memory, refresh in an `httpOnly` cookie; `localStorage` = XSS exposure.
+4. CSRF applies to cookie auth (`SameSite` + anti-CSRF token); bearer headers aren't CSRF-prone but are XSS-prone.
+5. Add a strict CSP; `npm audit` in CI; no secrets in the bundle; **the server authorizes every request** — guards are UX.
+
+Red flag: "guard/directive laga diya to route secure hai" — that's client-side only.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`bypassSecurityTrustHtml` on user or third-party content.** Direct XSS. Sanitize server-side and keep Angular's sanitizer, or render structured data.
+
+</Mistake>
+
+<Mistake>
+
+**Tokens in `localStorage`.** Any XSS (or a bad dependency) steals them. Memory + `httpOnly` cookie.
+
+</Mistake>
+
+<Mistake>
+
+**Treating route guards / `*appHasPermission` as authorization.** They hide UI. The API must authorize every request.
+
+</Mistake>
+
+<Mistake>
+
+**Secrets in `environment.prod.ts`.** They ship to every browser. Backend only.
+
+</Mistake>
+
+<Mistake>
+
+**Unvalidated `returnUrl` / redirect params.** An attacker crafts `?returnUrl=https://evil.com`. Allow only same-origin relative paths.
+
+</Mistake>
+
+<Mistake>
+
+**Ignoring dependency risk.** No `npm audit`, no lockfile discipline, adding packages without review. A compromised transitive dep has full access.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    UGC[user / third-party content] --> INTERP["{{ }} interpolation -> escaped (safe)"]
+    UGC --> IH["[innerHTML] -> DomSanitizer strips dangerous bits"]
+    UGC --> BYP["bypassSecurityTrust* -> sanitizer OFF -> XSS if content not fully controlled"]
+    TOK[tokens] --> MEM[access in memory]
+    TOK --> COOKIE[refresh in httpOnly SameSite cookie]
+    CSP[strict Content-Security-Policy] --> BLOCK[injected scripts can't run]
+    API[(every endpoint)] --> AUTHZ[authorizes the request server-side - guards are UX only]
+`}
+  caption="Templates are safe by default; the risks are bypassSecurityTrust, bad token storage, and trusting client-side checks."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `{{ }}` always escapes; `[innerHTML]`/`[href]`/`[src]`/`[style]` are auto-sanitized. XSS comes from `bypassSecurityTrust*` misuse or raw HTML.
+- Rich user content: sanitize server-side (DOMPurify) **and** keep Angular's sanitizer, or render structured data (no HTML).
+- Tokens: access token in memory, refresh token in an `httpOnly` Secure `SameSite` cookie. `localStorage` = XSS exposure.
+- CSRF applies to cookie auth (`SameSite` + anti-CSRF token; Angular has XSRF cookie/header support). Bearer headers aren't CSRF-prone but are XSS-prone.
+- Add a strict CSP (`script-src 'self'`, no inline) as a second line of defence.
+- `npm audit` in CI; lockfile + version pinning; review new deps — each runs with full app privileges.
+- No secrets in the bundle (it's public). OAuth client IDs and public URLs are fine.
+- Validate redirect params (open-redirect); `rel="noopener noreferrer"` on `target="_blank"`.
+- **The server authorizes every request** — guards, directives, disabled buttons are UX only.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Bind `"<img src=x onerror=alert(1)>"` three ways: `{{ evil }}`, `[innerHTML]="evil"`, and `[innerHTML]="sanitizer.bypassSecurityTrustHtml(evil)"`. Observe: escaped text, stripped/safe, and the alert firing. Note which one is the vulnerability.
+
+**Medium:** Implement a `returnUrl` redirect after login that only accepts same-origin relative paths (reject `http(s)://...`, `//host`, and anything with a scheme). Test with a malicious value.
+
+**Bada:** Add a strict `Content-Security-Policy` to your dev server (`script-src 'self'`, `object-src 'none'`, `base-uri 'self'`), fix anything it breaks (inline handlers, CDN scripts), and confirm an injected `<script>` from a test XSS payload does not execute. Then add an `npm audit --audit-level=high` step that fails your build. 6-line note on why client-side guards aren't authorization.
+
+</Callout>
