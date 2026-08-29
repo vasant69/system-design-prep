@@ -1,0 +1,239 @@
+---
+slug: "subject-and-behaviorsubject"
+title: "Subject, BehaviorSubject and ReplaySubject"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 5
+difficulty: "intermediate"
+readingTime: 12
+prerequisites: ["rxjs-operators-you-actually-use"]
+tags: ["angular", "rxjs", "subject", "behaviorsubject", "state", "employee-management"]
+englishDefinition: "A Subject is both an Observable and an observer: you can push values into it with next() and subscribe to it. It is hot and multicast. BehaviorSubject holds a current value and replays it to new subscribers; ReplaySubject replays the last N. They are the classic way to share state and events between components via a service."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A `Subject` is both an Observable and an observer: you push values with `next(v)` and others `subscribe` to receive them. It is hot and multicast (all subscribers share one execution). `BehaviorSubject` additionally holds a "current value" and immediately replays it to any new subscriber; `ReplaySubject` replays the last N values. They are the classic RxJS way to share state and events across components through a service.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Plain Observable ek producer function se values banata hai. Kabhi aapko **bahar se** values push karni hoti hain — ek event bus, ek shared state store. Uske liye `Subject` aur uske variants.
+
+### Subject — push + multicast
+
+```ts
+import { Subject } from "rxjs";
+
+const clicks$ = new Subject<string>();
+
+clicks$.subscribe(v => console.log("A:", v));
+clicks$.next("save");          // A: save
+clicks$.subscribe(v => console.log("B:", v));
+clicks$.next("delete");        // A: delete   B: delete
+```
+
+- `next(v)` — value push karo (Subject observer bhi hai).
+- Sab subscribers **same** execution share karte hain (hot, multicast).
+- **Late subscriber** ko purani values nahi milti — sirf subscribe ke baad wali.
+
+### BehaviorSubject — current value + replay-1
+
+```ts
+import { BehaviorSubject } from "rxjs";
+
+const user$ = new BehaviorSubject<User | null>(null);   // initial value zaroori
+
+user$.subscribe(u => console.log("A:", u));  // A: null (turant, current value)
+user$.next({ id: 1, name: "Aarav" });        // A: {id:1,...}
+user$.subscribe(u => console.log("B:", u));  // B: {id:1,...} (turant, current value)
+```
+
+- Constructor me **initial value** (mandatory).
+- Naya subscriber ko turant **current value** milti hai.
+- `.value` se synchronous current value (`user$.value`).
+- **State** ke liye ideal — "abhi user kaun hai?".
+
+### ReplaySubject — last N
+
+```ts
+const recent$ = new ReplaySubject<string>(3);   // last 3 replay
+```
+
+Naya subscriber ko last 3 values milti hain. No initial value needed. Use: "last few notifications", audit trail.
+
+### AsyncSubject — sirf final value on complete. Rare.
+
+### The service-store pattern
+
+```ts
+@Injectable({ providedIn: "root" })
+export class AuthService {
+  private _user$ = new BehaviorSubject<User | null>(null);
+  user$ = this._user$.asObservable();          // read-only stream
+
+  get currentUser() { return this._user$.value; }
+
+  setUser(u: User | null) { this._user$.next(u); }
+}
+```
+
+- `_user$` private (only service pushes).
+- `user$` public via `.asObservable()` — consumers subscribe but can't `next()`.
+- Components: `authService.user$ | async`.
+
+(Aajkal iska signals version aksar preferred — next topic.)
+
+### Subject vs BehaviorSubject — kab kya
+
+- **Event** (kuch hua, no "current" concept): `Subject` — e.g. "employee deleted", "toast requested".
+- **State** (there is always a current value): `BehaviorSubject` — current user, filter values, cart.
+- Late subscriber ko latest chahiye? -> `BehaviorSubject` (ya `Subject` + `shareReplay(1)`).
+
+### Show it in our project
+
+- `NotificationService`: `private _toasts$ = new Subject<Toast>()` — event, koi "current toast" nahi.
+- `AuthService`: `BehaviorSubject<User|null>` (ya signal) — always a current auth state.
+- `EmployeeFilterStore`: `BehaviorSubject<Filters>` — current filters, replay to new subscribers.
+
+### Where is it used in day-to-day development
+
+Cross-component events (toasts, "refresh list"), shared app state (auth, theme, feature flags), a lightweight store before reaching for NgRx. `EventEmitter` (which is a Subject) for `@Output`.
+
+### Pros and cons
+
+**Pros**
+
+- Push values imperatively into a stream — event buses, stores.
+- `BehaviorSubject` gives current value + reactive updates in one.
+- `.asObservable()` enforces read-only for consumers.
+
+**Cons**
+
+- Easy to leak if you forget to complete/unsubscribe.
+- Shared mutable-ish state — discipline needed (private subject, immutable values).
+- For pure UI state, signals are simpler (no subscribe, no async pipe).
+- Overusing a global Subject bus -> spaghetti events, hard to trace.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Naye code me app/UI **state** ke liye `signal` (ya `BehaviorSubject` -> `toSignal`) prefer karo. `Subject` abhi bhi solid hai pure **events** ke liye (toast requests, "list refresh karo" signals) jinka koi "current value" nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Toast notifications + auth state">
+
+EMS `NotificationService` ke andar `private _toasts$ = new Subject<Toast>()`. Kahin bhi `notify.success("Saved")` -> `_toasts$.next({...})`. Ek `<app-toast-host>` component `_toasts$` subscribe karta hai aur toasts render karta hai. `Subject` isliye (BehaviorSubject nahi) kyunki ek naya `<app-toast-host>` ko purane toasts replay nahi karne chahiye. Ulta, `AuthService` `BehaviorSubject<User|null>` (ya signal) use karta hai — jo bhi late subscribe kare (ek guard, header, directive) use turant current user chahiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `Subject`: late subscriber gets **only future** values (nothing replayed).
+- `BehaviorSubject`: needs an **initial value**; new subscriber gets the **current** value immediately; `.value` is a synchronous getter.
+- `ReplaySubject(n)`: new subscriber gets the **last n** values.
+- `.asObservable()` hides `next()` from consumers — the standard read-only pattern.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "Subject kya hai?", "Subject vs BehaviorSubject?", "BehaviorSubject vs signal?", "`.asObservable()` kyun?".
+
+Strong answer:
+
+1. Subject = Observable + observer; hot, multicast; `next()` to push.
+2. `BehaviorSubject` = Subject + current value, replayed to new subscribers + `.value`.
+3. `ReplaySubject(n)` = last n replayed; `AsyncSubject` = only final on complete.
+4. Event -> `Subject`; state (always has a current) -> `BehaviorSubject`.
+5. `.asObservable()` exposes read-only; keep the subject private.
+
+Red flag: "sab jagah plain `Subject` use karta hoon state ke liye" — late subscribers ko current value nahi milti; use `BehaviorSubject`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**State ke liye plain `Subject`.** Ek guard ya late-mounted component subscribe kare to use current value nahi milti (koi replay nahi). `BehaviorSubject` (ya signal).
+
+</Mistake>
+
+<Mistake>
+
+**Subject ko public expose karna.** Koi bhi `service.data$.next(...)` kar sakta hai. `private _data$` + `data$ = _data$.asObservable()`.
+
+</Mistake>
+
+<Mistake>
+
+**`BehaviorSubject` ke andar object ko mutate karke `next(sameRef)` karna.** Kuch operators/`distinctUntilChanged` change miss karenge, OnPush bhi. Immutable value + `next(newRef)`.
+
+</Mistake>
+
+<Mistake>
+
+**Long-lived Subject subscriptions ko unsubscribe na karna.** `Subject` complete nahi hota by default -> leak. `async` pipe / `takeUntilDestroyed()`.
+
+</Mistake>
+
+<Mistake>
+
+**Ek global "event bus" Subject me har cheez daal dena.** Untyped/loosely-typed events, trace karna mushkil. Specific typed subjects, ya better, direct service methods + signals.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    PUSH["service: _state$.next(newValue)"] --> BS[BehaviorSubject holds current]
+    BS -->|"replays current to new subscriber"| C1[Header]
+    BS --> C2[Guard]
+    BS --> C3[Directive]
+    PRIV["private _state$"] --> PUB["public state$ = _state$.asObservable()"]
+`}
+  caption="A private BehaviorSubject in a service is the classic shared-state store; consumers get a read-only stream with the current value."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `Subject` = Observable + observer; hot, multicast; push with `next(v)`; late subscribers get only future values.
+- `BehaviorSubject(initial)` = current value held + replayed to new subscribers; `.value` synchronous getter — use for **state**.
+- `ReplaySubject(n)` = replay last n; `AsyncSubject` = only the final value on complete.
+- Event (no "current") -> `Subject`; state (always has a current) -> `BehaviorSubject`.
+- Service-store: `private _x$`, public `x$ = _x$.asObservable()`, methods to `next()`.
+- Keep values immutable; push new references.
+- Complete/unsubscribe long-lived subjects or they leak.
+- For pure UI state, signals are usually simpler than `BehaviorSubject`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `Subject<string>` banao, ek subscriber add karo, `next("a")`, phir doosra subscriber add karo, phir `next("b")`. Note karo pehle subscriber ne `a` aur `b` dono dekhe, doosre ne sirf `b`. Ab `BehaviorSubject("init")` se repeat — doosre subscriber ko subscribe hote hi current value milti hai.
+
+**Medium:** `NotificationService` banao `private _toasts$ = new Subject<Toast>()` + public `toasts$` + `success(msg)`/`error(msg)` methods. Ek `<app-toast-host>` component `toasts$ | async` (ya subscribe + `takeUntilDestroyed`) se render kare. App me kahin se `notify.success("Saved")` call karke toast dekho.
+
+**Bada:** `EmployeeFilterStore` service: `BehaviorSubject<Filters>` with `setSearch`, `setDepartment`, `reset`. Public `filters$` read-only. `EmployeeListPage` `filters$.pipe(switchMap(f => api.list(f)))`. Ek toolbar component filters set kare, ek "active filters" chip-bar dusra component dikhaye — dono same store. Phir `BehaviorSubject` ke andar filters object ko mutate karke `next(sameRef)` karo aur dekho `distinctUntilChanged` ya OnPush kya miss karta hai. 4-line note.
+
+</Callout>

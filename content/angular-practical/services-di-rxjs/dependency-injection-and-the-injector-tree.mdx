@@ -1,0 +1,271 @@
+---
+slug: "dependency-injection-and-the-injector-tree"
+title: "Dependency Injection and the Injector Tree"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 2
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["services-and-why-logic-leaves-the-component"]
+tags: ["angular", "dependency-injection", "injector", "inject", "injection-token", "employee-management"]
+englishDefinition: "Dependency injection is Angular asking a class what it needs and supplying it, instead of the class creating its own dependencies. Providers register how to make a dependency; injectors form a hierarchy (root, route, component) and resolve a request by walking up the tree. Tokens identify what to inject when it is not a class."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+Dependency injection (DI) means a class declares what it needs and Angular supplies it, rather than the class constructing its own dependencies. **Providers** register *how* to create a dependency; **injectors** form a hierarchy (root, route, component/element) and resolve a request by walking up that tree until they find a provider. **Injection tokens** identify non-class dependencies (config objects, strings, functions).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne `inject(EmployeeService)` likha aur ek instance mil gaya — kisne banaya? DI ne. Ye topic samjhata hai wo machinery.
+
+### What is it — the idea
+
+Bina DI:
+
+```ts
+class EmployeeListPage {
+  service = new EmployeeService(new HttpClient(new HttpHandler(...))); // nightmare
+}
+```
+
+DI ke saath:
+
+```ts
+class EmployeeListPage {
+  private service = inject(EmployeeService); // Angular figures out the rest
+}
+```
+
+Aap "kya chahiye" batate ho; Angular "kaise banega aur kaunsa instance" handle karta hai. Isse loose coupling, testability, aur singleton management milta hai.
+
+### Providers — how to make it
+
+`providedIn: "root"` ek provider hai. Explicit forms:
+
+```ts
+providers: [
+  EmployeeService,                                   // shorthand: useClass EmployeeService
+  { provide: EmployeeService, useClass: FakeEmployeeService },
+  { provide: API_BASE_URL, useValue: "https://api.ems.local/v1" },
+  { provide: LOGGER, useFactory: () => new Logger(inject(ConfigService).level) },
+  { provide: OldService, useExisting: NewService },
+]
+```
+
+- `useClass` — is token ke liye ye class banao.
+- `useValue` — ye exact value do (config, constant).
+- `useFactory` — ye function chala kar jo mile wo do.
+- `useExisting` — is token ko doosre token ka alias bana do.
+
+### Injectors — the hierarchy
+
+```text
+Root injector (app-wide, providedIn: 'root' + appConfig.providers)
+  └── Route injector (route.providers)
+        └── Component injector (@Component providers)
+              └── ...child components...
+```
+
+Jab component `inject(X)` karta hai:
+
+1. Apne component injector me `X` ka provider dhoondho.
+2. Nahi mila -> parent component injector.
+3. ... upar route injector -> root injector.
+4. Root me bhi nahi -> `providedIn: "root"` check -> warna error "No provider for X".
+
+**Isliye:** `providedIn: "root"` -> ek shared instance. Component `providers` -> us subtree ke liye naya instance (jo upar wale ko shadow karta hai).
+
+### `inject()` vs constructor DI
+
+```ts
+// modern
+export class EmployeeListPage {
+  private service = inject(EmployeeService);
+}
+
+// classic
+export class EmployeeListPage {
+  constructor(private service: EmployeeService) {}
+}
+```
+
+Dono same DI use karte hain. `inject()` field initializers, functions (guards, interceptors, `useFactory`), aur inheritance me cleaner. `inject()` sirf ek **injection context** me kaam karta hai (constructor, field initializer, `runInInjectionContext`).
+
+### Injection tokens — non-class dependencies
+
+```ts
+import { InjectionToken } from "@angular/core";
+export const API_BASE_URL = new InjectionToken<string>("API_BASE_URL");
+
+// provide
+{ provide: API_BASE_URL, useValue: environment.apiBaseUrl }
+
+// inject
+private base = inject(API_BASE_URL);
+```
+
+String/config/function ko inject karne ke liye class nahi hoti, isliye ek token banate hain. `HTTP_INTERCEPTORS`, `LOCALE_ID` bhi tokens hain.
+
+### `@Optional`, `@Self`, `@SkipSelf`, `@Host` (resolution modifiers)
+
+```ts
+private logger = inject(LOGGER, { optional: true }); // null if not provided
+```
+
+- `optional: true` — na mile to `null`, error nahi.
+- `self: true` — sirf apne injector me dekho.
+- `skipSelf: true` — apna injector skip, parent se.
+- `host: true` — host tak dekho.
+
+### Show it in our project
+
+- `API_BASE_URL` token — `app.config.ts` me `environment.apiBaseUrl` se provide. Services isse inject karke URLs banate hain.
+- `AuthService`, `EmployeeService` etc. — `providedIn: "root"`.
+- Ek `EmployeeWizard` component route ke `providers` me ek `WizardStore` — har wizard instance ka apna draft state.
+
+### Where is it used in day-to-day development
+
+Har service inject. Har guard/interceptor/`useFactory` me `inject()`. Environment config as a token. Testing me `providers` override. DI Angular ki reedh ki haddi hai — har din.
+
+### Pros and cons
+
+**Pros**
+
+- Loose coupling — class ko concrete implementation ka pata nahi.
+- Testability — providers override se mocks.
+- Singleton management aur scoped instances ek system me.
+- Tokens se config/constants bhi injectable.
+
+**Cons**
+
+- "No provider for X" errors beginners ko confuse karte hain (injector tree samajhna padta hai).
+- Scoped providers galat jagah -> duplicate instances / broken singletons.
+- `inject()` sirf injection context me — bahar call karne pe runtime error.
+- Over-tokenization — har chhoti value ke liye token = boilerplate.
+
+</Hinglish>
+
+<Callout type="warning">
+
+"NG0201: No provider for X" ka matlab: jis injector chain me component hai, usme `X` kahin provide nahi hua. Fix: `X` ko `providedIn: "root"` do, ya sahi `providers` array (app/route/component) me add karo — root cause dekho, blindly har jagah mat daalo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Config + multi-environment apps">
+
+EMS me `API_BASE_URL` ek `InjectionToken` hai. `app.config.ts` me `{ provide: API_BASE_URL, useValue: environment.apiBaseUrl }`. Dev me `localhost`, prod me real domain — services ka code same. Tests me `{ provide: API_BASE_URL, useValue: "http://test" }`. Ek aur token `FEATURE_FLAGS` similarly. Ye "config ko inject karo, hardcode mat karo" pattern har mature Angular app me hota hai — aur DI ke bina isko clean karna mushkil.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Injector hierarchy levels: typically **root -> (route) -> component/element** — resolution walks up until a provider is found.
+- Provider recipes: `useClass`, `useValue`, `useFactory`, `useExisting` (+ shorthand class).
+- `inject()` must run in an **injection context**; outside it throws `NG0203`.
+- `providedIn: "root"` service unused anywhere = **tree-shaken out** of the bundle.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common, often deep: "DI kya hai?", "injector hierarchy?", "`providedIn: 'root'` vs component providers?", "injection token kyun?", "`inject()` vs constructor?".
+
+Strong answer:
+
+1. DI = class declares needs, Angular supplies; loose coupling + testability.
+2. Providers = how to create (`useClass/useValue/useFactory/useExisting`).
+3. Injectors form a tree (root/route/component); resolution walks up.
+4. `providedIn: "root"` singleton; component `providers` = scoped new instance.
+5. Tokens for non-class deps (config, functions); `@Optional/@Self/@SkipSelf` modify resolution.
+
+Red flag: "No provider" ko har jagah `providers` me daal kar theek karna without understanding — often breaks singletons.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**App-wide service ko component/route `providers` me daal kar "No provider" fix karna.** Ab ek naya scoped instance banta hai — shared state toot jata hai. `providedIn: "root"` sahi fix.
+
+</Mistake>
+
+<Mistake>
+
+**`inject()` ko injection context ke bahar call karna.** Ek plain function me, ya `setTimeout` callback me `inject(X)` -> `NG0203`. Field initializer / constructor / `runInInjectionContext` me karo.
+
+</Mistake>
+
+<Mistake>
+
+**Config string ko service me hardcode karna.** `private base = "https://api..."` — environment-specific nahi. Token banao aur inject karo.
+
+</Mistake>
+
+<Mistake>
+
+**`useValue` me ek complex object jo mutate hota hai.** DI ise share karta hai — ek jagah mutation sab jagah dikhta hai. Immutable rakho ya `useFactory`.
+
+</Mistake>
+
+<Mistake>
+
+**Har chhoti value ke liye `InjectionToken`.** Over-engineering. Token tab jab genuinely swap/override karna ho (config, env, feature flags, strategy).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    ROOT["Root injector: providedIn root + appConfig.providers"]
+    ROUTE["Route injector: route.providers"]
+    COMP["Component injector: @Component providers"]
+    ROOT --> ROUTE --> COMP
+    REQ["inject(X) in a deep component"] --> COMP
+    COMP -->|not found| ROUTE
+    ROUTE -->|not found| ROOT
+    ROOT -->|not found| ERR["NG0201 No provider for X"]
+`}
+  caption="A dependency request walks up the injector tree until a provider is found, or errors."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- DI = class declares needs (`inject(X)` / constructor param), Angular supplies the instance.
+- Providers = how to build it: `useClass`, `useValue`, `useFactory`, `useExisting` (class shorthand = `useClass`).
+- Injectors form a hierarchy: root -> route -> component; resolution walks **up** until a provider is found, else `NG0201`.
+- `providedIn: "root"` = app-wide singleton + tree-shakeable. Component/route `providers` = a scoped new instance for that subtree.
+- Injection tokens (`new InjectionToken<T>()`) inject non-class values: config, env, functions.
+- Modifiers: `{ optional: true }` (null if absent), `{ self: true }`, `{ skipSelf: true }`, `{ host: true }`.
+- `inject()` only works inside an injection context (`NG0203` otherwise).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `API_BASE_URL` naam ka ek `InjectionToken<string>` banao. `app.config.ts` me `{ provide: API_BASE_URL, useValue: "https://api.ems.local/v1" }`. `EmployeeService` me `private base = inject(API_BASE_URL)` aur URLs isse banao.
+
+**Medium:** `EmployeeService` ko ek interface `EmployeeApi` ke against likho. Test me `{ provide: EmployeeService, useClass: FakeEmployeeService }` provide karke `EmployeeListPage` ka behaviour bina HTTP ke test karo.
+
+**Bada:** Ek `WizardStore` service (koi `providedIn`) banao. Ek `EmployeeWizard` component ke `@Component({ providers: [WizardStore] })` me daalo. Do `<app-employee-wizard />` ek hi page par render karo aur confirm dono ka apna alag store hai (ek me draft badalne se doosra unaffected). Phir `WizardStore` ko `providedIn: "root"` bana do aur dekho ab dono share karte hain (bug). 4 line me explain karo hierarchical DI ne yahan kya control diya.
+
+</Callout>

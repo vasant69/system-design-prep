@@ -1,0 +1,296 @@
+---
+slug: "building-reusable-presentational-components"
+title: "Smart vs Presentational: Building Reusable Components"
+section: "angular-practical"
+module: "component-communication"
+order: 5
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["content-projection-with-ng-content"]
+tags: ["angular", "reusable-components", "smart-dumb", "container-presentational", "data-table", "employee-management"]
+englishDefinition: "The container/presentational pattern splits components into two kinds: containers (smart) that fetch data and hold state, and presentational (dumb) components that only take inputs and emit outputs. This lesson builds a reusable DataTable and ConfirmModal for the EMS and shows why the split matters."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+The container/presentational pattern splits components into two roles. A **container** (smart) component injects services, fetches data, holds state, and handles events. A **presentational** (dumb) component takes everything via `@Input`, emits everything via `@Output`, has no service dependencies, and is trivially reusable and testable. We build a reusable `DataTable` and `ConfirmModal` for the EMS this way.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne sikha: `@Input` neeche, `@Output` upar, `ng-content` markup, `ViewChild` imperative. Ye tools milke ek pattern banate hain jo bade Angular apps ko maintainable rakhta hai — **smart vs dumb** components.
+
+### The two kinds
+
+**Container / smart component:**
+
+- Route ke saath juda (`EmployeeListPage`).
+- Services inject karta hai (`EmployeeService`, `Router`).
+- Data fetch, state (signals), business decisions.
+- Template mostly presentational components ko compose karta hai.
+- Reuse kam — ek specific screen ke liye.
+
+**Presentational / dumb component:**
+
+- Sirf `@Input` leta hai, `@Output` emit karta hai.
+- Koi service, koi HTTP, koi router.
+- `OnPush`, signals-friendly.
+- Pure function of inputs — same inputs, same UI.
+- Reuse high, test trivial.
+
+### Example — EMS employees screen
+
+```ts
+// SMART: EmployeeListPage
+@Component({
+  selector: "app-employee-list-page",
+  imports: [DataTable, EmployeeToolbar, Paginator, ConfirmModal],
+  template: `
+    <app-employee-toolbar (search)="search.set($event)" (add)="goToAdd()" />
+    <app-data-table
+      [columns]="columns"
+      [rows]="pageRows()"
+      [loading]="loading()"
+      (rowClick)="viewDetails($event)"
+      (sortChange)="sort.set($event)" />
+    <app-paginator
+      [total]="total()" [page]="page()" [pageSize]="pageSize"
+      (pageChange)="page.set($event)" />
+    <app-confirm-modal
+      [open]="pendingDelete() !== null"
+      title="Delete employee?"
+      (confirmed)="doDelete()" (cancelled)="pendingDelete.set(null)" />
+  `,
+})
+export class EmployeeListPage {
+  private service = inject(EmployeeService);
+  search = signal("");
+  page = signal(1);
+  sort = signal<Sort | null>(null);
+  pendingDelete = signal<number | null>(null);
+  // ...derived signals + effects call the service
+}
+```
+
+```ts
+// DUMB: DataTable
+@Component({
+  selector: "app-data-table",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (loading()) { <app-skeleton-rows /> }
+    @else {
+      <table>
+        <thead>
+          @for (col of columns(); track col.key) {
+            <th (click)="sortChange.emit(col.key)">{{ col.label }}</th>
+          }
+        </thead>
+        <tbody>
+          @for (row of rows(); track row.id) {
+            <tr (click)="rowClick.emit(row)">
+              @for (col of columns(); track col.key) {
+                <td>{{ row[col.key] }}</td>
+              }
+            </tr>
+          } @empty { <tr><td [attr.colspan]="columns().length">No data</td></tr> }
+        </tbody>
+      </table>
+    }
+  `,
+})
+export class DataTable {
+  columns = input.required<Column[]>();
+  rows = input.required<Row[]>();
+  loading = input(false);
+  rowClick = output<Row>();
+  sortChange = output<string>();
+}
+```
+
+`DataTable` ko nahi pata: data kahan se aaya, sort ke baad kya hoga, row click par navigate karna hai ya modal. Wo sirf render + emit. `EmployeeListPage` sab decide karta hai.
+
+### Why the split matters — kyun
+
+- **Reuse**: `DataTable` `Departments`, `Leave Requests`, `Roles` screens me bhi.
+- **Testing**: `DataTable` test = inputs do, DOM assert, emitted events assert. No HTTP mock, no router mock.
+- **Change detection**: dumb components `OnPush` + signals -> fast.
+- **Reasoning**: bug "list galat dikh raha" -> smart component ki state dekho; "table styling toot gayi" -> DataTable dekho. Clear boundaries.
+- **Parallel work**: ek dev smart logic, doosra DataTable UI.
+
+### How to decide — smart ya dumb
+
+- Ye component `inject()` karta hai koi service? -> smart (ya wo dependency remove karo).
+- Ye route ka `component` hai? -> smart.
+- Ye `@Input`-only ho sakta hai bina kuch khoye? -> dumb banao.
+- Doubt ho -> dumb; smart wrapper alag.
+
+### Reusable component checklist
+
+- `OnPush` change detection.
+- Inputs: `input()` / `input.required()`, minimal, well-typed.
+- Outputs: named by action, payloads typed.
+- No `inject()` of app services (a purely-presentational util like a formatting service is a grey area).
+- `ng-content` slots for flexible bits.
+- Sensible defaults; works with just required inputs.
+- A `.spec.ts` covering inputs -> render and interactions -> emitted events.
+
+### Show it in our project
+
+`shared/ui/`: `DataTable`, `Paginator`, `ConfirmModal`, `Card`, `StatusBadge`, `Avatar`, `EmptyState`, `SearchBox`, `Toolbar`. Har feature page (smart) inhe compose karta hai. `ConfirmModal`:
+
+```ts
+@Component({ selector: "app-confirm-modal", changeDetection: ChangeDetectionStrategy.OnPush, /* ... */ })
+export class ConfirmModal {
+  open = input(false);
+  title = input("Are you sure?");
+  message = input("");
+  confirmText = input("Confirm");
+  confirmed = output<void>();
+  cancelled = output<void>();
+}
+```
+
+### Where is it used in day-to-day development
+
+Every feature: a smart page component + several dumb children. New screen = new smart component + reuse existing dumb ones + maybe one new dumb component. Over time the `shared/ui` library grows and screens get faster to build.
+
+### Pros and cons
+
+**Pros**
+
+- Max reuse, trivial tests, fast CD, clear debugging boundaries.
+- Design consistency — one `DataTable`, one look.
+- Onboarding easy — dumb components are self-contained.
+
+**Cons**
+
+- More files / indirection for a tiny screen.
+- Over-abstracting a one-off component wastes time.
+- "Prop drilling" through several dumb layers — sometimes a slot or a small service is cleaner.
+- Deciding the input/output API well takes thought (bad API = churn).
+
+</Hinglish>
+
+<Callout type="tip">
+
+Heuristic: agar aap ek component ke `.spec.ts` me `HttpClientTestingModule` ya router mock import kar rahe ho, wo component **smart** hai. Dumb component ke test me sirf `TestBed` + inputs + `fixture` hote hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Internal admin apps at scale">
+
+Ek mature EMS-type app me `shared/ui/` me 15–30 dumb components hote hain (table, paginator, modal, date-picker wrapper, tag-input, empty-state, stat-card, avatar, breadcrumb...). Feature folders me ~1 smart page component per screen. Naya "Assets" module banana = ek `AssetListPage` (smart) + `DataTable`/`Paginator`/`ConfirmModal` reuse + shayad ek `AssetStatusChip` (dumb). Team ka velocity is library ke saath badhta hai — nayi screens dinon me nahi ghanton me banti hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A dumb component's test typically needs **only** `TestBed.configureTestingModule({ imports: [TheComponent] })` — no HTTP/router mocks.
+- Reusable components should be **`OnPush`** — a shared table re-rendering on every CD across many screens is a real cost.
+- Rule of thumb: a presentational component with **more than ~6 inputs** or **any injected app service** is drifting toward "smart" — reconsider.
+- One good `DataTable` can back **5–10+** list screens in a typical admin app.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "smart vs dumb components?", "container/presentational pattern?", "reusable component kaise design karte ho?", "kaise decide karo component me service inject karein ya nahi?".
+
+Strong answer:
+
+1. Container/smart: services, data fetch, state, business decisions; route-bound; low reuse.
+2. Presentational/dumb: `@Input` in, `@Output` out, no services, `OnPush`; high reuse, trivial tests.
+3. Decide: needs a service or is a route component -> smart; can be inputs-only -> dumb.
+4. Benefits: reuse, testability, fast CD, clear debugging boundaries, parallel work.
+5. Cost: more files; don't over-abstract one-offs.
+
+Red flag: "har component me service inject kar deta hoon, convenient hai" — kills reuse and testability.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Dumb component me `inject(SomeService)` / `HttpClient` daal dena "just for one call".** Ab wo reusable nahi, test me mocks chahiye, aur ek specific backend se coupled. Emit an event; let the smart parent call the service.
+
+</Mistake>
+
+<Mistake>
+
+**Reusable component ko `Default` change detection par chhodna.** Har screen par har CD cycle me re-check. `OnPush` + signals/inputs.
+
+</Mistake>
+
+<Mistake>
+
+**Ek chhoti one-screen widget ke liye poora smart/dumb split.** Over-engineering. Split tab jab reuse ya testing genuinely benefit de.
+
+</Mistake>
+
+<Mistake>
+
+**Bad input/output API.** 10 boolean flags, ya ek `data` input jo poora backend shape hai. Minimal, well-typed, action-named outputs. API galat -> har consumer refactor.
+
+</Mistake>
+
+<Mistake>
+
+**Smart component me poora HTML likh dena, koi dumb children nahi.** 400-line template, sab logic mila hua. Compose it from presentational pieces.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    R[Route] --> SMART[EmployeeListPage - SMART]
+    SMART -->|inject| SVC[EmployeeService / Router]
+    SMART -->|"[rows] [columns] [loading]"| TABLE[DataTable - DUMB, OnPush]
+    SMART -->|"[total] [page]"| PAG[Paginator - DUMB]
+    SMART -->|"[open] [title]"| MODAL[ConfirmModal - DUMB]
+    TABLE -->|"(rowClick) (sortChange)"| SMART
+    PAG -->|"(pageChange)"| SMART
+    MODAL -->|"(confirmed) (cancelled)"| SMART
+`}
+  caption="The smart component owns data and decisions; dumb components only render inputs and emit events."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Container/smart: injects services, fetches data, holds state, makes decisions; route-bound; low reuse.
+- Presentational/dumb: `@Input` in, `@Output` out, no app services, `OnPush`; high reuse, trivial tests.
+- Decide: needs a service or is a route component -> smart; can be inputs-only -> dumb (default to dumb).
+- Dumb component tests: `TestBed` + set inputs + assert DOM/emitted events — no HTTP/router mocks.
+- Benefits: reuse, testability, fast change detection, clear debugging boundaries, parallel work.
+- Costs: more files/indirection; don't over-abstract one-off components.
+- Design the input/output API deliberately: minimal, typed, action-named outputs.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Apne `EmployeeList` me se table markup ko ek naye `DataTable` dumb component me nikaalo — `columns`, `rows`, `loading` inputs; `rowClick`, `sortChange` outputs. `OnPush` set karo. `EmployeeListPage` sirf compose kare.
+
+**Medium:** `DataTable` ka `.spec.ts` likho: `columns`/`rows` inputs set karke rows count assert karo, ek row click karke `rowClick` emitted value assert karo. Note karo test me na HTTP mock chahiye na router — kyunki component dumb hai.
+
+**Bada:** `DataTable` ko `DepartmentListPage` (dummy) me bhi reuse karo, alag columns/handlers ke saath. Phir jaan-boojhke `DataTable` ke andar `inject(EmployeeService)` add karke sort ke baad refetch karo. Ab `DepartmentListPage` me use karke dekho kya toota (wrong service, wrong data). Revert karke 4-5 line me likho smart/dumb split ne yahan kya bachaya.
+
+</Callout>

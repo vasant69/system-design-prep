@@ -1,0 +1,235 @@
+---
+slug: "services-and-why-logic-leaves-the-component"
+title: "Services: Why Logic Leaves the Component"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 1
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["building-reusable-presentational-components"]
+tags: ["angular", "services", "injectable", "separation-of-concerns", "employee-management"]
+englishDefinition: "A service is a plain class marked @Injectable that holds logic not tied to a single view: data access, business rules, shared state, cross-cutting helpers. Components stay focused on the template; services are singletons (with providedIn: 'root') that any component can ask for."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A service is a plain TypeScript class decorated with `@Injectable` that holds logic which is not tied to one specific view: data access (HTTP), business rules, shared state, and reusable helpers. Components delegate that work to services so they can stay focused on rendering. With `providedIn: "root"` a service is an app-wide singleton any component can inject.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak components me humne dummy arrays rakhe. Real app me data API se aata hai, business rules hote hain, aur ek hi data kai components ko chahiye. Ye sab component me daalna galat hai — iske liye **services** hain.
+
+### What is it
+
+```ts
+import { Injectable, inject } from "@angular/core";
+import { HttpClient } from "@angular/common/http";
+
+@Injectable({ providedIn: "root" })
+export class EmployeeService {
+  private http = inject(HttpClient);
+  private base = "/api/employees";
+
+  getAll() {
+    return this.http.get<Employee[]>(this.base);
+  }
+
+  getById(id: number) {
+    return this.http.get<Employee>(`${this.base}/${id}`);
+  }
+
+  isEligibleForLeave(emp: Employee): boolean {
+    return emp.isActive && emp.leaveBalance > 0;
+  }
+}
+```
+
+Component:
+
+```ts
+export class EmployeeListPage {
+  private service = inject(EmployeeService);
+  employees = signal<Employee[]>([]);
+
+  ngOnInit() {
+    this.service.getAll().subscribe((list) => this.employees.set(list));
+  }
+}
+```
+
+- `@Injectable({ providedIn: "root" })` — is class ko DI system me register karta hai, ek app-wide singleton ke roop me.
+- `inject(HttpClient)` — service khud HttpClient use karta hai.
+- Component sirf `service.getAll()` call karta hai — HTTP ki detail nahi jaanta.
+
+### Why do we need services — kyun
+
+1. **Reuse** — `EmployeeService.getAll()` list page, dropdown, aur report teeno use karte hain. Component me hota to 3 baar likhna.
+2. **Separation of concerns** — component = "kaise dikhe"; service = "data/rules". Chhote, focused units.
+3. **Testability** — business rule (`isEligibleForLeave`) ek pure method — unit test trivial, bina component render kiye.
+4. **Single source of truth** — shared state ek service me; kai components consistent.
+5. **Swap-able** — testing me real service ki jagah fake inject kar sakte ho (DI ka faayda).
+
+### What goes in a service
+
+- HTTP / data access.
+- Business logic and validation rules.
+- Shared/app-wide state (auth user, notifications, cart).
+- Cross-cutting helpers (logging, analytics, feature flags).
+- Caching, retries, mapping API DTO -> view model.
+
+### What does NOT go in a service
+
+- DOM manipulation (that is a directive/component).
+- View-only formatting that a pipe should do.
+- One component's private UI state (keep it local).
+
+### `providedIn: "root"` — the default
+
+- Ek hi instance poore app ke liye (singleton).
+- **Tree-shakeable** — agar service kahin inject nahi hui, bundle se nikal jaati hai.
+- Alternative: component `providers` (scoped instance) — jaan-boojhke, jaise ek wizard component ka isolated state.
+
+### Show it in our project
+
+`core/services/`: `EmployeeService`, `DepartmentService`, `AuthService`, `NotificationService`, `DocumentService`. Har feature component inject karta hai jo chahiye. Business rules jaise "leave overlap check", "salary band validation" bhi services me — components sirf call karte hain.
+
+### Where is it used in day-to-day development
+
+Har HTTP call ek service method. Har shared piece of state ek service. Har "yeh rule kahan rakhein" ka jawab aksar "ek service". Component me `inject(SomeService)` Angular apps ki sabse common line hai.
+
+### Pros and cons
+
+**Pros**
+
+- Reuse, testability, clear separation, single source of truth.
+- DI se swap-able (mocking, environment-specific implementations).
+- `providedIn: "root"` — singleton + tree-shakeable.
+
+**Cons**
+
+- "Ek aur service" ka temptation — kabhi ek pure function / util better.
+- God service (500 lines, sab kuch) — split by responsibility.
+- Shared mutable state services me carelessly = hidden coupling; prefer signals/immutability.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Agar aap ek hi logic do components me copy-paste karne wale ho, ya ek business rule ko test karna chahte ho bina UI ke — wo ek service (ya pure function) me jaana chahiye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Any API-backed app">
+
+EMS me `EmployeeService` ek jagah `/api/employees` ke saare calls, error mapping, aur DTO-to-view-model conversion rakhta hai. Jab backend `employeeCode` field add karta hai, ek file change — service ka mapping — poore app me reflect. `AuthService` current user aur permissions ek signal me rakhta hai; header, guards, aur `*appHasPermission` directive sab isi ek source se padhte hain. Ye consistency components me bikhri hui HTTP calls se kabhi nahi milti.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `providedIn: "root"` service jo kahin inject nahi hoti — production bundle se **completely removed** (tree-shaking).
+- A well-scoped service is typically **50–200 lines**; much larger usually means split by responsibility.
+- One `EmployeeService.getAll()` can back **3+** UI surfaces (list, dropdown, report) with zero duplication.
+- DI makes swapping a real service for a fake in tests a **one-line** `providers` override.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "service kya hai aur kyun?", "`providedIn: 'root'` kya karta hai?", "component me business logic kyun nahi?", "singleton kaise ensure hota hai?".
+
+Strong answer:
+
+1. Service = `@Injectable` class for non-view logic: HTTP, rules, shared state, helpers.
+2. Components delegate -> stay focused on template; services are reusable + testable.
+3. `providedIn: "root"` = app-wide singleton + tree-shakeable.
+4. DI lets you swap implementations (mocks, env-specific).
+5. Keep DOM/view formatting out of services.
+
+Red flag: "HTTP calls seedha component me, service ki kya zaroorat" — no reuse, no testability, duplicated error handling.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Har component me apni HTTP call likhna.** Duplicated URLs, duplicated error handling, inconsistent. Ek service method.
+
+</Mistake>
+
+<Mistake>
+
+**Service me DOM/`ElementRef`/view formatting daalna.** Service view-agnostic honi chahiye. Formatting -> pipe; DOM -> directive/component.
+
+</Mistake>
+
+<Mistake>
+
+**God service.** `AppService` with 40 methods for everything. Split: `EmployeeService`, `AuthService`, `NotificationService` — by responsibility.
+
+</Mistake>
+
+<Mistake>
+
+**Component `providers` me app-wide service daalna.** Har component apna instance -> singleton toota, shared state kaam nahi karta. `providedIn: "root"` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Service me mutable shared object carelessly expose karna.** `service.currentUser` jise koi bhi mutate kar de. Signals / readonly / immutable updates use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C1[EmployeeListPage] -->|inject| S[EmployeeService - singleton]
+    C2[EmployeeDropdown] -->|inject| S
+    C3[HeadcountReport] -->|inject| S
+    S -->|HttpClient| API[(REST API)]
+    S --> RULES[business rules + DTO mapping]
+`}
+  caption="One service, injected by many components, is the single place for data access and rules."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Service = `@Injectable` class for logic not tied to one view: HTTP/data access, business rules, shared state, helpers.
+- Components delegate to services and stay focused on the template.
+- `@Injectable({ providedIn: "root" })` = app-wide singleton + tree-shakeable (removed if unused).
+- Benefits: reuse, testability, single source of truth, swap-able via DI.
+- Keep out of services: DOM manipulation, view-only formatting (use pipes/directives).
+- Component-level `providers` = a scoped instance — only when you deliberately want isolation.
+- Split large services by responsibility; avoid a "god service".
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeService` banao `getAll()` / `getById(id)` ke saath (abhi `of([...])` se dummy data return karo). `EmployeeListPage` me inject karke `ngOnInit` me subscribe karke signal set karo.
+
+**Medium:** Service me ek pure business method `isEligibleForLeave(emp)` add karo. Uska ek `.spec.ts` likho jo bina kisi component ke, sirf method ke input/output test kare. Note karo: koi `TestBed`/DOM nahi chahiye.
+
+**Bada:** `EmployeeListPage` aur ek naya `EmployeeDropdown` component dono me `EmployeeService.getAll()` use karo. Confirm ek hi service instance (constructor me `console.log` ek hi baar). Phir jaan-boojhke `EmployeeDropdown` ke `@Component({ providers: [EmployeeService] })` me daal do — ab do instances, aur agar service me koi cache signal hota to wo share nahi hota. 4 line me likho `providedIn: "root"` kyun default hai.
+
+</Callout>

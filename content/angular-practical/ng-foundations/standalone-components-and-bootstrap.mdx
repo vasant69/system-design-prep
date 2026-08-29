@@ -1,0 +1,272 @@
+---
+slug: "standalone-components-and-bootstrap"
+title: "Standalone Components and How the App Boots"
+section: "angular-practical"
+module: "ng-foundations"
+order: 4
+difficulty: "beginner"
+readingTime: 13
+prerequisites: ["project-structure-walkthrough"]
+tags: ["angular", "standalone", "bootstrap", "application-config", "providers", "beginner", "employee-management"]
+englishDefinition: "Standalone components are Angular components that declare their own template dependencies via an imports array, with no NgModule. The app boots by calling bootstrapApplication with the root component and an ApplicationConfig object that lists app-wide providers like the router and HttpClient."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+A standalone component is an Angular component that lists everything its template needs (other components, directives, pipes) in its own `imports` array — there is no `NgModule` wrapping it. The application starts by calling `bootstrapApplication(RootComponent, appConfig)`, where `appConfig` is an `ApplicationConfig` object holding app-wide providers (router, HTTP client, and so on).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Agar aapne 2022 se pehle ka Angular tutorial dekha hai, to aapko `app.module.ts`, `@NgModule`, `declarations`, `imports` array yaad hoga. Modern Angular me wo layer hata di gayi hai. Ye topic samjhaata hai naya model — jo is course me hum end tak use karenge.
+
+### What is it — standalone component hai kya
+
+Pehle: har component ko ek `NgModule` ke `declarations` array me register karna padta tha, aur us module ke `imports` me batana padta tha ki template ko kaunse aur components/directives/pipes chahiye. Ye "har cheez do jagah likho aur sync me rakho" wala kaam tha.
+
+Ab: component khud batata hai use kya chahiye.
+
+```ts
+import { Component } from "@angular/core";
+import { RouterOutlet } from "@angular/router";
+import { EmployeeCard } from "./features/employees/employee-card/employee-card";
+
+@Component({
+  selector: "app-root",
+  imports: [RouterOutlet, EmployeeCard],
+  templateUrl: "./app.html",
+  styleUrl: "./app.scss",
+})
+export class App {
+  title = "EMS";
+}
+```
+
+`imports: [RouterOutlet, EmployeeCard]` — is component ke template me `<router-outlet>` aur `<app-employee-card>` use ho sakte hain, kyunki dono yahan import kiye gaye. Bas. Koi `NgModule` nahi.
+
+(Naye Angular me `standalone: true` default hai isliye likhne ki zaroorat nahi; thoda purane me aap `standalone: true` explicitly likhte the.)
+
+### Why do we need it — kyun badla
+
+`NgModule` model ke problems:
+
+- **Boilerplate** — har feature ke liye ek module file, uske `declarations` aur `imports` maintain karo.
+- **"Is X a known element?" errors** — bhool gaye kisi module me kuch import karna, aur error message confusing.
+- **Indirection** — component dekh kar pata nahi chalta use kya dependencies chahiye; module file kholni padti hai.
+
+Standalone se: component self-contained, dependencies component ke upar hi dikhti hain, kam files, aur tree-shaking behtar (jo import nahi hua wo bundle me nahi).
+
+### How does it work — boot sequence
+
+```text
+browser  ->  index.html  ->  loads main.js
+main.ts  ->  bootstrapApplication(App, appConfig)
+   |
+   +-- Angular ek "root injector" banata hai appConfig.providers se
+   +-- App component instantiate hota hai
+   +-- App ka template render hota hai <app-root> ke andar
+   +-- template me <router-outlet> hai -> router active route ka component load karta hai
+```
+
+**`app.config.ts`** app-wide providers rakhti hai:
+
+```ts
+import { ApplicationConfig } from "@angular/core";
+import { provideRouter } from "@angular/router";
+import { provideHttpClient, withInterceptors } from "@angular/common/http";
+import { routes } from "./app.routes";
+import { authInterceptor } from "./core/interceptors/auth-interceptor";
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient(withInterceptors([authInterceptor])),
+  ],
+};
+```
+
+Line by line:
+
+- `ApplicationConfig` — bas `{ providers: [...] }` shape ka type.
+- `provideRouter(routes)` — router ko configure karta hai humare route array ke saath. (Purane me `RouterModule.forRoot(routes)`.)
+- `provideHttpClient(...)` — `HttpClient` ko inject-able banata hai. (Purane me `HttpClientModule`.)
+- `withInterceptors([authInterceptor])` — har HTTP request pe chalne wale functional interceptors.
+- Ye "provide*" functions Angular ka naya pattern hain — module import karne ki jagah ek function call.
+
+**`main.ts`** sirf trigger karti hai:
+
+```ts
+bootstrapApplication(App, appConfig).catch((err) => console.error(err));
+```
+
+### Show it in our project
+
+EMS me hamara `app.config.ts` dheere-dheere badhega: abhi `provideRouter`. Baad me `provideHttpClient`, `provideAnimations` (agar Material use kiya), aur kuch app-level services jinko `providedIn: "root"` se register na karke yahan rakhna ho.
+
+Hamara `App` component ek layout shell hoga:
+
+```ts
+@Component({
+  selector: "app-root",
+  imports: [RouterOutlet, SiteHeader, SiteSidebar],
+  template: `
+    <app-site-header />
+    <div class="layout">
+      <app-site-sidebar />
+      <main><router-outlet /></main>
+    </div>
+  `,
+})
+export class App {}
+```
+
+Har feature component apne `imports` me apni zaroorat ki cheezein khud lega — koi central registry nahi.
+
+### Where is it used in day-to-day development
+
+- Naya component banate waqt: uske template ko ek pipe ya child component chahiye? Us component ke `imports` array me add karo.
+- App-level cheez chahiye (analytics, error handler, HTTP, router config)? `app.config.ts` ke `providers` me `provideX()` add karo.
+- Purane NgModule-based Angular tutorial follow kar rahe ho? Har `NgModule` ko standalone me translate karna padega — ye rozmarra ki skill hai jab tak internet purane examples se bhara hai.
+
+### Pros and cons
+
+**Pros**
+
+- Kam boilerplate — koi `*.module.ts` files nahi.
+- Component ki dependencies component pe hi visible.
+- Lazy loading simpler — `loadComponent: () => import(...)` seedha component.
+- Better tree-shaking, generally chhote bundles.
+
+**Cons**
+
+- Bahut se online tutorials/StackOverflow answers abhi bhi NgModule me hain — mental translation karni padti hai.
+- Bahut saare components ek jaisi cheezein import karte hain (CommonModule pieces, form modules) — thoda repetition (solution: ek chhota "shared imports" array export karna).
+- Bade migration me legacy libraries jo `NgModule` expect karti hain unke saath thoda glue code.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Purane tutorials ki nishani: `app.module.ts`, `@NgModule({ declarations: [...] })`, `RouterModule.forRoot`, `HttpClientModule` `imports` me. Agar ye dikhe, to aap purana pattern padh rahe ho — is course me hum `bootstrapApplication` + `provideRouter` + `provideHttpClient` use karte hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Angular team migration guidance">
+
+Angular team ne v15–v17 me standalone ko default banaya aur ek automated migration schematic diya (`ng generate @angular/core:standalone`) jo bade NgModule-based codebases ko step-by-step standalone me convert karta hai. Bahut si companies ne apne EMS-type internal apps ko is schematic se migrate kiya — pehle components standalone banaye, phir `NgModule`s hataye, phir `bootstrapModule` ko `bootstrapApplication` me badla. Naye projects directly standalone se shuru hote hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Standalone default: Angular **v17** se `ng new` aur `ng g c` standalone dete hain (`standalone: true` implicit).
+- Ek typical feature ke NgModule-based setup me **1 extra module file per feature** hoti thi — standalone me wo count zero.
+- `provideHttpClient()` + `provideRouter()` + `provideAnimations()` — 3 provider functions typically ek EMS-size app ke `app.config.ts` me.
+- Migration schematic bade apps me hazaaron lines ka mechanical change **automate** kar deta hai — manual effort mostly review tak simat jaata hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut common: "Standalone components kya hain?", "NgModule ki jagah kya aaya?", "App kaise bootstrap hoti hai standalone me?", "`provideRouter` vs `RouterModule.forRoot`?".
+
+Strong answer:
+
+1. Standalone = component apni template dependencies `imports` me khud declare karta hai, koi `NgModule` nahi.
+2. Boot: `main.ts` me `bootstrapApplication(Root, appConfig)`; `appConfig` = `ApplicationConfig` with `providers`.
+3. Purane module imports ki jagah `provide*` functions: `provideRouter(routes)`, `provideHttpClient()`, `provideAnimations()`.
+4. Faayde: kam boilerplate, visible deps, simpler lazy loading, better tree-shaking.
+
+Red flag: "Standalone matlab component bina dependencies ke" — galat; standalone matlab dependencies component khud declare karta hai, na ki nahi hoti.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Template me ek child component/pipe use karna bina uske `imports` me add kiye.** Error: "app-employee-card is not a known element". Fix: us component ke `@Component` `imports` array me `EmployeeCard` add karo. NgModule ke zamaane me ye module-level tha; ab component-level.
+
+</Mistake>
+
+<Mistake>
+
+**Purane tutorial se `HttpClientModule` ko component ke `imports` me daalna.** Kaam kar sakta hai but deprecated raasta. Modern: `app.config.ts` me `provideHttpClient()`. Isi tarah `RouterModule.forRoot` ki jagah `provideRouter`.
+
+</Mistake>
+
+<Mistake>
+
+**`bootstrapApplication` ko `bootstrapModule` samajhna.** `bootstrapModule(AppModule)` NgModule-era hai. Standalone me `bootstrapApplication(App, appConfig)` — pehla arg ek component, module nahi.
+
+</Mistake>
+
+<Mistake>
+
+**Har component me `standalone: true` likhna zaroori samajhna (naye Angular me).** v17+ me ye default hai. Likhna galat nahi, par zaroori bhi nahi. Purane version me explicitly chahiye tha.
+
+</Mistake>
+
+<Mistake>
+
+**App-wide service ko har component ke `providers` me daal dena.** Isse har component ko apna alag instance milta hai (singleton toot jaata hai). App-wide singleton ke liye `@Injectable({ providedIn: "root" })` ya `app.config.ts` ke `providers` — component `providers` sirf jaan-boojh ke scoped instance ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant B as Browser
+    participant M as main.ts
+    participant A as Angular
+    participant R as Root injector
+    participant App as App component
+    B->>M: load main.js
+    M->>A: bootstrapApplication(App, appConfig)
+    A->>R: build root injector from appConfig.providers
+    A->>App: create App instance
+    App-->>B: render template into app-root
+    App->>A: template has router-outlet
+    A-->>B: router renders the active route component
+`}
+  caption="bootstrapApplication builds the root injector from appConfig, then creates and renders the root component."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Standalone component**: declares its own template deps in `imports: [...]`; no `NgModule`. Default since Angular v17.
+- App boot: `main.ts` calls `bootstrapApplication(App, appConfig)`.
+- `appConfig` is an `ApplicationConfig` = `{ providers: [...] }` for app-wide setup.
+- Module imports are replaced by provider functions: `provideRouter(routes)`, `provideHttpClient()`, `provideAnimations()`.
+- Old vs new: `bootstrapModule(AppModule)` -> `bootstrapApplication(App, appConfig)`; `RouterModule.forRoot` -> `provideRouter`; `HttpClientModule` -> `provideHttpClient`.
+- "Not a known element" error = missing entry in that component's `imports`.
+- App-wide singleton service: `providedIn: "root"` (not per-component `providers`).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `app.ts` kholo. Uske `@Component` decorator me `imports` array dhoondho. `RouterOutlet` wahan hai kya? Ek line me likho `imports` array ka kaam kya hai.
+
+**Medium:** `ng g c shared/ui/site-header` se ek `SiteHeader` component banao. `App` ke `imports` me `SiteHeader` add karo aur `App` ke template me `<app-site-header />` use karo. Agar `imports` me add karna bhool jao to error dekho — error text note karo.
+
+**Bada:** `app.config.ts` me `provideHttpClient()` add karo (`@angular/common/http` se import). Phir ek dummy service banao jisme constructor me `private http = inject(HttpClient)` ho. `App` me us service ko inject karo. App chalao — koi error nahi aana chahiye. Ab `app.config.ts` se `provideHttpClient()` hata do aur dekho kya error aata hai. Dono states 2 line me likho.
+
+</Callout>

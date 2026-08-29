@@ -1,0 +1,239 @@
+---
+slug: "lifecycle-hooks-and-change-detection"
+title: "Lifecycle Hooks and Change Detection"
+section: "angular-practical"
+module: "components-templates-binding"
+order: 6
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["control-flow-if-for-switch"]
+tags: ["angular", "lifecycle-hooks", "ngoninit", "change-detection", "onpush", "employee-management"]
+englishDefinition: "Lifecycle hooks are methods Angular calls at defined moments of a component's life: creation, input changes, view initialisation, and destruction. Change detection is the process Angular runs to check bound expressions and update the DOM; the OnPush strategy limits when a component is checked."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree", "HCLTech"]
+---
+
+<SimpleDefinition>
+
+Lifecycle hooks are optional methods (`ngOnInit`, `ngOnChanges`, `ngAfterViewInit`, `ngOnDestroy`, and a few more) that Angular calls at specific moments in a component's life. Change detection is the process Angular runs to re-evaluate template expressions and update the DOM when data may have changed; the `OnPush` strategy restricts a component to being checked only on input-reference change, its own events, or signal changes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Component paida hota hai, inputs milte hain, template render hota hai, kabhi update hota hai, phir destroy. In har "moment" pe Angular aapke component ke ek method ko call kar sakta hai — wo lifecycle hooks hain. Aur "update kab hota hai" — wo change detection hai.
+
+### Lifecycle hooks — order me
+
+| Hook | Kab chalta hai | Kya karte ho yahan |
+|---|---|---|
+| `constructor` | Instance bante waqt (Angular se pehle) | Sirf DI (`inject()` / constructor params). Koi kaam nahi. |
+| `ngOnChanges` | Har baar koi `@Input` badle (pehli baar bhi) | Input change pe react (purani vs nayi value) |
+| `ngOnInit` | Pehle `ngOnChanges` ke baad, ek baar | Initial data fetch, setup, subscriptions |
+| `ngAfterViewInit` | Template + child views ready | `ViewChild` access, DOM measurement, 3rd-party lib init |
+| `ngOnDestroy` | Component hatane se pehle | Cleanup — unsubscribe, clearInterval, listeners |
+
+(Aur bhi hain — `ngAfterContentInit`, `ngDoCheck`, `ngAfterViewChecked` — kam use hote hain.)
+
+```ts
+import { Component, OnInit, OnDestroy, inject } from "@angular/core";
+
+@Component({ /* ... */ })
+export class EmployeeList implements OnInit, OnDestroy {
+  private service = inject(EmployeeService);   // constructor-time DI
+  private sub?: Subscription;
+
+  ngOnInit() {
+    this.sub = this.service.getAll().subscribe((list) => (this.employees = list));
+  }
+
+  ngOnDestroy() {
+    this.sub?.unsubscribe();
+  }
+}
+```
+
+- `implements OnInit` — TypeScript safety (method ka naam galat likho to error).
+- Constructor me API call **mat** karo — testing hard, aur inputs abhi set nahi hue.
+
+### Why do we need hooks — kyun
+
+Kuch kaam sirf sahi waqt pe ho sakte hain:
+
+- `ViewChild` ka element `constructor` me `undefined` hota hai — `ngAfterViewInit` me ready.
+- `@Input` values `constructor` me nahi hoti — `ngOnInit`/`ngOnChanges` me.
+- Subscriptions ko cleanup chahiye warna memory leak — `ngOnDestroy`.
+
+### Change detection — kya hai
+
+Angular ke paas ek internal list hai kaunse expressions template me bound hain (`{{ }}`, `[prop]`, `@if` conditions). "Change detection" = Angular in expressions ko dobara evaluate karta hai aur jahan value badli wahan DOM update karta hai.
+
+**Ye trigger kab hota hai?** Default me `zone.js` patch karta hai browser ke async APIs ko — `setTimeout`, `addEventListener`, `Promise`, `XHR/fetch`. In me se koi bhi complete ho, zone Angular ko batata hai "kuch hua ho sakta hai, check karo", aur Angular **poore component tree** ko root se check karta hai.
+
+### `Default` vs `OnPush`
+
+- **`Default`**: har CD cycle me har component check hota hai. Simple, par bade apps me wasteful.
+- **`OnPush`**: component tabhi check hota hai jab —
+  1. uska koi `@Input` **reference** badle,
+  2. component ke andar se koi event fire ho,
+  3. us par depend karta ek **signal** badle,
+  4. uske template ka ek `async` pipe naya value emit kare,
+  5. aap manually `ChangeDetectorRef.markForCheck()` call karo.
+
+OnPush se bade trees me Angular bahut se components skip kar deta hai -> tez.
+
+### Signals aur change detection ka future
+
+Signals Angular ko exactly batate hain kaunsa component kis value pe depend karta hai. Isliye signals + OnPush = Angular sirf wahi components update karta hai jinka data sach me badla — zone.js ke "poora tree check karo" se bahut behtar. Naye Angular "zoneless" ki taraf ja raha hai jahan signals hi CD drive karte hain.
+
+### Show it in our project
+
+- `EmployeeList`: `ngOnInit` me `service.getAll()`, `ngOnDestroy` me unsubscribe (ya `takeUntilDestroyed()` / `async` pipe use karke poora avoid).
+- Saare components `changeDetection: OnPush`, state signals me.
+- `EmployeeChart` (agar koi 3rd-party charting): `ngAfterViewInit` me init, `ngOnDestroy` me dispose.
+
+### Where is it used in day-to-day development
+
+`ngOnInit` — har data-loading component me. `ngOnDestroy` — har jagah jahan subscription/interval/listener hai. `ngOnChanges` — jab child ko input change pe recompute karna ho. `OnPush` — production apps me default choice. CD samajhna tab kaam aata hai jab "value badli par UI update nahi hui" bug aaye.
+
+### Pros and cons
+
+**Pros (OnPush + signals)**
+
+- Bahut kam wasted checks — bade apps smooth.
+- Data flow explicit — kya kis pe depend karta hai clear.
+- Zoneless future ke liye ready.
+
+**Cons**
+
+- OnPush ke saath mutation bugs ("view update nahi hua") — immutability/signals discipline chahiye.
+- Lifecycle hook order aur "kya kahan" yaad rakhna beginners ke liye load.
+- `ngOnChanges` sirf `@Input` decorator ke saath — signal `input()` ke saath `effect()`/`computed()` use hota hai, alag mental model.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Subscription cleanup ke liye modern approach: `import { takeUntilDestroyed } from "@angular/core/rxjs-interop"` aur `obs$.pipe(takeUntilDestroyed()).subscribe(...)` — `ngOnDestroy` + manual `unsubscribe` likhna nahi padta. Ya sabse saaf: template me `async` pipe.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Data-heavy dashboards">
+
+EMS dashboard me 6 widgets, har ek apna data fetch karta hai `ngOnInit` me. Agar sab `Default` CD par hon, to har mouse move / interval tick poore dashboard tree ko check karta hai — 60fps par janky. `OnPush` + signals + `async` pipe se: ek widget ka data aaya to sirf wo widget re-render hota hai. Yahi difference ek "slow Angular app" aur ek "smooth Angular app" ke beech hota hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Core lifecycle hooks: **8** total; roz kaam ke: `ngOnInit`, `ngOnChanges`, `ngAfterViewInit`, `ngOnDestroy`.
+- `Default` CD ek user event par **poore component tree** ko root-to-leaf check karta hai.
+- `OnPush` typically bade trees me **50–90%** components skip kar sakta hai per cycle.
+- `ngOnChanges` ko har `@Input` change par `SimpleChanges` object milta hai jisme `previousValue`, `currentValue`, `firstChange`.
+- Signals-based state + OnPush = component tabhi dirty jab uska koi consumed signal badle — koi tree-walk nahi.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye ek high-frequency, deep interview area hai. Common: "lifecycle hooks order?", "`constructor` vs `ngOnInit`?", "change detection kaise kaam karta hai?", "`OnPush` kab check hota hai?", "zone.js ka role?".
+
+Strong answer:
+
+1. Order: constructor -> `ngOnChanges` -> `ngOnInit` -> (`ngAfterViewInit`) -> ... -> `ngOnDestroy`.
+2. `constructor` = DI only; `ngOnInit` = initial data/setup (inputs ready).
+3. CD = bound expressions re-check + DOM update; triggered by zone.js-patched async (events, timers, XHR).
+4. `OnPush` = check only on input-ref change, internal event, signal change, `async` emit, or `markForCheck()`.
+5. Signals let Angular track exact dependencies -> path to zoneless.
+
+Red flag: "`ngOnInit` constructor se pehle chalta hai" — nahi, constructor pehle. Aur "OnPush se component kabhi update nahi hota" — galat.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Constructor me API call ya heavy init.** Inputs abhi set nahi hue, aur testing me constructor side-effects painful. `ngOnInit` me karo.
+
+</Mistake>
+
+<Mistake>
+
+**`ngOnDestroy` me unsubscribe bhoolna.** Long-lived observables (route params, stores, websockets) leak karenge — purane component instances memory me, callbacks chalte rehte hain. `takeUntilDestroyed()`, `async` pipe, ya explicit unsubscribe.
+
+</Mistake>
+
+<Mistake>
+
+**OnPush component me `@Input` object mutate karna.** `this.data.items.push(x)` — reference same, view update nahi. Naya array/object banao ya signals use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`ngAfterViewInit` me state badal kar "ExpressionChangedAfterItHasBeenChecked" error paana.** View check ho chuka, aap ab bind value badal rahe ho. Value ko `ngOnInit` me set karo, ya `queueMicrotask`/signal se defer karo.
+
+</Mistake>
+
+<Mistake>
+
+**Har chhoti cheez ke liye `ChangeDetectorRef.detectChanges()` thok dena.** Ye synchronous full check hai — overuse se perf worse aur re-entrancy bugs. Aksar `markForCheck()` (ya signal) sahi tool hai.
+
+</Mistake>
+
+<Mistake>
+
+**`ngDoCheck` implement karke usme bhaari kaam.** Ye har CD cycle me chalta hai — bahut frequent. Almost hamesha `ngOnChanges` ya computed signal better fit.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C[constructor - DI only] --> OC[ngOnChanges - inputs set]
+    OC --> OI[ngOnInit - fetch and setup]
+    OI --> AVI[ngAfterViewInit - ViewChild ready]
+    AVI --> RUN[component running - CD cycles update DOM]
+    RUN --> OC
+    RUN --> OD[ngOnDestroy - cleanup subscriptions]
+`}
+  caption="Hooks fire in this order; between init and destroy the component just re-renders through change-detection cycles."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Order: `constructor` -> `ngOnChanges` -> `ngOnInit` -> `ngAfterViewInit` -> ... -> `ngOnDestroy`.
+- `constructor` = DI only. `ngOnInit` = initial fetch/setup (inputs are ready). `ngAfterViewInit` = `ViewChild`/DOM. `ngOnDestroy` = cleanup.
+- Change detection = re-evaluate bound expressions + update DOM.
+- Default CD triggered by zone.js-patched async (events, `setTimeout`, `Promise`, XHR) -> checks the whole tree.
+- `OnPush` checks only on: `@Input` reference change, internal event, consumed signal change, `async` pipe emit, or `markForCheck()`.
+- Signals give exact dependency tracking -> fewer checks, path to zoneless.
+- OnPush + mutation = stale view; use immutable updates or signals.
+- Clean up subscriptions: `takeUntilDestroyed()` or `async` pipe.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek component me `constructor`, `ngOnInit`, `ngAfterViewInit`, `ngOnDestroy` me `console.log` lagao. Route navigate karke component mount/unmount karo aur console me exact order note karo.
+
+**Medium:** `EmployeeList` me `ngOnInit` me `interval(1000).subscribe(...)` (ek dummy tick) start karo, par `ngOnDestroy` me unsubscribe **mat** karo. Component se navigate away karke wapas aao 3 baar — console me multiple ticks per second dekho (leak). Ab `takeUntilDestroyed()` add karke fix karo aur confirm karo leak gaya.
+
+**Bada:** Ek parent-child pair banao. Child `OnPush`, ek `@Input() data` object leta hai aur `{{ data.count }}` dikhata hai. Parent me ek button jo `this.data.count++` karta hai (mutation) — child update nahi hoga. Doosra button jo `this.data = { ...this.data, count: this.data.count + 1 }` — ab hoga. Teesra: `data` ko signal bana do aur `data.update(d => ({ ...d, count: d.count + 1 }))`. Teenon behaviours aur unka reason 5 line me likho.
+
+</Callout>

@@ -1,0 +1,254 @@
+---
+slug: "custom-pipes"
+title: "Writing Custom Pipes (and Pure vs Impure)"
+section: "angular-practical"
+module: "directives-pipes"
+order: 4
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["built-in-pipes"]
+tags: ["angular", "pipes", "custom-pipe", "pure-impure", "performance", "employee-management"]
+englishDefinition: "A custom pipe is a class with an @Pipe decorator and a transform method. Pipes are pure by default, meaning Angular re-runs them only when the input's identity changes and caches the result otherwise. Making a pipe impure runs it on every change-detection cycle, which is a performance trap."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A custom pipe is a class decorated with `@Pipe({ name: "..." })` that implements a `transform(value, ...args)` method returning the display value. Pipes are pure by default: Angular re-runs `transform` only when the input value or arguments change identity, and reuses the cached result otherwise. Setting `pure: false` makes it run on every change-detection cycle — powerful but easy to misuse.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Built-in pipes sab kuch cover nahi karte. Aapko chahiye `fullName`, `timeAgo` ("3 hours ago"), `initials`, `maskEmail`, `fileSize` ("2.4 MB"). Ye chhote, reusable display transforms — custom pipe.
+
+### What is it — structure
+
+```ts
+import { Pipe, PipeTransform } from "@angular/core";
+
+@Pipe({ name: "timeAgo" })
+export class TimeAgoPipe implements PipeTransform {
+  transform(value: string | Date | null): string {
+    if (!value) return "";
+    const date = new Date(value);
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 60) return "just now";
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} hr ago`;
+    const days = Math.floor(hours / 24);
+    return `${days} day${days > 1 ? "s" : ""} ago`;
+  }
+}
+```
+
+Use:
+
+```html
+<span>{{ notification.createdAt | timeAgo }}</span>
+```
+
+Line by line:
+
+- `@Pipe({ name: "timeAgo" })` — template me `| timeAgo` naam.
+- `implements PipeTransform` — type safety; `transform` method zaroori.
+- `transform(value, ...args)` — pehla arg piped value, baaki `:` args.
+- Standalone pipe — component ke `imports` me `TimeAgoPipe`.
+
+### Pipe with arguments
+
+```ts
+@Pipe({ name: "truncate" })
+export class TruncatePipe implements PipeTransform {
+  transform(value: string, limit = 50, trail = "…"): string {
+    return value.length > limit ? value.slice(0, limit) + trail : value;
+  }
+}
+```
+
+```html
+{{ employee.bio | truncate:80 }}
+{{ employee.bio | truncate:80:' [more]' }}
+```
+
+### Pure vs impure — the important part
+
+**Pure (default):**
+
+- Angular `transform` ko sirf tab call karta hai jab piped value ya koi arg ki **identity** badle (primitives: value; objects: reference).
+- Result cache hota hai — same input, same output, no recompute.
+- 99% pipes aise hi hone chahiye.
+
+**Impure (`@Pipe({ name: "x", pure: false })`):**
+
+- `transform` **har change-detection cycle** me chalta hai.
+- Zaroori jab pipe ka output input identity se bahar kisi cheez par depend kare — jaise `async` pipe (naye emissions), ya ek pipe jo mutable array ko dekhta hai.
+- **Perf trap** — busy screen par saikdon baar per second.
+
+**`timeAgo` ka subtle issue:** ye pure hai, par output time ke saath badalna chahiye ("3 min ago" -> "4 min ago"). Pure pipe re-run nahi hoga jab tak `createdAt` na badle. Solutions: (a) accept karo ki refresh pe update hoga, (b) ek `setInterval` + signal se component ko periodically re-render karao, (c) impure banao (chhoti list ke liye) — lekin bade list me nahi.
+
+### Why do we need custom pipes — kyun
+
+- **DRY formatting** — `initials`, `fileSize`, `phoneFormat` ek jagah.
+- **Template readable** — `{{ user | initials }}` vs inline logic.
+- **Testable** — pipe ek pure function jaisa, unit test trivial.
+
+### Show it in our project
+
+EMS pipes (`shared/pipes/`):
+
+- `fullName` — `{{ employee | fullName }}` -> "Aarav Sharma".
+- `initials` — `{{ employee | initials }}` -> "AS" (avatar fallback).
+- `fileSize` — `{{ doc.bytes | fileSize }}` -> "2.4 MB" (Documents screen).
+- `timeAgo` — notifications feed.
+- `maskEmail` — `{{ user.email | maskEmail }}` -> "a****@ems.local" (audit logs).
+
+```ts
+@Pipe({ name: "fullName" })
+export class FullNamePipe implements PipeTransform {
+  transform(e: { firstName: string; lastName: string } | null): string {
+    return e ? `${e.firstName} ${e.lastName}`.trim() : "";
+  }
+}
+```
+
+### Where is it used in day-to-day development
+
+Har app me 3–10 custom pipes: date-relative, name formatting, size/units, masking, status labels. Naya pipe tab banao jab wahi formatting 2+ jagah chahiye.
+
+### Pros and cons
+
+**Pros**
+
+- Reusable, testable, template-clean formatting.
+- Pure pipes memoized — cheap.
+- Composable with built-ins (`{{ x | myPipe | uppercase }}`).
+
+**Cons**
+
+- Impure pipes perf trap — har CD cycle.
+- Time-dependent output (`timeAgo`) pure pipe ke saath "stuck" ho sakта hai.
+- Filtering/sorting ke liye pipe use karna (impure) — classic anti-pattern.
+- Har chhoti transform ke liye pipe = file sprawl; single-use logic inline theek.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Decision: transform **display-only** hai + **input se pure function** hai + **2+ jagah** chahiye -> pipe. Time/random/external-state par depend karta hai, ya list filter/sort hai -> component (`computed`).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Notifications and document lists">
+
+EMS notifications feed har item par `{{ n.createdAt | timeAgo }}` dikhata hai. Documents screen har file par `{{ d.sizeBytes | fileSize }}` ("340 KB", "1.2 MB"). Audit log par `{{ entry.actorEmail | maskEmail }}`. Teenon pure pipes hain, ek-ek jagah define, dozens of rows me reuse. `timeAgo` ke liye ek top-level `interval(60000)` ek signal tick karta hai jisse feed component har minute re-render hota hai — pipe pure rehta hai par label fresh dikhta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Pure pipe: `transform` called only on input **identity** change — effectively free across change detection otherwise.
+- Impure pipe: `transform` runs on **every** change-detection cycle — potentially hundreds of calls/second on an active screen.
+- `transform(value, ...args)` — first param is the piped value; each `:arg` in the template is the next param.
+- A custom pipe should typically be a **pure function of its inputs** — same inputs, same output, no side effects.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "custom pipe kaise banate ho?", "pure vs impure — default aur kab impure?", "`timeAgo` pipe pure ho to problem kya?", "pipe vs `computed`/getter?".
+
+Strong answer:
+
+1. `@Pipe({ name })` + `transform(value, ...args)` implementing `PipeTransform`; standalone -> `imports`.
+2. Pure (default) = memoized on input identity; impure (`pure: false`) = every CD cycle.
+3. Impure needed for `async`-style or mutable-source pipes; avoid for anything heavy.
+4. Time-dependent pure pipe stays stale until input changes — drive re-render with an interval/signal.
+5. Filtering/sorting -> component `computed`, never a pipe.
+
+Red flag: "list filter ke liye impure pipe banaya" — perf + anti-pattern.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Impure pipe me heavy computation.** Har CD cycle me chalega — parse, map, regex — screen janky. Pure rakho, ya logic `computed()` me.
+
+</Mistake>
+
+<Mistake>
+
+**Pure pipe se mutable array ko transform karna aur update expect karna.** `items.push(x)` reference nahi badalti -> pure pipe re-run nahi hoga. Naya array banao ya component me handle karo.
+
+</Mistake>
+
+<Mistake>
+
+**`transform` me side effects (HTTP call, state mutation, logging).** Pipe pure function honi chahiye — side effect testing aur CD dono todta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Standalone component me pipe `imports` me add karna bhoolna.** "The pipe 'timeAgo' could not be found". Component ya route ke `imports` me `TimeAgoPipe`.
+
+</Mistake>
+
+<Mistake>
+
+**Har ek-jagah formatting ke liye pipe banana.** Agar `{{ a + ' ' + b }}` sirf ek template me chahiye, pipe over-engineering hai. Getter ya inline theek.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    IN[input value + args] --> T[transform method]
+    T --> OUT[display string]
+    PURE{pure? default yes} -->|input identity unchanged| CACHE[return cached output - no call]
+    PURE -->|input identity changed| T
+    IMPURE[pure: false] -->|every change-detection cycle| T
+`}
+  caption="A pure pipe recomputes only when its inputs change identity; an impure pipe recomputes every cycle."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Custom pipe: `@Pipe({ name })` + `transform(value, ...args): T` implementing `PipeTransform`. Standalone -> add to `imports`.
+- First `transform` param = piped value; each `:arg` = next param.
+- Pure (default): re-runs only on input **identity** change; result memoized — cheap.
+- Impure (`pure: false`): re-runs every change-detection cycle — perf trap, use rarely (`async`-style, mutable source).
+- Time-dependent pure pipe (`timeAgo`) stays stale until input changes — refresh via an interval/signal tick.
+- Keep `transform` a pure function — no HTTP, no mutation, no logging.
+- Filtering/sorting lists -> component `computed()`, never a pipe.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `fullName` pipe banao jo `{ firstName, lastName }` se `"Aarav Sharma"` deta hai. `EmployeeCard` me use karo. Ek unit test likho: `expect(pipe.transform({firstName:'A', lastName:'B'})).toBe('A B')`.
+
+**Medium:** `fileSize` pipe banao jo bytes ko `"340 KB"` / `"1.2 MB"` / `"3.0 GB"` me convert kare (1024 base). Documents list me har row par lagao. Edge cases handle karo: `0`, `null`, exactly `1024`.
+
+**Bada:** `timeAgo` pipe banao (pure). Notifications feed me use karo. Note karo ki "1 min ago" 5 minute baad bhi wahi dikhta hai (pure, input nahi badla). Ab feed component me `interval(30000)` se ek `tick` signal banao jo template me kahin read ho — confirm feed re-render hota hai aur labels update. Phir pipe ko `pure: false` karke dekho (chhoti list) — bina interval ke bhi update, par explain karo bade list me ye kyun bura hai.
+
+</Callout>

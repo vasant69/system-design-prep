@@ -1,0 +1,261 @@
+---
+slug: "signals-and-computed"
+title: "Signals, computed and effect"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 6
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["subject-and-behaviorsubject"]
+tags: ["angular", "signals", "computed", "effect", "reactivity", "employee-management"]
+englishDefinition: "A signal is a reactive value container: you read it by calling it and write it with set/update. computed() derives a new signal from others and recomputes lazily and memoized. effect() runs side effects when the signals it reads change. Signals give Angular fine-grained change detection and are the modern default for UI state."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree", "HCLTech"]
+---
+
+<SimpleDefinition>
+
+A signal is a reactive value container. You read it by calling it (`count()`) and write it with `set(v)` or `update(fn)`. `computed(() => ...)` derives a new read-only signal from other signals, recomputing lazily and only when a dependency changed. `effect(() => ...)` runs a side effect whenever the signals it reads change. Signals give Angular fine-grained reactivity and are the modern default for component and app state.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`BehaviorSubject` state deta tha par `subscribe`/`async` pipe/unsubscribe ka overhead. **Signals** wahi kaam simpler karte hain, aur Angular ko exactly batate hain kaunsa view kis value par depend karta hai.
+
+### What is it — writable signal
+
+```ts
+import { signal } from "@angular/core";
+
+count = signal(0);
+
+// read
+console.log(this.count());        // 0
+
+// write
+this.count.set(5);
+this.count.update(n => n + 1);    // 6
+```
+
+- `signal(initial)` — writable signal banao.
+- `count()` — read (call karke).
+- `.set(v)` / `.update(fn)` — write.
+- Template: `{{ count() }}` — call karo.
+
+### `computed` — derived signal
+
+```ts
+import { computed } from "@angular/core";
+
+employees = signal<Employee[]>([]);
+search = signal("");
+
+filtered = computed(() =>
+  this.employees().filter(e => e.firstName.toLowerCase().includes(this.search().toLowerCase()))
+);
+activeCount = computed(() => this.employees().filter(e => e.isActive).length);
+```
+
+- `computed(fn)` — ek read-only signal jo `fn` se derive hota hai.
+- **Lazy** — value tabhi compute jab koi `filtered()` read kare.
+- **Memoized** — jab tak `employees` ya `search` na badle, cached value.
+- Dependency tracking automatic — `fn` ke andar jo signals read hue, wahi dependencies.
+
+### `effect` — side effects
+
+```ts
+import { effect } from "@angular/core";
+
+constructor() {
+  effect(() => {
+    console.log("search is now", this.search());
+    localStorage.setItem("lastSearch", this.search());
+  });
+}
+```
+
+- `effect(fn)` — `fn` chalta hai jab uske read kiye signals badlein.
+- Side effects ke liye: logging, localStorage, syncing to a non-signal API, analytics.
+- **Not** for deriving state — wo `computed`.
+- Injection context me create karo (constructor / field). Cleanup automatic on destroy.
+
+### Signals vs Observables
+
+| | Signal | Observable |
+|---|---|---|
+| Nature | Value (always has one) | Stream (0..n over time) |
+| Read | `x()` synchronous | `subscribe` / `async` |
+| Async ops | No (sync only) | Yes (debounce, switchMap, retry) |
+| Change detection | Fine-grained, automatic | Via `async` pipe / manual |
+| Best for | UI/app state, derived values | HTTP, events, time-based, cancellation |
+
+Bridge: `toSignal(obs$)`, `toObservable(sig)`.
+
+### Why signals — kyun
+
+- **Simpler** — no subscribe/unsubscribe, no `async` pipe.
+- **Fine-grained CD** — Angular jaanta hai exactly kaunsa DOM part kis signal par depend karta hai -> minimal re-render, path to zoneless.
+- **`computed` memoized** — derived values sasti.
+- **OnPush-native** — signal change hi trigger hai.
+
+### The `resource()` API (data loading)
+
+```ts
+id = input.required<number>();
+employeeResource = resource({
+  params: () => ({ id: this.id() }),
+  loader: ({ params }) => fetch(`/api/employees/${params.id}`).then(r => r.json()),
+});
+// employeeResource.value(), .isLoading(), .error()
+```
+
+`id` signal badle -> auto reload, purana request cancel. (Newer Angular; API still stabilising — `rxResource` for RxJS.)
+
+### Show it in our project
+
+- Every component: `loading = signal(false)`, `error = signal<string|null>(null)`, `employees = signal<Employee[]>([])`.
+- Derived: `filtered = computed(...)`, `pageItems = computed(...)`, `totalPages = computed(...)`.
+- `AuthService`: `private _user = signal<User|null>(null); user = this._user.asReadonly(); isLoggedIn = computed(() => this._user() !== null)`.
+- `effect` for: persisting filters to query params, syncing theme to `<html>` class.
+
+### Where is it used in day-to-day development
+
+Practically all component state now. Derived counts/filters/pagination. Service stores. `input()`/`model()`/`viewChild()` are signals. `effect` for the few genuine side-effects. RxJS stays for HTTP/events.
+
+### Pros and cons
+
+**Pros**
+
+- Minimal boilerplate — no subscribe lifecycle.
+- Automatic, fine-grained dependency tracking + memoized `computed`.
+- OnPush/zoneless-friendly; predictable synchronous reads.
+
+**Cons**
+
+- Synchronous only — async still needs RxJS (or `resource`).
+- `effect` misuse (deriving state, or writing signals inside — allowed but discouraged) -> loops/surprises.
+- Mutating a signal's object without `set`/`update` -> no notification (same as OnPush).
+- Two reactivity systems (signals + RxJS) to know and bridge.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`effect()` ke andar ek signal ko `set()` karke "derived state" banane ki koshish mat karo — wo `computed()` ka kaam hai, aur `effect` me writes infinite loops / `ExpressionChanged`-style issues de sakte hain. `effect` = bahar ki duniya se sync (DOM API, storage, logging).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="List screens with filters + pagination">
+
+EMS employee list: `employees = signal<Employee[]>([])` (from API), `search = signal("")`, `page = signal(1)`, `pageSize = 20`. Derived: `filtered = computed(() => employees().filter(matches(search())))`, `totalPages = computed(() => Math.ceil(filtered().length / pageSize))`, `pageItems = computed(() => filtered().slice((page()-1)*pageSize, page()*pageSize))`. Template just reads `pageItems()`, `totalPages()`. Change `search` -> only the affected `computed`s recompute, only the table re-renders. No subscribe, no `async` pipe, no manual change detection. This is the modern default shape of an Angular list component.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `computed()` is **lazy** (no compute until read) and **memoized** (no recompute unless a dependency changed).
+- Signal reads are **synchronous** — no `await`, no `subscribe`.
+- `effect()` must be created in an **injection context**; it cleans up automatically on destroy.
+- Signals enable **fine-grained** change detection: Angular re-renders only the views that read a changed signal — a key step toward **zoneless**.
+- Default signal equality is `Object.is`; pass `{ equal: fn }` for custom.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Now very common: "signal kya hai?", "`computed` vs `effect`?", "signals vs observables/BehaviorSubject?", "signal change detection ko kaise badalta hai?".
+
+Strong answer:
+
+1. Signal = reactive value; read `x()`, write `set`/`update`.
+2. `computed` = derived read-only signal; lazy + memoized; auto-tracked deps.
+3. `effect` = side effects when read signals change; not for deriving state.
+4. Signals = sync state + fine-grained CD; Observables = async streams. Bridge with `toSignal`/`toObservable`.
+5. OnPush-native; step toward zoneless.
+
+Red flag: "`effect` me `computed` jaisa derived value calculate karta hoon" — use `computed`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Template me signal ko call na karna: `{{ count }}`.** Signal hai — `{{ count() }}`. Bare `count` function print karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`effect()` me state derive karna.** `effect(() => this.total.set(this.a() + this.b()))` — ye `computed(() => this.a() + this.b())` hona chahiye. `effect` sirf external sync.
+
+</Mistake>
+
+<Mistake>
+
+**Signal ke andar object/array ko mutate karna.** `this.items().push(x)` — reference same, koi notification. `this.items.update(arr => [...arr, x])`.
+
+</Mistake>
+
+<Mistake>
+
+**Async kaam signal se karne ki koshish.** Signals synchronous hain. Debounce/HTTP/cancel ke liye RxJS (`toObservable` + operators) ya `resource()`.
+
+</Mistake>
+
+<Mistake>
+
+**`computed` ke andar side effect (HTTP call, log).** `computed` pure hona chahiye. Side effect -> `effect`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    S1["employees = signal([])"] --> C1["filtered = computed(...)"]
+    S2["search = signal('')"] --> C1
+    C1 --> C2["pageItems = computed(...)"]
+    S3["page = signal(1)"] --> C2
+    C2 --> TPL["template reads pageItems()"]
+    S2 --> E["effect: save search to query params"]
+`}
+  caption="Writable signals feed computed signals feed the template; effects sync to the outside world."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Signal = reactive value: read `x()`, write `x.set(v)` / `x.update(fn)`.
+- `computed(() => ...)` = derived read-only signal; lazy + memoized; dependencies auto-tracked.
+- `effect(() => ...)` = side effects when read signals change; created in an injection context; auto cleanup. Not for deriving state.
+- Signals are synchronous; async (debounce/HTTP/cancel) stays with RxJS or `resource()`.
+- Bridge: `toSignal(obs$)`, `toObservable(sig)`.
+- Mutating a signal's object without `set`/`update` = no notification.
+- Signals = fine-grained change detection, OnPush-native, path to zoneless.
+- `input()`, `model()`, `viewChild()` are all signals.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `count = signal(0)`, ek button `(click)="count.update(n => n + 1)"`, template `{{ count() }}`. Ek `double = computed(() => count() * 2)` add karke `{{ double() }}` dikhao.
+
+**Medium:** `EmployeeList` ko signals par banao: `employees = signal<Employee[]>([])`, `search = signal("")`. `filtered = computed(...)` aur `activeCount = computed(...)`. Search input `(input)` se `search.set(...)`. Confirm sirf `filtered`/`activeCount` recompute hote hain jab search badle (console.log inside computed).
+
+**Bada:** Full list state in signals: `employees`, `search`, `page`, `pageSize`. Derived `filtered`, `totalPages`, `pageItems`. Ek `effect` jo `search` aur `page` ko `router.navigate([], { queryParams })` se URL me sync kare. Phir jaan-boojhke `effect` ke andar `this.page.set(1)` karke `search` change par — dekho kya hota hai (allowed but be careful), aur likho `computed` vs `effect` ka sahi division yahan kya hai (4 line).
+
+</Callout>

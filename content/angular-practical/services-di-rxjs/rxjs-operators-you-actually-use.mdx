@@ -1,0 +1,242 @@
+---
+slug: "rxjs-operators-you-actually-use"
+title: "RxJS Operators You Actually Use"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 4
+difficulty: "intermediate"
+readingTime: 14
+prerequisites: ["observables-the-basics"]
+tags: ["angular", "rxjs", "operators", "switchmap", "debouncetime", "employee-management"]
+englishDefinition: "RxJS has 100+ operators but a working Angular app uses about a dozen: map, filter, tap, switchMap/mergeMap/concatMap/exhaustMap, debounceTime, distinctUntilChanged, catchError, retry, finalize, startWith, combineLatest, and forkJoin. This lesson covers what each does and when to reach for it."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+RxJS has 100+ operators, but real Angular apps lean on about a dozen: `map`, `filter`, `tap` (transform/inspect); `switchMap` / `mergeMap` / `concatMap` / `exhaustMap` (flatten inner Observables); `debounceTime`, `distinctUntilChanged` (rate control); `catchError`, `retry`, `finalize` (errors/cleanup); `startWith`, `combineLatest`, `forkJoin` (combine). Operators are pure functions you compose inside `pipe()`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Observables ki asli power operators me hai — `pipe()` ke andar chained pure functions jo stream ko transform karte hain.
+
+### Transform / inspect
+
+```ts
+source$.pipe(
+  map(emp => emp.firstName),           // har value ko transform
+  filter(name => name.startsWith("A")), // kuch values drop
+  tap(name => console.log("saw", name)), // side effect, value unchanged
+)
+```
+
+- `map` — value badlo.
+- `filter` — condition fail -> value skip.
+- `tap` — debugging / side effect (logging, analytics); stream ko touch nahi karta.
+
+### Flattening — the important family
+
+Jab ek Observable ke andar se **doosra Observable** chalana ho (jaise "search term aaya -> API call karo"), aap ek flattening operator chahiye. Sab me farak: overlapping inner Observables kaise handle hote hain.
+
+| Operator | Behaviour | Use for |
+|---|---|---|
+| `switchMap` | Nayi value aane par **purana inner cancel** | Search-as-you-type, latest-wins reads |
+| `mergeMap` | Sab inner **parallel** chalein | Independent parallel work (fire many) |
+| `concatMap` | Inner **queue**, ek ke baad ek | Order matters (sequential writes) |
+| `exhaustMap` | Jab tak current inner chal raha, **naye ignore** | Prevent double-submit (login button) |
+
+```ts
+this.searchTerm$.pipe(
+  debounceTime(300),
+  distinctUntilChanged(),
+  switchMap(term => this.api.search(term)),  // purani request cancel
+)
+```
+
+### Rate control
+
+- `debounceTime(300)` — value emit kar, phir 300ms shaant raho, tabhi aage bhejo. (Typing.)
+- `throttleTime(300)` — pehli value bhejo, phir 300ms ignore. (Scroll, resize.)
+- `distinctUntilChanged()` — same value consecutive -> skip.
+- `auditTime`, `sampleTime` — variants.
+
+### Errors & cleanup
+
+```ts
+this.api.getEmployees().pipe(
+  retry({ count: 2, delay: 1000 }),         // fail par 2 baar retry
+  catchError(err => {
+    this.toast.error("Load failed");
+    return of([]);                          // fallback value, stream alive
+  }),
+  finalize(() => this.loading.set(false)),  // success/error/unsubscribe — hamesha
+)
+```
+
+- `catchError` — error ko pakdo; ek **naya Observable** return karo (fallback) ya `throwError(() => err)` se rethrow.
+- `retry` — resubscribe on error.
+- `finalize` — teardown par hamesha (loading spinner off karne ke liye ideal).
+
+### Combine
+
+- `startWith(x)` — stream ke aage ek initial value (loading state, default).
+- `combineLatest([a$, b$])` — jab bhi koi badle, sab ki latest values ek saath.
+- `forkJoin([a$, b$])` — sab complete hone par ek baar final values (parallel HTTP, "sab load hone ka wait").
+- `merge`, `concat`, `zip` — situational.
+
+### Show it in our project
+
+- Search: `debounceTime + distinctUntilChanged + switchMap`.
+- List load: `tap(() => loading.set(true))` + `catchError` + `finalize(() => loading.set(false))`.
+- Details page: `forkJoin([employee$, departments$, roles$])` — sab ek saath.
+- Filters bar: `combineLatest([search$, dept$, activeOnly$])` -> `switchMap` -> API.
+- Login submit: `exhaustMap` — double-click par ek hi request.
+
+### Where is it used in day-to-day development
+
+Har non-trivial data flow. Search, filters, dependent dropdowns, parallel loads, retry-on-flaky-network, "loading" state management, autosave (debounce + concatMap). Ye ~12 operators 90% real code cover karte hain.
+
+### Pros and cons
+
+**Pros**
+
+- Complex async declaratively — cancellation, ordering, rate-limiting few lines me.
+- Composable, testable (marble tests).
+- `switchMap` se stale-response bugs structurally gaye.
+
+**Cons**
+
+- Galat flattening operator = subtle bug (parallel jab sequential chahiye tha, ya vice versa).
+- `tap` me business logic daalna (side-effect abuse).
+- Over-engineering simple cases — kabhi ek `map` + `toSignal` kaafi hai.
+- Operator import bhoolna -> "X is not a function".
+
+</Hinglish>
+
+<Callout type="trap">
+
+Search-as-you-type me `mergeMap` use karna classic bug: purani requests cancel nahi hoti, aur ek slow purani response nayi ke baad aake galat results dikha deti hai. `switchMap` use karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Dependent filters + parallel loads">
+
+EMS employee list ka filter bar: `combineLatest([search$, departmentId$, activeOnly$, page$])` -> `debounceTime(200)` -> `switchMap(filters => api.getEmployees(filters))`. Koi bhi filter badle, ek fresh (aur only-latest) request. Employee **Details** page: `forkJoin([api.getEmployee(id), api.getDepartments(), api.getRoles()])` — teenon parallel, page tab render jab teenon aa jayein. Do alag combine operators, do alag needs — yahi RxJS ki fluency hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Realistic "operators you need" list: about **12** (`map`, `filter`, `tap`, `switchMap`, `mergeMap`, `concatMap`, `exhaustMap`, `debounceTime`, `distinctUntilChanged`, `catchError`, `retry`, `finalize`, plus `startWith`/`combineLatest`/`forkJoin`).
+- Typical search debounce: **200–400 ms**.
+- `switchMap` cancels the previous inner subscription **immediately** on a new source value.
+- `forkJoin` emits **once**, only after **all** inputs complete (a non-completing input => it never emits).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Extremely common: "`switchMap` vs `mergeMap` vs `concatMap` vs `exhaustMap`?", "`debounceTime` vs `throttleTime`?", "`catchError` kaise kaam karta hai?", "`forkJoin` vs `combineLatest`?".
+
+Strong answer:
+
+1. Flattening: `switchMap` (cancel old — search), `mergeMap` (parallel), `concatMap` (queue — order), `exhaustMap` (ignore while busy — submit).
+2. `debounceTime` waits for silence; `throttleTime` emits first then ignores.
+3. `catchError` catches an error and must return an Observable (fallback or rethrow).
+4. `forkJoin` = all-complete-then-once (parallel HTTP); `combineLatest` = latest-of-each on any change.
+5. `finalize` runs on complete/error/unsubscribe — great for `loading = false`.
+
+Red flag: "`mergeMap` search ke liye use karta hoon" — stale-response bug.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Search me `mergeMap`/`concatMap`.** Purani requests cancel nahi -> out-of-order stale results. `switchMap`.
+
+</Mistake>
+
+<Mistake>
+
+**Sequential writes (jaise reorder API calls) me `mergeMap`.** Parallel -> server par order galat. `concatMap`.
+
+</Mistake>
+
+<Mistake>
+
+**`catchError` me kuch return na karna ya galat cheez return karna.** Ek Observable return karo (`of(fallback)`) ya `throwError(() => err)`. Plain value ya `undefined` -> error.
+
+</Mistake>
+
+<Mistake>
+
+**Loading flag ko `subscribe`'s `next` aur `error` dono me manually `false` karna.** `finalize()` use karo — ek jagah, hamesha chalta hai (unsubscribe par bhi).
+
+</Mistake>
+
+<Mistake>
+
+**`forkJoin` me ek non-completing source (jaise `interval` ya `BehaviorSubject`) daalna.** Wo complete nahi hota -> `forkJoin` kabhi emit nahi karta. `combineLatest` ya `take(1)` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`tap` me state mutate / API call.** `tap` sirf side-effects for observation. Real work operators/subscribe me.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    SRC[source: search terms] --> DB[debounceTime 300]
+    DB --> DUC[distinctUntilChanged]
+    DUC --> SM["switchMap(term => api.search(term))"]
+    SM --> CE[catchError -> of empty]
+    CE --> FIN[finalize -> loading false]
+    FIN --> OUT[results to template]
+    NOTE[new term cancels the previous api.search]
+`}
+  caption="A typical search pipeline: rate-limit, dedupe, switch to the latest request, handle errors, always clear loading."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `map` transform, `filter` drop, `tap` side-effect-only (no stream change).
+- Flattening: `switchMap` (cancel previous — search/latest-wins), `mergeMap` (parallel), `concatMap` (queue — order matters), `exhaustMap` (ignore new while busy — submit).
+- `debounceTime` = wait for silence (typing); `throttleTime` = emit first, then ignore (scroll).
+- `distinctUntilChanged` skips consecutive duplicates.
+- `catchError(err => of(fallback) | throwError(() => err))`; `retry({ count, delay })`; `finalize()` runs on complete/error/unsubscribe.
+- `startWith(x)` seeds an initial value; `forkJoin` = all-complete-then-once (parallel HTTP); `combineLatest` = latest-of-each on any change.
+- Wrong flattening operator = subtle ordering/cancellation bug.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `of(1,2,3,4,5).pipe(filter(n => n % 2), map(n => n * 10), tap(console.log))` banake subscribe karo. Predict karo output, phir verify.
+
+**Medium:** Search box banao: input events -> `debounceTime(300)` -> `distinctUntilChanged()` -> `switchMap(term => this.api.search(term))`. `api.search` ko `of([...]).pipe(delay(Math.random()*1000))` se simulate karo. Tez type karke confirm sirf last term ke results dikhte hain (no stale). Phir `switchMap` ko `mergeMap` se badalkar stale-result bug dekho.
+
+**Bada:** Employee Details load: `forkJoin([getEmployee(id), getDepartments(), getRoles()])` ke saath. Ek endpoint ko fail karwao aur `catchError` se poore page ko ek error state do. `finalize` se `loading` false. Phir list filter bar ke liye `combineLatest([search$, dept$])` + `switchMap`. Likho `forkJoin` aur `combineLatest` yahan kyun alag-alag sahi the (4 line).
+
+</Callout>

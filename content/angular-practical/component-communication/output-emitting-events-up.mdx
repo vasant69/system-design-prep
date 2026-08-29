@@ -1,0 +1,239 @@
+---
+slug: "output-emitting-events-up"
+title: "@Output and output(): Emitting Events Up"
+section: "angular-practical"
+module: "component-communication"
+order: 2
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["input-passing-data-down"]
+tags: ["angular", "output", "eventemitter", "component-communication", "employee-management"]
+englishDefinition: "Outputs let a child component notify its parent that something happened by emitting a value. The classic form is @Output() with an EventEmitter; modern Angular adds the output() function. The parent listens with normal event binding. Data flows one way, child to parent."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+An output lets a child component tell its parent that something happened, by emitting a value. The classic form is `@Output() saved = new EventEmitter<T>()`; modern Angular adds `saved = output<T>()`. The parent listens with normal event binding: `<app-child (saved)="onSaved($event)" />`. Data flows one way: child to parent.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Inputs data **neeche** bhejte hain. Outputs events **upar** bhejte hain. Ye do milke unidirectional data flow banate hain: parent state deta hai, child batata hai "user ne kuch kiya", parent decide karta hai kya karna hai.
+
+### What is it — classic `@Output()`
+
+```ts
+import { Component, Output, EventEmitter } from "@angular/core";
+
+@Component({ selector: "app-employee-row", templateUrl: "./employee-row.html" })
+export class EmployeeRow {
+  @Input() employee!: Employee;
+  @Output() edit = new EventEmitter<number>();
+  @Output() delete = new EventEmitter<number>();
+
+  onEdit() { this.edit.emit(this.employee.id); }
+  onDelete() { this.delete.emit(this.employee.id); }
+}
+```
+
+Parent:
+
+```html
+<app-employee-row
+  [employee]="emp"
+  (edit)="openEditDialog($event)"
+  (delete)="confirmDelete($event)" />
+```
+
+- `@Output() edit = new EventEmitter<number>()` — ek event channel.
+- `this.edit.emit(id)` — event fire, `id` payload ke saath.
+- Parent `(edit)="..."` se sunta hai; `$event` = emitted `id`.
+
+### Modern — `output()`
+
+```ts
+import { Component, output } from "@angular/core";
+
+export class EmployeeRow {
+  employee = input.required<Employee>();
+  edit = output<number>();
+  delete = output<number>();
+
+  onEdit() { this.edit.emit(this.employee().id); }
+}
+```
+
+`output<number>()` — same behaviour, lighter API, `EventEmitter` (jo actually ek RxJS Subject hai) ka baggage nahi. Recommended in new code.
+
+### Why do we need outputs — kyun
+
+Child ko parent ki state ya services ka pata nahi hona chahiye — wo **reusable** rehna chahiye. `EmployeeRow` ko nahi pata delete kaise hota hai (API? confirm dialog? optimistic?). Wo sirf bolta hai "delete pressed for id X". Parent (jo context jaanta hai) actual kaam karta hai. Isse row har jagah reuse hota hai.
+
+### Naming convention
+
+- Output ka naam **action/event** ki tarah: `save`, `delete`, `pageChange`, `selectionChange`.
+- `on` prefix mat lagao output pe (`onDelete` galat) — bind karte waqt `(delete)` padhna natural.
+- Two-way ke liye `xChange` (`valueChange`) — tab `[(value)]` kaam karta hai.
+
+### `output()` from an Observable
+
+```ts
+search = output<string>();
+// ...
+constructor() {
+  this.searchInput$.pipe(debounceTime(300), takeUntilDestroyed())
+    .subscribe(v => this.search.emit(v));
+}
+```
+
+Ya modern helper: `outputFromObservable(this.debounced$)`.
+
+### Show it in our project
+
+`EmployeeRow` emits `edit`/`delete`. `Paginator` emits `pageChange`. `SearchBox` emits `search` (debounced). `ConfirmModal` emits `confirmed`/`cancelled`. `EmployeeForm` emits `save` (with the form value) and `cancel`.
+
+```html
+<app-employee-form
+  [initial]="employee()"
+  (save)="onSave($event)"
+  (cancel)="goBack()" />
+```
+
+### Where is it used in day-to-day development
+
+Har interactive reusable component: form (`save`/`cancel`), table (`sortChange`/`rowClick`), paginator (`pageChange`), modal (`confirmed`), toolbar (`addClicked`), file upload (`uploaded`/`progress`). Child = "yeh hua", parent = "ab yeh karo".
+
+### Pros and cons
+
+**Pros**
+
+- Child reusable — parent-agnostic.
+- One-way flow — events upar, state neeche; predictable.
+- `output()` — no `EventEmitter` import, lighter.
+
+**Cons**
+
+- Deep trees me event "prop drilling" (har level pe re-emit) — tab shared service better.
+- Har chhoti cheez ke liye output = boilerplate; kabhi ek callback input ya service cleaner.
+- `EventEmitter` ko RxJS Subject ki tarah use karna (subscribe/pipe) technically possible par misuse — wo sirf template events ke liye.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Naye code me `output<T>()` use karo. `@Output() x = new EventEmitter<T>()` samajh lo (legacy), par `output()` cleaner hai aur `EventEmitter` ke Subject-nature ko misuse karne ka lalach nahi deta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Reusable table + form components">
+
+EMS ki `<app-data-table>` component completely dumb hai: `[columns]` aur `[rows]` inputs leti hai, aur `(sortChange)`, `(rowClick)`, `(selectionChange)` emit karti hai. Wo nahi jaanti data kahan se aaya ya sort karke kya karna hai. `EmployeeListPage`, `DepartmentListPage`, `LeaveRequestPage` — teeno isi table ko use karte hain, alag columns aur alag event handlers ke saath. Ek table component, teen (aur badhte) use cases.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `output()` emit is **synchronous** — parent ka handler `this.x.emit(v)` return hone se pehle chal jaata hai.
+- `output<void>()` — payload-less event; parent `(clicked)="doThing()"` bina `$event`.
+- `EventEmitter` extends RxJS `Subject` — isliye legacy code me `.subscribe()` dikhta hai, par templates me `( )` binding hi use karo.
+- Convention: two-way pair is `x` input + `xChange` output -> enables `[(x)]`.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "`@Output` kaise kaam karta hai?", "`EventEmitter` kya hai?", "`output()` vs `@Output()`?", "parent-child communication ke tareeke?".
+
+Strong answer:
+
+1. `@Output()` / `output()` — child -> parent, one-way, `this.x.emit(payload)`, parent `(x)="handler($event)"`.
+2. `EventEmitter` = RxJS Subject subclass; templates me sirf `( )` binding.
+3. `output()` modern, lighter, no `EventEmitter`.
+4. Naming: action noun/verb, no `on` prefix; `xChange` enables `[(x)]`.
+5. Parent-child: `@Input` down, `@Output` up; siblings/distant: shared service or lift state up.
+
+Red flag: "child directly parent ka method call karta hai `@ViewChild` se" — backwards; child emits, parent decides.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Output ka naam `onSave` rakhna.** Bind karte waqt `(onSave)` padhna ajeeb. Naam `save`, bind `(save)`.
+
+</Mistake>
+
+<Mistake>
+
+**Child ke andar hi API call / navigation karna, phir output bhi emit karna.** Child ko wo logic nahi pata honi chahiye. Sirf `save.emit(value)` — parent API call kare. Warna component reusable nahi.
+
+</Mistake>
+
+<Mistake>
+
+**`EventEmitter` ko service me use karna cross-component communication ke liye.** `EventEmitter` sirf `@Output` ke liye hai. Services me `Subject`/`BehaviorSubject`/signals use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Deep tree me har level pe event re-emit karna (event bubbling by hand).** 4 levels ki drilling = brittle. Us case me shared service ya state store.
+
+</Mistake>
+
+<Mistake>
+
+**`output<void>()` ke saath bhi `emit(something)` karna.** Type `void` hai — payload mat bhejo; parent ko `$event` chahiye to `output<T>()` declare karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C[Child: EmployeeRow] -->|"this.delete.emit(id)"| EV[(delete) event]
+    EV -->|"$event = id"| P[Parent handler: confirmDelete id]
+    P --> ACT[Parent runs API call + refresh list]
+    P -.->|"[employee]"| C
+`}
+  caption="The child emits a described event with a payload; the parent owns the decision and the side effects."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Output = child -> parent notification via emitted value; one-way.
+- Classic: `@Output() x = new EventEmitter<T>()`. Modern: `x = output<T>()`.
+- Emit: `this.x.emit(payload)`. Listen: `<app-child (x)="handler($event)" />`.
+- `EventEmitter` is an RxJS `Subject` subclass — but only use `( )` binding in templates.
+- Naming: action noun/verb, no `on` prefix; `xChange` + `x` input enables `[(x)]`.
+- Keep the child parent-agnostic: emit "what happened", let the parent do API/navigation.
+- Distant components: shared service or lift state up — not event drilling.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeRow` me `edit = output<number>()` aur `delete = output<number>()` add karo. Buttons se `this.edit.emit(this.employee().id)`. Parent `EmployeeList` me `(edit)`/`(delete)` bind karke `console.log` karo received id.
+
+**Medium:** `ConfirmModal` component banao: `title = input()`, `message = input()`, `confirmed = output<void>()`, `cancelled = output<void>()`. Parent me delete flow: row `(delete)` -> parent modal dikhata hai -> modal `(confirmed)` -> parent actual delete karta hai. Note karo modal ko delete ka kuch nahi pata.
+
+**Bada:** Ek `DataTable` dumb component banao `columns`/`rows` inputs + `sortChange`/`rowClick` outputs. Isko `EmployeeList` aur ek dummy `DepartmentList` dono me use karo, alag columns/handlers ke saath. Phir jaan-boojhke `DataTable` ke andar `HttpClient` inject karke sort ke baad data fetch karne ki koshish socho — likho kyun ye table ko non-reusable bana deta hai (3-4 points).
+
+</Callout>

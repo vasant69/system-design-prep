@@ -1,0 +1,258 @@
+---
+slug: "custom-attribute-directive"
+title: "Writing a Custom Attribute Directive"
+section: "angular-practical"
+module: "directives-pipes"
+order: 2
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["built-in-attribute-directives"]
+tags: ["angular", "directives", "hostbinding", "hostlistener", "elementref", "employee-management"]
+englishDefinition: "A custom attribute directive is a class with an @Directive decorator and an attribute selector. It attaches behaviour to any element it is placed on using host bindings and host listeners, or by injecting ElementRef. In the EMS we build an appHasPermission directive that hides elements the current user is not allowed to see."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A custom attribute directive is a class decorated with `@Directive` that uses an attribute selector (like `[appHighlight]`) so it can be attached to any element. It adds behaviour through host bindings (`host` / `@HostBinding`), host listeners (`@HostListener`), and inputs, and can read the element via injected `ElementRef`. We build an `appHasPermission` directive for role-based UI in the EMS.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Kabhi aapko ek chhota behaviour kai alag elements pe chahiye — hover pe highlight, permission na ho to hide, click pe ripple, auto-focus. Har baar ek naya component banana over-kill hai. Attribute directive isi ke liye hai: ek reusable behaviour jo aap kisi bhi element pe as an attribute laga do.
+
+### What is it — structure
+
+```ts
+import { Directive, ElementRef, HostListener, inject, input } from "@angular/core";
+
+@Directive({
+  selector: "[appHighlight]",
+})
+export class HighlightDirective {
+  private el = inject(ElementRef<HTMLElement>);
+  color = input("yellow", { alias: "appHighlight" });
+
+  @HostListener("mouseenter") onEnter() {
+    this.el.nativeElement.style.backgroundColor = this.color();
+  }
+
+  @HostListener("mouseleave") onLeave() {
+    this.el.nativeElement.style.backgroundColor = "";
+  }
+}
+```
+
+Use:
+
+```html
+<p appHighlight>Default yellow highlight on hover</p>
+<p [appHighlight]="'#cde'">Custom color</p>
+```
+
+Line by line:
+
+- `@Directive({ selector: "[appHighlight]" })` — attribute selector; jahan `appHighlight` attribute hoga wahan ye directive attach hoti hai.
+- `inject(ElementRef)` — jis element pe directive lagi uska reference.
+- `input("yellow", { alias: "appHighlight" })` — ek input jiska naam bahar `appHighlight` hai (isliye `[appHighlight]="..."` se value milti hai).
+- `@HostListener("mouseenter")` — host element pe event listener; method chalega jab mouse enter kare.
+- Standalone directive — component ke `imports` me `HighlightDirective` add karo.
+
+### `@HostBinding` — element ki property/class/style bind karna
+
+```ts
+@Directive({ selector: "[appInvalidRing]" })
+export class InvalidRingDirective {
+  invalid = input(false, { alias: "appInvalidRing" });
+
+  @HostBinding("class.ring-red") get show() {
+    return this.invalid();
+  }
+}
+```
+
+`@HostBinding("class.ring-red")` — jab getter true, host element pe `ring-red` class. `host: { "[class.ring-red]": "invalid()" }` metadata form bhi same karta hai.
+
+### Why do we need it — kyun
+
+- **Reuse** — ek behaviour, N elements. `appAutofocus` har form ke pehle input pe.
+- **Separation** — behaviour logic component se bahar, focused unit.
+- **Composition** — ek element pe kai directives (`appHighlight appTooltip appTrackClick`).
+
+### Show it in our project — `appHasPermission`
+
+EMS me kai buttons sirf certain roles ko dikhne chahiye (jaise "Delete Employee" sirf HR Admin ko).
+
+```ts
+import { Directive, TemplateRef, ViewContainerRef, effect, inject, input } from "@angular/core";
+import { AuthService } from "../services/auth.service";
+
+@Directive({ selector: "[appHasPermission]" })
+export class HasPermissionDirective {
+  private auth = inject(AuthService);
+  private tpl = inject(TemplateRef<unknown>);
+  private vcr = inject(ViewContainerRef);
+
+  required = input.required<string>({ alias: "appHasPermission" });
+
+  constructor() {
+    effect(() => {
+      this.vcr.clear();
+      if (this.auth.hasPermission(this.required())) {
+        this.vcr.createEmbeddedView(this.tpl);
+      }
+    });
+  }
+}
+```
+
+Use (structural form with `*`):
+
+```html
+<button *appHasPermission="'employee.delete'" (click)="delete()">Delete</button>
+```
+
+Yahan directive **structural** hai (`TemplateRef` + `ViewContainerRef` inject kiya) — permission na ho to element DOM me aata hi nahi. `effect()` se `auth` signal badalne pe re-evaluate hota hai.
+
+(Chhota attribute version bhi ho sakta hai jo sirf `[hidden]` toggle kare — par sensitive actions ke liye DOM se hatana behtar.)
+
+### Where is it used in day-to-day development
+
+`appAutofocus`, `appDebounceClick` (double-submit rokna), `appTooltip`, `appHasPermission`, `appClickOutside` (dropdown band karna), `appInfiniteScroll`. Har mature Angular codebase me ek `shared/directives/` folder hota hai 5–15 aisi directives ka.
+
+### Pros and cons
+
+**Pros**
+
+- Behaviour truly reusable aur composable.
+- Element ki markup clean rehti hai — sirf ek attribute.
+- Test karna aasan (host component me laga ke assert).
+
+**Cons**
+
+- `ElementRef.nativeElement` direct manipulation SSR/security ke liye risky — `Renderer2` ya host bindings prefer.
+- Structural directive (`*`) ka `TemplateRef`/`ViewContainerRef` mental model beginners ke liye tricky.
+- Over-abstraction — kuch cheez sirf ek jagah use hoti hai to inline hi theek.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`this.el.nativeElement.style....` direct likhna sirf simple cases me theek. SSR-safe aur XSS-safe rehne ke liye `@HostBinding`/`host` bindings ya `inject(Renderer2)` use karo — Angular DOM abstraction ke through.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Role-based admin UIs">
+
+EMS jaise HR app me har destructive ya sensitive action role-gated hota hai: "Delete Employee", "Approve Leave", "Edit Salary", "Export All". In sabke around `*appHasPermission="'...'"` lagta hai. Ek jagah (`AuthService.hasPermission`) rule define, aur poore app me consistent enforcement — kisi ne button hide karna bhoola nahi. Server-side bhi wahi check hota hai (frontend gating sirf UX, security nahi).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Ek directive class me typical: **1 selector**, **0–3 inputs**, **1–3 host listeners/bindings**.
+- Attribute directive ka selector `[bracketed]` hota hai; structural use ke liye `*` prefix ek `<ng-template>` desugar karta hai.
+- `@HostListener` events component ke saath **auto-cleanup** hote hain — manual `removeEventListener` nahi.
+- `Renderer2` SSR aur Web Worker environments me DOM ko safely touch karne ka Angular-sanctioned way hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "custom directive kaise banate ho?", "`@HostBinding` vs `@HostListener`?", "`ElementRef` vs `Renderer2`?", "structural directive kaise likhoge?".
+
+Strong answer:
+
+1. `@Directive({ selector: "[appX]" })` + class; standalone, `imports` me add.
+2. `@HostListener("event")` — host pe event; `@HostBinding("class.x"|"attr.y"|"style.z")` — host ki property.
+3. `input(..., { alias: "appX" })` — value `[appX]="v"` se.
+4. `ElementRef` = raw element (risky); `Renderer2` = safe DOM ops (SSR/security).
+5. Structural: inject `TemplateRef` + `ViewContainerRef`, `createEmbeddedView` / `clear`.
+
+Red flag: "directive me hamesha `nativeElement.style` set karta hoon" — Renderer2/host bindings prefer.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Selector me `app` prefix na lagana ya element selector use karna.** Attribute directive ka selector `[appHighlight]` — bracketed, prefixed. `highlight` (bare) built-in/HTML se clash kar sakta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`ElementRef.nativeElement` ko har jagah directly manipulate karna.** SSR pe `nativeElement` alag hota hai, aur direct `innerHTML` XSS risk. `Renderer2` ya `@HostBinding` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Structural directive banana par `TemplateRef` inject karna bhoolna.** `*appX` use karne ke liye directive ko `TemplateRef` + `ViewContainerRef` chahiye. Bina uske `*` syntax error dega.
+
+</Mistake>
+
+<Mistake>
+
+**`@HostListener` me heavy work har event pe.** `mousemove`/`scroll` par bhaari kaam — janky. Debounce/throttle karo ya `runOutsideAngular`.
+
+</Mistake>
+
+<Mistake>
+
+**Directive ko `imports` me add karna bhoolna.** Standalone component me `[appHighlight]` tabhi kaam karega jab `HighlightDirective` component ke `imports` me ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    EL["element with [appHasPermission]='employee.delete'"] --> DIR[HasPermissionDirective]
+    DIR --> IN[input: required permission string]
+    DIR --> AUTH[AuthService.hasPermission]
+    AUTH -->|allowed| ADD[createEmbeddedView - element rendered]
+    AUTH -->|denied| CLR[clear - element not in DOM]
+    EFF[effect re-runs when auth signal changes] --> DIR
+`}
+  caption="The directive asks AuthService whether to render its host template, and re-checks when auth state changes."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `@Directive({ selector: "[appX]" })` on a class; standalone — add to a component's `imports`.
+- Attribute selectors are `[bracketed]` and `app`-prefixed to avoid clashes.
+- `@HostListener("event")` method — listens on the host element (auto cleanup).
+- `@HostBinding("class.x" | "attr.y" | "style.z")` — binds a host property; `host: { ... }` metadata does the same.
+- `input(default, { alias: "appX" })` — receives the `[appX]="value"`.
+- `ElementRef.nativeElement` = raw element (SSR/XSS risk); prefer `Renderer2` or host bindings.
+- Structural directive: inject `TemplateRef` + `ViewContainerRef`; use `createEmbeddedView` / `clear`; used with `*appX`.
+- Common ones: `appAutofocus`, `appClickOutside`, `appHasPermission`, `appDebounceClick`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `HighlightDirective` (`[appHighlight]`) banao jo `@HostListener('mouseenter'/'mouseleave')` se background color set/clear kare. Ek `input` se color configurable karo. Do paragraphs par laga ke test karo.
+
+**Medium:** `appAutofocus` directive banao jo `ngAfterViewInit` (ya constructor + `afterNextRender`) me `this.el.nativeElement.focus()` kare. Add Employee form ke pehle input par lagao — page khulte hi cursor wahan.
+
+**Bada:** `*appHasPermission="'employee.delete'"` structural directive banao. Ek fake `AuthService` with `hasPermission(p: string)` reading a `permissions` signal. Delete button ko is directive me wrap karo. Runtime pe `AuthService` ki permissions signal badalke confirm karo button DOM se add/remove hota hai (sirf hide nahi). Attribute-only `[hidden]` version se compare karke likho kyun sensitive actions ke liye DOM removal behtar.
+
+</Callout>

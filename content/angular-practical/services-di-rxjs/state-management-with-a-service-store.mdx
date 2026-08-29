@@ -1,0 +1,262 @@
+---
+slug: "state-management-with-a-service-store"
+title: "State Management with a Service Store"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 7
+difficulty: "advanced"
+readingTime: 15
+prerequisites: ["signals-and-computed"]
+tags: ["angular", "state-management", "store", "signals", "ngrx", "employee-management"]
+englishDefinition: "State management is deciding where each piece of state lives and how it changes. For most Angular apps a small injectable store — a service holding a signal (or BehaviorSubject) with readonly selectors and explicit update methods — is enough. Larger apps may add a formal store like NgRx; this lesson covers the trade-offs."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+State management is deciding *where each piece of state lives* and *how it changes*. For most Angular apps, a small injectable **store** is enough: a service that holds one `signal` (or `BehaviorSubject`) of state, exposes read-only selectors (`computed`), and offers explicit update methods. Bigger apps with many features sharing complex state may adopt a formal library (NgRx, NgRx SignalStore, Elf). The skill is choosing the smallest thing that fits.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+State kai jagah reh sakta hai. Galat jagah -> bugs, duplication, prop-drilling. Ye topic decide karne ke baare me hai — aur ek practical signal-based store banane ke baare me.
+
+### Where state can live — a hierarchy
+
+1. **Local component signal** — sirf ek component ko chahiye (a toggle, a hovered row). Default. Yahin rakho.
+2. **Lifted to a parent** — ek chhota component subtree share karta hai (a page + its widgets). Parent me signal, inputs/outputs.
+3. **Feature-scoped store** — ek feature area ke kai components (employees list + toolbar + filters + details) share karte hain. A service provided at the route level.
+4. **App-wide store** — poori app (auth user, permissions, theme, notifications). A `providedIn: "root"` service.
+5. **Server state** — actual source of truth API par hai; client sirf ek cache. HTTP + caching + `resource()`.
+6. **URL** — filters, page, selected id — often best in query params (shareable, back-button works).
+
+Galti: sab kuch ek global store me thok dena. Zyadatar state local ya feature-scoped hona chahiye.
+
+### A signal-based store (the 80% solution)
+
+```ts
+type EmployeesState = {
+  items: Employee[];
+  loading: boolean;
+  error: string | null;
+  filters: { search: string; departmentId: number | null };
+  page: number;
+  pageSize: number;
+};
+
+@Injectable()  // provided at the employees route level
+export class EmployeesStore {
+  private api = inject(EmployeeService);
+
+  private state = signal<EmployeesState>({
+    items: [], loading: false, error: null,
+    filters: { search: "", departmentId: null }, page: 1, pageSize: 20,
+  });
+
+  // --- selectors (read-only) ---
+  readonly loading = computed(() => this.state().loading);
+  readonly error = computed(() => this.state().error);
+  readonly filtered = computed(() => {
+    const { search, departmentId } = this.state().filters;
+    return this.state().items.filter(e =>
+      e.firstName.toLowerCase().includes(search.toLowerCase()) &&
+      (departmentId == null || e.departmentId === departmentId));
+  });
+  readonly totalPages = computed(() => Math.ceil(this.filtered().length / this.state().pageSize));
+  readonly pageItems = computed(() => {
+    const { page, pageSize } = this.state();
+    return this.filtered().slice((page - 1) * pageSize, page * pageSize);
+  });
+
+  // --- updates (explicit) ---
+  setSearch(search: string) {
+    this.state.update(s => ({ ...s, filters: { ...s.filters, search }, page: 1 }));
+  }
+  setPage(page: number) { this.state.update(s => ({ ...s, page })); }
+
+  async load() {
+    this.state.update(s => ({ ...s, loading: true, error: null }));
+    try {
+      const items = await firstValueFrom(this.api.getAll());
+      this.state.update(s => ({ ...s, items, loading: false }));
+    } catch {
+      this.state.update(s => ({ ...s, loading: false, error: "Load failed" }));
+    }
+  }
+}
+```
+
+Components: `store.pageItems()`, `store.setSearch(term)`. No subscribe, no `async` pipe, testable (call methods, assert selectors).
+
+### Principles (from bigger stores, applied lightly)
+
+- **Single source of truth** per piece of state.
+- **Read-only outside** — selectors are `computed`; updates only via methods.
+- **Immutable updates** — spread, never mutate.
+- **Explicit actions** — `setSearch`, `load`, `deleteEmployee` — not random `state.set(anything)` from components.
+
+### When to reach for NgRx (or NgRx SignalStore / Elf)
+
+Consider a formal library when:
+
+- Many features share and mutate the same complex state.
+- You need time-travel debugging, strict action logs, or middleware (effects).
+- A large team benefits from one enforced pattern.
+- Complex async orchestration (sagas/effects) across the app.
+
+Cost: boilerplate, learning curve, indirection. For a typical EMS-sized app, signal stores per feature + a small root store are enough. **NgRx SignalStore** is a middle ground — the structure of NgRx with signals and less boilerplate.
+
+### Show it in our project
+
+- `AuthStore` (root): `user`, `permissions`, `isLoggedIn` selectors; `login`, `logout`.
+- `EmployeesStore` (employees route `providers`): as above.
+- `NotificationStore` (root): `unread` count, `items`, `markRead`.
+- Filters/page also mirrored to query params via an `effect` so URLs are shareable.
+
+### Where is it used in day-to-day development
+
+Every non-trivial feature has some shared state. Deciding "local vs feature vs global vs URL" is a daily design call. Writing a small store for a feature is a common task; adopting NgRx is an architectural decision made once per app.
+
+### Pros and cons
+
+**Signal store — Pros**
+
+- Minimal boilerplate; easy to read and test.
+- Fine-grained reactivity, OnPush/zoneless-friendly.
+- Scales down (one feature) and up (compose stores).
+
+**Signal store — Cons**
+
+- No built-in devtools/time-travel/effect middleware.
+- Conventions are yours to enforce (no lint rules by default).
+- Very large apps with heavy cross-feature orchestration may outgrow it.
+
+**NgRx — Pros/Cons**: strong structure + devtools + ecosystem, at the cost of boilerplate and a learning curve; often overkill for small/medium apps.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Start with **local signals**. Promote to a **feature store** only when 3+ components in a feature share the state. Reach for **NgRx** only when multiple features fight over the same complex state or you need audited action logs. Don't start with the biggest hammer.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employees feature">
+
+The whole "Employees" area — list page, toolbar, filter chips, paginator, bulk actions, and the details drawer — shares one `EmployeesStore` provided in the employees route's `providers`. It holds items, filters, page, and selection; exposes `pageItems`, `totalPages`, `selectedIds` selectors; and has `load`, `setSearch`, `toggleSelect`, `deleteSelected` actions. When the user leaves the Employees area, the route injector is destroyed and the store with it — fresh state next visit. No global store, no NgRx, ~120 lines, fully unit-tested by calling actions and asserting selectors.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Rule of thumb: promote state to a shared store when **3+** components in a feature need it.
+- A feature signal store is typically **80–150 lines**; an equivalent NgRx feature (actions + reducer + effects + selectors) is often **3–5x** that.
+- A route-`providers` store is **created on route entry and destroyed on exit** — automatic per-feature lifecycle.
+- Keeping filters/page in the **URL** (query params) gets you shareable links and working back/forward for free.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "Angular me state management kaise karte ho?", "NgRx kab use karoge?", "service + BehaviorSubject/signal store pattern?", "state kahan rakhna chahiye?".
+
+Strong answer:
+
+1. Hierarchy: local signal -> lifted to parent -> feature-scoped store -> app-wide store -> server state (cache) -> URL.
+2. 80% solution: injectable store = one state signal + `computed` selectors + explicit update methods; immutable updates; read-only outside.
+3. Feature store at route `providers` -> per-feature lifecycle.
+4. NgRx when many features share complex state, need devtools/time-travel/effect middleware, or a large team needs one enforced pattern.
+5. Don't over-adopt — start small, promote as needed.
+
+Red flag: "har app me NgRx daalta hoon" — boilerplate/overkill for most; or "sab kuch ek global BehaviorSubject" — everything becomes shared mutable state.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Sab state ek global store me.** Local UI state (hover, toggles, form drafts) global store me daalna — unnecessary coupling, re-renders, and noise. Keep local state local.
+
+</Mistake>
+
+<Mistake>
+
+**Store se mutable state expose karna.** `get state() { return this._state(); }` jise component mutate kar de. Selectors `computed` (read-only); updates only via methods.
+
+</Mistake>
+
+<Mistake>
+
+**Immutable update na karna.** `s.items.push(x)` inside `update` — same reference, broken reactivity. `{ ...s, items: [...s.items, x] }`.
+
+</Mistake>
+
+<Mistake>
+
+**Server data ko client store ka "source of truth" maan lena.** API is the truth; client is a cache — plan for staleness, refetch, and invalidation (or use `resource()`/a query lib).
+
+</Mistake>
+
+<Mistake>
+
+**Filters/page ko sirf store me rakhna, URL me nahi.** User refresh kare ya link share kare -> state gaya. Mirror to query params.
+
+</Mistake>
+
+<Mistake>
+
+**NgRx adopt karna ek chhote app ke liye "best practice hai" sochkar.** Boilerplate cost real hai; signal stores usually enough till the app genuinely outgrows them.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    L[Local component signal] --> P[Lifted to parent]
+    P --> F[Feature-scoped store - route providers]
+    F --> G[App-wide store - providedIn root]
+    G --> S[Server state - HTTP cache / resource]
+    U[URL query params - filters, page, id]
+    NOTE[Pick the lowest level that works; promote only when 3+ components share it]
+`}
+  caption="State lives at the lowest level that works; promote upward only when sharing demands it."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- State hierarchy: local signal -> parent -> feature-scoped store -> app-wide store -> server (cache) -> URL. Pick the lowest that works.
+- 80% store = injectable service + one state `signal` + `computed` selectors + explicit update methods.
+- Rules: single source of truth, read-only outside (selectors), immutable updates, explicit actions.
+- Feature store at the route's `providers` = created on entry, destroyed on exit (per-feature lifecycle).
+- Mirror filters/page/selected-id to URL query params for shareable links + back button.
+- NgRx / SignalStore when: many features share complex state, need devtools/time-travel/effects middleware, or a large team needs one enforced pattern.
+- Start small; promote as needed; don't default to the biggest tool.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `NotificationStore` (root) banao: `private state = signal({ items: [], unread: 0 })`, selectors `unread = computed(...)`, actions `add(n)`, `markAllRead()`. Header me `store.unread()` badge dikhao.
+
+**Medium:** `EmployeesStore` banao (employees route ke `providers` me) with `items`, `filters`, `page` state; `pageItems`/`totalPages` selectors; `load()`, `setSearch()`, `setPage()` actions. `EmployeeListPage` + `EmployeeToolbar` dono isse use karein. `.spec.ts` me actions call karke selectors assert karo — no component render.
+
+**Bada:** Same `EmployeesStore` me `filters` aur `page` ko ek `effect` se `router.navigate([], { queryParams })` se URL me sync karo, aur route load par query params se initial state hydrate karo. Test: search karke URL badalta hai; us URL ko naye tab me kholne par same filtered view. Phir socho: agar ye app 8 features ka ho jaaye jo employees state ko cross-reference karein, to kab NgRx justify hota — 5 point likho.
+
+</Callout>

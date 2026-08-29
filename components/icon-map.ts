@@ -50,6 +50,16 @@ import {
   GitCommit,
   Workflow,
   Rocket,
+  Component,
+  Code2,
+  Sparkles,
+  Share2,
+  Waypoints,
+  Route,
+  ArrowRightLeft,
+  FormInput,
+  LayoutDashboard,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 
@@ -64,6 +74,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Terminal,
   GraduationCap,
   Workflow,
+  Component,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -119,4 +130,14 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "real-world-features": Puzzle,
   "quality-and-architecture": TestTube2,
   deployment: Cloud,
+  "ng-foundations": Rocket,
+  "components-templates-binding": Code2,
+  "directives-pipes": Sparkles,
+  "component-communication": Share2,
+  "services-di-rxjs": Waypoints,
+  "ng-routing": Route,
+  "http-and-apis": ArrowRightLeft,
+  "forms-and-crud": FormInput,
+  "ng-real-world-features": LayoutDashboard,
+  "quality-performance-deploy": Gauge,
 };

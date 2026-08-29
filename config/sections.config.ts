@@ -507,4 +507,84 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "angular-practical",
+    title: "Angular Practical",
+    description:
+      "One project, empty folder to production. We build a single Employee Management System in modern Angular — standalone components, signals, and the new control flow — every concept landing in the same app, taught in Hinglish with the 'why' before the 'what', explained line by line.",
+    icon: "Component",
+    enabled: true,
+    modules: [
+      {
+        id: "ng-foundations",
+        title: "Foundations & First Run",
+        description:
+          "What Angular is and why it exists, the CLI, the project structure walked file by file, standalone components, how the app boots from main.ts, and the first component rendering on screen.",
+        order: 1,
+      },
+      {
+        id: "components-templates-binding",
+        title: "Components, Templates & Data Binding",
+        description:
+          "Component anatomy, template syntax, interpolation and property/attribute/class/style binding, event binding, two-way binding with signals, the new @if/@for/@switch control flow, lifecycle hooks, and how change detection decides what to re-render.",
+        order: 2,
+      },
+      {
+        id: "directives-pipes",
+        title: "Directives & Pipes",
+        description:
+          "Built-in attribute directives, writing a custom attribute directive for the EMS, built-in pipes for dates and currency and numbers, writing a custom pipe, and the pure-vs-impure performance trap.",
+        order: 3,
+      },
+      {
+        id: "component-communication",
+        title: "Component Communication & Reusable UI",
+        description:
+          "@Input and @Output (and the new input()/output() functions), template reference variables, ViewChild, content projection with ng-content, and building genuinely reusable presentational components — a data table, a card, a confirm modal.",
+        order: 4,
+      },
+      {
+        id: "services-di-rxjs",
+        title: "Services, DI, RxJS & Signals",
+        description:
+          "Services and why logic leaves the component, dependency injection and the injector tree, Observables and the operators you actually use, Subject and BehaviorSubject, Signals and computed, the async pipe, and a service-as-store approach to state management.",
+        order: 5,
+      },
+      {
+        id: "ng-routing",
+        title: "Routing",
+        description:
+          "Configuring routes, routerLink and navigation, route and query parameters, nested and child routes, lazy loading feature areas, functional route guards for auth, and resolvers that pre-load data — wiring up Login, Dashboard, and the Employees shell.",
+        order: 6,
+      },
+      {
+        id: "http-and-apis",
+        title: "HTTP & Talking to a Backend API",
+        description:
+          "HttpClient setup, typed request/response models against a defined REST contract, environment configuration for API URLs, error handling, functional HTTP interceptors, JWT authentication end to end — login, token storage, auth guard, and token refresh.",
+        order: 7,
+      },
+      {
+        id: "forms-and-crud",
+        title: "Forms, Validation & CRUD",
+        description:
+          "Template-driven vs reactive forms and when to use which, FormBuilder and FormGroup/FormControl, built-in and custom and async validators, showing errors well, and the full Add / Edit / Delete Employee flow against the API.",
+        order: 8,
+      },
+      {
+        id: "ng-real-world-features",
+        title: "Real-World Features",
+        description:
+          "Server-side pagination, filtering and debounced search, file upload for the Documents screen, a notifications feed, and the Departments, Roles & Permissions, and Leave Requests screens — the features every internal admin app actually needs.",
+        order: 9,
+      },
+      {
+        id: "quality-performance-deploy",
+        title: "Quality, Performance & Deployment",
+        description:
+          "Angular Material and CDK concepts, performance work — OnPush, trackBy, @defer, signals — security basics like XSS and sanitization and safe token storage, unit testing with TestBed and HttpTestingController, and the production build and deployment.",
+        order: 10,
+      },
+    ],
+  },
 ];

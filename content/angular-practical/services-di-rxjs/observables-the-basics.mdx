@@ -1,0 +1,236 @@
+---
+slug: "observables-the-basics"
+title: "Observables: The Basics"
+section: "angular-practical"
+module: "services-di-rxjs"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["dependency-injection-and-the-injector-tree"]
+tags: ["angular", "rxjs", "observables", "subscription", "async", "employee-management"]
+englishDefinition: "An Observable is a lazy stream of values over time that you subscribe to. Nothing runs until you subscribe; each subscription can receive next values, an error, or a completion. Angular's HttpClient and Router return Observables, so understanding subscribe, unsubscribe, and cold vs hot is essential."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+An Observable is a lazy stream of values over time. You start it by subscribing; until then nothing happens. A subscription receives zero or more `next` values, then either an `error` or a `complete` (never both). `HttpClient` and the `Router` return Observables, so `subscribe`, `unsubscribe`, and the cold-vs-hot distinction matter in every Angular app.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`EmployeeService.getAll()` ne ek Observable return kiya, humne `.subscribe()` kiya. Ye topic samjhata hai Observable actually hai kya.
+
+### What is it
+
+Ek **Observable** ek "future values ka container" hai. Ek array "abhi ki values", ek Promise "ek future value", ek Observable "0 ya zyada future values, over time".
+
+```ts
+import { Observable } from "rxjs";
+
+const clock$ = new Observable<number>((subscriber) => {
+  let n = 0;
+  const id = setInterval(() => subscriber.next(n++), 1000);
+  return () => clearInterval(id); // cleanup on unsubscribe
+});
+```
+
+- `$` suffix — convention for "this is an Observable".
+- Callback tabhi chalta hai jab koi `subscribe` kare (**lazy**).
+- `subscriber.next(v)` — ek value emit. `subscriber.error(e)` / `subscriber.complete()` — stream khatam.
+- Return function — cleanup jab unsubscribe ho.
+
+### Subscribing
+
+```ts
+const sub = clock$.subscribe({
+  next: (v) => console.log("tick", v),
+  error: (e) => console.error(e),
+  complete: () => console.log("done"),
+});
+
+// later
+sub.unsubscribe(); // stops it, runs cleanup
+```
+
+Shorthand: `clock$.subscribe(v => ...)` — sirf `next`.
+
+### Observable vs Promise
+
+| | Promise | Observable |
+|---|---|---|
+| Values | exactly 1 | 0 to many, over time |
+| Lazy? | No (runs on creation) | Yes (runs on subscribe) |
+| Cancel? | No | Yes (`unsubscribe`) |
+| Operators | `.then` chains | 100+ (`map`, `filter`, `switchMap`, `debounceTime`...) |
+| Re-run | No | Yes (subscribe again) |
+
+### Cold vs hot — important
+
+- **Cold**: har subscriber ko apna independent execution milta hai. `HttpClient.get()` cold — 3 subscribers = 3 HTTP requests.
+- **Hot**: ek shared execution jise sab subscribers dekhte hain. DOM events, `Subject` — hot.
+- Cold ko share karne ke liye `shareReplay(1)`.
+
+```ts
+this.employees$ = this.http.get<Employee[]>("/api/employees").pipe(shareReplay(1));
+// ab kai | async isko share karenge, ek hi request
+```
+
+### Unsubscribe — memory leaks
+
+Subscribe karo aur bhool jao -> callback chalta rehta hai, component GC nahi hota. Fixes:
+
+1. `async` pipe — auto unsubscribe on destroy. **Best default.**
+2. `takeUntilDestroyed()` — `obs$.pipe(takeUntilDestroyed()).subscribe(...)`.
+3. Manual: `ngOnDestroy` me `sub.unsubscribe()`.
+
+HTTP observables auto-complete hote hain (ek value + complete), isliye wo technically leak nahi karte — par `interval`, route params, stores, websockets **complete nahi hote**, wo leak karte hain.
+
+### Show it in our project
+
+- `EmployeeService` methods Observables return karti hain (`HttpClient`).
+- `EmployeeListPage` template me `employees$ | async` — koi manual subscribe/unsubscribe.
+- `NotificationService` ek `interval` + `switchMap` se unread count poll karta hai — `takeUntilDestroyed` cleanup.
+
+### Where is it used in day-to-day development
+
+Har HTTP call. Route params (`route.paramMap`). Form value changes (`form.valueChanges`). Interceptors. Realtime (websocket/SSE). RxJS Angular ke async ka backbone hai (signals ke aane ke baad bhi HTTP/events Observables hain).
+
+### Pros and cons
+
+**Pros**
+
+- Lazy + cancellable — HTTP request cancel, debounced search, race conditions handled.
+- Rich operators — complex async declaratively.
+- Composable — streams ko combine/transform.
+
+**Cons**
+
+- Learning curve sharp — 100+ operators, cold/hot, subscription management.
+- Forgotten unsubscribe = leaks.
+- Nested subscribes / manual state juggling = "callback hell 2.0" (operators se avoid).
+- Simple "ek value chahiye" cases me signals/`toSignal` aksar simpler.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Default rule: template me chahiye -> `obs$ | async`. Class me chahiye ek baar -> `firstValueFrom(obs$)` (Promise) ya `toSignal(obs$)`. Ongoing stream class me -> `pipe(takeUntilDestroyed())`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Search-as-you-type">
+
+EMS search box: har keystroke ek value stream me jaati hai. `debounceTime(300)` -> user ke rukne ka wait. `distinctUntilChanged()` -> same term dobara nahi. `switchMap(term => api.search(term))` -> nayi request, purani **cancel** (stale results nahi aate). `catchError` -> fail par empty. Ye poora behaviour ~5 lines RxJS. Bina Observables ke: manual debounce timer, manual "purani request ignore karo" flag, manual cleanup — 40+ lines aur buggy.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- An Observable does **nothing** until `.subscribe()` — it is lazy.
+- A stream emits **0..n** `next`, then **at most one** terminal (`error` OR `complete`).
+- `HttpClient` Observables are **cold** and **auto-complete** after one emission.
+- `interval`, `fromEvent`, route `paramMap`, `form.valueChanges` do **not** complete — they need explicit teardown.
+- 3 subscribers on a cold HTTP Observable = **3 requests** (use `shareReplay(1)`).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "Observable vs Promise?", "cold vs hot?", "unsubscribe kyun?", "`async` pipe kya karta hai?".
+
+Strong answer:
+
+1. Observable = lazy, cancellable stream of 0..n values; Promise = eager, single value, no cancel.
+2. Cold = per-subscriber execution (HTTP); hot = shared execution (Subject, DOM events).
+3. Unsubscribe non-completing streams (`interval`, params, stores) or they leak.
+4. `async` pipe subscribes, renders latest, auto-unsubscribes, marks for check.
+5. HTTP observables auto-complete -> low leak risk; still prefer `async`.
+
+Red flag: "har jagah manually subscribe karta hoon aur `ngOnDestroy` me unsubscribe" — `async` pipe / `takeUntilDestroyed` cleaner and safer.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Nested `subscribe` inside `subscribe`.** `a$.subscribe(x => b$(x).subscribe(...))` — leaks, no cancellation, race conditions. Use `switchMap`/`mergeMap`/`concatMap`.
+
+</Mistake>
+
+<Mistake>
+
+**Non-completing stream ko unsubscribe na karna.** `interval(1000).subscribe(...)` bina cleanup -> har navigation par ek naya, sab chalte rehte hain. `takeUntilDestroyed()`.
+
+</Mistake>
+
+<Mistake>
+
+**Ek cold HTTP observable ko kai jagah `| async` karna.** Har `| async` = ek request. `shareReplay(1)` ya `toSignal`.
+
+</Mistake>
+
+<Mistake>
+
+**Observable ko "call" karne ki koshish jaise function.** `getAll()` Observable deta hai; kuch hota nahi jab tak `.subscribe()` (ya `| async`) na ho.
+
+</Mistake>
+
+<Mistake>
+
+**`subscribe` ke andar state set karke `async` pipe se bhi bind karna.** Ek source, ek consumption pattern chuno — dono nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    O[Observable - lazy] -->|.subscribe| E[execution starts]
+    E --> N1[next value]
+    N1 --> N2[next value]
+    N2 --> T{terminal}
+    T -->|complete| C[done - cleanup]
+    T -->|error| ER[error - cleanup]
+    U[unsubscribe] --> C
+`}
+  caption="Subscribing starts the stream; it emits next values, then completes or errors once, and cleanup runs."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Observable = lazy stream of 0..n values over time; nothing runs until `.subscribe()`.
+- A subscription gets `next*` then at most one terminal (`error` OR `complete`).
+- Observable vs Promise: lazy vs eager, many vs one, cancellable vs not, operators vs `.then`.
+- Cold = per-subscriber execution (HTTP); hot = shared (Subject, DOM events). Share a cold one with `shareReplay(1)`.
+- Non-completing streams (`interval`, route params, stores, sockets) must be torn down.
+- Cleanup: `async` pipe (best), `takeUntilDestroyed()`, or manual `ngOnDestroy` unsubscribe.
+- Never nest `subscribe` — use flattening operators (`switchMap` etc.).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `interval(1000)` ko `subscribe` karke 5 ticks console me dekho, phir `unsubscribe`. Confirm ticks ruk jaate hain.
+
+**Medium:** Ek `EmployeeService.getAll()` (dummy `of([...]).pipe(delay(500))`) ko `EmployeeListPage` me do tareeke se consume karo: (a) `ngOnInit` subscribe + signal set + `ngOnDestroy` unsubscribe; (b) `employees$ | async` in template. Dono se same UI — behtar kaunsa aur kyun.
+
+**Bada:** Ek cold observable `of(Date.now()).pipe(delay(300), tap(() => console.log("executed")))` banao. Use template me 3 baar `| async` karo — console me "executed" 3 baar. Ab `.pipe(shareReplay(1))` add karo — ek baar. Phir `interval(1000)` wale case me bina cleanup navigate-away/return 3 baar karke leak observe karo, aur `takeUntilDestroyed()` se fix karo. 5 line me findings.
+
+</Callout>

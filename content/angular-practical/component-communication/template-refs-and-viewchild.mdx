@@ -1,0 +1,240 @@
+---
+slug: "template-refs-and-viewchild"
+title: "Template Reference Variables, ViewChild and ContentChild"
+section: "angular-practical"
+module: "component-communication"
+order: 3
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["output-emitting-events-up"]
+tags: ["angular", "viewchild", "template-ref", "contentchild", "component-communication", "employee-management"]
+englishDefinition: "A template reference variable (#name) labels an element or component in a template so other parts of the same template can use it. ViewChild / viewChild() give the component class a typed handle to an element or child component in its own template; ContentChild does the same for projected content."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A template reference variable (`#name`) labels an element or component inside a template so other expressions in that same template can read it. `@ViewChild` / `viewChild()` give the component's class a typed reference to an element or child component in its own view; `@ContentChild` / `contentChild()` do the same for content projected in via `<ng-content>`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak communication `@Input`/`@Output` se — declarative, one-way. Kabhi-kabhi aapko ek element/child ka **direct reference** chahiye — `<input>` ko focus karna, ek child component ka method call karna, ek `<video>` ko play karna. Uske liye template refs aur `ViewChild`.
+
+### Template reference variable — `#name`
+
+```html
+<input #searchBox type="text" />
+<button (click)="searchBox.focus()">Focus the box</button>
+<p>You typed: {{ searchBox.value }}</p>
+```
+
+- `#searchBox` — is `<input>` ka naam, **same template** me use karne ke liye.
+- Native element pe `#x` -> DOM element (`HTMLInputElement`).
+- Component/directive pe `#x` -> by default us component ka instance: `<app-child #c />` then `c.someMethod()`.
+- `#form="ngForm"` — jab directive `exportAs` define karta hai, wo instance milta hai.
+
+### `@ViewChild` / `viewChild()` — class se apne view ka element
+
+```ts
+import { Component, ElementRef, viewChild } from "@angular/core";
+
+@Component({
+  template: `<input #box /> <button (click)="focusBox()">Focus</button>`,
+})
+export class SearchPanel {
+  box = viewChild<ElementRef<HTMLInputElement>>("box");
+
+  focusBox() {
+    this.box()?.nativeElement.focus();
+  }
+}
+```
+
+- `viewChild("box")` — template ke `#box` ko class me laata hai (signal — `box()`).
+- `viewChild(ChildComponent)` — type se child component ka instance.
+- Classic form: `@ViewChild("box") box!: ElementRef;` — value `ngAfterViewInit` ke baad available.
+- Signal form: `viewChild()` ek signal deta hai; render ke baad populate hota hai.
+
+### `@ViewChildren` / `viewChildren()` — multiple
+
+```ts
+rows = viewChildren(EmployeeRow);  // signal of readonly array
+```
+
+### `@ContentChild` / `contentChild()` — projected content
+
+`ViewChild` **apne template** ke elements dekhta hai. `ContentChild` wo elements dekhta hai jo parent ne `<ng-content>` ke through **project** kiye:
+
+```ts
+@Component({ selector: "app-panel", template: `<div class="body"><ng-content /></div>` })
+export class Panel {
+  header = contentChild(PanelHeader);   // projected <app-panel-header>
+}
+```
+
+### Why do we need it — kyun
+
+Declarative binding sab kuch nahi kar sakti:
+
+- `<input>` auto-focus, text select.
+- Scroll ek element tak (`scrollIntoView`).
+- Ek 3rd-party widget (chart, map, editor) ko init karna jise DOM node chahiye.
+- Child component ka imperative method (`modal.open()`, `table.resetSelection()`).
+
+Lekin: **pehle** `@Input`/`@Output` try karo. `ViewChild` tabhi jab imperative access genuinely chahiye.
+
+### Timing — ye trap hai
+
+- Classic `@ViewChild`: value `constructor`/`ngOnInit` me `undefined`, `ngAfterViewInit` me ready.
+- `@ViewChild(..., { static: true })`: agar element `@if`/`@for` ke bahar hai, `ngOnInit` me bhi ready.
+- Signal `viewChild()`: signal read karo jahan zaroorat ho; render ke baad wo populate hota hai (use in `afterNextRender` / `effect`).
+- `@if`/`@for` ke andar ka element tab tak `undefined` jab tak wo condition true na ho.
+
+### Show it in our project
+
+- `AddEmployeeForm`: `viewChild<ElementRef>("firstNameInput")` -> `afterNextRender(() => this.firstNameInput()?.nativeElement.focus())`.
+- `EmployeeListPage`: `table = viewChild(DataTable)` -> `this.table()?.clearSelection()` after bulk action.
+- `Panel` shared component: `contentChild(PanelActions)` to detect whether the consumer provided action buttons.
+
+### Where is it used in day-to-day development
+
+Auto-focus, scroll-to, integrating non-Angular libs, calling a child's imperative API (rare, deliberate), measuring DOM (`getBoundingClientRect`). Most screens use `ViewChild` 0–2 times.
+
+### Pros and cons
+
+**Pros**
+
+- Direct access when declarative binding can't express it.
+- `viewChildren` handy for coordinating a list of children.
+- `contentChild` lets a wrapper adapt to what was projected.
+
+**Cons**
+
+- Timing bugs — accessing before the view exists.
+- Imperative access couples the parent to the child's internals — brittle.
+- Overuse = "jQuery in Angular"; prefer inputs/outputs/signals.
+- `ViewChild` into `@if` blocks is often `undefined` — needs care.
+
+</Hinglish>
+
+<Callout type="warning">
+
+`@ViewChild` ko "parent se child ki state badalne" ke liye mat use karo (`this.child().someFlag = true`). Wo child ke encapsulation ko todta hai. Child ko `@Input` do; child khud react kare.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Forms and third-party widgets">
+
+EMS Add Employee form page khulte hi first field ko focus karta hai — `viewChild` + `afterNextRender` + `.focus()`. Documents screen ek PDF preview ke liye ek `<div #host>` deta hai aur ek 3rd-party PDF lib ko us `host` element me mount karta hai `ngAfterViewInit` me (aur `ngOnDestroy` me dispose). Bulk-select ke baad `DataTable` child ka `clearSelection()` parent `viewChild(DataTable)` se call hota hai. Ye teenon legitimate imperative cases hain — baaki 95% communication inputs/outputs se.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Classic `@ViewChild` populated by **`ngAfterViewInit`** (or `ngOnInit` with `{ static: true }` if outside `@if`/`@for`).
+- Signal `viewChild()` — read it after render; `undefined` before the element exists.
+- `#ref` on a component = component instance by default; on a native element = the DOM element.
+- `@ViewChild` sees **own template**; `@ContentChild` sees **projected** content — different DOM regions.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "template reference variable kya hai?", "`ViewChild` vs `ContentChild`?", "`ViewChild` kab available hota hai?", "`@Input` hote hue `ViewChild` kab?".
+
+Strong answer:
+
+1. `#name` labels an element/component for the same template.
+2. `ViewChild`/`viewChild()` — class handle to own-view element/child; `ViewChildren` for many.
+3. `ContentChild` — handle to `<ng-content>`-projected content.
+4. Timing: classic ready in `ngAfterViewInit` (`static:true` -> `ngOnInit` if not conditional); signal form read after render.
+5. Prefer inputs/outputs; use `ViewChild` for imperative needs (focus, scroll, 3rd-party init, child method).
+
+Red flag: "parent `ViewChild` se child ki property set karta hoon" — breaks encapsulation; use `@Input`.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`ngOnInit` me `@ViewChild` access karna.** Classic `@ViewChild` tab `undefined` hota hai (unless `{ static: true }` and not inside `@if`/`@for`). `ngAfterViewInit` me karo, ya signal `viewChild()` + `afterNextRender`.
+
+</Mistake>
+
+<Mistake>
+
+**`@if`/`@for` ke andar ke element ko `ViewChild` se turant access.** Jab tak condition true na ho, wo DOM me nahi — `undefined`. Signal + `effect` se react karo jab available ho.
+
+</Mistake>
+
+<Mistake>
+
+**Parent se `this.child().internalState = ...` set karna.** Encapsulation break. `@Input` do, child react kare.
+
+</Mistake>
+
+<Mistake>
+
+**`#ref` ko doosre template (parent/child) me use karna.** Template ref sirf usi template me visible hoti hai jisme declare hui.
+
+</Mistake>
+
+<Mistake>
+
+**Har chhoti cheez `ViewChild` se karna.** "jQuery in Angular" — 90% cases inputs/outputs/signals se better. `ViewChild` sirf imperative-only cases ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Panel component template
+      NG["ng-content (projected)"]
+      OWN["div.body (own view)"]
+    end
+    VC["viewChild() - reads OWN view elements"] --> OWN
+    CC["contentChild() - reads PROJECTED content"] --> NG
+    HASH["#ref in template - usable only in that same template"]
+`}
+  caption="ViewChild reads the component's own template; ContentChild reads what a parent projected through ng-content."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `#name` = template reference variable; usable only in the same template. Native element -> DOM node; component -> instance (or `exportAs` value).
+- `@ViewChild` / `viewChild()` — class handle to an element/child in the component's own view; `@ViewChildren` / `viewChildren()` for many.
+- `@ContentChild` / `contentChild()` — handle to `<ng-content>`-projected content.
+- Timing: classic ready in `ngAfterViewInit` (`{ static: true }` -> `ngOnInit` if not conditional). Signal form: read after render.
+- Elements inside `@if`/`@for` are `undefined` until the condition renders them.
+- Prefer `@Input`/`@Output`/signals; use `ViewChild` for focus, scroll, 3rd-party init, or a child's imperative method.
+- Don't set a child's internal state from the parent via `ViewChild`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek template me `<input #box />` aur `<button (click)="box.focus()">Focus</button>` rakho. Confirm click par input focus hota hai — koi class code nahi.
+
+**Medium:** `AddEmployeeForm` me `firstNameInput = viewChild<ElementRef<HTMLInputElement>>("firstNameInput")` add karo aur `afterNextRender(() => this.firstNameInput()?.nativeElement.focus())`. Page khulte hi cursor pehle field me. `ngOnInit` me access karke dekho `undefined` aata hai.
+
+**Bada:** `DataTable` child me ek public `clearSelection()` method rakho. Parent `EmployeeListPage` me `table = viewChild(DataTable)`. Ek "Bulk archive" button jo archive ke baad `this.table()?.clearSelection()` call kare. Phir socho: agar parent isi `viewChild` se `table().rows = []` bhi set kare to kya problem — 3 line me likho (encapsulation, change detection, reusability).
+
+</Callout>
