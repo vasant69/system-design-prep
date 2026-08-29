@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 export function SimpleDefinition({ children }: { children: ReactNode }) {
   return (
     <div className="my-6 rounded-xl border border-sky-500/30 bg-sky-500/[0.07] p-5">
-      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-sky-300">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
         <BookOpen className="h-3.5 w-3.5" />
         Simple English Definition
       </div>

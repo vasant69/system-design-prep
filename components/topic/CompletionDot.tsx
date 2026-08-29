@@ -7,5 +7,5 @@ import { useTopicProgress } from "@/hooks/use-topic-progress";
 export function CompletionDot({ sectionSlug, slug }: { sectionSlug: string; slug: string }) {
   const { completed } = useTopicProgress(sectionSlug, slug);
   if (!completed) return null;
-  return <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" aria-label="Completed" />;
+  return <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="Completed" />;
 }

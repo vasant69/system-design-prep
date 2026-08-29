@@ -22,10 +22,16 @@ export function SiteHeader() {
   const [open, setOpen] = useState(false);
 
   return (
-    <header data-site-chrome className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-sm text-primary-foreground">
+    <header
+      data-site-chrome
+      className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/65"
+    >
+      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+        <Link
+          href="/"
+          className="group flex items-center gap-2.5 font-semibold tracking-tight transition-opacity hover:opacity-90"
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-[13px] font-bold text-primary-foreground shadow-sm ring-1 ring-black/5 transition-transform group-hover:scale-105">
             SD
           </span>
           <span className="hidden sm:inline">System Design Prep</span>
@@ -63,7 +69,7 @@ export function SiteHeader() {
           </button>
         </nav>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <Button variant="ghost" size="icon" onClick={openCommandPalette} className="md:hidden" aria-label="Search">
             <SearchIcon className="h-4 w-4" />
           </Button>

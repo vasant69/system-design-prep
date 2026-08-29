@@ -8,17 +8,17 @@ import { FencedText } from "@/components/topic/FencedText";
 import type { InterviewQuestion, InterviewQuestionType, ModuleConfig } from "@/lib/types";
 
 const TYPE_STYLES: Record<InterviewQuestionType, string> = {
-  conceptual: "border-sky-500/30 text-sky-300",
-  "code-output": "border-violet-500/30 text-violet-300",
-  scenario: "border-amber-500/30 text-amber-300",
-  trap: "border-red-500/30 text-red-300",
-  coding: "border-emerald-500/30 text-emerald-300",
+  conceptual: "border-sky-500/30 text-sky-700 dark:text-sky-300",
+  "code-output": "border-violet-500/30 text-violet-700 dark:text-violet-300",
+  scenario: "border-amber-500/30 text-amber-700 dark:text-amber-300",
+  trap: "border-red-500/30 text-red-700 dark:text-red-300",
+  coding: "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
 };
 
 const DIFFICULTY_STYLES: Record<string, string> = {
-  beginner: "border-emerald-500/30 text-emerald-300",
-  intermediate: "border-amber-500/30 text-amber-300",
-  advanced: "border-red-500/30 text-red-300",
+  beginner: "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
+  intermediate: "border-amber-500/30 text-amber-700 dark:text-amber-300",
+  advanced: "border-red-500/30 text-red-700 dark:text-red-300",
 };
 
 export type QuestionBankEntry = {
@@ -123,11 +123,11 @@ export function QuestionBankClient({ entries, modules }: { entries: QuestionBank
               {open && (
                 <div className="border-t border-border px-4 pb-4 pt-3">
                   <div className="mb-3 rounded-md border border-sky-500/20 bg-sky-500/5 p-3 text-sm text-sky-100">
-                    <span className="font-semibold text-sky-300">Say this first: </span>
+                    <span className="font-semibold text-sky-700 dark:text-sky-300">Say this first: </span>
                     {e.question.shortAnswer}
                   </div>
                   <FencedText text={e.question.detailedAnswer} className="space-y-3 text-sm leading-relaxed text-foreground/90" />
-                  <Link href={e.topicHref} className="mt-3 inline-block text-sm text-sky-400 hover:text-sky-300">
+                  <Link href={e.topicHref} className="mt-3 inline-block text-sm text-sky-600 dark:text-sky-400 hover:text-sky-700 dark:text-sky-300">
                     Read the full topic →
                   </Link>
                 </div>

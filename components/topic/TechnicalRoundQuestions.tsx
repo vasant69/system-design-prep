@@ -16,17 +16,17 @@ const TYPE_LABELS: Record<InterviewQuestionType, string> = {
 };
 
 const TYPE_STYLES: Record<InterviewQuestionType, string> = {
-  conceptual: "border-sky-500/30 text-sky-300",
-  "code-output": "border-violet-500/30 text-violet-300",
-  scenario: "border-amber-500/30 text-amber-300",
-  trap: "border-red-500/30 text-red-300",
-  coding: "border-emerald-500/30 text-emerald-300",
+  conceptual: "border-sky-500/30 text-sky-700 dark:text-sky-300",
+  "code-output": "border-violet-500/30 text-violet-700 dark:text-violet-300",
+  scenario: "border-amber-500/30 text-amber-700 dark:text-amber-300",
+  trap: "border-red-500/30 text-red-700 dark:text-red-300",
+  coding: "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
 };
 
 const DIFFICULTY_STYLES: Record<string, string> = {
-  beginner: "border-emerald-500/30 text-emerald-300",
-  intermediate: "border-amber-500/30 text-amber-300",
-  advanced: "border-red-500/30 text-red-300",
+  beginner: "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
+  intermediate: "border-amber-500/30 text-amber-700 dark:text-amber-300",
+  advanced: "border-red-500/30 text-red-700 dark:text-red-300",
 };
 
 function QuestionCard({ q, index }: { q: InterviewQuestion; index: number }) {
@@ -66,7 +66,7 @@ function QuestionCard({ q, index }: { q: InterviewQuestion; index: number }) {
       {open && (
         <div className="border-t border-border px-4 pb-4 pt-3">
           <div className="mb-3 rounded-md border border-sky-500/20 bg-sky-500/5 p-3 text-sm text-sky-100">
-            <span className="font-semibold text-sky-300">Say this first: </span>
+            <span className="font-semibold text-sky-700 dark:text-sky-300">Say this first: </span>
             {q.shortAnswer}
           </div>
 
@@ -81,7 +81,7 @@ function QuestionCard({ q, index }: { q: InterviewQuestion; index: number }) {
 
           {q.redFlag && (
             <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-100">
-              <span className="font-semibold text-red-300">Red flag answer: </span>
+              <span className="font-semibold text-red-700 dark:text-red-300">Red flag answer: </span>
               {q.redFlag}
             </div>
           )}

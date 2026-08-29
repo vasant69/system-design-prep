@@ -53,16 +53,17 @@ export default function HomePage() {
           className="absolute -top-40 left-1/2 -z-10 h-96 w-[36rem] -translate-x-1/2 rounded-full bg-sky-500/15 blur-3xl"
         />
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
-          <div className="max-w-2xl">
-            <p className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
+          <div className="max-w-3xl">
+            <p className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground shadow-[var(--shadow-card)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               Personal interview trainer · {systemDesignTopics} topics live
             </p>
             <h1 className="mt-5 font-[family-name:var(--font-display)] text-5xl font-medium tracking-tight text-balance sm:text-6xl">
               System Design,
               <br />
-              <span className="text-sky-400">pictured</span> and explained.
+              <span className="text-sky-600 dark:text-sky-400">pictured</span> and explained.
             </h1>
-            <p className="mt-5 text-lg leading-relaxed text-muted-foreground text-pretty">
+            <p className="mt-5 max-w-2xl text-lg leading-relaxed text-muted-foreground text-pretty">
               English definitions you can say out loud in an interview, Hinglish explanations for how it actually
               clicks, and a diagram for every hard concept so you remember it, not just recognize it. Built to study
               daily, not skim once.
@@ -70,26 +71,32 @@ export default function HomePage() {
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link
                 href="/system-design"
-                className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-transform hover:scale-[1.02] active:scale-[0.98]"
+                className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-[var(--shadow-card)] transition-all duration-150 hover:scale-[1.02] hover:shadow-[var(--shadow-card-hover)] active:scale-[0.98] motion-reduce:hover:scale-100"
               >
                 Start with System Design
                 <ArrowRight className="h-4 w-4" />
               </Link>
-              <span className="text-sm text-muted-foreground">No login, no ads — progress lives in your browser.</span>
+              <a
+                href="#tracks"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium transition-colors hover:bg-secondary"
+              >
+                Browse all tracks
+              </a>
             </div>
+            <p className="mt-4 text-sm text-muted-foreground">No login, no ads — progress lives in your browser.</p>
           </div>
         </div>
       </div>
 
       {/* Feature strip */}
-      <div className="border-b border-border bg-card/30">
-        <div className="mx-auto grid max-w-6xl gap-6 px-4 py-10 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
+      <div className="border-b border-border bg-secondary/30">
+        <div className="mx-auto grid max-w-6xl gap-x-8 gap-y-6 px-4 py-12 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
           {FEATURES.map((f) => (
-            <div key={f.title}>
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary">
-                <f.icon className="h-4.5 w-4.5" />
+            <div key={f.title} className="flex flex-col">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-card ring-1 ring-border shadow-[var(--shadow-card)]">
+                <f.icon className="h-5 w-5" />
               </span>
-              <h3 className="mt-3 text-sm font-semibold">{f.title}</h3>
+              <h3 className="mt-3.5 text-sm font-semibold">{f.title}</h3>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{f.body}</p>
             </div>
           ))}
@@ -97,9 +104,9 @@ export default function HomePage() {
       </div>
 
       {/* Sections */}
-      <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Choose a track</h2>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <div id="tracks" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-14 sm:px-6 sm:py-16">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Choose a track</h2>
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {sections.map((section) => {
             if (section.slug === "code-flow") return null;
             const Icon = sectionIconMap[section.icon];
@@ -138,7 +145,7 @@ export default function HomePage() {
               return (
                 <div
                   key={section.slug}
-                  className="relative overflow-hidden rounded-xl border border-border bg-card/50 p-6 opacity-60"
+                  className="relative overflow-hidden rounded-2xl border border-border bg-card/50 p-6 opacity-60"
                   aria-disabled
                 >
                   {cardBody}
@@ -151,10 +158,9 @@ export default function HomePage() {
                 key={section.slug}
                 href={`/${section.slug}`}
                 className={cn(
-                  "group relative overflow-hidden rounded-xl border border-border bg-card p-6 transition-colors",
-                  `hover:${theme.border}`,
+                  "group relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-card-hover)] motion-reduce:hover:translate-y-0",
+                  theme.hoverBorder,
                 )}
-                style={{ ["--tw-hover-border" as string]: undefined }}
               >
                 {cardBody}
               </Link>
@@ -165,8 +171,7 @@ export default function HomePage() {
           <Link
             href="/dictionary"
             className={cn(
-              "group relative overflow-hidden rounded-xl border border-border bg-card p-6 transition-colors",
-              "hover:border-amber-500/40",
+              "group relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-500/40 hover:shadow-[var(--shadow-card-hover)] motion-reduce:hover:translate-y-0",
             )}
           >
             <div
@@ -193,8 +198,7 @@ export default function HomePage() {
             <Link
               href="/code-flow"
               className={cn(
-                "group relative overflow-hidden rounded-xl border border-border bg-card p-6 transition-colors",
-                "hover:border-rose-500/40",
+                "group relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:border-rose-500/40 hover:shadow-[var(--shadow-card-hover)] motion-reduce:hover:translate-y-0",
               )}
             >
               <div

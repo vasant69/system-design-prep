@@ -4,9 +4,9 @@ import { cn } from "@/lib/utils";
 import type { InterviewFrequency } from "@/lib/types";
 
 const STYLES: Record<InterviewFrequency, string> = {
-  "very-high": "border-red-500/30 text-red-300",
-  high: "border-amber-500/30 text-amber-300",
-  medium: "border-sky-500/30 text-sky-300",
+  "very-high": "border-red-500/30 text-red-700 dark:text-red-300",
+  high: "border-amber-500/30 text-amber-700 dark:text-amber-300",
+  medium: "border-sky-500/30 text-sky-700 dark:text-sky-300",
   low: "border-muted-foreground/30 text-muted-foreground",
 };
 

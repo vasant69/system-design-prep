@@ -2,45 +2,78 @@
 
 import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { THEME_STORAGE_KEY } from "@/lib/theme";
 
+/**
+ * Segmented Light / Dark control. The blocking init script in <head> has
+ * already put the right class on <html> before this mounts, so we just read
+ * it back once and render the matching state. The site now defaults to light,
+ * which is also what the server renders, so the initial state is `false`.
+ */
 export function ThemeToggle() {
-  // Assume dark for the very first render so it matches the server-rendered
-  // markup exactly (no hydration mismatch) — the blocking init script in
-  // <head> already applied the real class before this ever mounts, so we
-  // just read it back once mounted and correct if the user was on light.
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    // One-time read of DOM state set by the pre-hydration init script —
-    // document doesn't exist during SSR, so this can only happen client-side
-    // after mount. Not an external-system subscription, just a single
-    // correction if the user's stored preference was actually "light".
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsDark(document.documentElement.classList.contains("dark"));
   }, []);
 
-  function toggle() {
-    const next = !isDark;
+  function set(next: boolean) {
+    if (next === isDark) return;
     setIsDark(next);
-    document.documentElement.classList.toggle("dark", next);
+    const root = document.documentElement;
+    // brief colour cross-fade (respects prefers-reduced-motion via CSS)
+    root.classList.add("theme-transition");
+    root.classList.toggle("dark", next);
+    window.setTimeout(() => root.classList.remove("theme-transition"), 300);
     try {
       localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
     } catch {
-      // localStorage unavailable (e.g. private browsing) — toggle still
-      // works for this page load, it just won't persist across visits
+      /* private mode: still toggles for this page load, just won't persist */
     }
   }
 
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={toggle}
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+    <div
+      role="group"
+      aria-label="Colour theme"
+      className="relative flex items-center rounded-full border border-border bg-secondary/60 p-0.5 text-muted-foreground"
     >
-      {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-    </Button>
+      {/* sliding thumb */}
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-card shadow-sm ring-1 ring-border transition-transform duration-200 ease-out",
+          isDark ? "translate-x-[calc(100%+2px)]" : "translate-x-0",
+        )}
+      />
+      <button
+        type="button"
+        onClick={() => set(false)}
+        aria-pressed={!isDark}
+        aria-label="Light mode"
+        className={cn(
+          "relative z-10 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors sm:px-3",
+          !isDark && "text-foreground",
+        )}
+      >
+        <Sun className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Light</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => set(true)}
+        aria-pressed={isDark}
+        aria-label="Dark mode"
+        className={cn(
+          "relative z-10 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors sm:px-3",
+          isDark && "text-foreground",
+        )}
+      >
+        <Moon className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Dark</span>
+      </button>
+    </div>
   );
 }

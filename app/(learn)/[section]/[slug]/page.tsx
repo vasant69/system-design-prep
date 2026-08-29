@@ -56,8 +56,14 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
       <ReadingProgress colorClassName={theme.progressBar} />
 
       <div className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className={cn("absolute inset-x-0 top-0 h-40 bg-gradient-to-b", theme.gradient)} />
-        <div className="relative mx-auto max-w-6xl px-4 pt-8 pb-6 sm:px-6">
+        <div
+          aria-hidden
+          className={cn(
+            "absolute inset-x-0 top-0 -z-10 h-48 bg-gradient-to-b [mask-image:linear-gradient(to_bottom,black,transparent)]",
+            theme.gradient,
+          )}
+        />
+        <div className="relative mx-auto max-w-6xl px-4 pt-8 pb-7 sm:px-6">
           <nav className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
             <Link href={`/${sectionSlug}`} className="hover:text-foreground">
               {section.title}
@@ -106,10 +112,13 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
 
       <KeyboardNav prevHref={prev?.href} nextHref={next?.href} />
 
-      <div id="topic-layout-grid" className="mx-auto grid max-w-6xl grid-cols-1 gap-8 px-4 py-10 sm:px-6 lg:grid-cols-[minmax(0,72ch)_16rem]">
+      <div
+        id="topic-layout-grid"
+        className="mx-auto grid max-w-6xl grid-cols-1 gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[minmax(0,var(--prose-measure))_15rem] lg:gap-12 xl:gap-16"
+      >
         <div className="min-w-0">
           {prerequisites.length > 0 && (
-            <div className="mb-8 rounded-lg border border-border bg-card p-4">
+            <div className="mb-8 rounded-xl border border-border bg-card p-4 shadow-[var(--shadow-card)]">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <GitBranch className="h-3.5 w-3.5" />
                 Read first
@@ -119,7 +128,10 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
                   <Link
                     key={prereq.slug}
                     href={prereq.href}
-                    className="rounded-full border border-border px-3 py-1 text-sm text-foreground/90 transition-colors hover:border-sky-500/40 hover:text-sky-300"
+                    className={cn(
+                      "rounded-full border border-border px-3 py-1 text-sm text-foreground/90 transition-colors hover:bg-secondary",
+                      theme.hoverBorder,
+                    )}
                   >
                     {prereq.title}
                   </Link>
@@ -132,17 +144,20 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
 
           <TechnicalRoundQuestions questions={interviewQuestions} />
 
-          <div className="mt-14 grid gap-3 border-t border-border pt-6 sm:grid-cols-2">
+          <div className="mt-16 grid gap-3 border-t border-border pt-8 sm:grid-cols-2">
             {prev ? (
               <Link
                 href={prev.href}
-                className="group flex flex-col rounded-lg border border-border p-4 transition-colors hover:border-sky-500/40 hover:bg-card"
+                className={cn(
+                  "group flex flex-col rounded-xl border border-border bg-card p-4 shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-card-hover)] motion-reduce:hover:translate-y-0",
+                  theme.hoverBorder,
+                )}
               >
                 <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <ArrowLeft className="h-3 w-3" />
+                  <ArrowLeft className="h-3 w-3 transition-transform group-hover:-translate-x-0.5" />
                   Previous
                 </span>
-                <span className="mt-1 font-medium group-hover:text-sky-300">{prev.title}</span>
+                <span className="mt-1 font-medium">{prev.title}</span>
               </Link>
             ) : (
               <div />
@@ -150,13 +165,16 @@ export default async function TopicPage({ params }: { params: Promise<{ section:
             {next ? (
               <Link
                 href={next.href}
-                className="group flex flex-col items-end rounded-lg border border-border p-4 text-right transition-colors hover:border-sky-500/40 hover:bg-card"
+                className={cn(
+                  "group flex flex-col items-end rounded-xl border border-border bg-card p-4 text-right shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-card-hover)] motion-reduce:hover:translate-y-0",
+                  theme.hoverBorder,
+                )}
               >
                 <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   Next
-                  <ArrowRight className="h-3 w-3" />
+                  <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
                 </span>
-                <span className="mt-1 font-medium group-hover:text-sky-300">{next.title}</span>
+                <span className="mt-1 font-medium">{next.title}</span>
               </Link>
             ) : (
               <div />
