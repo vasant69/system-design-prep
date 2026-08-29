@@ -20,7 +20,7 @@ const quiz: QuizQuestion[] = [
     question: "`encapsulation: ViewEncapsulation.Emulated` (default) kya karta hai?",
     options: [
       "Component ko dusre components se poori tarah hide kar deta hai",
-      "Component ke styles ko us component tak scope karta hai — Angular selectors me ek unique attribute add karke, taaki CSS bahar leak na kare",
+      "Component ke styles ko us component tak scope karta hai — Angular selectors me ek unique attribute add karke, taaki CSS bahar leak na karein",
       "Component ko lazy-load karta hai",
       "Change detection ko OnPush kar deta hai",
     ],

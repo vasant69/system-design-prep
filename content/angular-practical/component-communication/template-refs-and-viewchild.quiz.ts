@@ -40,7 +40,7 @@ const quiz: QuizQuestion[] = [
     ],
     correctIndex: 1,
     explanation:
-      "View render hone ke baad hi `@ViewChild` populate hota hai — yani `ngAfterViewInit`. `{ static: true }` non-conditional elements ko `ngOnInit` tak available kara deta hai. `@if`/`@for` ke andar ka element tab tak `undefined` jab tak wo condition render na kare.",
+      "View render hone ke baad hi `@ViewChild` populate hota hai — yani `ngAfterViewInit`. `{ static: true }` non-conditional elements ko `ngOnInit` tak available kara deta hai. `@if`/`@for` ke andar ka element tab tak `undefined` jab tak wo condition render na karein.",
     difficulty: "medium",
   },
   {

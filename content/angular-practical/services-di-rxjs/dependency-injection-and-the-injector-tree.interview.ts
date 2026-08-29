@@ -55,7 +55,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "`InjectionToken`s: `API_BASE_URL`, `FEATURE_FLAGS`. `app.config.ts` me `{ provide: API_BASE_URL, useValue: environment.apiBaseUrl }` etc. `environment.ts` files build-time `fileReplacements` se swap hoti hain. Services inject karke use karte hain — koi hardcoded URL nahi.",
     detailedAnswer:
-      "Layers: (1) `environments/environment.ts` + `environment.prod.ts` — plain objects, `angular.json` `fileReplacements` se build par swap. (2) Tokens — taaki config injectable aur test me overridable ho. (3) Optionally ek `AppConfigService` jo runtime config (`/config.json` fetch on bootstrap) merge kare for values jo build me nahi baked. Services aur guards `inject(API_BASE_URL)` / `inject(FEATURE_FLAGS)` karte hain. Test: `{ provide: FEATURE_FLAGS, useValue: { newDashboard: true } }`. Isse ek codebase, teen deployments, zero code branching.",
+      "Layers: (1) `environments/environment.ts` + `environment.prod.ts` — plain objects, `angular.json` `fileReplacements` se build par swap. (2) Tokens — taaki config injectable aur test me overridable ho. (3) Optionally ek `AppConfigService` jo runtime config (`/config.json` fetch on bootstrap) merge karein for values jo build me nahi baked. Services aur guards `inject(API_BASE_URL)` / `inject(FEATURE_FLAGS)` karte hain. Test: `{ provide: FEATURE_FLAGS, useValue: { newDashboard: true } }`. Isse ek codebase, teen deployments, zero code branching.",
     followUp: "Build-time environment files vs runtime-fetched config — kab kaunsa, aur kya dono chahiye?",
   },
 ];

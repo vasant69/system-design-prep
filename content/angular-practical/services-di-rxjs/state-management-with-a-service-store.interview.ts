@@ -9,7 +9,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Lowest-level-that-works: (1) local component signal; (2) lifted to a common parent; (3) feature-scoped store (service at route providers); (4) app-wide store (`providedIn: 'root'`); (5) server state as an HTTP cache / `resource()`; (6) URL query params for shareable view state. Promote upward only when sharing demands it.",
     detailedAnswer:
-      "Zyadatar state local ya feature-scoped hoti hai. App-wide sirf genuinely cross-cutting cheezein (auth, permissions, theme, notifications). Server state ko client 'source of truth' mat samjho — wo ek cache hai jise staleness/refetch/invalidation chahiye. Filters/page/selected-id URL me best (back button, sharing). Ek chhota injectable store (signal + computed selectors + methods) 80% needs cover karta hai; NgRx/SignalStore tab jab scale/team/tooling demand kare.",
+      "Zyadatar state local ya feature-scoped hoti hai. App-wide sirf genuinely cross-cutting cheezein (auth, permissions, theme, notifications). Server state ko client 'source of truth' mat samjho — wo ek cache hai jise staleness/refetch/invalidation chahiye. Filters/page/selected-id URL me best (back button, sharing). Ek chhota injectable store (signal + computed selectors + methods) 80% needs cover karta hai; NgRx/SignalStore tab jab scale/team/tooling demand karein.",
     followUp: "Server state ke liye ek dedicated query library (jaise TanStack Query for Angular) kab worth hai?",
   },
   {
@@ -53,7 +53,7 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "intermediate",
     shortAnswer:
-      "URL (query params) me rakhna aksar behtar: shareable links, working back/forward, refresh-safe, aur bookmarkable. Store me rakhna simpler code par ye teenon benefits kho deta hai. Common pattern: URL source of truth, store use derive/read karke API call kare (dono ko ek `effect`/route subscription se sync).",
+      "URL (query params) me rakhna aksar behtar: shareable links, working back/forward, refresh-safe, aur bookmarkable. Store me rakhna simpler code par ye teenon benefits kho deta hai. Common pattern: URL source of truth, store use derive/read karke API call karein (dono ko ek `effect`/route subscription se sync).",
     detailedAnswer:
       "URL approach: `router.navigate([], { queryParams: { search, page, dept } })`; component `route.queryParamMap` (ya `withComponentInputBinding` signals) se padhta hai aur `switchMap` se list load karta hai. Trade-off: URL me sirf serializable, user-meaningful state (filters, page, sort, selected id) — transient UI (loading, hovered row) store/local me. Downside of URL: rapid changes (har keystroke) history spam kar sakti hain -> `replaceUrl: true` + debounce. Overall shareability aur browser-nav ke liye URL jeet-ta hai list screens par.",
     followUp: "`replaceUrl: true` aur normal navigation me history ke liye kya farak, aur search me kaunsa?",

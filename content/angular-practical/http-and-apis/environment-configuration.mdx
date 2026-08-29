@@ -1,0 +1,221 @@
+---
+slug: "environment-configuration"
+title: "Environment Configuration"
+section: "angular-practical"
+module: "http-and-apis"
+order: 3
+difficulty: "beginner"
+readingTime: 11
+prerequisites: ["typed-models-and-the-api-contract"]
+tags: ["angular", "environments", "config", "fileReplacements", "api-base-url", "employee-management"]
+englishDefinition: "Environment configuration lets one codebase build for dev, staging, and production with different values like the API base URL. Angular's classic approach is environment.ts files swapped at build time via fileReplacements; a runtime alternative fetches a config file on startup. Secrets never belong in a front-end bundle."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Environment configuration lets one codebase build for `dev`, `staging`, and `production` with different values — chiefly the API base URL and feature flags. The classic Angular approach is `environment.ts` files swapped at build time via `angular.json`'s `fileReplacements`; a runtime approach instead fetches a `config.json` on startup. Front-end bundles are public — **never** put secrets in them.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Dev me API `http://localhost:5000`, prod me `https://api.ems.example.com`. Code same. Ye "kaunsi value kis environment me" ka management **environment config** hai.
+
+### Build-time approach — `environment.ts` files
+
+```ts
+// src/environments/environment.ts   (default = development)
+export const environment = {
+  production: false,
+  apiBaseUrl: "http://localhost:5000/api/v1",
+  featureFlags: { newDashboard: true },
+};
+
+// src/environments/environment.prod.ts
+export const environment = {
+  production: true,
+  apiBaseUrl: "https://api.ems.example.com/api/v1",
+  featureFlags: { newDashboard: false },
+};
+```
+
+```jsonc
+// angular.json  ->  projects > <app> > architect > build > configurations
+"production": {
+  "fileReplacements": [
+    { "replace": "src/environments/environment.ts", "with": "src/environments/environment.prod.ts" }
+  ]
+}
+```
+
+- Code hamesha `import { environment } from "src/environments/environment"`.
+- `ng build --configuration production` -> build ke waqt `environment.ts` ko `environment.prod.ts` se **replace** kar deta hai.
+- Result: prod bundle me sirf prod values.
+
+### Using it — via an InjectionToken
+
+```ts
+export const API_BASE_URL = new InjectionToken<string>("API_BASE_URL");
+
+// app.config.ts
+providers: [{ provide: API_BASE_URL, useValue: environment.apiBaseUrl }]
+
+// service
+private base = inject(API_BASE_URL);
+```
+
+Token se services `environment` ko directly import nahi karti — testing me override easy, aur coupling kam.
+
+### Runtime approach — `config.json`
+
+Build-time ka nuksan: har environment ke liye alag build. Agar aap **ek** build ko multiple environments me deploy karna chahte ho:
+
+```ts
+// APP_INITIALIZER / provideAppInitializer
+export function loadConfig(http: HttpClient) {
+  return () => firstValueFrom(http.get<AppConfig>("/config.json")).then(c => Object.assign(CONFIG, c));
+}
+```
+
+`config.json` har environment ke server pe alag rakha jata hai; app boot par fetch hota hai. Ek artifact, N deployments.
+
+### Secrets — never in the front-end
+
+Browser bundle **public** hai — DevTools me poora JS dikhta hai. API keys, DB strings, client secrets kabhi front-end config me nahi. Jo sensitive hai wo **backend** par; front-end sirf public URLs aur flags rakhta hai. (OAuth client IDs public hote hain — wo theek hai; client *secrets* nahi.)
+
+### Show it in our project
+
+`src/environments/environment.ts` + `.prod.ts` + `.staging.ts` with `apiBaseUrl`, `featureFlags`, `enableDebugTools`. `app.config.ts` provides `API_BASE_URL` and `FEATURE_FLAGS` tokens from `environment`. Services inject the tokens. No secrets anywhere.
+
+### Where is it used in day-to-day development
+
+Set up once per project. Touched when adding a new environment, a new flag, or a new config value. Every service's base URL comes from here.
+
+### Pros and cons
+
+**Build-time — Pros:** simple, zero runtime cost, values inlined & tree-shaken; **Cons:** one build per environment, rebuild to change a value.
+
+**Runtime — Pros:** one artifact for all environments, change config without rebuild; **Cons:** an extra startup fetch, app can't render until it resolves, slightly more setup.
+
+</Hinglish>
+
+<Callout type="warning">
+
+Front-end ka bundle poori tarah public hai — koi bhi DevTools me `environment` object dekh sakta hai. Isme **kabhi** API secret, private key, ya password mat rakho. Sensitive cheez backend par, front-end sirf public URL + flags.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="One build, three deployments">
+
+A team wanted `dist/` to be a single immutable artifact promoted from staging to production (no per-environment rebuild). They switched from `environment.prod.ts` to a runtime `config.json`: the CI builds once, and each environment's server serves its own `config.json` with the right `apiBaseUrl`. An `APP_INITIALIZER` fetches it before the app renders and populates the `API_BASE_URL` token. Rollbacks and promotions became trivial — same JS, different config file.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Build-time `fileReplacements`: **one build per environment**; values are inlined into the bundle.
+- Runtime config: **one build**, plus **one startup fetch** before the app renders.
+- A front-end bundle is 100% readable in DevTools — treat every value in it as public.
+- OAuth **client IDs** are public (fine in config); **client secrets** are not (backend only).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "multi-environment config kaise?", "`fileReplacements` kya karta hai?", "build-time vs runtime config?", "front-end me secrets?".
+
+Strong answer:
+
+1. Build-time: `environment.ts` + `environment.prod.ts`, swapped by `angular.json` `fileReplacements` on `ng build --configuration production`.
+2. Expose via an `InjectionToken` so services don't import `environment` directly (testable).
+3. Runtime: fetch `config.json` in an `APP_INITIALIZER` — one artifact, N deployments.
+4. Never put secrets in a front-end bundle — it's public; sensitive values live on the backend.
+
+Red flag: "API key ko `environment.prod.ts` me rakhta hoon" — it ships to every browser.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Secrets ko `environment.*.ts` me rakhna.** Bundle public — DevTools me dikhta hai. Backend par rakho.
+
+</Mistake>
+
+<Mistake>
+
+**Services me `environment` ko directly import karna har jagah.** Test me override mushkil. Ek `API_BASE_URL` token se provide karo.
+
+</Mistake>
+
+<Mistake>
+
+**`fileReplacements` config me galat path / naya environment file add na karna.** `ng build --configuration staging` fail ya dev values ship.
+
+</Mistake>
+
+<Mistake>
+
+**Runtime config fetch ko `APP_INITIALIZER` me na daalna.** App render ho jata hai config aane se pehle -> `apiBaseUrl` undefined, first requests fail.
+
+</Mistake>
+
+<Mistake>
+
+**Har environment ke liye alag Git branch/repo.** Ek codebase, config-driven. Branches = drift.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph Build-time
+      E1[environment.ts dev] -.->|"fileReplacements on prod build"| E2[environment.prod.ts]
+      E2 --> B[bundle with prod values inlined]
+    end
+    subgraph Runtime
+      ONE[one bundle] --> INIT["APP_INITIALIZER fetches /config.json"]
+      INIT --> TOK[populate API_BASE_URL token]
+    end
+    TOK --> SVC[services inject API_BASE_URL]
+    B --> SVC
+`}
+  caption="Build-time swaps files per environment; runtime loads a config file so one build serves all environments."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- One codebase, per-environment values (API base URL, feature flags) — never secrets.
+- Build-time: `environment.ts` + `environment.prod.ts` swapped via `angular.json` `fileReplacements` on `ng build --configuration production`. Values inlined; one build per environment.
+- Expose config via an `InjectionToken` (`API_BASE_URL`) so services don't import `environment` directly — easier to test/override.
+- Runtime: fetch `config.json` in an `APP_INITIALIZER` before render — one artifact, N deployments, one extra startup fetch.
+- Front-end bundles are public — anything in them is readable in DevTools. Secrets live on the backend.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `environment.ts` (dev) aur `environment.prod.ts` banao with different `apiBaseUrl`. `angular.json` me `fileReplacements` wire karo. `ng build --configuration production` karke `dist/` me check karo kaunsi URL inlined hai.
+
+**Medium:** `API_BASE_URL` `InjectionToken` banao, `app.config.ts` me `useValue: environment.apiBaseUrl` se provide karo. `EmployeeService` me `inject(API_BASE_URL)` use karo. Test me `{ provide: API_BASE_URL, useValue: 'http://test' }` override karke `HttpTestingController` se URL assert karo.
+
+**Bada:** Runtime config me switch karo: `provideAppInitializer` me `http.get<AppConfig>('/config.json')` fetch, ek `CONFIG` object populate, aur `API_BASE_URL` ko `useFactory: () => CONFIG.apiBaseUrl`. Ek `public/config.json` do. Confirm app config load hone ka wait karta hai. Build-time vs runtime ke trade-offs 5-line me.
+
+</Callout>

@@ -47,10 +47,10 @@ const quiz: QuizQuestion[] = [
     id: "rxjs-operators-you-actually-use-4",
     question: "`forkJoin([a$, b$, c$])` kab emit karta hai?",
     options: [
-      "Jab bhi koi ek input emit kare",
+      "Jab bhi koi ek input emit karein",
       "Sirf ek baar, jab teenon inputs complete ho jaayein — unki last values ek array me. Agar koi input complete na ho (jaise `interval`), forkJoin kabhi emit nahi karega",
       "Har second",
-      "Jab pehla input emit kare",
+      "Jab pehla input emit karein",
     ],
     correctIndex: 1,
     explanation:

@@ -1,0 +1,263 @@
+---
+slug: "error-handling-for-http"
+title: "Error Handling for HTTP"
+section: "angular-practical"
+module: "http-and-apis"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["crud-calls-in-the-service"]
+tags: ["angular", "http", "error-handling", "catcherror", "retry", "httperrorresponse", "employee-management"]
+englishDefinition: "HTTP calls fail: network down, 4xx client errors, 5xx server errors. Angular delivers these as an HttpErrorResponse on the Observable's error channel. Good handling normalizes errors to a typed shape, retries transient failures, shows the user a useful message, and always clears loading state with finalize."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+HTTP calls fail — offline, DNS, 4xx client errors, 5xx server errors, timeouts. Angular delivers all of these on the Observable's **error channel** as an `HttpErrorResponse`. Solid handling: normalize the error to a small typed shape, `retry` transient failures, show the user a message they can act on, and always clear loading state with `finalize`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har HTTP call fail ho sakta hai. "Happy path" code likhna aasan hai; production Angular ka aadha kaam failure handle karna hai.
+
+### What an error looks like
+
+```ts
+this.service.getAll(f).subscribe({
+  next: page => this.data.set(page),
+  error: (err: HttpErrorResponse) => { /* ... */ },
+});
+```
+
+`HttpErrorResponse` fields:
+
+- `err.status` — `0` (network/CORS/offline), `400`–`499` (client), `500`–`599` (server).
+- `err.error` — the response body the server sent (often `{ message, errors }`) — OR a `ProgressEvent` when `status === 0`.
+- `err.message` — a generic Angular string (not for users).
+- `err.url` — the failed URL.
+
+### Normalize to a typed shape
+
+```ts
+export interface AppError {
+  kind: "network" | "client" | "server" | "unknown";
+  status: number;
+  message: string;              // user-safe
+  fieldErrors?: Record<string, string[]>;
+}
+
+export function normalizeHttpError(err: HttpErrorResponse): AppError {
+  if (err.status === 0) return { kind: "network", status: 0, message: "Network problem. Check your connection." };
+  if (err.status >= 500) return { kind: "server", status: err.status, message: "Something went wrong on our side. Please try again." };
+  if (err.status >= 400) return {
+    kind: "client", status: err.status,
+    message: err.error?.message ?? "Request could not be completed.",
+    fieldErrors: err.error?.errors,
+  };
+  return { kind: "unknown", status: err.status, message: "Unexpected error." };
+}
+```
+
+Now the rest of the app deals with `AppError`, not raw `HttpErrorResponse`.
+
+### Where to handle — layered
+
+- **Interceptor** (next topic): cross-cutting — `401` -> logout, `403` -> forbidden page, maybe a generic toast for `5xx`. Normalize here so services/components get `AppError`.
+- **Service**: data-level — `retry` transient reads, map errors, provide a fallback for non-critical data.
+- **Component / store**: UX — set an `error` signal, show a retry button, keep field errors near the form.
+
+### `catchError` — recover or rethrow
+
+```ts
+getDepartments(): Observable<Department[]> {
+  return this.http.get<DepartmentDto[]>(this.base).pipe(
+    map(list => list.map(toDepartment)),
+    catchError(err => {
+      // non-critical: degrade gracefully
+      console.warn("departments failed", err);
+      return of([]);                       // fallback, stream stays alive
+    }),
+  );
+}
+```
+
+- Return `of(fallback)` -> recover.
+- Return `throwError(() => normalizeHttpError(err))` -> rethrow (component decides).
+- **Inner vs outer**: in a `switchMap` search, put `catchError` **inside** so one failed query doesn't kill the whole stream.
+
+### `retry` — transient failures only
+
+```ts
+this.http.get<Paged<EmployeeDto>>(url).pipe(
+  retry({ count: 2, delay: (err, n) => err.status >= 500 ? timer(500 * n) : throwError(() => err) }),
+);
+```
+
+- Retry only `5xx` / network — not `400`/`404` (retrying won't help).
+- Backoff (`500 * n`) so you don't hammer a struggling server.
+- Never retry non-idempotent writes blindly (a retried POST can double-create).
+
+### `finalize` — always clear loading
+
+```ts
+this.loading.set(true);
+this.service.getAll(f).pipe(
+  finalize(() => this.loading.set(false)),   // runs on next/error/unsubscribe
+).subscribe({ next: ..., error: e => this.error.set(normalizeHttpError(e)) });
+```
+
+### Show it in our project
+
+- An `errorInterceptor` normalizes every `HttpErrorResponse` to `AppError` and handles `401`/`403`.
+- Non-critical services (`departments`, `notifications`) fall back to `of([])` with a quiet log.
+- List/form components have `error = signal<AppError | null>(null)` -> an inline error banner with "Retry", and `fieldErrors` bound to form controls.
+
+### Where is it used in day-to-day development
+
+Every data call. Every form submit (validation errors from the server). Every "the API is down" banner. Retry logic for flaky mobile networks. This is a large fraction of real front-end work.
+
+### Pros and cons
+
+**Pros**
+
+- Normalized errors -> consistent UX, no raw `HttpErrorResponse` in components.
+- `retry` with backoff smooths transient failures.
+- Layered handling: cross-cutting in the interceptor, UX in the component.
+
+**Cons**
+
+- Easy to over-catch (swallowing real bugs into `of([])` everywhere).
+- Retrying writes or `4xx` causes harm.
+- `err.error` shape is server-dependent — needs a contract.
+- Forgetting `finalize` -> stuck spinners on error.
+
+</Hinglish>
+
+<Callout type="trap">
+
+`retry()` ko har request par blindly mat lagao. `400`/`404`/`409` retry karne se kuch theek nahi hota (sirf load badhta hai), aur ek non-idempotent `POST` retry hone se **do records** ban sakte hain. Retry sirf `5xx`/network par, backoff ke saath, aur reads (ya idempotent writes) par.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Flaky-network resilience">
+
+EMS runs on office wifi and 4G. Reads get `retry({ count: 2, delay: backoff })` for `5xx`/network — a blip becomes invisible. A failed employee save shows the server's `fieldErrors` next to each input (`email: "already registered"`) instead of a useless toast. A `401` anywhere triggers `errorInterceptor` -> token refresh or logout, so no screen shows a broken state. The dashboard's six widgets each `catchError(of(EMPTY_WIDGET))` — one failing widget doesn't blank the whole dashboard.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `HttpErrorResponse.status === 0` = network/CORS/offline (no HTTP response at all).
+- `4xx` = client error (don't retry); `5xx` = server error (retry with backoff is reasonable).
+- `retry({ count, delay })` — pair with exponential/linear backoff; never blind-retry non-idempotent writes.
+- `finalize()` runs on **next, error, and unsubscribe** — the reliable place to clear a loading flag.
+- `catchError` must return an Observable (`of(fallback)` or `throwError(() => e)`).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "HTTP errors kaise handle karte ho?", "`HttpErrorResponse` fields?", "`catchError` inner vs outer?", "kab retry?", "`finalize` kyun?".
+
+Strong answer:
+
+1. Errors arrive on the Observable's error channel as `HttpErrorResponse` (`status`, `error` body, `url`).
+2. Normalize to a small typed `AppError` (kind + user-safe message + optional field errors).
+3. Layer it: interceptor (cross-cutting: 401/403, normalize), service (retry reads, fallback for non-critical), component (error signal, retry button, field errors).
+4. `retry` only `5xx`/network with backoff; never blind-retry writes or `4xx`.
+5. `finalize` to always clear loading; `catchError` inside `switchMap` so one failure doesn't kill the stream.
+
+Red flag: "har call par `catchError(() => of([]))`" — swallows real bugs, hides outages.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Everywhere `catchError(() => of([]))`.** Real errors (and outages) become "empty list". Recover only where a fallback is genuinely correct; otherwise rethrow and show an error state.
+
+</Mistake>
+
+<Mistake>
+
+**Blind `retry()` on all requests.** `4xx` won't fix itself; a retried `POST` can double-create. Retry `5xx`/network reads only, with backoff.
+
+</Mistake>
+
+<Mistake>
+
+**`err.message` ko user ko dikhana.** That's a generic Angular string. Use `err.error?.message` (server) or a friendly normalized message.
+
+</Mistake>
+
+<Mistake>
+
+**`finalize` bhoolna.** On error, `loading` stays `true` -> stuck spinner.
+
+</Mistake>
+
+<Mistake>
+
+**`catchError` ko `switchMap` ke bahar rakhna in a search pipeline.** One failed query terminates the whole stream — subsequent keystrokes do nothing. Put it inside.
+
+</Mistake>
+
+<Mistake>
+
+**Server field errors ko ignore karna.** `err.error.errors` me per-field messages hote hain — bind them to form controls, don't just toast "failed".
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    REQ[HTTP request] --> RESP{result}
+    RESP -->|2xx| OK[map DTO -> model]
+    RESP -->|error| HER[HttpErrorResponse]
+    HER --> INT["interceptor: 401 -> logout, normalize to AppError"]
+    INT --> SVC["service: retry 5xx (backoff), fallback if non-critical"]
+    SVC --> CMP["component: error signal, retry button, field errors"]
+    CMP --> FIN["finalize: loading = false (always)"]
+`}
+  caption="Errors are normalized once, retried where sensible, and surfaced as UX — with loading always cleared."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Errors arrive on the Observable's error channel as `HttpErrorResponse`: `status` (0 = network, 4xx client, 5xx server), `error` (server body), `url`.
+- Normalize to a small typed `AppError` (kind + user-safe `message` + optional `fieldErrors`).
+- Layer handling: interceptor (401/403, normalize), service (retry reads, fallback for non-critical data), component/store (error signal, retry UI, field errors).
+- `retry({ count, delay })` for **5xx/network reads only**, with backoff; never blind-retry `4xx` or non-idempotent writes.
+- `catchError` must return an Observable — `of(fallback)` to recover or `throwError(() => e)` to rethrow; put it **inside** `switchMap` in a search pipeline.
+- `finalize()` runs on next/error/unsubscribe — always clear `loading` there.
+- Don't show `err.message` to users; use the server message or the normalized one.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `normalizeHttpError(err: HttpErrorResponse): AppError` likho — `status === 0` -> network, `>= 500` -> server, `>= 400` -> client (with `fieldErrors` from `err.error?.errors`). Ek `.spec.ts` with 3 fake `HttpErrorResponse`s.
+
+**Medium:** `EmployeeListPage` me `error = signal<AppError | null>(null)`, `loading = signal(false)`. Load pipeline: `tap(loading true)` + `catchError(e => { this.error.set(normalize(e)); return of(null); })` + `finalize(loading false)`. Template: `@if (error()) { <banner> + Retry button }`. Server ko 500 se fail karke banner + retry test karo.
+
+**Bada:** (1) `getEmployees` par `retry({ count: 2, delay })` sirf `5xx`/network ke liye. Flaky mock (random 503) se confirm ki 2 retries ke baad success dikhta hai. (2) Add Employee form submit par server 422 with `{ errors: { email: ["already registered"] } }` bheje — `fieldErrors` ko form controls par bind karke inline dikhao. (3) `catchError` ko `switchMap` ke bahar rakhke search stream ko ek fail se todo, phir andar move karke fix karo. 6-line note.
+
+</Callout>

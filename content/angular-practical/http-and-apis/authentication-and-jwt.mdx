@@ -1,0 +1,293 @@
+---
+slug: "authentication-and-jwt"
+title: "Authentication and JWT, End to End"
+section: "angular-practical"
+module: "http-and-apis"
+order: 7
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["http-interceptors"]
+tags: ["angular", "authentication", "jwt", "refresh-token", "auth-guard", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree", "HCLTech"]
+englishDefinition: "JWT auth flow in Angular: the login endpoint returns an access token and a refresh token. AuthService holds auth state in a signal, the auth interceptor attaches the access token, the error interceptor refreshes it on 401, and the auth guard redirects unauthenticated users to login. Where you store tokens is a real security decision."
+---
+
+<SimpleDefinition>
+
+A JWT auth flow in Angular: `POST /auth/login` returns a short-lived **access token** and a longer-lived **refresh token** (plus the user). `AuthService` holds auth state in a signal; the **auth interceptor** attaches the access token to requests; the **error interceptor** transparently refreshes it on a `401`; the **auth guard** redirects unauthenticated users to `/login`. Token storage (memory vs `localStorage` vs cookie) is a genuine security trade-off.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab sab pieces jodte hain — ek poora login-to-logout auth flow.
+
+### The pieces
+
+```text
+LoginPage --> AuthService.login() --> POST /auth/login
+   returns { accessToken, refreshToken, user }
+AuthService stores tokens + user (signal)
+authInterceptor --> adds "Authorization: Bearer <accessToken>" to every request
+errorInterceptor --> on 401: call AuthService.refresh(), retry the request
+authGuard --> if not logged in, redirect to /login?returnUrl=...
+LogoutButton --> AuthService.logout() --> clear state, navigate /login
+```
+
+### AuthService
+
+```ts
+@Injectable({ providedIn: "root" })
+export class AuthService {
+  private http = inject(HttpClient);
+  private router = inject(Router);
+
+  private _accessToken = signal<string | null>(null);
+  private _user = signal<AuthUser | null>(null);
+
+  readonly user = this._user.asReadonly();
+  readonly isLoggedIn = computed(() => this._user() !== null);
+  token() { return this._accessToken(); }
+
+  login(email: string, password: string): Observable<void> {
+    return this.http.post<LoginResponse>("/auth/login", { email, password }, authFreeContext()).pipe(
+      tap(res => this.setSession(res)),
+      map(() => void 0),
+    );
+  }
+
+  refresh(): Observable<string> {
+    const rt = this.readRefreshToken();
+    return this.http.post<LoginResponse>("/auth/refresh", { refreshToken: rt }, authFreeContext()).pipe(
+      tap(res => this.setSession(res)),
+      map(res => res.accessToken),
+    );
+  }
+
+  logout() {
+    this._accessToken.set(null);
+    this._user.set(null);
+    this.clearRefreshToken();
+    this.router.navigate(["/login"]);
+  }
+
+  private setSession(res: LoginResponse) {
+    this._accessToken.set(res.accessToken);
+    this._user.set(res.user);
+    this.writeRefreshToken(res.refreshToken);
+  }
+}
+```
+
+### Token storage — the real decision
+
+| Where | XSS risk | CSRF risk | Survives refresh? | Notes |
+|---|---|---|---|---|
+| **In-memory** (signal) | Low (not readable by injected script after nav) | None | **No** (lost on reload) | Safest for the access token; pair with a refresh cookie |
+| **`localStorage`** | **High** (any XSS reads it) | None | Yes | Common but risky; a single XSS = full account takeover |
+| **`sessionStorage`** | High | None | Per-tab only | Same XSS risk, shorter life |
+| **`httpOnly` Secure cookie** | Low (JS can't read it) | Needs CSRF defense (SameSite, token) | Yes | Best for the **refresh** token; requires backend cooperation |
+
+Pragmatic setup: **access token in memory**, **refresh token in an `httpOnly` Secure `SameSite` cookie** the backend sets. On reload, call `/auth/refresh` (the cookie goes automatically) to get a new access token. If you can't use cookies, `localStorage` for the refresh token is the fallback — accept the XSS exposure and harden aggressively (CSP, sanitization, deps).
+
+### Refresh-on-401 in the error interceptor
+
+```ts
+export const authRefreshInterceptor: HttpInterceptorFn = (req, next) => {
+  const auth = inject(AuthService);
+  return next(req).pipe(
+    catchError((err: HttpErrorResponse) => {
+      if (err.status !== 401 || req.context.get(SKIP_AUTH)) return throwError(() => err);
+      return auth.refresh().pipe(
+        switchMap(newToken =>
+          next(req.clone({ setHeaders: { Authorization: `Bearer ${newToken}` } }))),
+        catchError(refreshErr => { auth.logout(); return throwError(() => refreshErr); }),
+      );
+    }),
+  );
+};
+```
+
+**The concurrency trap:** if five requests `401` at once, you'd fire five refreshes. Fix: a shared in-flight refresh — the first `401` starts the refresh, the rest wait on the same `Observable` (a `BehaviorSubject<string|null>` + `filter`, or `shareReplay(1)` on the refresh call).
+
+### The auth guard
+
+```ts
+export const authGuard: CanActivateFn = (route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+  return auth.isLoggedIn()
+    ? true
+    : router.createUrlTree(["/login"], { queryParams: { returnUrl: state.url } });
+};
+```
+
+Put it on the pathless shell route. After login, `navigateByUrl(returnUrl ?? "/dashboard", { replaceUrl: true })`.
+
+### Reading claims (carefully)
+
+The client can `atob` the JWT payload to read `exp`, `roles`, `name` for UI purposes (show/hide, expiry countdown). **Never trust it for security** — the server validates the signature; the client only decodes for display. Don't verify signatures in the browser.
+
+### Show it in our project
+
+`AuthService` (state in signals), `authInterceptor` (attach token), `authRefreshInterceptor` (refresh-on-401 with shared in-flight), `authGuard` (shell route), `LoginPage` (reactive form -> `AuthService.login` -> `returnUrl`). Access token in memory; refresh token in an `httpOnly` cookie. On app start, an `APP_INITIALIZER` tries `/auth/refresh` so a reload keeps you logged in.
+
+### Where is it used in day-to-day development
+
+Every authenticated app. Login/logout flows, "remember me", session expiry UX, role-based UI, protected routes. Getting the refresh concurrency and storage right is a common interview and real-world sticking point.
+
+### Pros and cons
+
+**Pros**
+
+- Stateless server (JWT self-contained); interceptor + guard make it invisible to feature code.
+- Refresh tokens keep sessions alive without re-login.
+- Signals make auth state reactive across the app.
+
+**Cons**
+
+- Token storage is a real XSS/CSRF trade-off with no free lunch.
+- Refresh concurrency, race conditions, and logout-on-refresh-failure need careful code.
+- JWTs can't be revoked before `exp` (need a denylist / short expiry).
+- Client-side claim reading is easy to misuse as "security".
+
+</Hinglish>
+
+<Callout type="trap">
+
+Access token ko `localStorage` me rakhna sabse common — aur sabse risky — choice hai. Koi bhi XSS (ek compromised npm dependency bhi) `localStorage.getItem('token')` padh kar account le sakta hai. Access token **memory me**, refresh token **`httpOnly` cookie me** — yeh default hona chahiye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS session lifecycle">
+
+An EMS user logs in: `POST /auth/login` returns a 15-minute access token (kept in an `AuthService` signal) and sets an `httpOnly` Secure `SameSite=Strict` refresh cookie (7 days). Every request gets the `Bearer` header via `authInterceptor`. After 15 minutes a request `401`s; `authRefreshInterceptor` calls `/auth/refresh` (cookie auto-sent), gets a fresh access token, and replays the original request — the user notices nothing. Five parallel calls `401`ing share one refresh via a `BehaviorSubject`. On reload, `APP_INITIALIZER` calls `/auth/refresh` so the session persists. Logout clears the signal and calls `/auth/logout` to invalidate the refresh token server-side.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical access token life: **5–15 minutes**; refresh token: **days to weeks**.
+- A JWT is base64url `header.payload.signature` — the payload is **readable by anyone**, not encrypted.
+- Concurrent `401`s must share **one** refresh call — otherwise N refreshes and race conditions.
+- `localStorage` tokens are readable by **any** script on the page (including a compromised dependency).
+- JWTs are valid until `exp` — no revocation without a server-side denylist or short expiry.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Extremely common and often deep: "JWT auth flow Angular me?", "token kahan store karoge?", "`401` par refresh kaise?", "concurrent `401`s?", "client JWT claims trust?".
+
+Strong answer:
+
+1. `login` -> access + refresh token + user; `AuthService` holds state in a signal.
+2. `authInterceptor` attaches the access token; `authRefreshInterceptor` refreshes on `401` and replays the request.
+3. Concurrent `401`s share one in-flight refresh (`BehaviorSubject`/`shareReplay`).
+4. Storage: access token in memory, refresh token in an `httpOnly` Secure `SameSite` cookie; `localStorage` is the risky fallback (XSS = takeover).
+5. `authGuard` on the shell route with `returnUrl`; `APP_INITIALIZER` refresh on reload.
+6. Client decodes claims for UI only — the server validates.
+
+Red flag: "access token `localStorage` me, kaam ho jaata hai" — that's the classic XSS foot-gun; or "client JWT verify karta hoon" — the client can't be trusted.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Access token `localStorage` me.** Any XSS reads it -> full account takeover. Memory for access token, `httpOnly` cookie for refresh.
+
+</Mistake>
+
+<Mistake>
+
+**Concurrent `401`s each firing a refresh.** N refreshes, races, some requests replay with a stale token. Share one in-flight refresh.
+
+</Mistake>
+
+<Mistake>
+
+**Refresh failure me sirf error dikhana.** If refresh fails, the session is dead — `logout()` and go to `/login`, don't leave the user in limbo.
+
+</Mistake>
+
+<Mistake>
+
+**Client-side JWT signature verification.** The browser has no trusted secret. Decode for display only; the server validates.
+
+</Mistake>
+
+<Mistake>
+
+**Auth header ko `/auth/login` aur `/auth/refresh` par lagana.** No access token yet (or it's the expired one). Skip via `HttpContext`.
+
+</Mistake>
+
+<Mistake>
+
+**Logout par sirf client state clear karna.** Call the server logout too so the refresh token is invalidated — otherwise a stolen refresh token still works.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant U as User
+    participant L as LoginPage
+    participant A as AuthService
+    participant I as authRefreshInterceptor
+    participant API as Backend
+    U->>L: submit email/password
+    L->>A: login()
+    A->>API: POST /auth/login
+    API-->>A: accessToken + refresh cookie + user
+    Note over A: access token in signal (memory)
+    U->>API: GET /employees (Bearer token via authInterceptor)
+    API-->>I: 401 (token expired)
+    I->>A: refresh()
+    A->>API: POST /auth/refresh (cookie)
+    API-->>A: new accessToken
+    I->>API: retry GET /employees with new token
+    API-->>U: 200 data (user noticed nothing)
+`}
+  caption="The interceptor refreshes on 401 and replays the request; concurrent 401s must share one refresh."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `POST /auth/login` -> access token (short) + refresh token (long) + user. `AuthService` holds state in a signal; `isLoggedIn = computed(...)`.
+- `authInterceptor` attaches `Authorization: Bearer <accessToken>`; skip it for `/auth/*` via `HttpContext`.
+- `authRefreshInterceptor`: on `401`, call `refresh()`, then replay the request with the new token; on refresh failure, `logout()`.
+- Concurrent `401`s must share **one** in-flight refresh (`BehaviorSubject`/`shareReplay(1)`).
+- Storage: **access token in memory**, **refresh token in an `httpOnly` Secure `SameSite` cookie**. `localStorage` = XSS exposure (risky fallback).
+- `authGuard` (`CanActivate`) on the shell route with `returnUrl`; `APP_INITIALIZER` calls `/auth/refresh` on reload to persist the session.
+- Client decodes JWT claims for UI only — the server validates the signature; never verify in the browser.
+- Logout must also hit the server to invalidate the refresh token.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `AuthService` with `_accessToken`/`_user` signals, `isLoggedIn = computed(...)`, `login(email, password)` (`POST /auth/login`, `tap(setSession)`), and `logout()`. `LoginPage` reactive form -> `login()` -> navigate `returnUrl ?? '/dashboard'`.
+
+**Medium:** `authInterceptor` attaches the token (skip `/auth/*` via a `SKIP_AUTH` `HttpContextToken`). `authGuard: CanActivateFn` returns `true` or a `createUrlTree(['/login'], { queryParams: { returnUrl }})`. Put it on the pathless shell route. Logged-out -> `/protected` redirects to login with `returnUrl`; after login you land back on `/protected`.
+
+**Bada:** `authRefreshInterceptor`: on `401`, call `auth.refresh()`, `switchMap` to replay `next(req.clone({ Bearer newToken }))`; on refresh error, `auth.logout()`. Then make **5 requests `401` at once** and confirm your first version fires 5 refreshes — fix it with a shared in-flight refresh (`BehaviorSubject<string|null>` + `filter(Boolean)` + `take(1)`). 6-line note on storage choice and the concurrency fix.
+
+</Callout>

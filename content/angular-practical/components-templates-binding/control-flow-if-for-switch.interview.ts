@@ -18,7 +18,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer:
-      "`track` Angular ko har item ki identity deta hai, taaki list badalne par wo existing DOM nodes ko match karke reuse/move kare instead of sab destroy-recreate. Bina proper identity ke: unnecessary re-renders, lost `<input>` focus, reset scroll, aur bade lists me janky performance.",
+      "`track` Angular ko har item ki identity deta hai, taaki list badalne par wo existing DOM nodes ko match karke reuse/move karein instead of sab destroy-recreate. Bina proper identity ke: unnecessary re-renders, lost `<input>` focus, reset scroll, aur bade lists me janky performance.",
     detailedAnswer:
       "Legacy `*ngFor` me `trackBy` optional tha aur developers routinely skip kar dete the — har list update par Angular saare rows dobara render karta tha, jo ek top interview 'performance bug' example ban gaya. Naye `@for` me syntax hi `track` enforce karta hai. Best: stable unique key (`item.id`). Agar sach me id nahi aur list append-only hai to `track $index`. Kabhi `track` me naya object/`Math.random()` mat do.",
     followUp: "`track $index` kab safe hai aur kab silent bug deta hai?",

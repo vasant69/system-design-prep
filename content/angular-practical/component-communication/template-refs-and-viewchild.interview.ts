@@ -54,9 +54,9 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "intermediate",
     shortAnswer:
-      "Parent child ke internal `formGroup` ko reach kar raha hai — tight coupling, brittle. Behtar: child ek public `reset()` method expose kare (ya ek `[resetSignal]` input jise child observe kare), taaki child apna internal model khud manage kare.",
+      "Parent child ke internal `formGroup` ko reach kar raha hai — tight coupling, brittle. Behtar: child ek public `reset()` method expose karein (ya ek `[resetSignal]` input jise child observe karein), taaki child apna internal model khud manage karein.",
     detailedAnswer:
-      "`viewChild` se child ka public API call karna acceptable hai (`childForm().reset()`), par uske internals (`formGroup`, private fields) ko touch karna encapsulation break hai — child refactor kare (FormGroup se signals) to parent toot jaayega. Options: (1) child par `reset(): void` public method; (2) parent se ek `input()` (`resetToken = input(0)`) aur child me `effect(() => { this.resetToken(); this.form.reset(); })`; (3) agar parent ko form value chahiye to child `save = output<FormValue>()` emit kare. Rule: cross ONLY the public contract.",
+      "`viewChild` se child ka public API call karna acceptable hai (`childForm().reset()`), par uske internals (`formGroup`, private fields) ko touch karna encapsulation break hai — child refactor karein (FormGroup se signals) to parent toot jaayega. Options: (1) child par `reset(): void` public method; (2) parent se ek `input()` (`resetToken = input(0)`) aur child me `effect(() => { this.resetToken(); this.form.reset(); })`; (3) agar parent ko form value chahiye to child `save = output<FormValue>()` emit karein. Rule: cross ONLY the public contract.",
     followUp: "Child ka public imperative method aur ek input-driven trigger — kab kaunsa design behtar hai?",
   },
 ];

@@ -54,7 +54,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "`<base href>` browser ko batata hai ki relative URLs (router links, assets) kis prefix se resolve hon. Agar app sub-path par deploy ho (jaise `example.com/ems/`) to `href` ko `/ems/` karna padta hai.",
     detailedAnswer:
-      "Angular router aur asset paths `<base href>` ke relative kaam karte hain. Root domain par deploy (`example.com/`) me `/` theek hai. Lekin agar reverse proxy ya CDN app ko `example.com/ems/` par serve kare, to `<base href=\"/ems/\">` chahiye warna `/employees` jaise routes 404 denge aur images toot jaayengi. Isko build-time set karne ka tareeka: `ng build --base-href /ems/`. SPA ke liye server par bhi ek fallback rewrite chahiye (sab unknown paths -> `index.html`).",
+      "Angular router aur asset paths `<base href>` ke relative kaam karte hain. Root domain par deploy (`example.com/`) me `/` theek hai. Lekin agar reverse proxy ya CDN app ko `example.com/ems/` par serve karein, to `<base href=\"/ems/\">` chahiye warna `/employees` jaise routes 404 denge aur images toot jaayengi. Isko build-time set karne ka tareeka: `ng build --base-href /ems/`. SPA ke liye server par bhi ek fallback rewrite chahiye (sab unknown paths -> `index.html`).",
     followUp: "SPA deploy par 'refresh karne se 404 aata hai' — kyun hota hai aur kaise theek karte ho?",
   },
 ];

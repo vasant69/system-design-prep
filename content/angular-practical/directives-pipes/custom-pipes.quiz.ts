@@ -8,7 +8,7 @@ const quiz: QuizQuestion[] = [
       "Ek `render()` method",
       "`@Pipe({ name: '...' })` decorator aur ek `transform(value, ...args)` method (PipeTransform implement karke)",
       "Ek `@Component` decorator",
-      "Ek constructor jo HttpClient inject kare",
+      "Ek constructor jo HttpClient inject karein",
     ],
     correctIndex: 1,
     explanation:

@@ -44,8 +44,8 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Aapne current value object ko in-place mutate kiya aur wahi reference dobara `next` kiya. `distinctUntilChanged` (reference-based) is change ko miss karega, OnPush consumers update nahi honge, aur time-travel/debug tools stale reference dekhenge. Immutable update chahiye: `this._filters$.next({ ...this._filters$.value, search: 'abc' })`.",
     detailedAnswer:
-      "RxJS state ko immutable treat karna chahiye same reasons as OnPush/signals: reference equality par bahut kuch depend karta hai. Mutation + `next(sameRef)` = 'kuch emit hua' par 'kuch badla nahi' according to identity checks. Spread se naya object, phir `next` — ab `distinctUntilChanged`, `combineLatest` diffing, aur OnPush sab sahi. Ek `update(fn)` helper method bana lo taaki har call site ye galti na kare.",
-    followUp: "Ek `updateFilters(patch: Partial<Filters>)` helper kaise likhoge jo immutability guarantee kare?",
+      "RxJS state ko immutable treat karna chahiye same reasons as OnPush/signals: reference equality par bahut kuch depend karta hai. Mutation + `next(sameRef)` = 'kuch emit hua' par 'kuch badla nahi' according to identity checks. Spread se naya object, phir `next` — ab `distinctUntilChanged`, `combineLatest` diffing, aur OnPush sab sahi. Ek `update(fn)` helper method bana lo taaki har call site ye galti na karein.",
+    followUp: "Ek `updateFilters(patch: Partial<Filters>)` helper kaise likhoge jo immutability guarantee karein?",
   },
   {
     id: "sabs-5",

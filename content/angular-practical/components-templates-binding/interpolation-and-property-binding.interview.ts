@@ -31,7 +31,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Attribute HTML me likha initial value hai; property live DOM object ki current state hai. Angular ka `[x]` DOM property set karta hai; jab property exist nahi karti to `[attr.x]` se raw attribute set karte hain.",
     detailedAnswer:
-      "Example: `<input value=\"hi\">` — `value` attribute initial hai; user type kare to DOM `input.value` property badal jaati hai par attribute `\"hi\"` hi rehta hai. `[value]=\"x\"` property ko set karta hai (jo actually dikhta hai). Kuch cheezein sirf attributes hain — `colspan`, `aria-*`, `data-*`, SVG — inke liye `[attr.colspan]=\"n\"`. Angular pehle dekhta hai element/directive par matching property hai kya; nahi to warning deta hai ki `[ ]` use nahi ho sakta, tab `[attr.]` chahiye.",
+      "Example: `<input value=\"hi\">` — `value` attribute initial hai; user type karein to DOM `input.value` property badal jaati hai par attribute `\"hi\"` hi rehta hai. `[value]=\"x\"` property ko set karta hai (jo actually dikhta hai). Kuch cheezein sirf attributes hain — `colspan`, `aria-*`, `data-*`, SVG — inke liye `[attr.colspan]=\"n\"`. Angular pehle dekhta hai element/directive par matching property hai kya; nahi to warning deta hai ki `[ ]` use nahi ho sakta, tab `[attr.]` chahiye.",
     followUp: "`[class.foo]` aur `[attr.class]` me se list of classes bind karne ke liye kaunsa sahi hai?",
     redFlag: "'Attribute aur property ek hi cheez hai' — reactive UIs me ye galatfehmi real bugs deti hai (jaise `value` attribute update na hona).",
   },
@@ -55,7 +55,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Interpolation value ko `textContent` ki tarah render karta hai — HTML execute nahi hota, escape ho jaata hai. Property binding bhi safe contexts (jaise `[src]`, `[href]`) me Angular ki sanitization se guzarti hai; `[innerHTML]` sirf sanitized HTML render karta hai.",
     detailedAnswer:
-      "Angular templates by default 'safe' hain: `{{ userInput }}` me `<script>` string banke dikhega. `[innerHTML]=\"html\"` par Angular DomSanitizer chalata hai jo dangerous tags/attributes strip kar deta hai. `[src]`/`[href]`/`[style]` jaise sensitive bindings bhi sanitized. Escape hatch `bypassSecurityTrust*` hai — jise sirf genuinely trusted content par use karna chahiye. Isliye Angular apps me XSS aam taur par tabhi aata hai jab koi `bypassSecurityTrust` ka misuse kare ya `innerHTML` ko raw unsanitized source se feed kare via a custom pipe.",
+      "Angular templates by default 'safe' hain: `{{ userInput }}` me `<script>` string banke dikhega. `[innerHTML]=\"html\"` par Angular DomSanitizer chalata hai jo dangerous tags/attributes strip kar deta hai. `[src]`/`[href]`/`[style]` jaise sensitive bindings bhi sanitized. Escape hatch `bypassSecurityTrust*` hai — jise sirf genuinely trusted content par use karna chahiye. Isliye Angular apps me XSS aam taur par tabhi aata hai jab koi `bypassSecurityTrust` ka misuse karein ya `innerHTML` ko raw unsanitized source se feed karein via a custom pipe.",
     followUp: "`bypassSecurityTrustHtml` kab genuinely justified hai, aur kaise minimize karoge risk?",
   },
 ];

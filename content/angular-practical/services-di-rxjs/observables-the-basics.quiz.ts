@@ -12,7 +12,7 @@ const quiz: QuizQuestion[] = [
     ],
     correctIndex: 1,
     explanation:
-      "Observable lazy hai — uska producer function tabhi chalta hai jab koi subscribe kare. Ek Promise (eager) create hote hi chal jaata hai. Isliye `getAll()` call karne se HTTP nahi hota, `subscribe`/`async` se hota hai.",
+      "Observable lazy hai — uska producer function tabhi chalta hai jab koi subscribe karein. Ek Promise (eager) create hote hi chal jaata hai. Isliye `getAll()` call karne se HTTP nahi hota, `subscribe`/`async` se hota hai.",
     difficulty: "easy",
   },
   {

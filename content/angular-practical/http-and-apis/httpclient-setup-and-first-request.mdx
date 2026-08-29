@@ -1,0 +1,245 @@
+---
+slug: "httpclient-setup-and-first-request"
+title: "HttpClient Setup and the First Request"
+section: "angular-practical"
+module: "http-and-apis"
+order: 1
+difficulty: "beginner"
+readingTime: 12
+prerequisites: ["lazy-loading-and-route-guards"]
+tags: ["angular", "httpclient", "http", "rest", "api-contract", "employee-management"]
+englishDefinition: "HttpClient is Angular's built-in HTTP API. You enable it once with provideHttpClient() in the app config, then inject it into a service and call get/post/put/delete, which return typed Observables. This lesson also defines the REST contract the EMS front-end will talk to."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+---
+
+<SimpleDefinition>
+
+`HttpClient` is Angular's built-in HTTP API (from `@angular/common/http`). You enable it once with `provideHttpClient()` in `app.config.ts`, inject it into a service, and call `get`/`post`/`put`/`delete`, which return typed `Observable`s. This lesson wires up the first real request and defines the REST contract the EMS front-end assumes.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak humne dummy arrays use kiye. Real EMS ek REST API se baat karega. Angular ka `HttpClient` uske liye hai.
+
+### Enable it once
+
+```ts
+// app.config.ts
+import { provideHttpClient, withInterceptors } from "@angular/common/http";
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient(withInterceptors([/* auth, error, ... later */])),
+  ],
+};
+```
+
+`provideHttpClient()` — `HttpClient` ko inject-able banata hai. (Purana `HttpClientModule` ka replacement.)
+
+### First request in a service
+
+```ts
+@Injectable({ providedIn: "root" })
+export class EmployeeService {
+  private http = inject(HttpClient);
+  private base = "/api/v1/employees";
+
+  getAll(): Observable<Paged<Employee>> {
+    return this.http.get<Paged<Employee>>(this.base);
+  }
+}
+```
+
+- `this.http.get<T>(url)` — generic `<T>` batata hai response ka shape (compile-time only; runtime pe cast nahi hota).
+- Returns an `Observable<T>` — lazy, cancellable.
+- By default `HttpClient` JSON assume karta hai — response body ko `JSON.parse` karke `T` ki tarah deta hai.
+
+### Consuming it
+
+```ts
+export class EmployeeListPage {
+  private service = inject(EmployeeService);
+  employees = toSignal(this.service.getAll(), { initialValue: null });
+  // or template:  employees$ = this.service.getAll();   ->   *ngFor over (employees$ | async)
+}
+```
+
+### The EMS API contract (we define this)
+
+Base URL: `environment.apiBaseUrl` (e.g. `https://api.ems.local/v1`).
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/employees?page=1&pageSize=20&search=&departmentId=&sort=` | — | `Paged<Employee>` |
+| GET | `/employees/{id}` | — | `Employee` |
+| POST | `/employees` | `EmployeeCreate` | `Employee` (201) |
+| PUT | `/employees/{id}` | `EmployeeUpdate` | `Employee` |
+| DELETE | `/employees/{id}` | — | 204 no content |
+| POST | `/auth/login` | `{ email, password }` | `LoginResponse` |
+| POST | `/auth/refresh` | `{ refreshToken }` | `LoginResponse` |
+| GET | `/departments` | — | `Department[]` |
+| POST | `/documents` (multipart) | `FormData` | `AppDocument` |
+| GET | `/notifications` | — | `Notification[]` |
+
+`Paged<T> = { items: T[]; total: number; page: number; pageSize: number }`.
+
+### Request options
+
+```ts
+this.http.get<Paged<Employee>>(this.base, {
+  params: new HttpParams().set("page", page).set("search", search),
+  headers: { "X-Trace-Id": traceId },
+  observe: "body",          // "response" for the full HttpResponse, "events" for progress
+  responseType: "json",     // "blob"/"text" for downloads
+});
+```
+
+- `params` — query string. `HttpParams` immutable — `set` returns a new instance.
+- `observe: "response"` — headers + status chahiye to.
+
+### Show it in our project
+
+`core/services/employee.service.ts` gets `getAll`, `getById`, `create`, `update`, `remove` — all thin wrappers over `HttpClient` against the contract above. Components never touch `HttpClient` directly.
+
+### Where is it used in day-to-day development
+
+Every screen that shows or saves server data. Every service method. `provideHttpClient()` is set up once per app; after that it's `this.http.get/post/put/delete` all day.
+
+### Pros and cons
+
+**Pros**
+
+- Built-in, typed, Observable-based (cancellable, composable).
+- Interceptors, testing utilities, JSON handling all included.
+- One-line setup with `provideHttpClient()`.
+
+**Cons**
+
+- Generic `<T>` is a compile-time hint only — a wrong API shape won't throw, you get a mistyped object.
+- `HttpParams` immutability trips people (`params.set(...)` return value ignored).
+- Default JSON assumption surprises you on non-JSON endpoints (`responseType`).
+- Forgetting `provideHttpClient()` -> "No provider for HttpClient".
+
+</Hinglish>
+
+<Callout type="warning">
+
+`this.http.get<Employee>(url)` ka `<Employee>` **sirf TypeScript ko batata hai** — koi runtime validation nahi. Agar API `firstName` ki jagah `first_name` bheje, to aapko ek object milega jisme `firstName` undefined hai, bina kisi error ke. Contract ka mapping/validation service me karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS employee service">
+
+`EmployeeService.getAll(filters)` builds `HttpParams` from the filter object and calls `GET /api/v1/employees` — returning `Observable<Paged<Employee>>`. The list component does `data = toSignal(this.service.getAll(this.filters()))` and renders `data()?.items` with `data()?.total` driving the paginator. When the backend team renames a field, one place changes — the service's response mapping — and every screen stays correct. Components have never imported `HttpClient`.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `provideHttpClient()` is called **once** per app; `HttpClient` is then a root singleton.
+- `http.get<T>()` returns a **cold** Observable that emits once and completes — one subscription = one request.
+- The generic `<T>` is erased at runtime — **no** validation, no transformation.
+- `HttpParams` and `HttpHeaders` are **immutable** — `set`/`append` return new instances.
+- Default `responseType` is `"json"`; use `"blob"` for file downloads, `"text"` for plain text.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "`HttpClient` setup?", "`get<T>` ka `<T>` runtime pe kya karta hai?", "`HttpParams` kaise?", "`observe: 'response'` kab?".
+
+Strong answer:
+
+1. `provideHttpClient()` once in config; inject `HttpClient` into a service; components don't touch it.
+2. `get/post/put/delete` return cold typed `Observable`s (one request per subscription).
+3. `<T>` is a compile-time hint only — no runtime validation; map/validate in the service.
+4. `HttpParams`/`HttpHeaders` are immutable — use the return value of `set`/`append`.
+5. `observe: 'response'` for headers/status; `responseType: 'blob'` for downloads.
+
+Red flag: "`get<T>` API response ko validate karta hai" — it does not.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`provideHttpClient()` add karna bhoolna.** "NG0201: No provider for HttpClient". App config me add karo.
+
+</Mistake>
+
+<Mistake>
+
+**`params.set("page", 2)` ka return value ignore karna.** `HttpParams` immutable — `let p = new HttpParams(); p = p.set("page", "2");`.
+
+</Mistake>
+
+<Mistake>
+
+**Component me `HttpClient` directly inject karna.** HTTP logic service me — components service method call karen.
+
+</Mistake>
+
+<Mistake>
+
+**`<T>` par bharosa karke API shape validate na karna.** Snake_case vs camelCase, missing fields — silently wrong. Service me map/validate (Zod/manual).
+
+</Mistake>
+
+<Mistake>
+
+**Ek observable ko subscribe karke state set + `async` pipe dono.** Ek source, ek consumption. `toSignal`/`async` prefer.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    CFG["provideHttpClient() in app.config"] --> HC[HttpClient singleton]
+    SVC[EmployeeService] -->|inject| HC
+    CMP[EmployeeListPage] -->|inject| SVC
+    SVC -->|"http.get<Paged<Employee>>(url, { params })"| API[(REST API)]
+    API -->|JSON body| SVC
+    SVC --> CMP
+`}
+  caption="HttpClient is enabled once, injected into services, and never touched directly by components."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Enable once: `provideHttpClient(withInterceptors([...]))` in `app.config.ts`.
+- Inject `HttpClient` into a **service**; components call the service, never `HttpClient`.
+- `http.get<T>/post/put/delete` return **cold** typed `Observable`s — one request per subscription, emits once, completes.
+- `<T>` is compile-time only — no runtime validation/transform; do mapping in the service.
+- `HttpParams` / `HttpHeaders` are immutable — keep the return value of `set`/`append`.
+- `observe: "response"` for headers/status; `responseType: "blob" | "text"` for non-JSON.
+- Define the REST contract (paths, params, `Paged<T>`, DTOs) up front.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `app.config.ts` me `provideHttpClient()` add karo. `EmployeeService` me `getAll()` jo `this.http.get<Paged<Employee>>('/api/v1/employees')` return karein. `EmployeeListPage` me `toSignal` se consume karke `items` render karo. (Backend na ho to `json-server` ya ek static JSON file use karo.)
+
+**Medium:** `getAll(filters)` ko `HttpParams` ke saath likho — `page`, `pageSize`, `search`, `departmentId`. `HttpParams` ko immutably build karo. Network tab me query string verify karo. Ek jagah `p.set(...)` ka return ignore karke bug reproduce karo.
+
+**Bada:** API deliberately `first_name`/`last_name` (snake_case) bheje. `get<Employee>` se aane wale object me `firstName` undefined dekho (koi error nahi). Phir service me ek `map(dto => ({ id: dto.id, firstName: dto.first_name, ... }))` add karke fix karo. 4-line note: `<T>` runtime pe kya (nahi) karta hai.
+
+</Callout>

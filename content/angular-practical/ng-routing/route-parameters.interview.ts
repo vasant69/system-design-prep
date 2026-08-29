@@ -30,9 +30,9 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "advanced",
     shortAnswer:
-      "Ek `canMatch`/`canActivate` guard jo param check kare aur invalid par `router.parseUrl('/not-found')` return kare; ya ek resolver jo fetch kare aur fail par redirect/throw kare; ya component me `paramMap` pipeline me guard karke redirect.",
+      "Ek `canMatch`/`canActivate` guard jo param check karein aur invalid par `router.parseUrl('/not-found')` return karein; ya ek resolver jo fetch karein aur fail par redirect/throw karein; ya component me `paramMap` pipeline me guard karke redirect.",
     detailedAnswer:
-      "Cleanest: functional `canMatch` guard — `const id = Number(route.params['id']); return Number.isInteger(id) && id > 0 ? true : router.parseUrl('/not-found');`. `canMatch` `false`/UrlTree dega to router agli matching route try karta hai (ya `**`). Data-level validation (id valid hai par record nahi mila) -> resolver jo `getById` kare aur `catchError(() => { router.navigateByUrl('/not-found'); return EMPTY; })`. Component ke andar handle karna bhi ok hai par guard/resolver me early exit cleaner aur reusable.",
+      "Cleanest: functional `canMatch` guard — `const id = Number(route.params['id']); return Number.isInteger(id) && id > 0 ? true : router.parseUrl('/not-found');`. `canMatch` `false`/UrlTree dega to router agli matching route try karta hai (ya `**`). Data-level validation (id valid hai par record nahi mila) -> resolver jo `getById` karein aur `catchError(() => { router.navigateByUrl('/not-found'); return EMPTY; })`. Component ke andar handle karna bhi ok hai par guard/resolver me early exit cleaner aur reusable.",
     followUp: "`canMatch` aur `canActivate` guard me kya farak hai is validation use case ke liye?",
   },
   {
@@ -55,7 +55,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Do routes: `{ path: 'new', component: EmployeeFormPage, data: { mode: 'create' } }` aur `{ path: ':id/edit', component: EmployeeFormPage, data: { mode: 'edit' } }` (new ko :id se pehle). Component `mode` (route data) + optional `id` input padhe: create me empty form, edit me load + patch.",
     detailedAnswer:
-      "Ek shared `EmployeeFormPage` dono ke liye — DRY. `mode = input<'create'|'edit'>()` (via `withComponentInputBinding` + route `data`) aur `id = input<string>()` (undefined in create). `effect(() => { if (this.mode() === 'edit') this.load(this.id()!); })`. Submit: create -> `POST`, edit -> `PUT`. Route order: `new` static route `:id/edit` se pehle warna `new` ko `id` samajh liya jaayega (agar path shape overlap kare). Alternative: ek `:id` param jahan `id === 'new'` sentinel ho — kam clean, avoid.",
+      "Ek shared `EmployeeFormPage` dono ke liye — DRY. `mode = input<'create'|'edit'>()` (via `withComponentInputBinding` + route `data`) aur `id = input<string>()` (undefined in create). `effect(() => { if (this.mode() === 'edit') this.load(this.id()!); })`. Submit: create -> `POST`, edit -> `PUT`. Route order: `new` static route `:id/edit` se pehle warna `new` ko `id` samajh liya jaayega (agar path shape overlap karein). Alternative: ek `:id` param jahan `id === 'new'` sentinel ho — kam clean, avoid.",
     followUp: "Shared form component me create/edit differences ko kaise minimal rakhoge (validators, submit)?",
   },
 ];

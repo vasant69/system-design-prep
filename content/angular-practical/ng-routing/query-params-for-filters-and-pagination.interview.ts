@@ -53,7 +53,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "beginner",
     shortAnswer:
-      "Explicit coercion at the read boundary: `+ (qp.get('page') ?? '1')` for numbers, `qp.get('active') === 'true'` for booleans. Ek `parseFilters(qp)` function jo raw `ParamMap` ko ek typed `Filters` object me convert kare — ek jagah.",
+      "Explicit coercion at the read boundary: `+ (qp.get('page') ?? '1')` for numbers, `qp.get('active') === 'true'` for booleans. Ek `parseFilters(qp)` function jo raw `ParamMap` ko ek typed `Filters` object me convert karein — ek jagah.",
     detailedAnswer:
       "Anti-pattern: har jagah ad-hoc coercion. Better: `function toFilters(qp: ParamMap): Filters { return { search: qp.get('search') ?? '', page: Math.max(1, +(qp.get('page') ?? 1) || 1), active: qp.get('active') === 'true' ? true : qp.get('active') === 'false' ? false : undefined, sort: (qp.get('sort') as SortKey) ?? 'name' }; }`. Invalid values ko sane defaults par clamp karo (page `NaN` -> 1). Writing side par bhi consistent: booleans ko `'true'`/`null`, numbers ko string. `withComponentInputBinding` ke saath ek input `transform` (`numberAttribute`, `booleanAttribute`, ya custom) use kar sakte ho.",
     followUp: "`withComponentInputBinding` ke saath query param ke liye custom transform kaise likhoge (jaise CSV `?tags=a,b,c` -> `string[]`)?",

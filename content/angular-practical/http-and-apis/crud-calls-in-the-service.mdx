@@ -1,0 +1,248 @@
+---
+slug: "crud-calls-in-the-service"
+title: "CRUD Calls in the Service"
+section: "angular-practical"
+module: "http-and-apis"
+order: 4
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["environment-configuration"]
+tags: ["angular", "httpclient", "crud", "rest", "service", "employee-management"]
+englishDefinition: "A CRUD service wraps the REST endpoints for one resource: getAll (with params), getById, create (POST), update (PUT/PATCH), and remove (DELETE). Each method builds the URL and params, maps DTO to view model, and returns a typed Observable. Components call these methods and never touch HttpClient."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A CRUD service wraps the REST endpoints for one resource. For employees: `getAll(filters)` (with query params), `getById(id)`, `create(dto)` (POST), `update(id, dto)` (PUT/PATCH), `remove(id)` (DELETE). Each method builds the URL and `HttpParams`, maps DTO ↔ view model, and returns a typed `Observable`. Components call these methods; they never import `HttpClient`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab humare paas `HttpClient`, contract, environment sab hai. Chaliye ek poora `EmployeeService` banate hain — CRUD ke saare methods.
+
+### The full service
+
+```ts
+@Injectable({ providedIn: "root" })
+export class EmployeeService {
+  private http = inject(HttpClient);
+  private base = `${inject(API_BASE_URL)}/employees`;
+
+  getAll(filters: EmployeeFilters): Observable<Paged<Employee>> {
+    let params = new HttpParams()
+      .set("page", filters.page)
+      .set("pageSize", filters.pageSize);
+    if (filters.search) params = params.set("search", filters.search);
+    if (filters.departmentId != null) params = params.set("departmentId", filters.departmentId);
+    if (filters.sort) params = params.set("sort", filters.sort);
+
+    return this.http.get<Paged<EmployeeDto>>(this.base, { params }).pipe(
+      map(page => ({ ...page, items: page.items.map(toEmployee) })),
+    );
+  }
+
+  getById(id: number): Observable<Employee> {
+    return this.http.get<EmployeeDto>(`${this.base}/${id}`).pipe(map(toEmployee));
+  }
+
+  create(input: EmployeeCreate): Observable<Employee> {
+    return this.http.post<EmployeeDto>(this.base, toCreateDto(input)).pipe(map(toEmployee));
+  }
+
+  update(id: number, input: EmployeeUpdate): Observable<Employee> {
+    return this.http.put<EmployeeDto>(`${this.base}/${id}`, toUpdateDto(input)).pipe(map(toEmployee));
+  }
+
+  remove(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/${id}`);
+  }
+}
+```
+
+### Line-by-line notes
+
+- `base` built from the `API_BASE_URL` token — environment-driven, one place.
+- `getAll` builds `HttpParams` conditionally — only send params that have a value (empty `search=` is noise).
+- `HttpParams` immutable — reassign `params = params.set(...)`.
+- Every read maps `EmployeeDto` -> `Employee`; `getAll` maps each item inside the `Paged` wrapper.
+- `create`/`update` map the input (form/view model) -> request DTO before sending.
+- `remove` returns `Observable<void>` — DELETE usually 204 no content.
+- Methods are **thin** — no loading flags, no navigation, no toasts. That's the component's job.
+
+### PUT vs PATCH
+
+- `PUT` — replace the whole resource (send all fields).
+- `PATCH` — partial update (send only changed fields).
+- Match your API. If it's PATCH, `update(id, partial: Partial<EmployeeUpdate>)`.
+
+### Consuming in a component
+
+```ts
+export class EmployeeListPage {
+  private service = inject(EmployeeService);
+  filters = signal<EmployeeFilters>({ page: 1, pageSize: 20 });
+
+  page = toSignal(
+    toObservable(this.filters).pipe(
+      debounceTime(200),
+      switchMap(f => this.service.getAll(f)),
+    ),
+    { initialValue: null },
+  );
+}
+
+// delete
+onDelete(id: number) {
+  this.service.remove(id).subscribe(() => this.reload());
+}
+```
+
+### Show it in our project
+
+`EmployeeService`, `DepartmentService`, `LeaveRequestService`, `RoleService` — all follow this exact shape. A `createCrudService<TDto, T>(base, mapper)` factory can even generate the common parts, with entity-specific methods added on top.
+
+### Where is it used in day-to-day development
+
+Every entity gets a CRUD service. Adding a new one is copy-adapt-map. Components import the service and call `getAll`/`getById`/`create`/`update`/`remove`.
+
+### Pros and cons
+
+**Pros**
+
+- One clear place per resource; endpoints not scattered.
+- Thin methods = easy to read, easy to test with `HttpTestingController`.
+- Mapping centralised; components get clean models.
+- Consistent shape across entities -> a factory can DRY it.
+
+**Cons**
+
+- Boilerplate per entity (mitigated by a factory/base class).
+- Deciding PUT vs PATCH, and full vs partial DTOs, per endpoint.
+- `HttpParams` conditional-building is verbose.
+- Temptation to add loading/toast logic into the service (don't).
+
+</Hinglish>
+
+<Callout type="tip">
+
+Service methods ko **thin aur side-effect-free** rakho — sirf URL/params/mapping. Loading spinners, toasts, navigation, retries-with-UI — ye component (ya a store) ka kaam hai. Testable aur reusable rehta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS entity services">
+
+Every EMS list/detail/form screen sits on a CRUD service with the same five methods. When the team adds "Assets" management, they copy `EmployeeService`, swap the base path and mapper, and 80% of the work is done — plus one asset-specific method (`GET /assets/{id}/history`). Because every service is thin and consistent, a shared `HttpTestingController`-based test helper covers the common CRUD paths for all of them, and a `crud-service.factory.ts` removed the last of the copy-paste.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- A typical CRUD service = **5 methods** (getAll, getById, create, update, remove) + a few entity-specific ones.
+- `DELETE` typically returns **204 No Content** -> `Observable<void>`.
+- `PUT` sends the **full** resource; `PATCH` sends **only changed** fields — match the API.
+- Only send query params that have a value — an empty `search=` is meaningless noise.
+- Each read method should `map(dto -> model)`; `getAll` maps inside the `Paged` wrapper.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "ek CRUD service kaise structure karoge?", "PUT vs PATCH?", "`HttpParams` conditionally kaise?", "service method me loading state rakhna chahiye?".
+
+Strong answer:
+
+1. Five thin methods per resource; build URL + params, `map(dto->model)`, return typed Observable.
+2. `HttpParams` immutable — reassign; only set params with a value.
+3. PUT = full replace, PATCH = partial; match the API and shape the DTO accordingly.
+4. No loading/toast/navigation in the service — that's the component/store.
+5. A factory or base class DRYs the common parts across entities.
+
+Red flag: "service method me `this.loading = true` set karta hoon" — couples the service to one UI, breaks reuse and testing.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`params.set(...)` ka result assign na karna.** `HttpParams` immutable — `params = params.set(...)`.
+
+</Mistake>
+
+<Mistake>
+
+**Empty/undefined filter values ko bhi param me bhejna.** `search=&departmentId=` — noise, aur backend `undefined`-string ko literally search kar sakта hai. Conditionally add.
+
+</Mistake>
+
+<Mistake>
+
+**Service me loading flags / toasts / `router.navigate`.** Reuse aur testability khatam. Component/store me.
+
+</Mistake>
+
+<Mistake>
+
+**`create`/`update` me form model ko directly bhejna.** Form me `fullName`/`Date`/extra fields ho sakte hain jo API reject karein. `toCreateDto` / `toUpdateDto`.
+
+</Mistake>
+
+<Mistake>
+
+**PUT jab API PATCH expect karta hai (ya vice versa).** PUT with missing fields -> unintended nulls. Match the contract.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    CMP[Component / Store] -->|"getAll(filters)"| SVC[EmployeeService]
+    CMP -->|"create(input)"| SVC
+    CMP -->|"remove(id)"| SVC
+    SVC -->|"build URL + HttpParams, map DTO"| HC[HttpClient]
+    HC --> API[(REST API)]
+    API -->|"DTO / 204"| SVC
+    SVC -->|"view model / void"| CMP
+    NOTE[Service = thin: URL + params + mapping only]
+`}
+  caption="The service owns URLs, params, and DTO mapping; components own UI state and side effects."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- CRUD service per resource: `getAll(filters)`, `getById(id)`, `create(dto)`, `update(id, dto)`, `remove(id)`.
+- Build the base URL from the `API_BASE_URL` token; build `HttpParams` conditionally (only params with a value); `HttpParams` is immutable so reassign.
+- Every read `map(dto -> model)`; `getAll` maps inside the `Paged` wrapper.
+- Map inputs (`toCreateDto`/`toUpdateDto`) before POST/PUT.
+- `DELETE` -> `Observable<void>` (204). PUT = full replace; PATCH = partial.
+- Keep methods **thin** — no loading flags, toasts, navigation, or retries-with-UI in the service.
+- A factory / base class DRYs the common shape across entities.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeService` me `getById`, `create`, `update`, `remove` add karo (getAll already hai). Har read `map(toEmployee)`; `remove` returns `Observable<void>`.
+
+**Medium:** `getAll(filters)` me `HttpParams` conditionally build karo — `search`/`departmentId`/`sort` tabhi set karo jab value ho. Network tab me confirm empty filters se clean URL banta hai (`?page=1&pageSize=20` only).
+
+**Bada:** `EmployeeService` ka `.spec.ts` `HttpTestingController` ke saath — har method ke liye: correct URL + method assert karo, ek mock DTO flush karo, aur returned value ka mapped shape (number salary, Date joinDate) assert karo. Phir jaan-boojhke service me `this.loading = true` add karke socho ye test aur reuse ko kaise todta hai. 4-line note.
+
+</Callout>

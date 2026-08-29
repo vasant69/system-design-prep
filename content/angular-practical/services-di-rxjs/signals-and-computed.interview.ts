@@ -32,7 +32,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Ye derived state hai jise `effect` me `set` kar rahe hain — galat. Sahi: `filteredCount = computed(() => this.items().filter(x => x.active).length)`. `computed` memoized, glitch-free, aur signal-writes-in-effect (jo allowed but discouraged hai) ke loop/timing risks nahi.",
     detailedAnswer:
-      "`effect` me signal `set` karna Angular explicitly discourage karta hai (aur by default `allowSignalWrites` ke bina warn/error karta tha) kyunki: (1) do sources of truth (`items` aur `filteredCount`) sync se bahar ja sakte hain ek frame ke liye; (2) agar `effect` apne likhe signal ko bhi read kare to loop; (3) `computed` ka lazy+memoized behaviour nahi milta. Rule: 'signal se signal derive' = `computed`. 'signal se bahar ki duniya' = `effect`.",
+      "`effect` me signal `set` karna Angular explicitly discourage karta hai (aur by default `allowSignalWrites` ke bina warn/error karta tha) kyunki: (1) do sources of truth (`items` aur `filteredCount`) sync se bahar ja sakte hain ek frame ke liye; (2) agar `effect` apne likhe signal ko bhi read karein to loop; (3) `computed` ka lazy+memoized behaviour nahi milta. Rule: 'signal se signal derive' = `computed`. 'signal se bahar ki duniya' = `effect`.",
     followUp: "`effect` me genuinely ek signal set karna kab justified hai (koi valid case)?",
   },
   {

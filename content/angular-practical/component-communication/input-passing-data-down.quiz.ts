@@ -20,7 +20,7 @@ const quiz: QuizQuestion[] = [
     question: "`employee = input.required<Employee>()` ka `@Input() employee!: Employee` par kya faayda hai?",
     options: [
       "Kuch nahi, dono same",
-      "Agar parent `[employee]` bind na kare to compile-time error milta hai (runtime `undefined` surprise nahi); aur ye ek signal hai jo `computed`/`effect` me directly kaam karta hai",
+      "Agar parent `[employee]` bind na karein to compile-time error milta hai (runtime `undefined` surprise nahi); aur ye ek signal hai jo `computed`/`effect` me directly kaam karta hai",
       "`input.required` faster HTTP karta hai",
       "`input.required` ko `FormsModule` chahiye",
     ],
@@ -54,7 +54,7 @@ const quiz: QuizQuestion[] = [
     ],
     correctIndex: 1,
     explanation:
-      "Input object parent ka data hai. Child use mutate kare to shared reference chupke se badalta hai — predictability aur OnPush dono khatam. Child ko change chahiye to `output()` se parent ko batao, parent apni state update kare (immutably).",
+      "Input object parent ka data hai. Child use mutate karein to shared reference chupke se badalta hai — predictability aur OnPush dono khatam. Child ko change chahiye to `output()` se parent ko batao, parent apni state update karein (immutably).",
     difficulty: "medium",
   },
 ];

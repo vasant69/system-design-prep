@@ -37,7 +37,7 @@ const questions: InterviewQuestion[] = [
   },
   {
     id: "cpnc-4",
-    question: "Named slot ka `select` selector match na kare to kya hota hai? Debugging tip?",
+    question: "Named slot ka `select` selector match na karein to kya hota hai? Debugging tip?",
     type: "code-output",
     difficulty: "intermediate",
     shortAnswer:
@@ -54,7 +54,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "`::ng-deep` deprecated hai aur view encapsulation ko bypass karke global leak deta hai — brittle, refactor par toot-ta hai. Options: (1) CSS custom properties wrapper se expose karo; (2) consumer apni classes laaye; (3) `ViewEncapsulation.None` sirf jab genuinely ek theme component ho; (4) documented class hooks.",
     detailedAnswer:
-      "Encapsulation ka poora point hai ki ek component doosre ke DOM ko accidentally style na kare. `::ng-deep` us guarantee ko todta hai. Behtar contract: wrapper `--card-padding`, `--card-radius` jaise CSS variables define kare jo consumer override kar sake; ya wrapper apne slots ke around wrapper elements par stable classes de (`.card__body`) jo consumer target kare (documented). Design systems yahi karte hain — theming CSS variables se, structural styling wrapper ke andar.",
+      "Encapsulation ka poora point hai ki ek component doosre ke DOM ko accidentally style na karein. `::ng-deep` us guarantee ko todta hai. Behtar contract: wrapper `--card-padding`, `--card-radius` jaise CSS variables define karein jo consumer override kar sake; ya wrapper apne slots ke around wrapper elements par stable classes de (`.card__body`) jo consumer target karein (documented). Design systems yahi karte hain — theming CSS variables se, structural styling wrapper ke andar.",
     followUp: "CSS custom properties se theming ka ek concrete example do ek button component ke liye.",
   },
 ];

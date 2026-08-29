@@ -29,7 +29,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer:
-      "OnPush component ko sirf tab dirty maanta hai jab uska `@Input` reference badle, uske andar event ho, consumed signal badle, `async` pipe emit kare, ya `markForCheck()` ho. Baaki cycles me wo aur uska subtree skip. Bade / list-heavy / frequently-re-rendered UIs me default choice.",
+      "OnPush component ko sirf tab dirty maanta hai jab uska `@Input` reference badle, uske andar event ho, consumed signal badle, `async` pipe emit karein, ya `markForCheck()` ho. Baaki cycles me wo aur uska subtree skip. Bade / list-heavy / frequently-re-rendered UIs me default choice.",
     detailedAnswer:
       "Faayda: ek CD cycle me Angular bahut se components ka kaam bacha leta hai. Cost: immutable data discipline — `@Input` objects/arrays ko mutate karne ke bajaye replace karna, ya signals use karna. Modern recommendation: har component OnPush + signals-first; is combination me OnPush 'automatically correct' rehta hai kyunki signal change hi trigger hai. Legacy mutation-heavy code ko OnPush me daalne se stale-view bugs aate hain — pehle state ko immutable/signals me refactor karo.",
     followUp: "`markForCheck()` aur `detectChanges()` me farak?",

@@ -10,7 +10,7 @@ const questions: InterviewQuestion[] = [
       "`routerLink` template me user ke direct clicks ke liye — ek real `<a>` render hota hai, SPA navigation, new-tab/middle-click kaam karta hai. `Router.navigate(commands, extras)` code se — action ke baad redirect (form save, login, logout), guard redirects, conditional flows.",
     detailedAnswer:
       "`routerLink` array form dynamic segments deta hai (`['/employees', id, 'edit']`); query params `[queryParams]`, fragment `fragment`. `Router.navigate` wahi commands array leta hai plus `extras` (`queryParams`, `relativeTo`, `replaceUrl`, `state`, `queryParamsHandling`) aur `Promise<boolean>` return karta hai (guard cancel -> `false`). Rule: agar user click karke jaayega aur destination static-ish hai -> `routerLink`. Agar navigation ek side-effect hai -> service.",
-    followUp: "Ek nav item jo click par navigate bhi kare aur ek dropdown bhi khole — kaise structure karoge?",
+    followUp: "Ek nav item jo click par navigate bhi karein aur ek dropdown bhi khole — kaise structure karoge?",
   },
   {
     id: "nrlr-2",

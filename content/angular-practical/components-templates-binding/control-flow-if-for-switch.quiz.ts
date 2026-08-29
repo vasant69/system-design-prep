@@ -20,7 +20,7 @@ const quiz: QuizQuestion[] = [
     question: "`@for (x of list; track x.id)` me `track` ka kya kaam hai, aur kya wo optional hai?",
     options: [
       "Optional hai; list ko sort karta hai",
-      "Mandatory hai; har item ki identity batata hai taaki list badalne par Angular DOM nodes reuse kare (perf + focus/scroll preserve)",
+      "Mandatory hai; har item ki identity batata hai taaki list badalne par Angular DOM nodes reuse karein (perf + focus/scroll preserve)",
       "Optional hai; sirf debugging ke liye",
       "Mandatory hai; duplicate items hata deta hai",
     ],

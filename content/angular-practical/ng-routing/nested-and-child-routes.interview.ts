@@ -7,7 +7,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer:
-      "Parent route ke `children` array child routes define karta hai; parent component apne template me apna `<router-outlet />` rakhta hai jahan wo children render hote hain. Use case: ek shared section layout (heading + sub-nav) jo navigation par persist kare jabki sirf inner content badle — jaise Employees section ya ek tabbed details page.",
+      "Parent route ke `children` array child routes define karta hai; parent component apne template me apna `<router-outlet />` rakhta hai jahan wo children render hote hain. Use case: ek shared section layout (heading + sub-nav) jo navigation par persist karein jabki sirf inner content badle — jaise Employees section ya ek tabbed details page.",
     detailedAnswer:
       "Outlets stack: `app.html` outlet -> `ShellLayout` outlet -> `EmployeesLayout` outlet -> page. Har level ka matched segment apne parent ke outlet me. Faayde: layout ek baar render (no re-mount of header/sidebar on inner nav), aur ek parent guard/resolver sab children ko cover karta hai. Tabs ko child routes banane se wo deep-linkable ho jaate hain.",
     followUp: "Named outlets (`<router-outlet name='sidebar'>`) kab chahiye aur wo secondary routes kaise kaam karte hain?",
@@ -32,7 +32,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Agar employee load har tab component me hota hai, to tab switch (child route change) par har baar refetch. Fix: employee ko parent (`EmployeeDetailsPage`) ke resolver ya store me ek baar load karo; tab components use `route.parent.data` / parent store se padhein, khud fetch na karein.",
     detailedAnswer:
-      "Parent route par `resolve: { employee: employeeResolver }` — resolver `:id` change par hi re-run hota hai (default), tab change par nahi (child route badalta hai, parent params nahi). Tab component: `employee = this.route.parent!.snapshot.data['employee']` ya better, ek feature store (`EmployeeDetailsStore` in the details route's `providers`) jo `load(id)` ek baar kare aur `employee` signal expose kare. Tabs sirf apna tab-specific data load karein (documents list, leave history). Isse tab switching instant aur network-free.",
+      "Parent route par `resolve: { employee: employeeResolver }` — resolver `:id` change par hi re-run hota hai (default), tab change par nahi (child route badalta hai, parent params nahi). Tab component: `employee = this.route.parent!.snapshot.data['employee']` ya better, ek feature store (`EmployeeDetailsStore` in the details route's `providers`) jo `load(id)` ek baar karein aur `employee` signal expose karein. Tabs sirf apna tab-specific data load karein (documents list, leave history). Isse tab switching instant aur network-free.",
     followUp: "Resolver aur ek route-`providers` store — is case me kaunsa prefer karoge?",
   },
   {
@@ -55,7 +55,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "Signal tabs simple hain par kho dete hain: deep linking (`/x/42/documents` nahi ban sakta), browser back/forward tab history, refresh restore, aur per-tab lazy loading. Child routes ye sab free me dete hain, thodi zyada config ke saath. Internal-only, non-shareable widgets me signal tabs ok.",
     detailedAnswer:
-      "Decision: agar tab ek 'view' hai jise user share/bookmark karna chahe, refresh par wapas chahe, ya back se navigate kare — child routes. Agar tabs ek chhote form ke sections hain (jinhe share karne ka koi matlab nahi) — signal + `@switch` (ya `[hidden]` for state preservation) fine. Bade detail pages (employee, order, ticket) practically hamesha routes-as-tabs. Bonus: routes-as-tabs se har tab `loadComponent` se lazy ho sakta hai — heavy tab (charts) initial load me nahi.",
+      "Decision: agar tab ek 'view' hai jise user share/bookmark karna chahe, refresh par wapas chahe, ya back se navigate karein — child routes. Agar tabs ek chhote form ke sections hain (jinhe share karne ka koi matlab nahi) — signal + `@switch` (ya `[hidden]` for state preservation) fine. Bade detail pages (employee, order, ticket) practically hamesha routes-as-tabs. Bonus: routes-as-tabs se har tab `loadComponent` se lazy ho sakta hai — heavy tab (charts) initial load me nahi.",
     followUp: "Routes-as-tabs me active tab ka state (scroll, unsaved form) preserve karna ho to kya karoge?",
   },
 ];

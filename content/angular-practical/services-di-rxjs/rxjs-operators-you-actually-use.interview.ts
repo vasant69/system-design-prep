@@ -29,7 +29,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer:
-      "`forkJoin`: sab parallel, sab complete hone par ek baar final values — parallel HTTP loads (details page). `combineLatest`: jab bhi koi input emit kare, sab ki latest values — dependent filters. Gotcha: `forkJoin` me koi non-completing source (interval/BehaviorSubject) ho to wo kabhi emit nahi karega; `combineLatest` tab tak emit nahi karta jab tak har input ne kam se kam ek value na di ho.",
+      "`forkJoin`: sab parallel, sab complete hone par ek baar final values — parallel HTTP loads (details page). `combineLatest`: jab bhi koi input emit karein, sab ki latest values — dependent filters. Gotcha: `forkJoin` me koi non-completing source (interval/BehaviorSubject) ho to wo kabhi emit nahi karega; `combineLatest` tab tak emit nahi karta jab tak har input ne kam se kam ek value na di ho.",
     detailedAnswer:
       "`forkJoin([getUser(), getRoles(), getDepartments()])` — teenon HTTP (jo complete hote hain) parallel, page render on all done. `combineLatest([search$, dept$, page$]).pipe(switchMap(f => api.list(f)))` — koi bhi filter change -> nayi query. `combineLatest` ka 'har input ko kam se kam ek value chahiye' issue ko `startWith(defaultValue)` se solve karte hain. `forkJoin` ka non-completing issue ko `source$.pipe(take(1))` se.",
     followUp: "`combineLatest` initial 'sab ready hone' ke wait ko kaise handle karoge bina flicker ke?",

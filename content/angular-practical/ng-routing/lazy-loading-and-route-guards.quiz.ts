@@ -34,7 +34,7 @@ const quiz: QuizQuestion[] = [
     question: "`CanActivate` aur `CanMatch` guard me core farak?",
     options: [
       "Koi farak nahi",
-      "`CanActivate` route ko activate hone se rokta hai (par lazy chunk phir bhi download ho sakta hai); `CanMatch` `false` return kare to route match hi nahi hota (chunk download bhi nahi) aur router agli matching route try karta hai",
+      "`CanActivate` route ko activate hone se rokta hai (par lazy chunk phir bhi download ho sakta hai); `CanMatch` `false` return karein to route match hi nahi hota (chunk download bhi nahi) aur router agli matching route try karta hai",
       "`CanMatch` sirf eager routes par kaam karta hai",
       "`CanActivate` deprecated hai",
     ],

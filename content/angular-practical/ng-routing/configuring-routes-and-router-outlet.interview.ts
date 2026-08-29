@@ -30,9 +30,9 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "intermediate",
     shortAnswer:
-      "Top-level `app.routes.ts` chhoti rakho — sirf shell, redirects, `**`, aur har feature ke liye ek `loadChildren` entry. Har feature apna `feature.routes.ts` export kare (apne children, guards, resolvers). Lazy-load feature areas.",
+      "Top-level `app.routes.ts` chhoti rakho — sirf shell, redirects, `**`, aur har feature ke liye ek `loadChildren` entry. Har feature apna `feature.routes.ts` export karein (apne children, guards, resolvers). Lazy-load feature areas.",
     detailedAnswer:
-      "```ts\n// app.routes.ts\n{ path: 'employees', loadChildren: () => import('./features/employees/employees.routes').then(m => m.EMPLOYEE_ROUTES) }\n// employees.routes.ts\nexport const EMPLOYEE_ROUTES: Routes = [\n  { path: '', component: EmployeeListPage },\n  { path: 'new', component: AddEmployeePage },\n  { path: ':id', component: EmployeeDetailsPage },\n  { path: ':id/edit', component: EditEmployeePage },\n];\n```\nFaayde: (1) feature ownership — team apni routes khud manage kare; (2) lazy loading — har feature apna bundle; (3) feature-scoped `providers` (stores) route level par; (4) `app.routes.ts` review karna easy. Anti-pattern: ek 300-line flat routes file.",
+      "```ts\n// app.routes.ts\n{ path: 'employees', loadChildren: () => import('./features/employees/employees.routes').then(m => m.EMPLOYEE_ROUTES) }\n// employees.routes.ts\nexport const EMPLOYEE_ROUTES: Routes = [\n  { path: '', component: EmployeeListPage },\n  { path: 'new', component: AddEmployeePage },\n  { path: ':id', component: EmployeeDetailsPage },\n  { path: ':id/edit', component: EditEmployeePage },\n];\n```\nFaayde: (1) feature ownership — team apni routes khud manage karein; (2) lazy loading — har feature apna bundle; (3) feature-scoped `providers` (stores) route level par; (4) `app.routes.ts` review karna easy. Anti-pattern: ek 300-line flat routes file.",
     followUp: "`loadChildren` aur `loadComponent` — dono lazy hain, farak kya?",
   },
   {

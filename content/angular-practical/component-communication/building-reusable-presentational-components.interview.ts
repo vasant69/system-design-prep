@@ -30,9 +30,9 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "advanced",
     shortAnswer:
-      "Ek shared dumb `DataTable` + `Paginator` + `ConfirmModal` + `Toolbar` `shared/ui/` me. Har entity ke liye ek smart `XListPage` component jo apni service inject kare, columns define kare, aur shared dumb components compose kare. Common list logic (pagination/filter/sort state) ek reusable hook/service me.",
+      "Ek shared dumb `DataTable` + `Paginator` + `ConfirmModal` + `Toolbar` `shared/ui/` me. Har entity ke liye ek smart `XListPage` component jo apni service inject karein, columns define karein, aur shared dumb components compose karein. Common list logic (pagination/filter/sort state) ek reusable hook/service me.",
     detailedAnswer:
-      "Layers: (1) `shared/ui` — presentational, entity-agnostic. (2) `features/<entity>/` — `EmployeeListPage` (smart): `inject(EmployeeService)`, `columns: Column[]`, event handlers (`viewDetails`, `confirmDelete`, `sortChange`). (3) Common list state (page/pageSize/search/sort signals + derived query) ek `createListState()` factory ya a small `ListStore` class me — har smart page use kare, duplicate na ho. Result: naya entity = ~1 smart component + column config, baaki reuse. Consistency free me (same table, same paginator, same empty-state).",
+      "Layers: (1) `shared/ui` — presentational, entity-agnostic. (2) `features/<entity>/` — `EmployeeListPage` (smart): `inject(EmployeeService)`, `columns: Column[]`, event handlers (`viewDetails`, `confirmDelete`, `sortChange`). (3) Common list state (page/pageSize/search/sort signals + derived query) ek `createListState()` factory ya a small `ListStore` class me — har smart page use karein, duplicate na ho. Result: naya entity = ~1 smart component + column config, baaki reuse. Consistency free me (same table, same paginator, same empty-state).",
     followUp: "Common list state ko ek base class, ek factory function, ya ek service — kaunsa aur kyun?",
   },
   {

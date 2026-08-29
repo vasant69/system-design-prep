@@ -32,7 +32,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "God service smell. Responsibility ke hisaab se split: `EmployeeApiService` (HTTP + DTO mapping), `EmployeeRulesService` ya pure functions (validation/eligibility), `EmployeeExportService` (CSV), aur notification triggers ko `NotificationService` par event/call se delegate.",
     detailedAnswer:
-      "Single Responsibility: har service ka ek reason-to-change ho. HTTP shape badle -> Api service. Business rule badle -> Rules. Export format badle -> Export. Ye chhote services independently test hote hain aur unke consumers minimal dependencies lete hain. Ek 'facade' service optionally rakh sakte ho jo inhe compose kare agar consumers ko convenience chahiye, par core logic split rahe. Bonus: pure functions (koi DI nahi) ko service banane ki zaroorat bhi nahi — ek `employee-rules.ts` module.",
+      "Single Responsibility: har service ka ek reason-to-change ho. HTTP shape badle -> Api service. Business rule badle -> Rules. Export format badle -> Export. Ye chhote services independently test hote hain aur unke consumers minimal dependencies lete hain. Ek 'facade' service optionally rakh sakte ho jo inhe compose karein agar consumers ko convenience chahiye, par core logic split rahe. Bonus: pure functions (koi DI nahi) ko service banane ki zaroorat bhi nahi — ek `employee-rules.ts` module.",
     followUp: "Facade pattern kab helpful hai aur kab wo bhi ek god-object ban jaata hai?",
   },
   {

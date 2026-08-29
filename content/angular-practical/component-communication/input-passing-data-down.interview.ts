@@ -18,7 +18,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "intermediate",
     shortAnswer:
-      "Signal input ke saath: `effect(() => this.load(this.id()))` ya ek `computed`/resource jo `id()` par depend kare. Classic `@Input` ke saath: `ngOnChanges(changes)` me `changes['id']` check karo, ya `@Input set id(v) { ...; this.load(v); }`.",
+      "Signal input ke saath: `effect(() => this.load(this.id()))` ya ek `computed`/resource jo `id()` par depend karein. Classic `@Input` ke saath: `ngOnChanges(changes)` me `changes['id']` check karo, ya `@Input set id(v) { ...; this.load(v); }`.",
     detailedAnswer:
       "`ngOnChanges` har input change par `SimpleChanges` deta hai (`previousValue`, `currentValue`, `firstChange`) — verbose par explicit. `@Input set` concise hai but ek private backing field chahiye. Signal `effect()` sabse clean: `id()` read hote hi dependency register, badalne par re-run. Data loading ke liye Angular ka `resource()` / `rxResource()` even better — `id()` signal par keyed, automatic loading/error/cancellation. Anti-pattern: `ngDoCheck` me manual comparison.",
     followUp: "`effect()` me HTTP call karna kya recommended hai, ya koi behtar API hai?",

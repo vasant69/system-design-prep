@@ -30,7 +30,7 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "intermediate",
     shortAnswer:
-      "Event 'drilling' (har intermediate component ek output re-emit kare) brittle aur noisy hai. Behtar: ek shared service (feature-scoped ya root) jise deep child aur top consumer dono inject karein — deep child `service.something()` call kare, top component uske signal/stream ko observe kare.",
+      "Event 'drilling' (har intermediate component ek output re-emit karein) brittle aur noisy hai. Behtar: ek shared service (feature-scoped ya root) jise deep child aur top consumer dono inject karein — deep child `service.something()` call karein, top component uske signal/stream ko observe karein.",
     detailedAnswer:
       "Har intermediate component ko event ke baare me kuch nahi pata hona chahiye jo wo sirf pass karta hai — ye leaky. Shared service pattern: `@Injectable()` (route `providers` me for feature scope) with `private _event = new Subject<T>()` / a signal, `emitX()` method, aur `event$` / `event()` read. Deep child `inject(FeatureBus).select(id)`; top component `effect(() => handle(bus.selected()))`. Ye tree structure se decouple karta hai. NgRx/other stores bhi isi problem ko solve karte hain bade scale par.",
     followUp: "Feature-scoped service kaise ensure karta hai ki do parallel feature instances apna-apna state rakhein?",

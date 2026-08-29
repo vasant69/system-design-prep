@@ -20,7 +20,7 @@ const quiz: QuizQuestion[] = [
     question: "Ek reusable `DataTable` ke andar `inject(EmployeeService)` daalne se kya problem hoti hai?",
     options: [
       "Kuch nahi, convenient hai",
-      "Table ab ek specific service/endpoint se coupled ho gaya — Departments/Roles/Leave screens me reuse nahi ho sakta, aur test me service mock chahiye. Behtar: table `sortChange` emit kare, smart parent service call kare",
+      "Table ab ek specific service/endpoint se coupled ho gaya — Departments/Roles/Leave screens me reuse nahi ho sakta, aur test me service mock chahiye. Behtar: table `sortChange` emit karein, smart parent service call karein",
       "`inject` sirf smart components me syntactically allowed hai",
       "Table slow ho jaayega",
     ],

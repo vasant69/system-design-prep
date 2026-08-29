@@ -48,7 +48,7 @@ const quiz: QuizQuestion[] = [
     question: "Login success ke baad `router.navigate(['/dashboard'], { replaceUrl: true })` kyun (plain navigate ke bajaye)?",
     options: [
       "Faster hota hai",
-      "`replaceUrl: true` current history entry (login page) ko replace kar deta hai — user dashboard se back press kare to login par wapas nahi aata",
+      "`replaceUrl: true` current history entry (login page) ko replace kar deta hai — user dashboard se back press karein to login par wapas nahi aata",
       "Query params preserve karta hai",
       "Guards ko skip karta hai",
     ],

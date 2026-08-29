@@ -7,7 +7,7 @@ const questions: InterviewQuestion[] = [
     type: "coding",
     difficulty: "intermediate",
     shortAnswer:
-      "`@Pipe({ name: 'fullName' })` class jo `PipeTransform` implement kare aur `transform(value, ...args)` de. Standalone — component ke `imports` me add.",
+      "`@Pipe({ name: 'fullName' })` class jo `PipeTransform` implement karein aur `transform(value, ...args)` de. Standalone — component ke `imports` me add.",
     detailedAnswer:
       "```ts\n@Pipe({ name: 'truncate' })\nexport class TruncatePipe implements PipeTransform {\n  transform(value: string, limit = 50, trail = '…'): string {\n    return value?.length > limit ? value.slice(0, limit) + trail : (value ?? '');\n  }\n}\n```\nUse: `{{ bio | truncate:80 }}`. `transform` ka pehla param piped value, baaki template ke `:args`. Null-safety andar handle karo. Pipe ko pure function rakho — koi side effect nahi.",
     followUp: "Pipe ka unit test kaisa dikhta hai?",
@@ -18,7 +18,7 @@ const questions: InterviewQuestion[] = [
     type: "conceptual",
     difficulty: "advanced",
     shortAnswer:
-      "Pure (default): Angular `transform` sirf tab call karta hai jab input/args ki identity badle; warna cached output — change detection me practically free. Impure (`pure: false`): har CD cycle me `transform`. Genuinely chahiye jab output input identity ke bahar kisi cheez par depend kare — `async` pipe (naye emissions), ya ek pipe jo ek mutable collection ko observe karta hai.",
+      "Pure (default): Angular `transform` sirf tab call karta hai jab input/args ki identity badle; warna cached output — change detection me practically free. Impure (`pure: false`): har CD cycle me `transform`. Genuinely chahiye jab output input identity ke bahar kisi cheez par depend karein — `async` pipe (naye emissions), ya ek pipe jo ek mutable collection ko observe karta hai.",
     detailedAnswer:
       "Pure pipe ka memoization single previous input par hota hai (last value/args). Impure pipe ko Angular har cycle me chalata hai kyunki wo maan leta hai output kabhi bhi badal sakta hai. Cost: agar wo pipe 100 rows me hai aur screen busy hai, `transform` hazaaron baar/sec. Isliye impure sirf tab jab (a) work trivial ho, ya (b) koi alternative na ho. `async` pipe impure hai par internally efficient — wo naye emission par hi naya value emit karta hai. 'Mujhe impure chahiye kyunki array update nahi dikh raha' ka sahi jawab: immutable updates ya `computed()`.",
     followUp: "`async` pipe ko Angular kaise pata chalta hai ki naya value aaya bina har cycle me kuch expensive kiye?",
@@ -32,7 +32,7 @@ const questions: InterviewQuestion[] = [
     shortAnswer:
       "AngularJS me `filter`/`orderBy` built-in the, par Angular (2+) ne unhe deliberately hataya — perf aur predictability ke liye. Pure banao to list mutations miss; impure banao to har CD cycle me O(n log n). Sahi: filtering/sorting component `computed()` signals me, ya server-side.",
     detailedAnswer:
-      "Suggest: `filteredEmployees = computed(() => this.employees().filter(e => e.name.includes(this.term())).sort(...))`. Faayde: (1) sirf tab recompute jab `employees` ya `term` badle; (2) test karna easy; (3) template saaf. Bade datasets (1000+ rows) par ye bhi client par mat karo — `GET /employees?search=&sort=` se server handle kare aur paginated result do. Pipes single-value formatting ke liye reserve karo.",
+      "Suggest: `filteredEmployees = computed(() => this.employees().filter(e => e.name.includes(this.term())).sort(...))`. Faayde: (1) sirf tab recompute jab `employees` ya `term` badle; (2) test karna easy; (3) template saaf. Bade datasets (1000+ rows) par ye bhi client par mat karo — `GET /employees?search=&sort=` se server handle karein aur paginated result do. Pipes single-value formatting ke liye reserve karo.",
     followUp: "`computed()` aur ek getter jo filter karta hai — dono me kya farak, kaunsa behtar?",
     redFlag: "'AngularJS me chalta tha to yahan bhi impure pipe se kar dete hain' — framework ne isko intentionally remove kiya.",
   },

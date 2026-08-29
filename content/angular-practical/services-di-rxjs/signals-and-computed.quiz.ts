@@ -26,7 +26,7 @@ const quiz: QuizQuestion[] = [
     ],
     correctIndex: 1,
     explanation:
-      "`computed` derived read-only signal hai. Uska function ke andar jo signals read hote hain wahi uski dependencies ban jaati hain; recompute sirf tab jab unme se koi badle aur koi `computed()` ko read kare.",
+      "`computed` derived read-only signal hai. Uska function ke andar jo signals read hote hain wahi uski dependencies ban jaati hain; recompute sirf tab jab unme se koi badle aur koi `computed()` ko read karein.",
     difficulty: "medium",
   },
   {

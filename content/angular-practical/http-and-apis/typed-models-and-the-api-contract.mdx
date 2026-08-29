@@ -1,0 +1,256 @@
+---
+slug: "typed-models-and-the-api-contract"
+title: "Typed Models and the API Contract"
+section: "angular-practical"
+module: "http-and-apis"
+order: 2
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["httpclient-setup-and-first-request"]
+tags: ["angular", "typescript", "dto", "view-model", "api-contract", "employee-management"]
+englishDefinition: "An API contract is the agreed shape of requests and responses. In the front-end you model it with TypeScript types: a DTO type mirrors the raw API JSON, a view model is the shape your components use, and a mapper converts between them. This anti-corruption layer keeps backend changes from rippling through the whole app."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro"]
+---
+
+<SimpleDefinition>
+
+An API contract is the agreed shape of every request and response. In the front-end you model it with TypeScript: a **DTO** type mirrors the raw API JSON; a **view model** is the shape your components actually use; a **mapper** converts DTO ↔ view model in the service. This thin "anti-corruption layer" means a backend field rename or shape change touches one file, not thirty components.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic me humne dekha `get<T>` runtime pe validate nahi karta. Isliye front-end me API ke saath ka "contract" ko types se model karna zaroori hai — aur API ki shape ko apni app ki shape se decouple karna.
+
+### Three layers
+
+```ts
+// 1. DTO — exactly what the API sends (raw)
+export interface EmployeeDto {
+  id: number;
+  first_name: string;
+  last_name: string;
+  email: string;
+  department_id: number;
+  join_date: string;          // ISO string
+  salary: string;             // API sends money as a string!
+  is_active: boolean;
+}
+
+// 2. View model — what components use (clean, typed, convenient)
+export interface Employee {
+  id: number;
+  firstName: string;
+  lastName: string;
+  fullName: string;           // derived
+  email: string;
+  departmentId: number;
+  joinDate: Date;             // real Date
+  salary: number;             // real number
+  isActive: boolean;
+}
+
+// 3. Mapper — the only place that knows both
+export function toEmployee(dto: EmployeeDto): Employee {
+  return {
+    id: dto.id,
+    firstName: dto.first_name,
+    lastName: dto.last_name,
+    fullName: `${dto.first_name} ${dto.last_name}`,
+    email: dto.email,
+    departmentId: dto.department_id,
+    joinDate: new Date(dto.join_date),
+    salary: Number(dto.salary),
+    isActive: dto.is_active,
+  };
+}
+```
+
+Service:
+
+```ts
+getById(id: number): Observable<Employee> {
+  return this.http.get<EmployeeDto>(`${this.base}/${id}`).pipe(map(toEmployee));
+}
+```
+
+### Request DTOs too
+
+```ts
+export interface EmployeeCreate {
+  firstName: string;
+  lastName: string;
+  email: string;
+  departmentId: number;
+  joinDate: string;           // send ISO
+  salary: number;
+}
+// map view/form model -> request DTO before POST
+```
+
+### Why the anti-corruption layer — kyun
+
+- **One place to change** — backend renames `salary` -> `ctc`? Only `toEmployee` changes.
+- **Convenience** — components get `Date`, `number`, `fullName` — no parsing in templates.
+- **Type safety** — DTO type documents the real API; view model documents your app.
+- **Testable** — `toEmployee` is a pure function.
+
+### Runtime validation (optional but valuable)
+
+`get<EmployeeDto>` still doesn't check. For critical endpoints, validate the raw response with a schema library (Zod):
+
+```ts
+const EmployeeDtoSchema = z.object({ id: z.number(), first_name: z.string(), /* ... */ });
+map(raw => toEmployee(EmployeeDtoSchema.parse(raw)))
+```
+
+Now a contract violation fails loudly (and monitorably) instead of silently corrupting state.
+
+### Shared types
+
+`Paged<T>`, `ApiError`, `LoginResponse` — define once in `core/models/`. If the backend is also TypeScript, a shared package (or generated types from OpenAPI) removes the DTO layer's guesswork.
+
+### Show it in our project
+
+`core/models/`: `employee.ts` (`EmployeeDto`, `Employee`, `EmployeeCreate`, `toEmployee`), `department.ts`, `auth.ts` (`LoginResponse`, `AuthUser`), `common.ts` (`Paged<T>`, `ApiError`). Services import DTOs, return view models. Components import only view models.
+
+### Where is it used in day-to-day development
+
+Every new endpoint: define the DTO from the API docs, define/extend the view model, write the mapper. Every backend change: adjust the mapper. This is routine, and it's what keeps a growing app from becoming a field-renaming minefield.
+
+### Pros and cons
+
+**Pros**
+
+- Backend changes isolated to mappers.
+- Components work with clean, convenient, typed models.
+- Mappers are pure and unit-testable.
+- Optional schema validation catches contract drift early.
+
+**Cons**
+
+- Boilerplate — DTO + model + mapper per entity.
+- Two types to keep in sync when adding a field.
+- Over-mapping trivial endpoints wastes time (sometimes DTO === model).
+- Without generated/shared types, the DTO is a hand-maintained guess.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Agar DTO aur view model **bilkul same** hain (koi rename, koi type conversion nahi), to alag types + identity mapper mat banao — bas ek type use karo. Anti-corruption layer tab add karo jab genuine mismatch ho (snake_case, string-money, ISO dates, nested reshaping).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS with an evolving backend">
+
+The EMS backend sends `salary` as a string (`"85000.00"`) and dates as ISO strings, and uses `snake_case`. Every EMS component works with `Employee` where `salary` is a `number`, `joinDate` is a `Date`, and fields are `camelCase` — because `toEmployee` in `EmployeeService` does the conversion. Six months later the backend splits `name` into `first_name`/`last_name`; the fix is three lines in `toEmployee` (and the DTO type), and not one component changes. That's the whole point of the layer.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- With an anti-corruption layer, a backend field rename typically touches **1 mapper + 1 DTO type**, not every consuming component.
+- Money as a string, dates as ISO strings, and `snake_case` are the three most common DTO-vs-model mismatches.
+- Schema validation (Zod) adds a small bundle cost but converts silent corruption into a **caught, logged** error.
+- If DTO === view model exactly, skip the layer — an identity mapper is pure overhead.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "API response ko component tak kaise le jaate ho?", "DTO vs view model?", "backend field rename kaise handle karoge?", "runtime type safety?".
+
+Strong answer:
+
+1. DTO type = raw API shape; view model = app shape; mapper (pure fn) converts, in the service.
+2. Anti-corruption layer -> backend changes hit one file.
+3. Components import only view models; services import DTOs.
+4. `get<T>` has no runtime check — add schema validation (Zod) on critical endpoints.
+5. Skip the layer when DTO === model.
+
+Red flag: "API JSON ko seedha components me pass karta hoon" — every backend change becomes an app-wide refactor.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Raw API objects ko components tak pass karna.** `snake_case`, string-money, ISO dates templates me leak; backend change = app-wide edit. Map in the service.
+
+</Mistake>
+
+<Mistake>
+
+**Har trivial endpoint ke liye DTO+model+mapper.** Jab shapes identical hain, ek type. Layer sirf real mismatch ke liye.
+
+</Mistake>
+
+<Mistake>
+
+**Date ko string rakhna aur templates me `| date` par bharosa.** `| date` string bhi handle karta hai, par calculations (`joinDate < cutoff`) string par galat. Map to `Date`.
+
+</Mistake>
+
+<Mistake>
+
+**Request DTO map na karna.** Form model me `fullName`/`Date` hain jo API expect nahi karta. POST se pehle `toCreateDto`.
+
+</Mistake>
+
+<Mistake>
+
+**`get<T>` ko validation samajhna.** Critical endpoints par Zod/manual check — warna contract drift silent.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    API[(API JSON: snake_case, string money, ISO dates)] --> DTO[EmployeeDto type]
+    DTO --> MAP["toEmployee() mapper (+ optional schema.parse)"]
+    MAP --> VM[Employee view model: camelCase, number, Date]
+    VM --> CMP[Components use only the view model]
+    CMP --> RMAP[toCreateDto mapper] --> REQ[EmployeeCreate DTO] --> API
+`}
+  caption="The mapper is the only code that knows both the API shape and the app shape."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- API contract = agreed request/response shapes; model it with TypeScript.
+- Three layers: **DTO** (raw API), **view model** (app), **mapper** (pure fn, in the service).
+- Components import only view models; services import DTOs and `map(toModel)`.
+- Anti-corruption layer -> a backend rename/reshape touches one mapper + one DTO type.
+- Common mismatches: `snake_case`, money-as-string, ISO date strings, nested reshaping.
+- `get<T>` has **no** runtime validation — add Zod/manual checks on critical endpoints.
+- If DTO === view model exactly, skip the layer.
+- Map request bodies too (`toCreateDto`) before POST/PUT.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `EmployeeDto` (snake_case, `salary: string`, `join_date: string`) aur `Employee` (camelCase, `number`, `Date`) types banao. Ek `toEmployee(dto)` mapper likho. `EmployeeService.getById` me `map(toEmployee)`.
+
+**Medium:** `toEmployee` ka ek `.spec.ts` — ek DTO do, assert `salary` number hai, `joinDate` `Date` hai, `fullName` bana. Phir DTO me ek field rename karke sirf mapper + DTO type fix karke dekho components untouched.
+
+**Bada:** `EmployeeDtoSchema` (Zod) add karo aur `map(raw => toEmployee(schema.parse(raw)))`. API se jaan-boojhke ek galat field bhejo (ya mock) — ab ek clear validation error milta hai console me instead of `undefined` spreading. `EmployeeCreate` request DTO + `toCreateDto(form)` bhi likho. 5-line note on the anti-corruption layer's value.
+
+</Callout>

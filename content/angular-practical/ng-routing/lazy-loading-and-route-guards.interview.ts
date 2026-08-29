@@ -26,11 +26,11 @@ const questions: InterviewQuestion[] = [
   {
     id: "llrg-3",
     question:
-      "Ek admin-only lazy `settings` area hai. Non-admin us route par na ja sake AUR us chunk ko download bhi na kare. Kaunsa guard?",
+      "Ek admin-only lazy `settings` area hai. Non-admin us route par na ja sake AUR us chunk ko download bhi na karein. Kaunsa guard?",
     type: "scenario",
     difficulty: "advanced",
     shortAnswer:
-      "`CanMatch`. `{ path: 'settings', canMatch: [adminGuard], loadChildren: () => import('./settings/settings.routes') }`. `CanMatch` `false` return kare to route match hi nahi hota — lazy chunk download nahi, aur router agli matching route (ya `**`) try karta hai. `CanActivate` sirf activation rokta hai, chunk phir bhi aa sakta hai.",
+      "`CanMatch`. `{ path: 'settings', canMatch: [adminGuard], loadChildren: () => import('./settings/settings.routes') }`. `CanMatch` `false` return karein to route match hi nahi hota — lazy chunk download nahi, aur router agli matching route (ya `**`) try karta hai. `CanActivate` sirf activation rokta hai, chunk phir bhi aa sakta hai.",
     detailedAnswer:
       "`CanActivate`: route matched + chunk possibly loaded, phir activation blocked -> user ko '403-ish' behaviour, aur bandwidth waste. `CanMatch`: route effectively invisible for that user — cleaner semantics aur no download. Bonus: `CanMatch` se aap same `path` par do routes rakh sakte ho alag guards ke saath (feature-flag A/B: `{ path: 'dashboard', canMatch: [newDashGuard], loadComponent: NewDash }, { path: 'dashboard', loadComponent: OldDash }`). Non-admin ke liye `**` not-found (ya ek explicit `/forbidden`) fall-through hota hai.",
     followUp: "Feature-flag ke saath do same-path routes — Angular kaise decide karta hai kaunsa lena hai?",
@@ -41,9 +41,9 @@ const questions: InterviewQuestion[] = [
     type: "scenario",
     difficulty: "intermediate",
     shortAnswer:
-      "Unsaved-changes protection — user edit form chhod raha hai bina save kiye, guard confirm poochhta hai. Reusable: ek interface `CanComponentDeactivate { canDeactivate(): boolean | Observable<boolean> }` aur ek generic guard `const guard: CanDeactivateFn<CanComponentDeactivate> = c => c.canDeactivate();`. Har form component `canDeactivate()` implement kare (`form.pristine || confirm(...)`).",
+      "Unsaved-changes protection — user edit form chhod raha hai bina save kiye, guard confirm poochhta hai. Reusable: ek interface `CanComponentDeactivate { canDeactivate(): boolean | Observable<boolean> }` aur ek generic guard `const guard: CanDeactivateFn<CanComponentDeactivate> = c => c.canDeactivate();`. Har form component `canDeactivate()` implement karein (`form.pristine || confirm(...)`).",
     detailedAnswer:
-      "Generic guard reuse: `canDeactivate: [pendingChangesGuard]` on every edit route; component decides via its own dirty check. Better UX than `window.confirm`: ek app modal (`ConfirmModal`) jo Observable<boolean> return kare, taaki styling/i18n consistent ho. Also handle browser-level navigation (tab close) with `@HostListener('window:beforeunload', ['$event'])`. Edge: after a successful save, mark the form `pristine` (`form.markAsPristine()`) so the guard doesn't fire on the post-save redirect.",
+      "Generic guard reuse: `canDeactivate: [pendingChangesGuard]` on every edit route; component decides via its own dirty check. Better UX than `window.confirm`: ek app modal (`ConfirmModal`) jo Observable<boolean> return karein, taaki styling/i18n consistent ho. Also handle browser-level navigation (tab close) with `@HostListener('window:beforeunload', ['$event'])`. Edge: after a successful save, mark the form `pristine` (`form.markAsPristine()`) so the guard doesn't fire on the post-save redirect.",
     followUp: "Successful save ke baad guard ko fire hone se kaise rokoge programmatically?",
   },
   {

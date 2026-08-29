@@ -35,7 +35,7 @@ const quiz: QuizQuestion[] = [
     options: [
       "Kabhi nahi — OnPush ka matlab component freeze",
       "Har CD cycle me, Default ki tarah",
-      "Jab: `@Input` ki reference badle, component ke andar event fire ho, consumed signal badle, `async` pipe emit kare, ya `markForCheck()` call ho",
+      "Jab: `@Input` ki reference badle, component ke andar event fire ho, consumed signal badle, `async` pipe emit karein, ya `markForCheck()` call ho",
       "Sirf `ngOnInit` par ek baar",
     ],
     correctIndex: 2,

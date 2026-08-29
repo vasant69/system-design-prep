@@ -1,0 +1,258 @@
+---
+slug: "http-interceptors"
+title: "HTTP Interceptors"
+section: "angular-practical"
+module: "http-and-apis"
+order: 6
+difficulty: "intermediate"
+readingTime: 13
+prerequisites: ["error-handling-for-http"]
+tags: ["angular", "http", "interceptors", "auth-header", "loading", "employee-management"]
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini", "Wipro", "LTIMindtree"]
+englishDefinition: "An HTTP interceptor is a function that sits in the pipeline of every HttpClient request and response. It can add headers (auth token), start and stop a global loading indicator, normalize errors, log, retry, or cache. Functional interceptors are registered once with provideHttpClient(withInterceptors([...]))."
+---
+
+<SimpleDefinition>
+
+An HTTP interceptor is a function that runs for **every** `HttpClient` request and response. Use it for cross-cutting concerns: attach the auth token, drive a global loading bar, normalize errors, add a correlation id, log, retry, or cache. Modern functional interceptors are registered once: `provideHttpClient(withInterceptors([authInterceptor, errorInterceptor, loadingInterceptor]))`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har request pe auth header lagana, har error pe `401` check karna, har call pe loading bar — ye **har service me** likhna duplication hai. Interceptor ye ek jagah, sab requests ke liye karta hai.
+
+### Functional interceptor shape
+
+```ts
+import { HttpInterceptorFn } from "@angular/common/http";
+import { inject } from "@angular/core";
+
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const token = inject(AuthService).token();
+  if (!token) return next(req);
+
+  const authReq = req.clone({
+    setHeaders: { Authorization: `Bearer ${token}` },
+  });
+  return next(authReq);
+};
+```
+
+- `req` — the outgoing `HttpRequest` (immutable).
+- `next(req)` — pass it down the chain; returns `Observable<HttpEvent>`.
+- `req.clone({ setHeaders })` — requests are immutable; clone to modify.
+- Register: `provideHttpClient(withInterceptors([authInterceptor]))`.
+
+### Error interceptor
+
+```ts
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  return next(req).pipe(
+    catchError((err: HttpErrorResponse) => {
+      if (err.status === 401) { auth.logout(); router.navigate(["/login"]); }
+      if (err.status === 403) { router.navigate(["/forbidden"]); }
+      return throwError(() => normalizeHttpError(err));   // hand components an AppError
+    }),
+  );
+};
+```
+
+### Loading interceptor
+
+```ts
+export const loadingInterceptor: HttpInterceptorFn = (req, next) => {
+  const loading = inject(LoadingService);
+  loading.start();
+  return next(req).pipe(finalize(() => loading.stop()));
+};
+```
+
+`LoadingService` keeps a counter (`start`/`stop`) so overlapping requests show one bar until all finish. Skip it for polling requests with a header/context flag.
+
+### Order matters
+
+`withInterceptors([a, b, c])` — request flows `a -> b -> c -> backend`; response flows back `c -> b -> a`. So:
+
+- `authInterceptor` before anything that needs the token.
+- `errorInterceptor` outermost-ish so it sees errors from inner interceptors too.
+- `loadingInterceptor` wherever, but be consistent.
+
+### `HttpContext` — per-request opt-out
+
+```ts
+export const SKIP_LOADING = new HttpContextToken(() => false);
+
+// in a service call:
+this.http.get(url, { context: new HttpContext().set(SKIP_LOADING, true) });
+
+// in the interceptor:
+if (req.context.get(SKIP_LOADING)) return next(req);
+```
+
+Use it so background polling doesn't flash the global loading bar, or so the login request skips the auth header.
+
+### What interceptors are great for
+
+- Auth header (and refresh-on-401 — see next topic).
+- Global loading indicator.
+- Error normalization + `401`/`403` handling.
+- Correlation/trace id header.
+- Base-URL prefixing (relative paths -> full API URL).
+- Logging / analytics.
+- Caching `GET`s (with care).
+
+### Show it in our project
+
+`core/interceptors/`: `authInterceptor`, `errorInterceptor`, `loadingInterceptor`, `baseUrlInterceptor` (prefixes `/api/...`). Registered in `app.config.ts`. Services and components stop worrying about tokens, base URLs, and `401`s.
+
+### Where is it used in day-to-day development
+
+Set up once, then rarely touched. But it's why every request "just has" the token and every `401` "just logs out" — that behaviour lives here, not scattered.
+
+### Pros and cons
+
+**Pros**
+
+- Cross-cutting logic in one place — DRY, consistent.
+- Services/components stay focused on their job.
+- Easy to add trace ids, logging, global loading, auth without touching every call.
+
+**Cons**
+
+- Hidden behaviour — a request is modified somewhere "invisible"; new devs get surprised.
+- Order bugs (auth after something that needed the token).
+- Over-stuffing interceptors (business logic doesn't belong here).
+- A buggy interceptor breaks *every* request at once.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Interceptors ko chhota aur single-purpose rakho: ek auth, ek error, ek loading. Ek giant "do everything" interceptor debug karna mushkil, aur order/coupling issues deta hai. Compose several small ones via the `withInterceptors([...])` array.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EMS request pipeline">
+
+Every EMS request passes through: `baseUrlInterceptor` (turns `employees` into `https://api.ems.example.com/api/v1/employees`), `authInterceptor` (adds `Authorization: Bearer ...`, skipped for `/auth/login` via `HttpContext`), `loadingInterceptor` (increments a counter -> the top progress bar), and `errorInterceptor` (`401` -> refresh token or logout, normalizes everything to `AppError`). A developer adding a new service writes zero of this — they call `this.http.get('employees')` and everything else is handled.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Interceptors run for **every** `HttpClient` request; registration order = request order (response order is reversed).
+- `HttpRequest` is immutable — `req.clone({ setHeaders, params, url })` to modify.
+- A `LoadingService` counter (start/stop) shows **one** bar across overlapping requests.
+- `HttpContextToken` gives per-request opt-out (skip loading, skip auth) without a separate `HttpClient`.
+- Functional interceptors (`HttpInterceptorFn`) replaced class-based `HTTP_INTERCEPTORS` as the standard.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Very common: "interceptor kya hai aur kis liye?", "functional interceptor kaise likhte ho?", "order kaise matter karta hai?", "ek request ke liye interceptor skip kaise?".
+
+Strong answer:
+
+1. A function in every request/response pipeline — cross-cutting: auth header, loading bar, error normalization, trace id, logging, caching.
+2. `HttpInterceptorFn = (req, next) => next(req.clone({ setHeaders: {...} }))`; register with `provideHttpClient(withInterceptors([...]))`.
+3. Order = array order for the request; reversed for the response.
+4. `HttpContextToken` for per-request opt-out (skip auth on `/login`, skip loading on polling).
+5. Keep each interceptor small and single-purpose.
+
+Red flag: "class-based interceptors with `HTTP_INTERCEPTORS` multi-provider" — functional interceptors are the current standard.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`req.headers.set(...)` directly.** `HttpRequest` immutable — use `req.clone({ setHeaders })`.
+
+</Mistake>
+
+<Mistake>
+
+**Auth header ko `/auth/login` par bhi lagana.** No token yet, and some servers reject a bogus header. Skip via `HttpContext` or a URL check.
+
+</Mistake>
+
+<Mistake>
+
+**Loading interceptor without a counter.** Overlapping requests -> the bar flickers on/off. Use a `start`/`stop` counter, hide only when it hits zero.
+
+</Mistake>
+
+<Mistake>
+
+**Business logic in an interceptor.** "If URL is `/employees` and method is POST, also call analytics" — too coupled, hard to find. Interceptors = truly cross-cutting only.
+
+</Mistake>
+
+<Mistake>
+
+**Wrong order.** `authInterceptor` after an interceptor that already sent the request, or `errorInterceptor` too inner to see other interceptors' errors.
+
+</Mistake>
+
+<Mistake>
+
+**Not handling the interceptor's own failure.** A throw in an interceptor breaks every request. Keep them defensive.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    C["http.get('employees')"] --> BU[baseUrlInterceptor: prefix API URL]
+    BU --> AU["authInterceptor: add Bearer token (skip /login)"]
+    AU --> LO[loadingInterceptor: counter++ -> progress bar]
+    LO --> BE[(backend)]
+    BE --> LO2[finalize: counter-- ]
+    LO2 --> ER["errorInterceptor: 401 -> logout, normalize to AppError"]
+    ER --> C2[service gets clean model or AppError]
+`}
+  caption="One request flows through small single-purpose interceptors; the response flows back in reverse."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Interceptor = a function in every `HttpClient` request/response pipeline: auth header, global loading, error normalization, trace id, logging, caching.
+- `export const x: HttpInterceptorFn = (req, next) => next(req.clone({ setHeaders: {...} }))`. Register once: `provideHttpClient(withInterceptors([a, b, c]))`.
+- `HttpRequest` is immutable — `req.clone({ setHeaders, params, url, context })`.
+- Order = array order for the request; reversed for the response. `authInterceptor` before token-dependent ones; `errorInterceptor` outer enough to see all errors.
+- `HttpContextToken` for per-request opt-out (skip auth on `/login`, skip loading on polling).
+- `LoadingService` counter so overlapping requests show one bar.
+- Keep interceptors small and single-purpose; no business logic; functional style (not class-based `HTTP_INTERCEPTORS`).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `authInterceptor: HttpInterceptorFn` likho jo `AuthService.token()` ho to `req.clone({ setHeaders: { Authorization: 'Bearer ' + token } })` karein. `provideHttpClient(withInterceptors([authInterceptor]))`. Network tab me kisi request par header confirm karo.
+
+**Medium:** `LoadingService` (counter + `isLoading` signal) + `loadingInterceptor` (`start()` / `finalize(stop())`). Ek top progress bar `loading.isLoading()` par. Do overlapping requests trigger karke confirm bar ek hi baar dikhta hai jab tak dono khatam na hon.
+
+**Bada:** (1) `errorInterceptor` — `401` -> `auth.logout()` + navigate `/login`; sab errors ko `normalizeHttpError` se `AppError` me. (2) `SKIP_AUTH` `HttpContextToken` banao aur login request me set karke auth header skip karo. (3) `withInterceptors([a, b])` ka order swap karke ek order-dependent bug reproduce karo (auth after loading, ya error too inner). 6-line note on order + `HttpContext`.
+
+</Callout>

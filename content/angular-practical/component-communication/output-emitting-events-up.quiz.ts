@@ -48,13 +48,13 @@ const quiz: QuizQuestion[] = [
     question: "Ek reusable `EmployeeRow` ke `delete` button me hi `HttpClient.delete(...)` call karna kyun galat design hai?",
     options: [
       "HttpClient rows me inject nahi ho sakta",
-      "Row ab ek specific API, error handling, aur confirm flow se coupled ho gaya — wo dashboard/search/report me reuse nahi ho sakta. Sahi: row `delete.emit(id)` kare, parent (jo context jaanta hai) API call kare",
+      "Row ab ek specific API, error handling, aur confirm flow se coupled ho gaya — wo dashboard/search/report me reuse nahi ho sakta. Sahi: row `delete.emit(id)` karein, parent (jo context jaanta hai) API call karein",
       "Ye slow hota hai",
       "`delete` ek reserved word hai",
     ],
     correctIndex: 1,
     explanation:
-      "Dumb/presentational components context-agnostic rehne chahiye. Row sirf 'delete pressed for id X' emit kare; parent decide kare confirm dialog, optimistic update, API endpoint, aur refresh. Isse ek row component har list screen me reuse hota hai.",
+      "Dumb/presentational components context-agnostic rehne chahiye. Row sirf 'delete pressed for id X' emit karein; parent decide karein confirm dialog, optimistic update, API endpoint, aur refresh. Isse ek row component har list screen me reuse hota hai.",
     difficulty: "medium",
   },
 ];
