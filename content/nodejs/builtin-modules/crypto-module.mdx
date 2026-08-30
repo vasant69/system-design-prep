@@ -1,0 +1,336 @@
+---
+slug: "crypto-module"
+title: "The crypto Module — Hashing, HMAC & Encryption"
+section: "nodejs"
+module: "builtin-modules"
+order: 5
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: []
+tags: ["nodejs", "crypto", "hashing", "hmac", "encryption", "security", "builtin-modules"]
+englishDefinition: "The crypto module is Node's built-in cryptography toolkit, backed by OpenSSL. It provides one-way hashing (createHash), keyed hashing for integrity and authenticity (HMAC), reversible symmetric encryption (AES), deliberately slow password hashing (scrypt, pbkdf2), and a cryptographically secure random source (randomBytes, randomUUID, randomInt). Knowing which tool solves which problem — and that you should never invent your own scheme — is the whole point."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+The `crypto` module is Node's built-in cryptography toolkit, backed by OpenSSL. It provides one-way **hashing** (`createHash`), keyed hashing for integrity and authenticity (**HMAC**), reversible symmetric **encryption** (AES), deliberately **slow password hashing** (`scrypt`, `pbkdf2`), and a cryptographically secure **random** source (`randomBytes`, `randomUUID`, `randomInt`). The skill is knowing which tool solves which problem — and never inventing your own scheme.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`crypto` mein kai overlapping-lagne wale tools hain, aur galat tool choose karna security hole hai. Interview mein aksar yahi test hota hai: "password kaise store karoge?" pe agar tum `sha256` bolo toh galat. Chalo har tool ka kaam clear karte hain.
+
+### Ye kya hai — crypto module
+
+Core module (`const crypto = require("node:crypto")`), OpenSSL ke upar bana. Chaar buckets:
+
+1. **Hashing** — one-way fingerprint (`createHash`).
+2. **HMAC** — keyed hash, "kisne bheja + tamper toh nahi hua" prove karta hai.
+3. **Encryption** — reversible, key ke saath wapas plaintext (`createCipheriv` — AES).
+4. **Password hashing** — jaan-boojh ke **slow** (`scrypt`, `pbkdf2`) taaki brute-force mehnga ho.
+
+Plus **CSPRNG** — secure randomness (`randomBytes`, `randomUUID`, `randomInt`).
+
+### Hashing vs HMAC vs Encryption vs Password hashing
+
+| Tool | Reversible? | Key? | Kis liye |
+|---|---|---|---|
+| **Hash** (`sha256`) | Nahi | Nahi | File/content fingerprint, dedup, ETag, integrity check (non-adversarial) |
+| **HMAC** (`sha256` + secret) | Nahi | Haan (shared secret) | Webhook signature verify, API request signing, tamper-proof tokens |
+| **Encryption** (AES-256-GCM) | Haan (key ke saath) | Haan | PII/secrets ko rest pe chhupana, jise baad mein wapas padhna hai |
+| **Password hash** (`scrypt`) | Nahi | Nahi (par salt) | User passwords store karna |
+
+Galtiyan jo yahan hoti hain:
+
+- **Password ko `sha256` se hash karna** — `sha256` bahut fast hai; ek GPU se billions/sec try ho jaate hain. Password hashing ka pura point slow hona hai.
+- **Password ko encrypt karna** — reversible hai, matlab key leak hui toh saare passwords plaintext. Password kabhi decrypt karne ki zaroorat nahi — sirf compare.
+- **Integrity ke liye plain hash jab attacker involved ho** — attacker content aur hash dono badal sakta hai. HMAC (secret key) chahiye.
+
+### Internally kaise kaam karta hai
+
+`crypto` OpenSSL ke primitives call karta hai — C code, fast. Zyaadatar operations (`createHash().update().digest()`, `createCipheriv`) **synchronous aur CPU-light** hain chhote inputs pe — main thread pe theek. Lekin:
+
+- **`crypto.pbkdf2` / `crypto.scrypt` (async versions)** libuv **thread pool** (default 4) use karte hain — kyunki wo jaan-boojh ke CPU-heavy hain. Async version use karo taaki event loop block na ho.
+- Sync versions (`pbkdf2Sync`, `scryptSync`) main thread block karte hain — login endpoint pe **mat** use karo; ek script/CLI mein theek.
+
+### Simple real-life analogy
+
+- **Hash** = document ka photocopy-count ka fingerprint. Same doc → same fingerprint. Fingerprint se doc wapas nahi bana sakte.
+- **HMAC** = fingerprint + tumhari secret stamp. Koi aur same stamp nahi laga sakta, toh receiver sure ho sakta hai ye tumne bheja aur beech mein badla nahi.
+- **Encryption** = locker. Key wale kholte hain, padhte hain, band karte hain.
+- **Password hash** = ek aisa fingerprint machine jo jaan-boojh ke 0.2 second leti hai. 5 tries insaan ke liye theek, 5 billion attacker ke liye impossible.
+
+### Code — line by line
+
+```javascript
+const crypto = require("node:crypto");
+
+// 1. HASH — file/content fingerprint
+const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+// 2. HMAC — webhook signature verify
+const expected = crypto
+  .createHmac("sha256", process.env.WEBHOOK_SECRET)
+  .update(rawBody)
+  .digest("hex");
+const ok = crypto.timingSafeEqual(
+  Buffer.from(expected, "hex"),
+  Buffer.from(receivedSignature, "hex"),
+);
+
+// 3. RANDOM — token / id / OTP
+const token = crypto.randomBytes(32).toString("hex"); // 64-char session token
+const id = crypto.randomUUID();                        // RFC 4122 v4
+const otp = crypto.randomInt(0, 1_000_000);            // 0..999999, unbiased
+
+// 4. PASSWORD HASH — scrypt (async, thread pool)
+function hashPassword(password) {
+  return new Promise((resolve, reject) => {
+    const salt = crypto.randomBytes(16);
+    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+      if (err) return reject(err);
+      resolve(`${salt.toString("hex")}:${derivedKey.toString("hex")}`);
+    });
+  });
+}
+function verifyPassword(password, stored) {
+  return new Promise((resolve, reject) => {
+    const [saltHex, keyHex] = stored.split(":");
+    const salt = Buffer.from(saltHex, "hex");
+    const keyBuf = Buffer.from(keyHex, "hex");
+    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+      if (err) return reject(err);
+      resolve(crypto.timingSafeEqual(keyBuf, derivedKey));
+    });
+  });
+}
+```
+
+- `createHash("sha256")` — algorithm. `.update(data)` (multiple baar bhi), `.digest("hex")` final.
+- `createHmac("sha256", secret)` — same but secret ke saath; koi bina secret ke valid HMAC nahi bana sakta.
+- `timingSafeEqual` — dono buffers ko constant time mein compare karta hai; `===` early-exit karta hai jisse timing attack se secret leak ho sakta hai.
+- `randomBytes` / `randomUUID` / `randomInt` — CSPRNG. `Math.random()` predictable hai — tokens/OTP/keys ke liye **kabhi nahi**.
+- `scrypt(password, salt, keylen, cb)` — slow KDF. Har user ka **unique random salt** taaki rainbow tables aur "same password → same hash" na ho.
+
+### AES-256-GCM — chhota encrypt/decrypt
+
+GCM isliye kyunki wo **authenticated** encryption hai — decrypt ke waqt pata chal jaata hai ciphertext tamper hua ya nahi (auth tag).
+
+```javascript
+const crypto = require("node:crypto");
+const ALGO = "aes-256-gcm";
+
+function encrypt(plaintext, key /* 32 bytes */) {
+  const iv = crypto.randomBytes(12);                 // GCM ke liye 12 bytes
+  const cipher = crypto.createCipheriv(ALGO, key, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]).toString("base64");
+}
+
+function decrypt(payloadB64, key) {
+  const data = Buffer.from(payloadB64, "base64");
+  const iv = data.subarray(0, 12);
+  const tag = data.subarray(12, 28);
+  const enc = data.subarray(28);
+  const decipher = crypto.createDecipheriv(ALGO, key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+}
+```
+
+- **IV (initialization vector)** har encryption pe **naya random** — same plaintext + same key bhi alag ciphertext de, aur IV secret nahi (ciphertext ke saath store karo).
+- **Auth tag** — GCM ka integrity proof. Decrypt se pehle `setAuthTag`; tamper hua ho toh `final()` throw karega.
+- **Key** — 32 bytes (256-bit). Kahin secure jagah (KMS, env, secret manager), code mein nahi.
+- Tamper hua ho toh `decipher.final()` exception — silently galat plaintext nahi milega.
+
+### "Don't roll your own crypto"
+
+Apna encryption scheme, apna token format, apna "XOR se obfuscate", apna password hashing — **mat banao**. Subtle bugs (IV reuse, no auth, timing leak, weak KDF) production mein pakde nahi jaate, exploit ho jaate hain. Standard primitives standard modes mein use karo (AES-GCM, HMAC-SHA256, scrypt/argon2), ya proven libraries (`bcrypt`, `argon2`, `jsonwebtoken`, `libsodium`/`sodium-native`).
+
+### Day-to-day use
+
+- File dedup / cache key / ETag — `sha256` hash
+- Webhook (Stripe, GitHub) signature verify — HMAC + `timingSafeEqual`
+- Session tokens, password-reset tokens, API keys — `randomBytes(32).toString("hex")`
+- Request IDs / correlation IDs — `randomUUID()`
+- OTP — `randomInt(0, 1_000_000)`
+- User passwords — `scrypt` (built-in) ya `argon2`/`bcrypt` (library)
+- PII at rest (Aadhaar, card last-4, notes) — AES-256-GCM with key from KMS
+
+### Kab kaunsa use karna chahiye
+
+- **Fingerprint / dedup / non-adversarial integrity** → `createHash("sha256")`.
+- **"Ye message tamper nahi hua aur sahi sender se hai"** (attacker present) → HMAC.
+- **"Isse baad mein wapas plaintext chahiye"** → AES-256-GCM.
+- **"User password"** → slow KDF (`scrypt`/`argon2`/`bcrypt`), never plain hash, never encryption.
+- **"Random secret/token/id/OTP"** → `crypto.random*`, never `Math.random()`.
+- **"Do secrets compare"** → `timingSafeEqual`, never `===`.
+
+### Kab use nahi karna chahiye
+
+- Password ke liye `sha256`/`md5` — fast = brute-forceable.
+- Password ko encrypt karna — reversible = key leak = total compromise.
+- Login route pe `scryptSync`/`pbkdf2Sync` — main thread block, poora server slow.
+- Same IV dobara AES-GCM ke saath — catastrophic, key recover ho sakti hai.
+- Apna JWT-jaisa token format — `jsonwebtoken` ya PASETO use karo.
+
+### Pros and cons
+
+**Pros**
+
+- Built-in, OpenSSL-backed, fast, FIPS-capable builds.
+- Sab standard primitives — hash, HMAC, AES, RSA/EC, KDFs, CSPRNG.
+- `scrypt` aur `randomUUID` bahar ki dependency ke bina.
+
+**Cons**
+
+- API low-level — IV, tag, salt, encoding sab khud manage.
+- Galat combination silently insecure — koi "you did it wrong" warning nahi.
+- `argon2` (aaj ka recommended password KDF) built-in nahi — library chahiye.
+
+### Alternatives
+
+- **`bcrypt` / `argon2`** (npm) — password hashing, battle-tested, tuned defaults.
+- **`jsonwebtoken` / `jose` / PASETO** — signed tokens, apna HMAC scheme mat likho.
+- **`libsodium` / `sodium-native`** — misuse-resistant high-level API (secretbox, sealed box).
+- **Cloud KMS (AWS KMS, GCP KMS)** — key management + envelope encryption; key kabhi app process mein na aaye.
+
+### Interview mein "Passwords kaise store karte ho?"
+
+> "Kabhi plain hash nahi — `sha256` GPU pe billions/sec hai. Main `bcrypt` ya `argon2id` use karta hoon (ya built-in `scrypt`), per-user random salt ke saath, work factor itna tuned ki ek hash ~200-300ms le. Verify ke waqt derived key ko `timingSafeEqual` se compare karta hoon, `===` se nahi, taaki timing attack se info leak na ho. Async variant taaki libuv thread pool pe chale, login endpoint block na ho. Passwords encrypt bilkul nahi karta — unhe kabhi wapas nahi chahiye, sirf compare, aur reversible rakhna key-leak pe total compromise hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Secrets compare karte waqt `a === b` mat likho. `===` pehle mismatched byte pe return kar deta hai; attacker response time measure karke secret byte-by-byte guess kar sakta hai. `crypto.timingSafeEqual(bufA, bufB)` hamesha constant time leta hai (dono buffers same length hone chahiye).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Stripe / GitHub webhook verification">
+
+Payment aur VCS webhooks ka standard: provider request body ko apni secret se HMAC-SHA256 karke ek header (`Stripe-Signature`, `X-Hub-Signature-256`) mein signature bhejta hai. Receiver **raw body** (parsed JSON nahi — byte-for-byte) pe same HMAC compute karta hai apni copy of the secret se, aur `crypto.timingSafeEqual` se compare karta hai. Match hua toh request genuine hai aur transit mein tamper nahi hui. Plain `sha256` yahan kaam nahi karta — attacker body aur hash dono replace kar sakta hai; HMAC ka secret hi wo cheez hai jo attacker ke paas nahi.
+
+</RealWorld>
+
+<RealWorld company="Encrypting PII columns in a BFSI app">
+
+Ek lending app customer ke PAN aur bank account number ko database mein plaintext nahi rakhti. Har value AES-256-GCM se encrypt hoti hai — data encryption key AWS KMS se aati hai (envelope encryption: KMS ek per-record data key deta hai, wo memory mein use hoke discard hoti hai). Stored payload = `iv || authTag || ciphertext`, base64. IV har row ke liye fresh `randomBytes(12)`. Read pe auth tag verify hota hai — agar koi DB row directly chhed de toh `decipher.final()` throw karta hai aur app us record ko corrupt flag karti hai bajaye galat data serve karne ke.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `crypto.randomBytes(32).toString("hex")` = **64 hex chars**, 256 bits entropy — session token ke liye standard.
+- AES-256 key = **32 bytes**; GCM IV = **12 bytes**; GCM auth tag = **16 bytes**.
+- `crypto.scrypt` / `crypto.pbkdf2` **async** versions libuv thread pool (default **4**) use karte hain; sync versions main thread block karte hain.
+- Password hash ka target: **~200-300 ms** per hash — insaan ke login ke liye unnoticeable, brute-force ke liye deadly.
+- `sha256` ~cents-per-billion on GPU; `bcrypt` cost 12 ≈ **250 ms** per hash — ~10 orders of magnitude slower on purpose.
+- `crypto.randomUUID()` Node **v14.17+**; `crypto.getRandomValues` (Web Crypto) Node **v15+**.
+- `MD5` aur `SHA-1` collision-broken — **kabhi** signatures/integrity ke liye nahi (legacy checksums only).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Security-flavoured backend interviews mein ye pakka aata hai — mostly "passwords kaise store karoge?" aur "webhook/token kaise verify karoge?"
+
+Achhe jawaab ka shape:
+
+1. **Right tool** — hash (fingerprint), HMAC (keyed integrity/auth), encryption (reversible secret), password KDF (slow, salted).
+2. **Passwords** — `bcrypt`/`argon2`/`scrypt`, per-user salt, tuned work factor (~250ms); never `sha256`, never encryption.
+3. **Randomness** — `crypto.randomBytes`/`randomUUID`/`randomInt`, never `Math.random()` for anything security-relevant.
+4. **Comparison** — `crypto.timingSafeEqual`, never `===`, for secrets/signatures.
+5. **AES** — GCM (authenticated), fresh random IV per message, key from KMS/secret-manager, store `iv+tag+ciphertext`.
+6. **"Don't roll your own"** — standard primitives/modes ya proven libraries.
+
+Red flags: "passwords ko sha256 kar deta hoon", "Math.random() se token", "`if (sig === expected)`", "apna encryption likha hai jo bahut secure hai".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Passwords ko `sha256` / `md5` se hash karna.** Ye hashes GPU pe billions-per-second compute hote hain — poora leaked DB dino mein crack. Password hashing deliberately slow honi chahiye: `bcrypt`, `argon2id`, ya built-in `scrypt`, per-user random salt ke saath, work factor tuned to ~200-300ms.
+
+</Mistake>
+
+<Mistake>
+
+**Passwords ko encrypt karna (decrypt kar sakein isliye).** Password ko kabhi wapas plaintext mein nahi chahiye — sirf compare. Encryption reversible hai, toh key leak = saare passwords exposed. One-way KDF use karo; "forgot password" reset flow se solve hota hai, decrypt se nahi.
+
+</Mistake>
+
+<Mistake>
+
+**`Math.random()` se tokens, OTP, ya keys banana.** `Math.random()` ek fast PRNG hai, cryptographically predictable — attacker output se aage ke values guess kar sakta hai. Security-relevant randomness ke liye hamesha `crypto.randomBytes`, `crypto.randomUUID`, ya `crypto.randomInt`.
+
+</Mistake>
+
+<Mistake>
+
+**Signatures / secrets ko `===` se compare karna.** `===` (aur `Buffer.compare` early-exit) mismatch pe jaldi return karta hai; timing difference se attacker secret byte-by-byte recover kar sakta hai. `crypto.timingSafeEqual(a, b)` constant-time hai (equal-length buffers required).
+
+</Mistake>
+
+<Mistake>
+
+**AES-GCM ke saath IV (nonce) reuse karna, ya hardcoded IV.** Same key + same IV do baar = GCM ki security poori tarah tootti hai (auth key recover ho sakti hai, plaintexts XOR-leak). Har encryption pe fresh `crypto.randomBytes(12)`, aur IV ko ciphertext ke saath store karo (secret nahi hai). Bonus mistake: CBC/ECB mode use karna GCM ke bajaye — no built-in integrity.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Kya problem solve kar rahe ho?"] --> B{"?"}
+    B -->|"Content fingerprint / dedup / ETag"| C["createHash('sha256')"]
+    B -->|"Message tamper-proof + sender verify (attacker present)"| D["createHmac('sha256', secret) + timingSafeEqual"]
+    B -->|"Secret ko store karo, baad me wapas plaintext chahiye"| E["AES-256-GCM: fresh IV + auth tag, key from KMS"]
+    B -->|"User ka password"| F["scrypt / argon2 / bcrypt: per-user salt, ~250ms, async"]
+    B -->|"Random token / id / OTP"| G["crypto.randomBytes / randomUUID / randomInt"]
+`}
+  caption="Har row ek alag problem hai — hash, HMAC, encryption, password KDF, aur CSPRNG interchangeable nahi hain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Hash** (`createHash`) — one-way fingerprint. Dedup, ETag, non-adversarial integrity. `sha256`; `md5`/`sha1` broken.
+- **HMAC** (`createHmac` + secret) — keyed. Webhook/API signature verify. Compare with `timingSafeEqual`.
+- **Encryption** (AES-256-GCM) — reversible with key. Fresh random **IV per message**, store `iv+tag+ciphertext`, key from KMS. GCM = authenticated (tamper → `final()` throws).
+- **Password hash** — slow KDF (`scrypt`/`argon2`/`bcrypt`), per-user random salt, ~250ms. **Never** `sha256`, **never** encryption.
+- **Randomness** — `crypto.randomBytes` / `randomUUID` / `randomInt`. **Never** `Math.random()` for security.
+- **Compare secrets** — `crypto.timingSafeEqual(a, b)` (equal length), **never** `===`.
+- `pbkdf2`/`scrypt` **async** → libuv thread pool (4). Sync versions block main thread — not on login routes.
+- **Don't roll your own crypto** — standard primitives/modes or proven libraries (`argon2`, `jsonwebtoken`, `libsodium`).
+- `randomBytes(32).toString("hex")` = 64-char, 256-bit token.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek function likho jo kisi file ka SHA-256 hash `hex` mein return kare (`fs.readFile` + `createHash`). Same file do baar chalao — hash identical hona chahiye. Ek byte badlo — hash poora badal jaana chahiye.
+
+**Medium:** `signPayload(body, secret)` aur `verifyPayload(body, secret, signature)` likho HMAC-SHA256 se. `verify` mein `crypto.timingSafeEqual` use karo. Ek test: sahi signature → true; body mein ek char badlo, same signature → false; secret galat → false.
+
+**Bada:** `hashPassword(pw)` aur `verifyPassword(pw, stored)` implement karo `crypto.scrypt` (async) se, `stored` format `salt:key` (dono hex). Salt `randomBytes(16)`. Phir `console.time` se measure karo ek hash kitne ms leta hai; `scrypt` ke cost params (`N`) badhaake ~250ms target karo. Bonus: `verifyPassword` mein `timingSafeEqual` use karo aur explain karo `===` kyun galat hota.
+
+</Callout>

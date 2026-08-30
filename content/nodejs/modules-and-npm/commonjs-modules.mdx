@@ -1,0 +1,311 @@
+---
+slug: "commonjs-modules"
+title: "CommonJS Modules (require / module.exports)"
+section: "nodejs"
+module: "modules-and-npm"
+order: 1
+difficulty: "beginner"
+readingTime: 16
+prerequisites: []
+tags: ["nodejs", "modules", "commonjs", "require", "module-exports", "fundamentals"]
+englishDefinition: "CommonJS is Node's original module system. Each file is its own module: you expose values with module.exports and pull other modules in with a synchronous require() call. Node wraps every file in a function that injects module, exports, require, __filename and __dirname, loads each file only once, and caches the resulting exports object so repeated requires return the same value."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+CommonJS is Node's **original** module system. Every file is its own module with its own scope — nothing leaks to global unless you put it on `module.exports`. You import other modules with a **synchronous** `require()` call. Node wraps each file in a hidden function that hands it `module`, `exports`, `require`, `__filename` and `__dirname`, runs the file **once**, and caches the result so the next `require()` of the same file returns the exact same object.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node se pehle browser JavaScript mein modules the hi nahi — sab kuch ek global `window` pe chipak jaata tha aur naam ke jhagde hote the. Node ne 2009 mein CommonJS adopt kiya taaki har file ka apna scope ho aur code reusable ban sake. Aaj bhi npm ka bada hissa CommonJS mein hai, isliye ye samajhna zaroori hai.
+
+### Ye kya hai — CommonJS module
+
+Ek `.js` file = ek module. Us file mein jo bhi `const`, `function` likha wo **us file ke andar hi** rehta hai — global nahi banta. Doosri file ko kuch dena hai toh `module.exports` pe rakho. Doosri file ka kuch chahiye toh `require("./path")` karo.
+
+```javascript
+// math.js
+function add(a, b) {
+  return a + b;
+}
+module.exports = { add };
+
+// app.js
+const math = require("./math");
+console.log(math.add(2, 3)); // 5
+```
+
+`require` ek **normal function** hai jo synchronously chalta hai, file ko load karta hai, aur uska `module.exports` return karta hai.
+
+### Ye kyun exist karta hai
+
+Teen problems solve karta hai:
+
+- **Naam ke jhagde** — har file ka apna scope, toh do files mein same variable naam safe hai.
+- **Explicit dependencies** — file ke top pe `require` lines dekh ke pata chal jaata hai ye module kis pe depend karta hai.
+- **Reusability** — ek baar likha `logger.js` poori app mein `require` kar sakte ho.
+
+### Internally kaise kaam karta hai
+
+Jab Node kisi file ko load karta hai, wo file ke code ko as-is nahi chalata — pehle use ek **wrapper function** mein lapet deta hai:
+
+```javascript
+(function (exports, require, module, __filename, __dirname) {
+  // tumhari file ka poora code yahan aata hai
+});
+```
+
+Isi wajah se har module ko ye 5 cheezein "magically" milti hain — wo actually is wrapper ke **parameters** hain, koi global nahi:
+
+- `module` — is module ko represent karne wala object; `module.exports` isi ke andar hai.
+- `exports` — shuru mein `module.exports` ka hi ek **shortcut reference** (`exports === module.exports`).
+- `require` — is file ke location ke hisaab se resolve karne wala function.
+- `__filename` — is file ka absolute path.
+- `__dirname` — is file ke folder ka absolute path.
+
+Wrapper chalne ke baad Node `module.exports` ki value uthata hai aur use **cache** mein daal deta hai, key = resolved absolute path. Agli baar koi bhi file usi module ko `require` kare toh Node file dobara **nahi** chalata — cache se wahi object turant de deta hai.
+
+### `exports` vs `module.exports` — asli gotcha
+
+`exports` sirf ek local variable hai jo shuruaat mein `module.exports` ko point karta hai. **Return hamesha `module.exports` hota hai**, `exports` nahi.
+
+```javascript
+// theek — dono ek hi object ko point kar rahe hain, property add ho rahi hai
+exports.add = (a, b) => a + b;
+
+// theek
+module.exports = { add: (a, b) => a + b };
+
+// TOOTA HUA — `exports` ko naya object de diya, ab wo module.exports se disconnect
+exports = { add: (a, b) => a + b };
+// require karne wale ko `{}` milega, kyunki module.exports abhi bhi purana khali object hai
+```
+
+Rule: property add karni ho toh `exports.foo = ...` chalega; **poora object replace** karna ho toh hamesha `module.exports = ...` likho.
+
+### Simple real-life analogy
+
+Module cache ek **office ki shared printer setup** jaisa hai. Pehla banda "printer install karo" bolta hai — driver load hota hai, config hoti hai (file chalti hai). Doosra, teesra banda bhi "printer chahiye" bolta hai — koi dobara install nahi hota, sabko **wahi ek installed printer** mil jaata hai (cached exports).
+
+`require` khud ek **courier** hai jo turant jaake parcel le aata hai aur tumhara kaam tab tak ruka rehta hai (synchronous) — courier ke wapas aane tak agli line nahi chalti.
+
+### Code — line by line
+
+```javascript
+// config.js
+console.log("config.js chal rahi hai");
+module.exports = { port: 3000 };
+
+// server.js
+const c1 = require("./config");
+const c2 = require("./config");
+console.log(c1.port);      // 3000
+console.log(c1 === c2);    // true
+console.log(__dirname);    // is file ka folder
+```
+
+- `require("./config")` pehli baar — Node `config.js` ko resolve karta hai, wrapper mein daalta hai, chalata hai. `"config.js chal rahi hai"` **ek baar** print hota hai.
+- Us run ka `module.exports` (`{ port: 3000 }`) cache mein `resolvedPath -> exports` ke roop mein store ho jaata hai.
+- `require("./config")` doosri baar — Node file dobara nahi chalata; cache se **wahi** object deta hai. Isliye `"config.js chal rahi hai"` dobara print **nahi** hota.
+- `c1 === c2` `true` — dono ek hi cached object.
+- `__dirname` — courier ko pata hai wo kaunse folder mein khada hai.
+
+### Circular dependency — kya hota hai
+
+Do modules ek doosre ko `require` karein toh Node crash nahi karta — wo **partial exports** de deta hai.
+
+```javascript
+// a.js
+exports.name = "A";
+const b = require("./b");
+console.log("a.js ko mila b.done =", b.done);
+exports.done = true;
+
+// b.js
+const a = require("./a");            // a.js abhi aadha chala hai
+console.log("b.js ko mila a.done =", a.done); // undefined!
+exports.done = true;
+```
+
+Jab `a.js` `require("./b")` karta hai, `b.js` chalne lagti hai aur `require("./a")` karti hai. Us waqt `a.js` **poori nahi chali** — `exports.done` abhi set nahi hua. Toh `b.js` ko `a.done` `undefined` milta hai. Lesson: circular deps se bacho; agar zaroori ho toh values ko function ke andar (lazy) `require` karo, file ke top pe nahi.
+
+### Day-to-day use
+
+- `const express = require("express")` — har CJS project ki pehli line.
+- Apne helper modules: `const { formatDate } = require("./utils/date")`.
+- JSON seedha load: `const pkg = require("./package.json")` — Node `.json` ko parse karke object deta hai.
+- Conditional load: `if (isDev) require("./devTools")` — `require` ek expression hai, kahin bhi likh sakte ho.
+
+### Kab use karna chahiye
+
+- Existing CJS codebase mein — consistency ke liye wahi rakho.
+- Quick scripts / CLI tools jahan build step nahi chahiye.
+- Jab kisi dependency ko **conditionally** ya lazily load karna ho (ESM ka static `import` ye seedhe nahi karne deta).
+
+### Kab use nahi karna chahiye
+
+- Naya greenfield project 2024+ mein — ESM default choice hai (tree-shaking, standard syntax, top-level await).
+- Jab tumhe browser aur Node dono ke liye ek hi source chahiye — ESM zyada portable hai.
+- Jab library publish kar rahe ho jise modern bundlers optimize karein — ESM (ya dual) better.
+
+### Pros and cons
+
+**Pros**
+
+- Simple mental model: `require` ek function, `module.exports` ek object.
+- Synchronous — load hone ke baad value turant available, no `await`.
+- Dynamic — `require` ko variable path ke saath, `if` ke andar, function ke andar bula sakte ho.
+- Har purana npm package isi mein hai — universal support.
+
+**Cons**
+
+- Synchronous load bade dependency trees mein startup slow kar sakta hai.
+- Static analysis mushkil — bundlers tree-shake theek se nahi kar paate.
+- `exports = ...` wali galti common hai.
+- Circular deps silently partial object dete hain — debug karna painful.
+- Top-level `await` nahi milta.
+
+### Alternatives
+
+- **ES Modules (`import`/`export`)** — standard JS syntax, async graph load, tree-shakeable, top-level await. Naye projects ke liye default.
+- **Bundler (webpack/esbuild/Rollup)** — build time pe modules ko resolve/combine karta hai; dono syntax samajh leta hai.
+- **`import()` dynamic** — ESM mein bhi conditional/lazy loading milta hai, bas Promise return karta hai.
+
+### Interview mein "Why CommonJS here and not ESM?"
+
+> "Ye ek internal CLI tool tha jise hum bina build step ke `node cli.js` se chalate the, aur ek plugin folder se modules **conditionally** `require` karta tha runtime pe — CJS ka synchronous dynamic `require` iske liye seedha fit tha. Naye HTTP service ke liye humne ESM chuna kyunki wahan top-level await aur tree-shaking ka fayda tha. Ek shared utils package humne dual-published kiya taaki dono taraf ke consumers kaam kar sakein."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`module.exports` aur `exports` shuru mein **same object** hain. `exports.foo = 1` safe hai. Lekin `exports = something` likhte hi link toot jaata hai aur require karne wale ko `{}` milta hai. Poora replace karna ho toh hamesha `module.exports =` likho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express aur legacy npm ecosystem">
+
+Express 4.x, `lodash`, `async`, `chalk@4`, `node-fetch@2` — 2020 se pehle ka poora npm ecosystem CommonJS mein publish hua tha. Ek typical service ki `server.js` bees-tees `require()` lines se shuru hoti hai, aur ye sab synchronous load hoti hain process boot ke waqt. Yahi wajah hai ki bade Node apps ka "cold start" (Lambda vagairah) kabhi-kabhi seconds mein jaata hai — sirf module graph resolve karne aur har file ko wrapper mein chalane mein time lagta hai. Cache is cheez ko bachata hai: `require("express")` chahe 50 files mein ho, Express ka code **ek hi baar** evaluate hota hai.
+
+</RealWorld>
+
+<RealWorld company="Config aur JSON loading">
+
+Bahut si teams `require("./config.json")` ya `require("./package.json")` use karti hain kyunki Node `.json` files ko automatically parse karke object deta hai, aur cache ki wajah se wo file disk se sirf ek baar padhi jaati hai chahe app mein kai jagah use ho. Iska flip side: agar file runtime pe badal jaaye toh `require` purani cached copy hi deta rahega — isiliye "hot reload config" ke liye log `delete require.cache[require.resolve("./config.json")]` karte hain ya `fs.readFile` pe switch kar dete hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- CommonJS Node mein **v0.x (2009)** se hai — ES Modules stable **v13.2 (2019)** mein, unflagged, aaye.
+- Har module ka wrapper function inject karta hai exactly **5** identifiers: `exports`, `require`, `module`, `__filename`, `__dirname`.
+- Har module file lifetime mein **ek hi baar** evaluate hoti hai; uske baad har `require` `O(1)` cache lookup hai.
+- `require.resolve(id)` tumhe wo **absolute path** deta hai jise Node cache key ki tarah use karta — debugging mein kaam aata hai.
+- Circular dependency mein jo module abhi load ho raha hai wo `require` karne par uska **partial** (abhi tak set hue) `module.exports` milta hai, error nahi.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic screening round ka pakka sawaal hai, aksar is form mein: "`module.exports` aur `exports` mein farak?" ya "`require` ke baad file dobara chalti hai kya?". Interviewer dekh raha hai ki tumhe module **caching** aur **wrapper** ka pata hai ya sirf syntax ratta hai.
+
+Achhe jawaab ka shape:
+
+1. **Ek file = ek module, apna scope** — wrapper function ki wajah se.
+2. **`require` synchronous hai** aur `module.exports` return karta hai; `exports` sirf uska alias hai jise reassign mat karo.
+3. **Cache** — module ek baar chalta hai, phir wahi object har `require` ko milta hai (singleton pattern isi pe bana).
+4. **Circular deps** — Node partial exports deta hai, crash nahi; islie design mein avoid karo.
+5. **Trade-off** — naye code mein ESM, lekin dynamic/conditional load ya legacy codebase mein CJS theek hai.
+
+Red flag: "`require` har baar file ko dobara execute karta hai" — nahi, sirf pehli baar; uske baad cache.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`exports` ko reassign kar dena.** `exports = { add }` likhne se `exports` ab ek naye object ko point karta hai jo `module.exports` se juda nahi. Require karne wale ko purana khali `{}` milta hai. Poora object export karna ho toh `module.exports = { add }` likho; sirf property add karni ho toh `exports.add = ...` theek hai.
+
+</Mistake>
+
+<Mistake>
+
+**Yeh sochna ki `require` async hai ya file har baar dobara chalti hai.** `require` **blocking** hai — jab tak module load nahi hota agli line nahi chalti — aur module ka top-level code sirf **pehli** baar chalta hai. Agar tum module ke top pe `console.log` laga ke expect karte ho ki har `require` pe print ho, toh galat: sirf ek baar print hoga.
+
+</Mistake>
+
+<Mistake>
+
+**Cache ka side effect na samajhna.** Ek module `let count = 0` rakhta hai aur `increment()` export karta hai. Do alag files use `require` karti hain — dono ko **wahi** `count` milta hai, alag copy nahi. Kai baar log expect karte hain "fresh state per import" — CJS mein aisa nahi hota, module ek shared singleton hai.
+
+</Mistake>
+
+<Mistake>
+
+**Circular dependency mein top-level pe destructure karna.** `const { helper } = require("./b")` jab `b.js` abhi aadha chala hai — `helper` `undefined` aa sakta hai. Agar circular structure majboori hai toh `const b = require("./b")` rakho aur `b.helper()` **use karte waqt** access karo, top pe destructure mat karo.
+
+</Mistake>
+
+<Mistake>
+
+**Relative path pe `./` bhoolna.** `require("utils")` aur `require("./utils")` bilkul alag hain. Pehla Node ko `node_modules` mein `utils` package dhoondhne bhejta hai; doosra current folder ki `utils.js` file load karta hai. Apni local file ke liye hamesha `./` ya `../` se shuru karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["require('./math') call"] --> B{"Cache me hai?"}
+    B -->|haan| C["Cached module.exports turant return"]
+    B -->|nahi| D["Path resolve karo -> absolute path"]
+    D --> E["File ko wrapper function me lapeto"]
+    E --> F["Wrapper chalao: exports, require, module, __filename, __dirname inject"]
+    F --> G["module.exports ki value cache me daalo (key = absolute path)"]
+    G --> C
+`}
+  caption="Pehli require file ko chalati hai aur cache karti hai; har agli require sirf cache lookup hai — isliye module ka top-level code ek hi baar chalta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Ek file = ek module**, apna scope; global mein kuch leak nahi hota.
+- Node har file ko `(function (exports, require, module, __filename, __dirname) { ... })` wrapper mein chalata hai.
+- `require()` **synchronous** hai aur module ka `module.exports` return karta hai.
+- `exports` sirf `module.exports` ka alias — `exports.foo = ...` theek, `exports = ...` **toota hua**.
+- **Cache**: module ka code ek baar chalta hai; har agla `require` wahi object deta hai (singleton).
+- Cache key = **resolved absolute path** (`require.resolve` se dekho).
+- **Circular deps** — Node partial `module.exports` deta hai, crash nahi; design mein avoid karo.
+- `require("x")` = `node_modules` package; `require("./x")` = local file. `./` mat bhoolo.
+- `.json` files `require` par automatically parse hoke object banti hain.
+- 2024+ naye projects: ESM default; CJS tab jab dynamic/conditional load ya legacy codebase ho.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Do files banao — `greet.js` jo `module.exports = (name) => "Hi " + name` karti hai, aur `main.js` jo use `require` karke `greet("Vasant")` print kare. Phir `greet.js` ko `exports = (name) => ...` mein badlo aur dekho `main.js` kya error deta hai — samjhao kyun.
+
+**Medium:** Ek `counter.js` banao jo `let n = 0` rakhe aur `{ inc, get }` export kare. `a.js` aur `b.js` dono `require("./counter")` karein, `a.js` `inc()` do baar kare, `b.js` `get()` print kare. Output predict karo, phir chalao — samjhao ki `b.js` ko `2` kyun mila.
+
+**Bada:** `a.js` aur `b.js` ke beech circular `require` banao (upar wale example jaisa). Har file ke top pe aur end pe `console.log` lagao. Output ka exact order likho **chalane se pehle**, phir verify karo aur explain karo ki kaun sa `exports` `undefined` tha aur kyun.
+
+</Callout>

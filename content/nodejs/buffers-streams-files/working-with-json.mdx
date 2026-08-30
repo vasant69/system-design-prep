@@ -1,0 +1,283 @@
+---
+slug: "working-with-json"
+title: "Working with JSON"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 7
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["streams-introduction"]
+tags: ["nodejs", "json", "parsing", "ndjson", "event-loop", "streaming"]
+englishDefinition: "JSON.parse turns a JSON string into a JavaScript value and JSON.stringify does the reverse. Both are synchronous and run in O(n) of the input size, so parsing or building a very large JSON string blocks the event loop and spikes memory. For big data the fix is a line-delimited format (NDJSON) with streaming, or a streaming JSON parser. reviver and replacer functions let you hook into the process, and several value types (BigInt, circular references, Date, undefined) need special handling."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+`JSON.parse` turns a JSON string into a JavaScript value; `JSON.stringify` does the reverse. Both are **synchronous** and run in **O(n)** of the input size, so parsing or building a very large JSON string blocks the event loop and spikes memory. For big data the fix is a line-delimited format (**NDJSON / JSON Lines**) with streaming, or a **streaming JSON parser**. `reviver` and `replacer` functions let you hook into the process, and several value types (`BigInt`, circular refs, `Date`, `undefined`) need special handling.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+JSON har Node app mein hai — request bodies, config, API responses, logs. Basics 2 minute ke hain. Asli interview cheez ye hai: `JSON.parse` aur `JSON.stringify` **synchronous** hain, aur bade payload pe ye event loop ko rok dete hain. Yahi is topic ka dil hai.
+
+### Ye kya hai — parse aur stringify
+
+- `JSON.parse(text)` — JSON string ko JS value (object/array/number/string/boolean/null) mein badalta hai. Invalid JSON pe `SyntaxError` **throw** karta hai.
+- `JSON.stringify(value)` — JS value ko JSON string mein. `undefined`, functions, aur `Symbol` ko **drop** kar deta hai (object mein) ya `null` bana deta hai (array mein).
+
+```javascript
+const obj = JSON.parse('{"id":7,"active":true}'); // { id: 7, active: true }
+const text = JSON.stringify({ id: 7, active: true }); // '{"id":7,"active":true}'
+```
+
+### Ye kyun matter karta hai — sync + O(n)
+
+`JSON.parse` aur `JSON.stringify` C++ mein implemented hain aur **poore** input pe ek hi synchronous pass lagate hain. Iska matlab:
+
+- **Event loop block** — ek 100 MB JSON body parse karne mein ~1-2 seconds lag sakte hain, aur us dauraan tumhara Node process **kuch nahi** kar sakta: na doosri requests, na timers, na health checks. Load balancer socha "server mar gaya" aur traffic hata leta hai.
+- **Memory spike** — parse ke waqt input string (100 MB) + resulting object graph (aksar 2-5x, kyunki har key/value alag JS object) dono memory mein. 100 MB JSON = 300-600 MB RAM ka jhatka.
+- **`stringify` bhi same** — ek bade array ko `JSON.stringify` karke `res.send()` karna wahi block + spike deta hai.
+
+### Internally kaise kaam karta hai
+
+`JSON.parse` V8 ka ek recursive-descent parser call karta hai: character-by-character scan, tokens (`{`, `}`, `:`, strings, numbers) pehchano, aur ek JS value tree banao. Poora kaam ek synchronous function call hai — beech mein event loop ko yield nahi karta. Isliye 100 MB pe wo poore 100 MB ke through ek baar mein jaata hai.
+
+`JSON.stringify` ulta: value tree ko recursively walk karta hai, har node ke liye string banata hai, sab concat karta hai. `replacer` function (agar diya) har key-value pe call hota hai. Circular reference pe recursion khatam nahi hoti — V8 detect karke `TypeError: Converting circular structure to JSON` throw karta hai.
+
+### Simple real-life analogy
+
+`JSON.parse` ek 500-page contract ko ek hi baithak mein poora padhke uska summary banana hai — jab tak tum padh rahe ho, phone nahi utha sakte, darwaza nahi khol sakte. Chhota 2-page contract? Koi baat nahi. 500 pages har 5 minute mein? Tumhara poora din block. Solution: contract ko **ek-ek page** karke process karo aur beech-beech mein doosre kaam karo — yahi streaming / NDJSON hai.
+
+### Code — line by line
+
+```javascript
+// ALWAYS wrap parse in try/catch
+function safeParse(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// reviver: parse ke dauraan har value transform karo
+const data = JSON.parse(raw, (key, value) => {
+  if (key === "createdAt") return new Date(value); // string -> Date
+  return value;
+});
+
+// replacer + spacing: readable logs
+console.log(JSON.stringify(user, ["id", "name"], 2)); // sirf id, name; 2-space indent
+```
+
+- `try { JSON.parse(text) } catch` — `parse` untrusted input (HTTP body, file, queue message) pe kabhi bhi throw kar sakta hai. Bina `try/catch` ek malformed body poora process crash kar deta hai.
+- `JSON.parse(raw, reviver)` — `reviver(key, value)` har parsed key-value pe call hota hai, bottom-up. Jo return karo wahi final value banti hai. Common use: date strings ko `Date` banana, numbers ko `BigInt` banana.
+- `JSON.stringify(value, replacer, space)` — `replacer` ya to ek function (har key-value filter/transform) ya ek **array of keys** (whitelist) ho sakta hai. `space` (number ya string) pretty-print ke liye.
+
+### The big-JSON problem — kya karein
+
+Jab payload bada hai (10s of MB+), do approaches:
+
+**1. NDJSON / JSON Lines** — ek bade JSON array ke bajaye, har line ek chhota independent JSON object:
+
+```text
+{"id":1,"name":"A"}
+{"id":2,"name":"B"}
+{"id":3,"name":"C"}
+```
+
+Ab tum `readline` se line-by-line padho, har line pe chhota `JSON.parse` (fast, non-blocking-ish kyunki chhota), process karo, aur aage badho. Memory ek line jitni. Ye exports, log shipping, aur data pipelines ka standard format hai (Elasticsearch bulk API, BigQuery loads, `pino` logs — sab NDJSON).
+
+**2. Streaming JSON parser** — agar format ek hi bada JSON document hai jise tum badal nahi sakte, `stream-json` (ya `JSONStream`) library use karo. Ye document ko token stream ki tarah parse karti hai aur tumhe `Readable`/pipeline mein objects deti hai bina poora tree banaye:
+
+```javascript
+const { parser } = require("stream-json");
+const { streamArray } = require("stream-json/streamers/StreamArray");
+
+pipeline(
+  fs.createReadStream("big-array.json"),
+  parser(),
+  streamArray(),
+  async function (source) {
+    for await (const { value } of source) {
+      handle(value); // ek-ek element, constant memory
+    }
+  },
+  (err) => { if (err) console.error(err); }
+);
+```
+
+### Day-to-day use
+
+- HTTP request body parsing — Express `express.json()` andar `JSON.parse` karta hai, isliye uska `limit` option (default 100 KB) hota hai.
+- Config files — `JSON.parse(readFileSync(...))` at boot.
+- Structured logs — `JSON.stringify(logObj)` per line (NDJSON).
+- API responses — `res.json(obj)` = `JSON.stringify` + `Content-Type`.
+- Deep-clone (chhote plain objects) — `JSON.parse(JSON.stringify(obj))` (lossy — Dates, undefined, functions).
+
+### Kab plain `JSON.parse`/`stringify` theek hai
+
+- Payload chhota hai — few KB to low MB.
+- Ek baar ka kaam (config at boot, ek request body under a sane limit).
+- Poora object graph waise bhi chahiye memory mein.
+
+### Kab NAHI — streaming/NDJSON pe jao
+
+- Payload 10s of MB+ ya unbounded (user upload, bulk export, DB dump).
+- Ye request hot path pe hai aur high throughput chahiye.
+- Tumhe sirf stream process karna hai (filter, transform, load) — poora tree kabhi nahi chahiye.
+
+### Pros and cons
+
+**`JSON.parse`/`stringify` — Pros**: built-in, zero deps, C++-fast for small input, spec-standard. **Cons**: synchronous (event loop block on big input), memory 2-5x of input, `BigInt`/circular/`Date`/`undefined` gotchas, all-or-nothing (partial parse nahi).
+
+**NDJSON + streaming — Pros**: constant memory, non-blocking, resumable, appendable. **Cons**: format tumhe control karna padta hai, har line ka apna parse, aggregate operations (total, sort) manual.
+
+### Alternatives
+
+- **`stream-json` / `JSONStream`** — bada single JSON document streaming parse.
+- **NDJSON (`ndjson` npm, ya manual `readline`)** — line-delimited records.
+- **`JSON.parse` in a Worker Thread** — agar bada blob unavoidable hai, parse ko alag thread pe daal do taaki main event loop free rahe.
+- **`fast-json-stringify`** — schema se pre-compiled stringify, big responses pe 2-5x faster (Fastify use karta hai).
+- **Protocol Buffers / MessagePack** — binary formats, chhote aur faster parse, jab dono ends tumhare control mein hon.
+- **`v8.serialize` / `structuredClone`** — deep-clone ke liye `JSON.parse(JSON.stringify())` se better (Dates, Maps preserve).
+
+### Interview mein "Why NDJSON instead of a JSON array here?"
+
+> "Endpoint ko ek analytics job ko 2 GB tak ka event export dena tha. Ek `[...]` JSON array bhejne ka matlab tha client ko poora `JSON.parse` karna — ~5 s event loop block aur 6 GB+ RAM. Maine response ko NDJSON banaya: server har event ko `JSON.stringify` karke ek line likhta hai stream mein, client `readline` se line-by-line padhke process karta hai. Dono taraf memory constant ~50 MB rahi, aur client processing shuru kar deta hai pehli line milte hi — poora download khatam hone ka wait nahi. Jahan payloads chhote the (single user object) wahan maine normal `res.json` rakha — over-engineering ka koi matlab nahi tha."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`JSON.parse` par hamesha `try/catch`. Untrusted input (HTTP body, file, queue message) kabhi bhi malformed ho sakta hai, aur ek uncaught `SyntaxError` poore process ko le doobta hai. `JSON.stringify` sirf tab throw karta hai jab circular reference ho ya `BigInt` ho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express body parsing & the payload limit">
+
+`express.json()` middleware har request ka body buffer karke `JSON.parse` karta hai. Iska default `limit` **100 KB** hai — jaan-boojhke chhota, kyunki har request pe synchronous parse hota hai aur ek bada body event loop ko block karke poore server ki latency badha deta hai. Log jab `413 Payload Too Large` dekhte hain to `limit: '50mb'` daal dete hain bina soche — ye ek DoS vector khol deta hai: 20 concurrent 50 MB bodies = 1 GB buffered + serial parsing = server frozen. Sahi fix aksar hota hai ki bade uploads ko multipart/stream se lo, JSON body mein nahi.
+
+</RealWorld>
+
+<RealWorld company="Structured logging (pino / NDJSON everywhere)">
+
+`pino`, Node ka fastest logger, har log line ko ek single-line JSON object ki tarah likhta hai — yani NDJSON. Wajah: (1) har line independent hai, `tail -f` aur `grep` kaam karte hain; (2) log shippers (Fluent Bit, Vector) line-by-line stream karte hain bina poori file parse kiye; (3) crash ke waqt aadhi file bhi useful hai — sirf aakhri adhoori line kharab hoti hai. Agar logs ek bada JSON array hote to file kabhi "complete" nahi hoti jab tak process zinda hai, aur analysis ke liye poora array memory mein laana padta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `JSON.parse` / `stringify` dono **synchronous**, **O(n)** input size mein — koi yield point nahi.
+- Rough guidance: **~10 MB+** JSON ek single parse mein noticeable event-loop stall (10s of ms) deta hai; **100 MB** pe 1-2 s freeze.
+- Parsed object graph aksar source string ka **2x-5x** memory leta hai (har key/value ek alag JS heap object).
+- `express.json()` default body `limit`: **100 KB** (`100kb`).
+- `fast-json-stringify` (schema-compiled) bade responses pe `JSON.stringify` se **2x-5x** faster.
+- NDJSON streaming pe memory **constant** (~ek line + buffer), chahe file 1 MB ho ya 100 GB.
+- `JSON.stringify(obj, null, 2)` — teesra arg `2` = 2-space indent, logs/config ke liye standard.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic aksar event-loop discussion ke saath aata hai. Interviewer dekhta hai: (1) tum jaante ho `JSON.parse`/`stringify` sync hain aur bade input pe block karte hain, (2) tumhare paas bada-payload ka concrete plan hai (NDJSON / streaming parser / worker thread), (3) tum gotchas jaante ho (`try/catch`, `BigInt`, circular, `Date`).
+
+Achhe jawaab ka shape:
+
+1. **Basics** — "`parse` string se value, `stringify` ulta; `parse` untrusted input pe throw karta hai, isliye `try/catch`."
+2. **The problem** — "dono sync + O(n); 100 MB body = ~1-2 s event loop freeze + 3-5x memory spike."
+3. **Fix** — "format control mein ho to NDJSON + `readline`; ek bada document ho to `stream-json`; unavoidable blob ho to worker thread."
+4. **Gotchas** — "`BigInt` serialize nahi hota, circular ref throw karti hai, `Date` string ban jaati hai (reviver se wapas), `undefined` drop ho jaata hai."
+
+Red flag: "`JSON.parse` async hai" ya "bade JSON ke liye bas `limit` badha do".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`JSON.parse` ko `try/catch` ke bina call karna.** Untrusted input — HTTP body, file content, Kafka/SQS message — kabhi bhi malformed ho sakta hai, aur `JSON.parse` tab `SyntaxError` **throw** karta hai. Agar wo ek async context ya event handler mein hai to uncaught exception poore process ko crash kar deta hai. Har `parse` on external data `try/catch` mein.
+
+</Mistake>
+
+<Mistake>
+
+**Bade payload ke liye `express.json()` ka `limit` badha dena.** `413` aaya to `limit: '100mb'` daal diya. Ab har request synchronously up to 100 MB parse hota hai — 10 concurrent aise requests event loop ko seconds ke liye freeze kar dete hain, ek asaan DoS. Bade data ko streaming/multipart se lo, JSON body limit mat badhao.
+
+</Mistake>
+
+<Mistake>
+
+**`BigInt` ko `JSON.stringify` karna aur expect karna kaam karega.** `JSON.stringify({ id: 9007199254740993n })` seedha `TypeError: Do not know how to serialize a BigInt` throw karta hai. Bade IDs ko string ki tarah serialize karo (`String(id)`) ya `replacer` mein handle karo, aur parse pe `reviver` se wapas `BigInt` banao.
+
+</Mistake>
+
+<Mistake>
+
+**`Date` ko round-trip safe maan lena.** `JSON.stringify(new Date())` ek ISO string deta hai, aur `JSON.parse` use wapas string hi rakhta hai — `Date` object **nahi**. Baad mein `data.createdAt.getFullYear()` `undefined is not a function` deta hai. `reviver` mein known date keys ko `new Date(value)` se revive karo.
+
+</Mistake>
+
+<Mistake>
+
+**`JSON.parse(JSON.stringify(obj))` ko general-purpose deep clone maan lena.** Ye `undefined` values, functions, `Symbol` keys drop kar deta hai; `Date` ko string bana deta hai; `Map`/`Set` ko `{}` bana deta hai; `NaN`/`Infinity` ko `null`; aur circular ref pe throw karta hai. Chhote plain-data objects ke liye theek, baaki sab ke liye `structuredClone(obj)` use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["JSON data aaya"] --> B["Size chhota? (few KB - low MB)"]
+    B -->|Yes| C["JSON.parse in try/catch — theek hai"]
+    B -->|No| D["Format tumhare control mein?"]
+    D -->|Yes| E["NDJSON: har record ek line + readline stream"]
+    D -->|No: ek bada JSON document| F["stream-json / JSONStream — token streaming parser"]
+    D -->|Blob unavoidable, ek baar| G["JSON.parse ko Worker Thread pe daalo"]
+    C --> H["Object graph memory mein — 2x-5x input size"]
+`}
+  caption="Bade JSON pe decision: format control mein ho to NDJSON, ek bada document ho to streaming parser, warna worker thread — plain JSON.parse sirf chhote payload pe."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `JSON.parse` string → value (throws `SyntaxError` on bad input); `JSON.stringify` value → string.
+- **Dono synchronous, O(n)** — bade input pe event loop block + 2x-5x memory spike.
+- `JSON.parse` on untrusted data hamesha `try/catch` mein.
+- Bada payload, format control mein: **NDJSON** (one JSON object per line) + `readline` streaming.
+- Bada single JSON document: **`stream-json`** / `JSONStream` — token streaming, constant memory.
+- Unavoidable big blob, one-off: `JSON.parse` in a **Worker Thread**.
+- `reviver` (`JSON.parse(text, reviver)`) — har value transform karo parse pe (date strings → `Date`).
+- `replacer` (`JSON.stringify(v, replacer, space)`) — function (filter/transform) ya keys-array (whitelist); `space` = pretty print.
+- Gotchas: `BigInt` throws; circular ref throws; `Date` → string (revive manually); `undefined`/functions/`Symbol` dropped.
+- Deep clone: `structuredClone(obj)` beats `JSON.parse(JSON.stringify(obj))` (lossy).
+- `express.json()` default limit **100 KB** — badhao mat, bade data streaming/multipart se lo.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `safeParse(text)` likho jo `{ ok: true, value }` ya `{ ok: false, error }` return kare, kabhi throw na kare. Valid aur invalid dono strings pe test karo.
+
+**Medium:** Ek object banao jismein ek `Date`, ek `undefined` field, aur ek `9999999999999999n` `BigInt` ho. `JSON.stringify` karke dekho kya hota hai (BigInt pe crash). Phir ek `replacer` likho jo `BigInt` ko string bana de aur `Date` ko `{ __date: iso }` bana de, aur ek matching `reviver` jo parse pe wapas original types de. Round-trip verify karo.
+
+**Bada:** Ek script jo 100k fake user records ko (a) ek `users.json` array file mein aur (b) ek `users.ndjson` file mein likhe. Phir dono ko padhne wale do functions likho — array wala `JSON.parse(readFileSync(...))`, NDJSON wala `readline` loop — aur dono ke `process.memoryUsage().heapUsed` aur time ko compare karo. File size 5x badha ke (500k records) dobara chalao aur note karo array wala kaise scale karta hai vs NDJSON.
+
+</Callout>

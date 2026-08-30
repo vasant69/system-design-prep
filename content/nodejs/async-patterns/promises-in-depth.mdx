@@ -1,0 +1,280 @@
+---
+slug: "promises-in-depth"
+title: "Promises In Depth"
+section: "nodejs"
+module: "async-patterns"
+order: 2
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["callbacks-and-callback-hell"]
+tags: ["nodejs", "promises", "then", "catch", "chaining", "async"]
+englishDefinition: "A Promise is an object representing the eventual result of an async operation. It is always in one of three states: pending, fulfilled, or rejected — and once it settles it never changes again. Chaining with .then() flattens nested async steps, a value returned from a .then handler passes to the next .then, a thrown error or returned rejected promise skips ahead to the next .catch, and .finally runs regardless of outcome."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **Promise** is an object that represents the eventual result of an asynchronous operation. It is always in exactly one of three states: **pending** (not done yet), **fulfilled** (done, has a value), or **rejected** (failed, has a reason). Once a Promise **settles** — fulfilled or rejected — it never changes again. `.then()` registers what to do on success, `.catch()` on failure, and `.finally()` runs either way. Chaining `.then()` calls flattens the pyramid of nested callbacks into a linear sequence.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topic mein dekha ki dependent async steps callbacks mein pyramid banate hain. Promise us pyramid ko ek **flat chain** mein badal deta hai, aur error handling ko ek jagah le aata hai. Ye topic Promise ke andar ki mechanics — states, chaining, error propagation — detail mein cover karta hai.
+
+### Ye kya hai — Promise
+
+Promise ek **object** hai jo keh raha hai: "abhi mere paas value nahi hai, lekin future mein ya toh ek value hogi (fulfilled), ya ek failure reason hoga (rejected)." Callback ke ulat — jahan tum ek function *dete* ho — Promise ek cheez *return* karta hai jise tum pass around kar sakte ho, store kar sakte ho, ya multiple `.then()` laga sakte ho.
+
+### Ye kyun exist karta hai
+
+Callbacks ke 4 structural problems the: nesting, repeated error handling, `err` shadowing, aur value forwarding. Promise ek first-class object hone ki wajah se:
+
+- **chaining** deta hai — har `.then` ek naya Promise return karta hai, isliye `a().then(b).then(c)` flat rehta hai
+- **single error path** deta hai — chain mein kahin bhi error ho, wo aage ke `.then` skip karke seedhe agle `.catch` pe jati hai
+- **value auto-forward** deta hai — ek `.then` se return value agle `.then` ko milti hai
+
+### Internally kaise kaam karta hai
+
+Ek Promise object ke andar 3 slots hote hain: state (`pending`/`fulfilled`/`rejected`), value/reason, aur callbacks ki ek list. Jab tum `.then(onFulfilled, onRejected)` call karte ho, ye handlers us list mein add ho jate hain aur `.then` **turant ek naya pending Promise return** karta hai.
+
+Jab original Promise settle hota hai:
+
+- agar **fulfilled** — `onFulfilled(value)` ko microtask queue mein schedule kiya jata hai
+- agar **rejected** — `onRejected(reason)` schedule hota hai
+- handler jo return kare, usse `.then` ka returned Promise resolve hota hai
+- handler jo **throw** kare, usse `.then` ka returned Promise **reject** hota hai
+
+Ye handlers hamesha **microtask** queue mein chalte hain — matlab current synchronous code khatam hone ke turant baad, `setTimeout` (macrotask) se pehle.
+
+**Thenable**: koi bhi object jiske paas `.then` method hai, use Promise machinery "Promise jaisa" treat karti hai. `Promise.resolve(thenable)` us thenable ko adopt kar leta hai. Isi wajah se `await` custom promise-like libraries ke saath bhi kaam karta hai.
+
+### Simple real-life analogy
+
+Promise ek **courier tracking number** hai. Parcel abhi raaste mein hai (pending). Do hi outcomes: parcel deliver ho jayega (fulfilled, tumhare paas saaman) ya "delivery failed - address wrong" ka message aayega (rejected, tumhare paas reason). Ek baar status final ho gaya toh badalta nahi. Tum tracking number kisi ko bhi de sakte ho ("jab aa jaye mujhe batana" = `.then`), aur "kuch bhi ho, mujhe confirm karna" = `.finally`.
+
+### Code — line by line
+
+```javascript
+function getUser(id) {
+  return new Promise((resolve, reject) => {
+    db.query("SELECT * FROM users WHERE id = ?", [id], (err, rows) => {
+      if (err) return reject(err);
+      if (rows.length === 0) return reject(new Error("user not found"));
+      resolve(rows[0]);
+    });
+  });
+}
+
+getUser(42)
+  .then((user) => {
+    console.log("got user:", user.name);
+    return getOrders(user.id); // ek Promise return kiya
+  })
+  .then((orders) => {
+    console.log("order count:", orders.length);
+    return orders[0].id;
+  })
+  .then((firstOrderId) => getLineItems(firstOrderId))
+  .then((items) => console.log("items:", items))
+  .catch((err) => console.error("chain failed at some step:", err.message))
+  .finally(() => console.log("done, cleanup"));
+```
+
+- `new Promise((resolve, reject) => { ... })` — executor function turant chalta hai. `resolve` call karo success pe, `reject` failure pe.
+- `if (err) return reject(err)` — callback ki error ko Promise rejection mein convert kiya. `return` zaroori.
+- `.then((user) => { ...; return getOrders(user.id); })` — handler ne ek **Promise** return kiya, isliye chain us Promise ke settle hone tak wait karti hai (nesting nahi).
+- doosra `.then((orders) => { ...; return orders[0].id; })` — handler ne ek **plain value** return ki, wo seedhe agle `.then` ko milti hai.
+- `.then((firstOrderId) => getLineItems(firstOrderId))` — implicit return (arrow, no braces) — Promise return.
+- `.catch((err) => ...)` — chain mein kisi bhi step pe reject ya throw hua toh yahan aayega, beech ke `.then` skip.
+- `.finally(() => ...)` — success ho ya fail, ye chalta hai. Koi argument nahi milta, aur chain ki final value ko badalta nahi.
+
+### `.then` ke 3 return cases — yaad rakho
+
+| Handler kya karta hai | `.then` ka returned Promise |
+| --- | --- |
+| plain value return (`return 5`) | us value se **fulfilled** |
+| Promise return (`return getX()`) | us Promise ke settle hone ka wait karke wahi state adopt |
+| throw karta hai (`throw new Error()`) | us error se **rejected** — agla `.catch` pakadta hai |
+| kuch return nahi karta | `undefined` se fulfilled — agla `.then` ko `undefined` milta hai |
+
+### Day-to-day use
+
+- `fetch(url).then(res => res.json()).then(data => ...)`
+- `fs.promises.readFile(path).then(...)`
+- DB drivers (`pg`, `mongoose`) ka promise API
+- `Promise.all([...])` parallel calls ke liye
+- Kisi callback API ko `new Promise` se wrap karna (ya `util.promisify`)
+
+### Kab use karna chahiye
+
+- Jab tum ek library likh rahe ho jo async result deti hai — Promise return karo, callback nahi
+- Jab tumhe parallel async chahiye — `Promise.all` / `allSettled`
+- Jab async result ko kisi aur function ko pass karna ho as a value
+
+### Kab use nahi karna chahiye
+
+- **Repeated events** — Promise sirf **ek baar** settle hota hai. Stream `data` event, `setInterval` — yahan EventEmitter/callback.
+- Jab async/await available hai aur tumhe complex conditional flow chahiye — raw `.then` chains conditionals ke saath jaldi ugly ho jaate hain; async/await padho.
+- CPU-bound sync kaam — Promise wrap karne se wo async nahi ban jata, sirf ek tick delay hota hai.
+
+### Pros and cons
+
+**Pros**
+
+- Flat chaining — pyramid khatam
+- Single `.catch()` — error handling centralized
+- Values auto-forward
+- Composable — `Promise.all`, `race`, `allSettled`, `any`
+- Immutable once settled — predictable
+
+**Cons**
+
+- Raw `.then` chains conditionals/loops ke saath awkward
+- Common mistakes (return bhoolna, nesting) silent bugs dete hain
+- Stack traces callback jitni hi kharab ho sakti hain agar `.catch` na ho
+- Ek baar settle — repeated events ke liye nahi
+
+### Alternatives
+
+- **async/await** — Promises ke upar syntax sugar; conditional/loop-heavy flow ke liye zyada readable (agla topic)
+- **Callbacks** — repeated events, ya jab zero-overhead chahiye
+- **Observables (RxJS)** — jab async **streams** of values chahiye over time, cancellation ke saath
+- **EventEmitter** — Node-native multi-value async
+
+### Interview mein "Why Promise over callback here?"
+
+> "Ye function ek library helper tha jise 3 alag jagah se call kiya jaata hai — callback deta toh har caller ko nesting handle karni padti. Promise return karke maine har caller ko chaining ya `await` ki azadi de di. Chain mein maine ek hi `.catch` rakha kyunki teenon steps ke liye recovery same tha — log aur alert. `.finally` mein connection release kiya taaki success aur failure dono mein resource leak na ho. Agar mujhe repeated results chahiye hote toh main EventEmitter use karta, kyunki Promise ek hi baar settle hota hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`.then` ke andar `return` bhool jaana Promise ka sabse aam bug hai. Bina `return` ke, chain us inner Promise ka **wait nahi** karti — agla `.then` ko `undefined` milta hai aur us inner Promise ki koi bhi rejection **unhandled** ho jati hai. Rule: `.then` ke andar har async call ke aage `return` (ya arrow ka implicit return).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Payment gateway integration">
+
+Ek payment service ka client wrapper: `charge(order)` ne ek Promise return kiya jo gateway ke callback-based SDK ko `new Promise` se wrap karta tha. Consumer code ne galti se `.then` ke andar `savePayment(result)` likha bina `return` ke, aur uske neeche `.then(() => sendReceipt())`. Result: `sendReceipt` `savePayment` complete hone se pehle chal gaya, aur ek DB write fail hui to wo rejection kisi ne nahi pakdi — silent data loss. Fix ek word tha: `return savePayment(result)`. Iske baad team ne lint rule `promise/always-return` enable kiya.
+
+</RealWorld>
+
+<RealWorld company="fetch in a Node BFF">
+
+Ek Node backend-for-frontend jo 3 upstream APIs call karta hai: `fetch(a).then(r => r.json())`. Ek jagah developer ne `.catch` chain ke beech mein laga diya, end mein nahi — `fetch(a).then(...).catch(logIt).then(step2)`. Isse jab `fetch(a)` fail hua, `catch` ne error nigal liya aur `step2` `undefined` ke saath chal pada, ek confusing "cannot read property of undefined" downstream. Rule seekha: `.catch` chain ke **end** mein, unless tum sach mein us specific step se **recover** karke aage badhna chahte ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Promise ke exactly **3** states: pending, fulfilled, rejected — aur settle hone ke baad **0** further transitions.
+- `.then` callbacks **microtask** queue mein chalte hain — `setTimeout(fn, 0)` (macrotask) se **pehle**, current sync stack ke **turant baad**.
+- 4 classic Promise mistakes: return na karna, nesting instead of chaining, `.catch` bhoolna, callback+promise mix — ye code review mein sabse common async findings hain.
+- Native Promises ES2015 se; V8 mein pehli implementation Node **v0.12 (2015)** ke aaspaas.
+- Ek unhandled rejection Node **v15+** mein process ko **crash** karti hai (pehle sirf warning tha).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer aksar teen cheezein probe karta hai: (1) 3 states aur "settle ke baad immutable" — kya tum jaante ho; (2) `.then` chaining mein value vs Promise vs throw ka behaviour; (3) error propagation — "chain ke beech mein error ho toh kya hota hai?"
+
+Achhe jawaab ka shape:
+
+1. **States** — "pending se ek baar fulfilled ya rejected, phir kabhi nahi badalta."
+2. **Chaining** — "har `.then` naya Promise deta hai; handler plain value de toh wo forward, Promise de toh chain wait karti hai, throw kare toh reject."
+3. **Error skip** — "koi bhi step reject/throw kare toh beech ke `.then` skip hoke agla `.catch` chalta hai."
+4. **`.finally`** — "outcome se independent, cleanup ke liye, final value badalta nahi."
+
+Red flag: "`.then` ke andar Promise return karna optional hai" — nahi, `return` ke bina chain wait nahi karti aur rejection unhandled ho jati hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`.then` ke andar `return` na karna.** `.then(user => { getOrders(user.id); }).then(orders => ...)` — yahan `orders` `undefined` hoga kyunki `getOrders` ka Promise return nahi hua, chain ne wait nahi kiya. Aur `getOrders` ki koi rejection unhandled rehti hai. Fix: `return getOrders(user.id)`.
+
+</Mistake>
+
+<Mistake>
+
+**Chaining ke bajaye nesting.** `.then(user => { return getOrders(user.id).then(orders => { return getItems(orders[0]); }); })` — ye "promise hell" hai, callback hell ka hi naya version. Flat karo: `.then(user => getOrders(user.id)).then(orders => getItems(orders[0]))`.
+
+</Mistake>
+
+<Mistake>
+
+**`.catch` bhool jaana.** Chain ke end pe `.catch` nahi, toh koi bhi rejection **unhandled promise rejection** ban jati hai — Node v15+ mein process crash. Har top-level chain ka end `.catch` hona chahiye (ya `await` ke around `try/catch`).
+
+</Mistake>
+
+<Mistake>
+
+**Ek hi operation ke liye callback aur Promise dono.** `function load(id, cb) { return new Promise(res => { db.get(id, (e, r) => { cb(e, r); res(r); }); }); }` — ye caller ko confuse karta hai aur error double-report ho sakti hai. Ek API do: ya Promise, ya callback — dono nahi.
+
+</Mistake>
+
+<Mistake>
+
+**`.catch` ko chain ke beech mein rakhna aur socha ki wo top-level errors pakdega.** `getA().then(step1).catch(log).then(step2)` — agar `getA()` fail hua, `catch` use nigal lega aur `step2` `undefined` ke saath chalega. Beech ka `.catch` sirf tab jab tum us point se **recover** karna chahte ho; warna `.catch` end mein.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    P["Promise: pending"] -->|resolve value| F["fulfilled (value)"]
+    P -->|reject reason| R["rejected (reason)"]
+    F --> T1[".then(onFulfilled) runs"]
+    R --> C1[".catch(onRejected) runs — beech ke .then skip"]
+    T1 -->|handler returns value| NV["next .then gets value"]
+    T1 -->|handler returns Promise| NW["chain waits, adopts its state"]
+    T1 -->|handler throws| C1
+    NV --> FIN[".finally() runs either way"]
+    C1 --> FIN
+`}
+  caption="Settle hone ke baad state fix; .then handler ka return-type decide karta hai chain aage kaise badhti hai; throw/reject seedhe .catch pe."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **3 states**: pending → (fulfilled | rejected). Settle ke baad **kabhi nahi badalta**.
+- **Thenable** = koi bhi object jiske paas `.then` ho; Promise machinery ise adopt kar leti hai (`await` bhi).
+- `.then` **hamesha naya Promise** return karta hai → isliye chaining flat rehti hai.
+- Handler **value** return kare → forward; **Promise** return kare → chain wait; **throw** kare → agla `.catch`.
+- `return` bhoole → chain wait nahi karti, `undefined` forward, inner rejection **unhandled**.
+- Chain mein **kahin bhi** error → beech ke `.then` skip → **agla `.catch`**.
+- `.finally` outcome-independent, koi arg nahi, final value badalta nahi — cleanup ke liye.
+- `.then` handlers **microtask** queue mein — `setTimeout` se pehle.
+- 4 classic bugs: (1) return na karna (2) nesting instead of chaining (3) `.catch` bhoolna (4) callback+promise mix.
+- Top-level chain ka end hamesha `.catch` (ya `await` + `try/catch`). Node v15+ mein unhandled rejection = crash.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `delay(ms, value)` likho jo ek Promise return kare jo `ms` baad `value` se fulfil ho. `delay(300, "hi").then(console.log)` — 300ms baad `"hi"` print.
+
+**Medium:** Ek chain likho: `getUser(id)` → `getOrders(user.id)` → `getLineItems(orders[0].id)`, sab fake `delay`-based. Chain ko flat rakho (nesting nahi). Ek jagah jaanbujh ke `return` hata do aur observe karo ki agla `.then` ko `undefined` milta hai. Phir `return` wapas lagao.
+
+**Bada:** Ek chain banao jismein doosra step 50% chance pe reject kare. End mein ek `.catch` aur ek `.finally` lagao. Verify karo: (a) reject hone par `.catch` chalta hai aur beech ke `.then` skip hote hain, (b) `.finally` dono cases mein chalta hai, (c) `.catch` ke baad bhi chain fulfilled continue kar sakti hai agar `.catch` koi value return kare.
+
+</Callout>

@@ -1,0 +1,306 @@
+---
+slug: "package-lock-and-semver"
+title: "package-lock.json & SemVer"
+section: "nodejs"
+module: "modules-and-npm"
+order: 7
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["package-json"]
+tags: ["nodejs", "npm", "semver", "package-lock", "npm-ci", "reproducible-builds"]
+englishDefinition: "Semantic Versioning (SemVer) gives every package version three numbers, MAJOR.MINOR.PATCH, and package.json uses range operators like caret and tilde to say which future versions are acceptable. Because ranges are flexible, two installs from the same package.json can produce different trees, so npm writes package-lock.json to pin the entire resolved dependency tree plus integrity hashes. npm install may update the lock; npm ci installs exactly what the lock says and is used in CI."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+**Semantic Versioning (SemVer)** gives every release three numbers — `MAJOR.MINOR.PATCH` — and `package.json` uses **range operators** (`^`, `~`, exact, ranges) to say which future versions are acceptable. Because ranges are flexible, two installs from the same `package.json` can resolve to **different trees**, so npm writes **`package-lock.json`** to pin the *entire* resolved dependency tree plus integrity hashes. `npm install` may update the lock; **`npm ci`** installs exactly what the lock says and is what CI uses.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Mere laptop pe chal raha tha" bugs ka sabse bada source galat dependency versions hote hain. SemVer aur `package-lock.json` mil ke ye guarantee dete hain ki har machine — tumhara laptop, teammate ka laptop, CI server, production — **exactly same** dependency tree install kare. Ye topic samajhna production reliability ke liye zaroori hai.
+
+### Ye kya hai — SemVer
+
+Har published version ek string hai: `MAJOR.MINOR.PATCH`, jaise `4.18.2`.
+
+- **PATCH** (`4.18.2` → `4.18.3`) — sirf bug fixes, koi naya feature nahi, koi break nahi.
+- **MINOR** (`4.18.2` → `4.19.0`) — naye features **backward-compatible** tareeke se add hue.
+- **MAJOR** (`4.18.2` → `5.0.0`) — **breaking changes**. Purana code toot sakta hai.
+
+Ye ek **contract** hai jo package author se. Agar wo SemVer sahi follow kare, toh `4.x` ke andar koi bhi version tumhare code ko nahi todega.
+
+### Range operators — `package.json` mein version kaise likhte hain
+
+```json
+"dependencies": {
+  "exact-lib":  "1.4.2",      // exactly 1.4.2, kuch aur nahi
+  "caret-lib":  "^1.4.2",     // >=1.4.2 <2.0.0  — koi bhi 1.x jo >= 1.4.2
+  "tilde-lib":  "~1.4.2",     // >=1.4.2 <1.5.0  — sirf patch updates
+  "star-lib":   "*",          // koi bhi version — kabhi mat karo
+  "range-lib":  ">=1.2.0 <1.5.0"  // explicit range
+}
+```
+
+- **exact** (`1.4.2`) — sirf wahi. Total control, lekin patch security fixes bhi manually chahiye.
+- **caret `^`** (`^1.4.2`) — npm ka **default** jab tum `npm install` karte ho. "MAJOR mat badlo" — `1.4.2` se lekar `2.0.0` se just neeche tak sab allowed. MINOR aur PATCH updates apne aap.
+- **tilde `~`** (`~1.4.2`) — "MINOR bhi mat badlo, sirf PATCH" — `1.4.2` se `1.5.0` se neeche tak. Zyada conservative.
+- **`*`** ya `""` — koi bhi version. Production mein kabhi nahi — MAJOR bump silently aa jayega aur build toot jayega.
+
+### `^` ka special `0.x` behaviour
+
+`0.x.y` versions ke liye caret alag kaam karta hai, kyunki SemVer bolta hai `0.x` "still unstable" hai:
+
+- `^1.4.2` → `>=1.4.2 <2.0.0` (MINOR allowed)
+- `^0.4.2` → `>=0.4.2 <0.5.0` (MINOR **bhi lock**, sirf PATCH — jaise `~`)
+- `^0.0.3` → `>=0.0.3 <0.0.4` (**exactly** `0.0.3`)
+
+Matlab `0.x` dependency ke saath `^` automatically zyada strict ho jata hai. Isliye pre-1.0 libraries ke minor bumps bhi breaking maane jate hain.
+
+### Ye kyun exist karta hai — package-lock.json
+
+Problem: `package.json` mein `"express": "^4.18.2"` likha hai. Aaj `npm install` karo toh `4.18.2` mile. Do mahine baad koi aur `npm install` kare toh Express ne `4.19.1` release kar diya — wo range mein fit hai, toh use `4.19.1` milega. **Same `package.json`, alag tree.** Aur ye sirf top-level nahi — Express ki har transitive dependency ke saath ye hota hai, jisse hazaaron subtle differences aa sakte hain.
+
+`package-lock.json` is ambiguity ko khatam karta hai. Wo record karta hai:
+
+- **har** installed package ka **exact** resolved version (transitive bhi)
+- har package ka **integrity hash** (SHA-512) — tamper/corruption detection
+- tree ka **shape** — kaunsa package kahan nested hai
+- registry **resolved URL**
+
+Jab `package-lock.json` present hai, `npm install` pehle **usko** consult karta hai — sirf tab naya version resolve karta hai jab `package.json` ki range lock ke version se satisfy na ho.
+
+### Internally kaise kaam karta hai — install vs ci
+
+**`npm install`**:
+
+1. `package.json` padhta hai.
+2. `package-lock.json` present hai toh use starting point maanta hai.
+3. Har dependency: agar lock ka version abhi bhi `package.json` range satisfy karta hai → wahi use karo. Agar nahi (tumne range badli, ya nayi dep add ki) → resolve karo aur **lock update** karo.
+4. `node_modules` ko lock ke hisaab se banata/patch karta hai (jo already sahi hai use chhodta hai).
+
+**`npm ci`** (Continuous Integration):
+
+1. `package.json` **aur** `package-lock.json` dono padhta hai; agar dono **in sync nahi** → turant **fail** (ye feature hai, bug nahi).
+2. `node_modules` ko **poora delete** karta hai.
+3. **Sirf** `package-lock.json` se, exact versions, clean install. Kuch bhi resolve ya update nahi.
+4. Lock ko **kabhi nahi likhta**.
+
+Isliye `npm ci` deterministic aur (bade projects mein) tez hai — resolution skip.
+
+### Simple real-life analogy
+
+`package.json` ki range = "koi bhi 4-star ya usse upar hotel book kar lena." `package-lock.json` = "Hotel Taj, Room 512, booking ID `X9F2`." Range flexible hai — do log alag hotel mein reh sakte hain. Lock exact hai — sab log wahi kamra paate hain. `npm ci` = "booking ID ke bina check-in mat karna."
+
+### Code — line by line
+
+```bash
+# nayi dependency add — lock update hoga
+npm install lodash
+
+# range badalna — lock update ho sakta hai
+npm install express@^4.19.0
+
+# lock se exact install (CI) — lock kabhi update nahi
+npm ci
+
+# kaunse packages ke naye versions available hain
+npm outdated
+
+# known vulnerabilities check
+npm audit
+
+# auto-fix jitna safe range ke andar ho
+npm audit fix
+```
+
+- `npm install lodash` — `lodash` ko resolve karke `dependencies` mein `^x.y.z` likhta hai **aur** `package-lock.json` mein exact version + hash add karta hai.
+- `npm install express@^4.19.0` — `package.json` range badli, lock ka purana `4.18.x` ab range satisfy nahi karta → naya resolve, lock update.
+- `npm ci` — lock ko as-is follow, `node_modules` fresh. `package.json`/lock mismatch pe error.
+- `npm outdated` — teen columns: `Current` (installed), `Wanted` (range ke andar max), `Latest` (registry pe newest). `Wanted` se `Latest` ka gap MAJOR bumps dikhata hai.
+- `npm audit` — dependency tree ko npm ke vulnerability database se cross-check karta hai; severity (low/moderate/high/critical) aur fix path deta hai.
+
+### Day-to-day use
+
+- Naya repo clone kiya → `npm ci` (na ki `npm install`) taaki exact lock tree mile.
+- Dependency add/update ki → `npm install`, phir `package-lock.json` ke changes **review** karke commit karo.
+- CI pipeline mein hamesha `npm ci`.
+- Hafte mein ek baar `npm outdated` + `npm audit` chala ke pending updates dekho.
+
+### Kab exact pinning (`1.4.2`) use karo
+
+- Ek dependency ne pehle SemVer toda hai (patch release mein breaking change aaya) — trust khatam, pin kar do.
+- Highly regulated environment (BFSI) jahan har version change ko explicitly approve karna padta hai.
+- CLI tools jinke output pe tumhara snapshot test depend karta hai.
+
+### Kab `^` (default) theek hai
+
+- Well-maintained, popular libraries jo SemVer sahi follow karti hain — `express`, `react`, `lodash`. Automatic patch + minor security fixes chahiye without manual churn.
+- Lockfile waise bhi exact version pin kar raha hai, toh `^` ka "risk" sirf **explicit `npm update`** ya lock regenerate karne pe realize hota hai.
+
+### Kab lockfile commit **nahi** karna — trick question
+
+Kabhi nahi (application ke liye). **Hamesha commit karo.** Sirf ek exception: agar tum ek **library** publish kar rahe ho, toh consumers tumhari lockfile use nahi karte (wo unke apne tree ka hissa banti hai tumhari `package.json` ranges se) — phir bhi apni CI ke liye commit karna standard practice hai. "Lockfile ko gitignore karo" ek anti-pattern hai jo non-reproducible builds deta hai.
+
+### Pros and cons
+
+**Pros**
+
+- Reproducible installs — har machine same tree.
+- Integrity hashes — supply-chain tampering detect.
+- `npm ci` fast aur deterministic — CI ke liye perfect.
+- `package.json` readable rehta hai (ranges), exact detail lock mein.
+
+**Cons**
+
+- Lockfile diffs bade aur noisy — merge conflicts common (tool: `npm install` re-run karke resolve).
+- Ranges + lock ka interaction confusing — log samajh nahi paate ki `^` hote hue bhi version fixed kyun hai.
+- `npm audit` bahut false-positive / unreachable-vuln noise deta hai — blindly `audit fix --force` MAJOR bumps la ke build tod deta hai.
+
+### Alternatives
+
+- **`yarn.lock`** — Yarn ka lockfile; concept identical, format alag.
+- **`pnpm-lock.yaml`** — pnpm ka; YAML, aur content-addressable store ke liye extra info.
+- **`npm shrinkwrap`** — `package-lock.json` ka publishable version; libraries mein rarely use hota hai.
+- **Renovate / Dependabot** — automated PRs jo lockfile + `package.json` ranges ko controlled tareeke se bump karte hain, taaki manual `npm outdated` na karna pade.
+
+### Interview mein "package-lock.json commit kyun karte ho?"
+
+> "`package.json` ki ranges (`^4.18.0`) flexible hain — do installs alag versions resolve kar sakte hain, aur transitive deps ke saath ye difference multiply ho jata hai. `package-lock.json` poore resolved tree ko exact versions + SHA-512 integrity hashes ke saath pin karta hai, isliye main use commit karta hoon aur CI mein `npm ci` chalata hoon — wo lock ko exactly install karta hai, `node_modules` fresh banata hai, aur `package.json` se mismatch pe fail karta hai. Isse dev, CI, aur prod ka tree bit-for-bit same rehta hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`npm audit fix` safe hai — sirf range ke andar updates karta hai. `npm audit fix --force` **MAJOR** version bumps kar deta hai jo breaking hote hain. `--force` chalane ke baad hamesha full test suite chalao, warna production mein surprise milega.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="event-stream incident (2018)">
+
+Ek popular package `event-stream` mein maintainer ne ek naye contributor ko access diya, jisne `flatmap-stream` naam ki ek chhoti dependency add ki jismein bitcoin-wallet-churane wala malicious code tha. Jinke projects ki lockfile pehle se pinned thi wo tab tak safe rahe jab tak unhone deliberately update nahi kiya — jinke paas loose ranges aur no committed lockfile tha, unhe agla `npm install` compromised version de sakta tha. Ye lockfile + integrity hash ke value ka classic case study hai.
+
+</RealWorld>
+
+<RealWorld company="CI pipelines: npm ci vs npm install">
+
+GitHub Actions, GitLab CI, Jenkins — sabki Node build guides `npm ci` recommend karti hain. Ek team ne CI mein `npm install` use kiya tha; ek transitive dependency ne patch release kiya jo unke test ko flaky bana raha tha, aur wo silently tree mein aa gaya bina koi `package.json` change ke. Debugging mein din lage kyunki "code toh kuch badla hi nahi." `npm ci` pe switch karne ke baad tree lock ke against frozen ho gaya aur ye class of bug khatam.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- SemVer ke **3** components: `MAJOR.MINOR.PATCH`. Pre-release tags (`1.0.0-beta.2`) aur build metadata (`+20130313144700`) optional.
+- `^1.4.2` → `>=1.4.2 <2.0.0`; `~1.4.2` → `>=1.4.2 <1.5.0`; `^0.4.2` → `>=0.4.2 <0.5.0` (0.x special-case).
+- `package-lock.json` **`lockfileVersion`**: npm 7+ `3` likhta hai (npm 6 ka `1`, npm 7 ka backward-compatible `2`).
+- `npm ci` `node_modules` ko **poora delete** karke rebuild karta hai — isliye reproducible; `npm install` incremental hai.
+- `npm ci` bade projects mein `npm install` se **~2x tez** — resolution phase skip hota hai.
+- `npm audit` severity levels: **low, moderate, high, critical** — CI mein aksar `--audit-level=high` pe fail karte hain taaki noise kam ho.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye intermediate round ka reliable question hai: "`^` aur `~` mein farak?", "lockfile commit kyun?", "`npm install` vs `npm ci`?". Interviewer dekhta hai ki tumne kabhi ek dependency bug debug kiya hai ya sirf `npm install` muscle-memory se chalate ho.
+
+Achhe jawaab ka shape:
+
+1. **SemVer** — `MAJOR.MINOR.PATCH`; MAJOR = breaking, MINOR = backward-compatible feature, PATCH = fix.
+2. **Ranges** — `^` = no MAJOR bump (npm default), `~` = patch only, exact = pinned, `*` = never.
+3. **`0.x` gotcha** — `^0.x` MINOR ko bhi lock karta hai.
+4. **Lockfile** — ranges flexible → alag trees possible → lock poora tree + integrity hash pin karta hai → commit karo.
+5. **install vs ci** — `install` lock update kar sakta hai (dev); `ci` lock exactly follow, `node_modules` fresh, mismatch pe fail (CI).
+6. **Maintenance** — `npm outdated` (Current/Wanted/Latest), `npm audit` (vuln DB check), `audit fix --force` khatarnak.
+
+Red flag: "lockfile ki zaroorat nahi kyunki `^` waise bhi version fix kar deta hai" — ye galat, `^` range hai, exact nahi.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`package-lock.json` ko `.gitignore` mein daal dena.** Isse har machine `npm install` pe apni marzi ka (range-satisfying) tree resolve karti hai — "works on my machine" bugs, aur supply-chain attacks ke against protection khatam. Lockfile hamesha commit karo; wahi reproducibility deta hai, `node_modules` nahi.
+
+</Mistake>
+
+<Mistake>
+
+**CI mein `npm install` use karna `npm ci` ke bajaye.** `npm install` transitive deps ke naye patch versions silently pull kar sakta hai bina kisi `package.json` change ke, jisse "kuch badla nahi phir bhi build toot gaya" wale ghost bugs aate hain. CI mein hamesha `npm ci` — wo lock ke against frozen hai.
+
+</Mistake>
+
+<Mistake>
+
+**`npm audit fix --force` chala ke commit kar dena bina test kiye.** `--force` SemVer range ignore karke MAJOR bumps kar deta hai — API break ho jati hai. Pehle `npm audit fix` (safe) try karo; `--force` ke baad **poora test suite** aur manual smoke test.
+
+</Mistake>
+
+<Mistake>
+
+**Lockfile merge conflict ko hand-edit se resolve karna.** `package-lock.json` ek generated file hai; usme manually versions/hashes theek karne se corrupt ho jati hai. Sahi tareeka: conflict markers wali lockfile pe `git checkout --theirs package-lock.json` (ya `--ours`), phir `npm install` re-run karo — npm ise `package.json` ke against regenerate kar deta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`^0.x` dependency pe MINOR update ko "safe" maan lena.** `^0.4.2` sirf `<0.5.0` allow karta hai kyunki pre-1.0 mein MINOR bhi breaking ho sakta hai. `0.4.x` se `0.5.0` pe jaana MAJOR bump jaisa treat karo — changelog padho, test chalao.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["package.json: express ^4.18.2"] --> B{"package-lock.json present?"}
+    B -->|nahi| C["Range se best version resolve -> lock likho"]
+    B -->|haan| D{"Lock ka version abhi bhi range satisfy karta hai?"}
+    D -->|haan| E["Lock ka exact version use karo"]
+    D -->|nahi — range badli ya nayi dep| F["Naya resolve -> lock update"]
+    E --> G["npm ci: lock delete-nahi, follow-exactly, mismatch pe fail"]
+    F --> H["npm install: lock update ho sakta hai — diff review karke commit"]
+`}
+  caption="Range decide karti hai KYA acceptable hai; lockfile decide karta hai EXACTLY kya install hoga. npm ci lock ko authority maanta hai, npm install use update kar sakta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **SemVer** `MAJOR.MINOR.PATCH`: MAJOR = breaking, MINOR = backward-compatible feature, PATCH = fix.
+- **`^1.4.2`** = `>=1.4.2 <2.0.0` (npm default, no MAJOR bump). **`~1.4.2`** = `>=1.4.2 <1.5.0` (patch only). **exact** = `1.4.2`. **`*`** = never.
+- **`^0.x` special**: `^0.4.2` → `>=0.4.2 <0.5.0` (MINOR bhi locked); `^0.0.3` → exactly `0.0.3`.
+- Ranges flexible → same `package.json` se alag trees possible, transitive deps ke saath multiply.
+- **`package-lock.json`** = poora resolved tree + exact versions + SHA-512 integrity hashes + tree shape. **Hamesha commit karo.**
+- **`npm install`** = lock ko starting point maanta hai; range change / nayi dep pe lock **update** kar sakta hai.
+- **`npm ci`** = `node_modules` delete → lock se exact install → lock kabhi nahi likhta → `package.json`/lock mismatch pe **fail**. CI ke liye.
+- **`npm outdated`** = Current / Wanted (range max) / Latest (registry newest).
+- **`npm audit`** = vuln DB check; **`audit fix`** safe (range ke andar); **`audit fix --force`** = MAJOR bumps, breaking, test karo.
+- Lockfile merge conflict → `checkout --ours/--theirs` + `npm install` re-run, hand-edit nahi.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek folder mein `npm init -y`, phir `npm install lodash`. `package.json` mein `lodash` ki range dekho (`^x.y.z`). `package-lock.json` mein `lodash` ki entry dhoondho — exact `version` aur `integrity` field note karo. Ab `package.json` mein range ko `"*"` kar do aur `npm install` phir chalao — kya lock badla?
+
+**Medium:** `npm outdated` chalao ek project mein aur `Current` / `Wanted` / `Latest` columns interpret karo — kaunse packages ke liye ek MAJOR bump pending hai (Wanted < Latest)? Phir `npm ci` chala ke `node_modules` delete hone aur fresh install hone ko observe karo (`--verbose`).
+
+**Bada:** Ek `package.json` mein `"a": "^1.2.3"` likho, lock generate karo, phir lock mein `a` ka version manually `1.2.4` se `1.5.0` kar do. `npm ci` chalao — kya hota hai aur kyun? Phir `npm install` chalao — kya hota hai? Dono ka behaviour explain karo lock-as-authority vs range-as-authority ke terms mein.
+
+</Callout>
+

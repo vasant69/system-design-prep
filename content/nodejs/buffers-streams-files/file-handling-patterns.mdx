@@ -1,0 +1,309 @@
+---
+slug: "file-handling-patterns"
+title: "File Handling Patterns"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 6
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["pipes-and-pipeline"]
+tags: ["nodejs", "fs", "streams", "readfile", "atomic-write", "readline"]
+englishDefinition: "File handling in Node has three main reading styles: readFileSync (blocking, whole file in memory), fs.readFile (async, whole file in memory), and fs.createReadStream (async, chunk by chunk). Choosing between them is a decision based on file size, whether the code is on the request hot path, whether you need the whole file at once, and whether you are piping it somewhere. Related patterns include atomic writes, safe copy/move, line-by-line reading with readline, and directory walking."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+File handling in Node has three main reading styles: **`readFileSync`** (blocking, whole file into memory), **`fs.readFile`** (async, whole file into memory), and **`fs.createReadStream`** (async, chunk by chunk). Choosing between them is a **decision** driven by file size, whether the code is on the request hot path, whether you need the whole file at once, and whether you are piping it somewhere. Related patterns: atomic writes, safe copy/move, line-by-line reading with `readline`, and directory walking.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+File padhna Node mein "ek line ka kaam" lagta hai, lekin galat method chunna production mein ya to event loop block karta hai ya process ko OOM kar deta hai. Ye topic ek **decision framework** hai: kaunsa API kab.
+
+### Ye kya hai — teen reading styles
+
+- **`fs.readFileSync(path)`** — thread ruk jaata hai jab tak poori file RAM mein nahi aa jaati. Return: ek `Buffer` (ya encoding do to string).
+- **`fs.readFile(path, cb)`** / `fs.promises.readFile(path)` — non-blocking, lekin phir bhi **poori file** memory mein aati hai; sirf event loop free rehta hai I/O ke dauraan.
+- **`fs.createReadStream(path)`** — non-blocking aur chunk-by-chunk (~64 KB); poori file kabhi ek saath memory mein nahi.
+
+### Ye kyun exist karta hai — decision factors
+
+Chaar sawaal poochho:
+
+1. **File kitni badi hai?** KBs = koi bhi. 10s of MB = async at least. 100s of MB / GBs = stream, warna memory spike.
+2. **Ye request hot path pe hai?** Har HTTP request pe chalega? To `Sync` bilkul nahi — ek slow disk read poore server ko freeze kar dega.
+3. **Poori file ek saath chahiye?** JSON config ko `JSON.parse` karne ke liye haan (pura chahiye). Log scan karne ke liye nahi (line-by-line kaafi).
+4. **Kahin pipe kar rahe ho?** File ko HTTP response ya gzip ko bhej rahe ho = stream, taaki backpressure mile.
+
+### Decision table
+
+| Scenario | File size | Hot path? | Whole file needed? | Best choice |
+| --- | --- | --- | --- | --- |
+| Startup pe chhota config JSON padhna | few KB | No (startup only) | Yes (parse it) | `readFileSync` — simple, ek baar, blocking theek hai |
+| Bada log file scan karke errors count karna | 500 MB | Maybe (cron/job) | No (line by line) | `readline` over `createReadStream` |
+| Ek video HTTP response pe stream karna | 1 GB | Yes | No | `createReadStream(path).pipe(res)` (ya `pipeline`) |
+| Bade CSV ko transform karke doosri file likhna | 2 GB | No (batch) | No | `pipeline(createReadStream, transform, createWriteStream)` |
+| User-uploaded 2 MB image ko S3 pe bhejna | 2 MB | Yes | No | stream — chhota hai par pipe kar rahe ho |
+| Ek chhoti template file har request pe padhni | 4 KB | Yes | Yes | `fs.promises.readFile` + in-memory cache |
+
+**Rule of thumb**: `Sync` sirf startup / CLI scripts / build tools mein. Server request ke andar kabhi `Sync` nahi. Bada + pipe = stream. Chhota + chahiye pura = async `readFile` (+ cache agar baar-baar).
+
+### Internally kaise kaam karta hai
+
+`fs.readFile` (async) andar libuv ke **thread pool** (default 4 threads, `UV_THREADPOOL_SIZE`) pe chalta hai — disk I/O OS-level pe truly async nahi hota zyadatar platforms pe, isliye Node use ek background thread pe karta hai. Callback tab event loop pe aata hai jab poora data ready ho.
+
+`createReadStream` bhi thread pool use karta hai lekin har baar sirf ek chunk (`highWaterMark`, default 64 KB) padhta hai, use readable buffer mein daalta hai, `data` event fire karta hai, aur agla chunk tabhi padhta hai jab consumer ready ho (backpressure).
+
+`readFileSync` main thread pe seedha blocking `read()` syscall karta hai — jab tak wo return nahi karta, event loop, timers, sab freeze.
+
+### Simple real-life analogy
+
+- `readFileSync` — tum library mein khade ho, poori 900-page book photocopy hone ka intezaar kar rahe ho, aur tab tak kisi aur ka kaam nahi kar sakte.
+- `readFile` (async) — tumne photocopy ka order diya, parchi le li, apna doosra kaam karne lage; poori book copy hone par staff bula lega.
+- `createReadStream` — tumhe ek-ek chapter photocopy hote hi mil raha hai; tum padhte jaao, poori book kabhi tumhare haath mein ek saath nahi.
+
+### Code — line by line
+
+```javascript
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const readline = require("node:readline");
+
+// 1. Small config at startup — sync is fine
+const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+
+// 2. Small file on hot path — async + cache
+let templateCache;
+async function getTemplate() {
+  if (!templateCache) {
+    templateCache = await fsp.readFile("./email.html", "utf8");
+  }
+  return templateCache;
+}
+
+// 3. Big file, line by line — stream + readline
+async function countErrors(logPath) {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(logPath),
+    crlfDelay: Infinity,
+  });
+  let count = 0;
+  for await (const line of rl) {
+    if (line.includes("ERROR")) count += 1;
+  }
+  return count;
+}
+```
+
+- `fs.readFileSync("./config.json", "utf8")` — startup pe ek baar; blocking acceptable kyunki abhi koi request serve nahi ho rahi.
+- `templateCache` — chhoti file bhi har request pe disk se padhna waste hai; pehli baar padho, memory mein rakho.
+- `readline.createInterface({ input: createReadStream(...) })` — stream ke upar ek line-reader; `crlfDelay: Infinity` Windows ke `\r\n` ko sahi handle karta hai.
+- `for await (const line of rl)` — ek waqt mein ek line, memory constant, chahe log 50 GB ho.
+
+### Atomic write pattern
+
+Seedhe `fs.writeFile("data.json", json)` khatarnak hai: agar process beech mein crash ho gaya, file **aadhi likhi** reh jaati hai — corrupt. Safe pattern: temp file pe likho, phir `rename` (same filesystem pe `rename` atomic hota hai).
+
+```javascript
+async function atomicWriteJson(path, obj) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(obj, null, 2));
+  await fsp.rename(tmp, path); // atomic swap
+}
+```
+
+Reader ko ya to purani poori file dikhti hai ya nayi poori file — kabhi aadhi nahi.
+
+### Copy / move
+
+- Copy: `fs.copyFile(src, dest)` (chhoti), ya `pipeline(createReadStream(src), createWriteStream(dest))` (badi, progress chahiye to).
+- Move same disk: `fs.rename(src, dest)` — instant, sirf metadata badalta hai.
+- Move across disks: `rename` `EXDEV` error dega — tab copy karo phir `unlink` src.
+
+### `fs.watch` caveats
+
+`fs.watch(dir, cb)` file changes pe callback deta hai, lekin: platform ke hisaab se behaviour alag (Linux inotify vs macOS FSEvents vs Windows), ek save pe **do-do events** aate hain (`rename` + `change`), kabhi filename `null` aata hai, aur network/Docker mounts pe kaam hi nahi karta reliably. Production file-watching ke liye `chokidar` library use hoti hai jo ye sab normalize karti hai.
+
+### Directory walking
+
+```javascript
+async function* walk(dir) {
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    const full = require("node:path").join(dir, e.name);
+    if (e.isDirectory()) yield* walk(full);
+    else yield full;
+  }
+}
+```
+
+Node 20+ mein `fsp.readdir(dir, { recursive: true })` bhi hai, lekin custom generator se tum filter/skip control kar sakte ho (jaise `node_modules` skip).
+
+### Day-to-day use
+
+- Config / secrets load at boot — `readFileSync`.
+- Serving static assets / downloads — `createReadStream(...).pipe(res)`.
+- Log analysis, data migration scripts — `readline` over stream.
+- Saving app state / cache to disk — atomic write.
+- Build tools, codegen — sync everything (no server, simplest).
+
+### Kab kya — quick
+
+- **`readFileSync`**: startup, CLI, build scripts, tests. Never in a request handler.
+- **`fs.promises.readFile`**: chhoti-medium file jo request mein chahiye pura (template, small JSON), ideally cached.
+- **`createReadStream`**: badi file, ya kahin pipe karni hai, ya line-by-line chahiye.
+
+### Pros and cons
+
+**`readFileSync` — Pros**: simplest code, no callback/await, error `try/catch` se seedha. **Cons**: event loop block, badi file pe memory spike, ek slow disk poore server ko rok deta hai.
+
+**`fs.readFile` async — Pros**: event loop free, familiar. **Cons**: poori file memory mein (2 GB file = 2 GB RAM), thread pool ke 4 slots occupy kar sakta hai.
+
+**`createReadStream` — Pros**: constant memory, backpressure, composable. **Cons**: zyada code, chunk boundaries manage karni padti hain, chhoti file ke liye over-engineering.
+
+### Alternatives
+
+- **`Bun.file` / worker threads** — CPU-heavy parsing ke liye alag thread.
+- **`mmap` (via native addon)** — random access on huge files; rarely needed.
+- **In-memory cache + `fs.watch`/`chokidar`** — file ko ek baar padho, change pe reload; har request pe disk hit avoid.
+- **Database** — agar tum file ko "structured store" ki tarah use kar rahe ho (bahut saari chhoti writes), file galat tool hai.
+
+### Interview mein "Why did you choose a stream over readFile here?"
+
+> "Endpoint users ke liye 200 MB tak ke export downloads serve karta tha. `readFile` pe har concurrent download ek 200 MB buffer banata — 10 users = 2 GB RAM, pod OOM. Maine `pipeline(fs.createReadStream(file), res)` use kiya: memory per download ~64 KB, aur slow clients pe backpressure ne disk read throttle kar diya. Config file, jo boot pe ek baar padhni thi, uske liye maine `readFileSync` rakha — wahan blocking ka koi nuksan nahi kyunki server abhi requests le hi nahi raha tha."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Server request handler ke andar `fs.readFileSync` ya koi bhi `*Sync` call = red flag. Ek 50 ms disk read us dauraan **saari** concurrent requests, timers, aur I/O callbacks ko rok deta hai. `Sync` sirf tab jab process abhi kuch aur serve nahi kar raha (startup, scripts).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Static file / download endpoints">
+
+Har framework (Express `res.sendFile`, Fastify `@fastify/static`) andar `fs.createReadStream(path).pipe(res)` jaisa hi karta hai, `readFile` nahi. Wajah: ek 300 MB PDF ko 20 log ek saath download karein to `readFile` 6 GB RAM maang lega; stream ke saath har connection ~64 KB. Plus streams `Range` requests (video seek) aur early client disconnect ko naturally handle kar lete hain — disconnect pe stream destroy ho jaata hai aur disk read ruk jaata hai.
+
+</RealWorld>
+
+<RealWorld company="Config & feature-flags at boot (typical service-company backend)">
+
+Node service startup pe `config.json`, `.env`-derived JSON, aur TLS certs `fs.readFileSync` se load karti hai — deliberately blocking. Yahan async ka koi fayda nahi: server ne abhi `listen()` nahi kiya, koi request wait nahi kar rahi, aur agar config missing hai to hum chahte hain process **turant crash** ho (fail fast), na ki aadha start hoke. Isi tarah CLI tools aur DB migration scripts sab sync `fs` use karte hain — single task, no concurrency, simplest code jeetta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- libuv thread pool default size: **4**. `fs.readFile` / `createReadStream` isi pool pe chalte hain; 4 se zyada concurrent disk reads queue ho jaate hain. `UV_THREADPOOL_SIZE` (max **1024**) se badha sakte ho.
+- `createReadStream` default `highWaterMark`: **64 KB** (65536 bytes) per chunk.
+- Ek `readFileSync` on a 1 GB file: **~1 GB** resident memory spike + poora event loop us dauraan blocked (disk speed pe 1-10+ seconds).
+- Same-filesystem `fs.rename`: **O(1)**, sirf directory entry update — isliye atomic write ka backbone.
+- `fs.watch` ek single file save pe aksar **2 events** deta hai; `chokidar` ise debounce karke **1** karta hai.
+- Node **v20.1.0** se `fs.readdir(path, { recursive: true })` built-in — usse pehle manual recursion chahiye tha.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye "aap production mein kaise sochte ho" wala topic hai. Interviewer aksar ek scenario dega ("100 GB log file se pattern dhoondho", "video serve karo") aur dekhega tum method kaise chunte ho.
+
+Achhe jawaab ka shape:
+
+1. **Factors gino** — file size, hot path, poora chahiye ya nahi, pipe kar rahe ho ya nahi.
+2. **Map to API** — badi + pipe = `createReadStream`/`pipeline`; badi + line-by-line = `readline`; chhoti + pura chahiye + hot path = async `readFile` + cache; startup = `readFileSync`.
+3. **Failure mode** — "`readFile` on big file = memory spike / OOM; `Sync` on hot path = event loop freeze."
+4. **Atomic write** — "state file likhne ke liye tmp + rename, taaki crash pe corruption na ho."
+
+Red flag: har cheez ke liye `fs.readFileSync` bolna ("simple hai"), ya server route mein `Sync` use karna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Request handler ke andar `fs.readFileSync` (ya koi `*Sync`) call karna.** "File to chhoti hai" sochke log ise chalne dete hain. Problem concurrency ka hai: jab tak wo sync read chalti hai, us process ki **saari** doosri requests, timers, aur I/O callbacks rukte hain. 50 ms ka read 100 req/s pe massive tail latency deta hai. Hot path pe hamesha async ya stream.
+
+</Mistake>
+
+<Mistake>
+
+**Badi file pe `fs.readFile` (async) use karna aur "async hai to safe hai" sochna.** Async hone se sirf event loop block nahi hota — poori file phir bhi memory mein aati hai. 2 GB file pe 2 GB+ RAM, aur 5 concurrent to 10 GB — OOM. Badi file = stream, chahe async readFile "kaam kar raha" lage.
+
+</Mistake>
+
+<Mistake>
+
+**Seedhe target file pe `fs.writeFile` karke state save karna.** Process crash / power loss beech mein hua to file aadhi likhi, corrupt. Reader ko invalid JSON milta hai. Hamesha tmp file pe likho phir `fs.rename(tmp, target)` — same filesystem pe rename atomic hai, reader ko poori purani ya poori nayi file dikhti hai.
+
+</Mistake>
+
+<Mistake>
+
+**Cross-device move ke liye `fs.rename` maan lena.** `rename` sirf same filesystem pe kaam karta hai; alag disk / mount pe `EXDEV` error deta hai. Cross-device move = `copyFile` (ya stream copy) phir `unlink` source. Docker volumes aur `/tmp` aksar alag filesystem hote hain.
+
+</Mistake>
+
+<Mistake>
+
+**`fs.watch` pe production file-watching banana.** Platform ke hisaab se alag behaviour, ek save pe do events, kabhi `filename` `null`, network mounts pe silent fail. Log jab tak dev machine pe test karte hain sab theek lagta hai. Production ke liye `chokidar` use karo jo ye sab normalize karti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q1["File bahut badi? (100s MB / GB)"] -->|Yes| S["createReadStream / pipeline"]
+    Q1 -->|No| Q2["Kahin pipe kar rahe ho? (res, gzip, S3)"]
+    Q2 -->|Yes| S
+    Q2 -->|No| Q3["Line-by-line scan chahiye?"]
+    Q3 -->|Yes| RL["readline over createReadStream"]
+    Q3 -->|No| Q4["Request hot path pe hai?"]
+    Q4 -->|Yes| A["fs.promises.readFile + in-memory cache"]
+    Q4 -->|No| SY["readFileSync (startup / script)"]
+`}
+  caption="File padhne ka decision tree: pehla filter size, phir 'pipe kar rahe ho', phir 'line by line', phir 'hot path'."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Teen styles: `readFileSync` (blocking, whole file), `fs.readFile` async (non-blocking, still whole file in memory), `createReadStream` (async, chunked).
+- Decide by: **size**, **hot path?**, **poora chahiye?**, **pipe kar rahe ho?**.
+- `Sync` sirf startup / CLI / build / tests. Request handler mein **kabhi nahi**.
+- Badi file + pipe/line-scan = stream. Badi file + async `readFile` bhi memory spike deta hai — OOM risk.
+- Chhoti file, hot path, poori chahiye = `fs.promises.readFile` + cache (har request pe disk mat hit karo).
+- Line-by-line: `readline.createInterface({ input: createReadStream(p), crlfDelay: Infinity })` + `for await`.
+- Atomic write: tmp file → `fs.rename(tmp, target)` (same-fs rename atomic). Kabhi seedhe target pe mat likho.
+- Move: same disk `fs.rename` (O(1)); cross-disk `EXDEV` → copy + unlink.
+- `fs.watch` production-unreliable (2 events, null filename, network mounts) → `chokidar`.
+- Directory walk: recursive `fsp.readdir(dir, { withFileTypes: true })` generator, ya Node 20+ `{ recursive: true }`.
+- libuv thread pool = 4 default; heavy concurrent fs = raise `UV_THREADPOOL_SIZE`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script likho jo `config.json` ko `readFileSync` se padhe aur ek key print kare. Phir wahi async `fs.promises.readFile` se dobara likho. Dono chalao, note karo output same hai.
+
+**Medium:** `countErrors(logPath)` likho jo ek bade log file mein "ERROR" wali lines count kare using `readline` over `createReadStream`. Ek ~100 MB fake log banao (loop mein append) aur chalate waqt `process.memoryUsage().rss` print karo — confirm karo memory badhti nahi.
+
+**Bada:** `atomicWriteJson(path, obj)` implement karo (tmp + rename). Ek loop mein har 100 ms pe file likho, aur ek doosre process se usi file ko 10 ms pe `JSON.parse(readFileSync(...))` karke padho. Confirm karo reader ko kabhi parse error nahi aata (atomicity proof). Phir jaan-boojhke `rename` ki jagah seedha `writeFile` karke dikhao ki ab kabhi-kabhi corrupt read aata hai.
+
+</Callout>

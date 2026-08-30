@@ -1,0 +1,283 @@
+---
+slug: "dependencies-vs-devdependencies"
+title: "dependencies vs devDependencies"
+section: "nodejs"
+module: "modules-and-npm"
+order: 8
+difficulty: "beginner"
+readingTime: 14
+prerequisites: ["package-json"]
+tags: ["nodejs", "npm", "dependencies", "devdependencies", "production", "docker"]
+englishDefinition: "In package.json, dependencies are packages the application needs at runtime in production, while devDependencies are packages needed only to build, test, or lint the project. You add a dev-only package with npm install -D. Production images run npm ci --omit=dev to skip devDependencies, which makes the image smaller and reduces attack surface. peerDependencies and optionalDependencies cover plugin and platform-specific cases."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+In `package.json`, **`dependencies`** are packages the running application needs **at runtime in production** — `express`, `pg`, `jsonwebtoken`. **`devDependencies`** are packages needed **only to build, test, or lint** — `typescript`, `jest`, `eslint`, `nodemon`. You add a dev-only package with `npm install -D` (`--save-dev`). Production images run `npm ci --omit=dev` to skip devDependencies, which makes the image smaller and shrinks the attack surface. `peerDependencies` and `optionalDependencies` cover plugin and platform-specific cases.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye ek chhota sa distinction hai jo galat karne pe production crash ya bloated Docker image deta hai. Rule ek line mein: **"kya production mein chalte hue process ko ye package chahiye?"** — haan toh `dependencies`, nahi toh `devDependencies`.
+
+### Ye kya hai — do buckets
+
+`package.json` mein dependencies do jagah likhi jati hain:
+
+```json
+{
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "jest": "^29.7.0",
+    "eslint": "^8.56.0",
+    "nodemon": "^3.0.2"
+  }
+}
+```
+
+- **`dependencies`** — jo compiled/running application `require`/`import` karega aur jiske bina production process start nahi hoga ya crash karega.
+- **`devDependencies`** — jo sirf developer ke laptop pe ya CI mein build/test/lint step ke dauraan chahiye. Deployed artifact inhe use nahi karta.
+
+### Ye kyun exist karta hai
+
+Agar sab kuch ek hi bucket mein hota, toh production install mein `jest`, `eslint`, `typescript`, `webpack`, `@types/*` — sab aa jaate. Ye:
+
+- image ka size badha dete (sau-do sau MB)
+- container start slow karte
+- **attack surface** badha dete — har extra package prod environment mein ek potential vulnerability / supply-chain entry point hai
+- deployment ko unnecessarily heavy banate
+
+Do buckets se production install lean rehta hai.
+
+### Internally kaise kaam karta hai
+
+- `npm install` (bina flag) — **dono** `dependencies` aur `devDependencies` install karta hai. Local development ke liye yahi chahiye.
+- `npm install <pkg>` — `dependencies` mein add karta hai (default).
+- `npm install -D <pkg>` ya `--save-dev` — `devDependencies` mein add karta hai.
+- `npm ci --omit=dev` (ya purana `--production` / `NODE_ENV=production`) — **sirf** `dependencies`, devDependencies skip.
+- `npm ci --omit=dev` transitive deps ke saath bhi respect karta hai — agar koi devDependency ki apni deps hain aur wo kisi prod dep se bhi reference nahi hoti, toh wo bhi skip.
+
+### Simple real-life analogy
+
+Ghar shift karna hai. **`dependencies`** = furniture jo naye ghar mein rakhna hai — bed, sofa, fridge. **`devDependencies`** = packing tools — cartons, tape, bubble wrap, trolley. Shifting ke baad tum tape aur cartons naye ghar mein nahi rakhte — wo sirf move karne ke liye the. Production image = naya ghar; usme sirf furniture jaye, packing material nahi.
+
+### Code — line by line
+
+```bash
+# runtime dependency — production process ise import karega
+npm install express
+
+# dev-only — sirf build/test/lint ke liye
+npm install -D typescript jest eslint nodemon
+
+# local development — dono buckets install
+npm install
+
+# production image / deploy — sirf dependencies
+npm ci --omit=dev
+
+# ek package ko galat bucket se sahi mein move karo
+npm install --save-prod pg      # dev -> dependencies
+npm install --save-dev @types/pg  # dependencies -> dev
+```
+
+- `npm install express` — `express` `dependencies` mein `^4.18.2` ke saath.
+- `npm install -D typescript jest eslint nodemon` — chaaron `devDependencies` mein. `-D` = `--save-dev`.
+- `npm install` — clone ke baad; sab kuch laata hai taaki tum build aur test kar sako.
+- `npm ci --omit=dev` — Dockerfile ki production stage mein; `node_modules` mein sirf runtime deps.
+- `npm install --save-prod <pkg>` — pehle se installed package ko `dependencies` mein re-classify karta hai; `--save-dev` ulta.
+
+### Day-to-day use
+
+- `npm i <pkg>` jab wo runtime code mein import hoga.
+- `npm i -D <pkg>` jab wo sirf tooling ho — test framework, bundler, linter, formatter, type definitions (`@types/*`), `nodemon`, `ts-node`.
+- `npm ls --omit=dev` — dekho production install mein kya-kya jayega.
+- Docker multi-stage build: ek stage `npm ci` (sab, build ke liye), final stage `npm ci --omit=dev` (sirf runtime).
+
+### Kab `dependencies` mein daalo
+
+- Web framework — `express`, `fastify`, `koa`.
+- DB drivers / ORMs — `pg`, `mysql2`, `mongoose`, `prisma` (runtime client), `@prisma/client`.
+- Runtime utilities — `zod`, `dayjs`, `jsonwebtoken`, `bcrypt`, `axios`, `dotenv`.
+- Anything the compiled `dist/` code `require`s.
+
+### Kab `devDependencies` mein daalo
+
+- Compilers / bundlers — `typescript`, `webpack`, `esbuild`, `vite`, `babel`.
+- Test tooling — `jest`, `vitest`, `mocha`, `supertest`, `@testing-library/*`.
+- Lint / format — `eslint`, `prettier`, plugins.
+- Dev-server helpers — `nodemon`, `ts-node`, `concurrently`.
+- Type definitions — `@types/node`, `@types/express` (compile ke baad zaroorat nahi).
+
+### Kab confusion hota hai — grey areas
+
+- **`prisma` CLI vs `@prisma/client`** — client runtime dep, CLI (`prisma migrate`) dev dep.
+- **`typescript` in a published library** — dev dep, but agar tum `.d.ts` types ship karte ho toh consumers ko unke apne TS ki zaroorat (peer, unofficially).
+- **`ts-node` in production** — agar tum galti se prod mein `.ts` directly chalate ho toh wo runtime dep ban jata hai. Better: build kar ke plain `.js` deploy karo, `ts-node` dev mein rakho.
+- **`dotenv`** — agar prod mein bhi `.env` file load karte ho toh `dependencies`; agar prod env vars orchestrator (Kubernetes, ECS) se aate hain toh technically dev-only, par convention `dependencies` hai.
+
+### Pros and cons (dono buckets rakhne ka approach)
+
+**Pros**
+
+- Production install lean — chhota image, tez cold start, kam attack surface.
+- Clear documentation — `package.json` dekh ke pata chalta hai kya runtime hai kya tooling.
+- `npm audit` prod-relevant vulns pe focus kar sakta hai (`--omit=dev`).
+
+**Cons**
+
+- Galat bucket = do tarah ke bugs (neeche mistakes dekho).
+- Grey areas mein judgement chahiye — hamesha obvious nahi.
+- `npm install` local pe sab laata hai, isliye galat classification local testing mein pakdi nahi jati — sirf prod mein.
+
+### Alternatives / related fields
+
+- **`peerDependencies`** — "main khud install nahi karunga; host application provide karega, is range mein." Plugins ke liye — ek Express middleware `express` ko peer declare karta hai taaki app aur middleware ek hi Express copy share karein, do alag nahi (jisse `instanceof` aur augmentation toot jaate).
+- **`optionalDependencies`** — install fail ho jaye toh npm error nahi karta, chup-chaap skip. Platform-specific native addons ke liye — `fsevents` sirf macOS pe build hota hai; Linux pe skip, `npm install` nahi tootta. Code ko `try { require("fsevents") } catch {}` se guard karna padta hai.
+- **`bundleDependencies`** — publish tarball ke andar hi kuch deps pack kar do; rare.
+
+### Interview mein "typescript ko kaunse bucket mein daaloge?"
+
+> "`devDependencies` mein. Deployment artifact plain compiled `.js` hota hai — production process ko `tsc` chahiye hi nahi, wo sirf build step mein use hota hai. Agar `typescript` `dependencies` mein aa jaye toh `npm ci --omit=dev` bhi use install karega — image ~50MB bada, attack surface bada, zero runtime fayda. Ulta bhi galat hai: `pg` jaisi runtime dep agar `-D` se install ho jaye toh local dev chalega par prod `npm ci --omit=dev` ke baad `Cannot find module 'pg'` se crash karega. Rule: 'kya running production process ise import karega?' — haan toh `dependencies`."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Galat classification local dev mein **kabhi nahi** pakdi jati, kyunki `npm install` local pe dono buckets laata hai. Ise pakadne ka ek hi tareeka: CI ya ek local check mein `npm ci --omit=dev && node dist/index.js` chala ke dekho server start hota hai ya `Cannot find module` deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Docker multi-stage builds for Node APIs">
+
+Ek standard production Dockerfile do stages rakhta hai. **Build stage**: `npm ci` (sab deps), phir `npm run build` (`tsc` compile). **Runtime stage**: fresh `node:20-slim` base, `npm ci --omit=dev` (sirf `dependencies`), phir build stage se sirf `dist/` copy. Result: final image mein `typescript`, `jest`, `eslint`, `@types/*` — kuch nahi. Ek real BFSI API mein ye split image ko 380MB se 190MB le aaya, aur `npm audit --omit=dev` ki vuln count aadhi ho gayi kyunki dev-only tooling ke CVEs ab image mein hi nahi the.
+
+</RealWorld>
+
+<RealWorld company="The classic 'prod crash' from a misfiled runtime dep">
+
+Ek team ne `dotenv` ko `npm install -D dotenv` se add kiya (galti se `-D` lag gaya). Local pe sab chala — CI tests bhi pass, kyunki wahan bhi dev deps installed the. Production deploy `npm ci --omit=dev` chalata tha; `dotenv` install hi nahi hua; app boot pe `require('dotenv')` `Cannot find module 'dotenv'` se crash. Rollback, `package.json` mein `dotenv` ko `dependencies` mein move, re-deploy. Ek line ka fix, lekin ek outage. Isliye prod-parity install check CI mein hona chahiye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Ek typical TS Node API: `dependencies` mein **8-15** packages, `devDependencies` mein **20-40** (types, test, lint, build).
+- `npm ci --omit=dev` ek TS backend image se aksar **100-200MB** hata deta hai.
+- `-D` = `--save-dev`; `--save-prod` (ya no flag) = `dependencies`. `--save-optional` = `optionalDependencies`; `--save-peer` = `peerDependencies`.
+- `npm install` (no flag) **dono** buckets laata hai; `--omit=dev` skip karta hai devDependencies **aur** unki exclusive transitive deps.
+- `NODE_ENV=production npm install` bhi devDependencies skip karta hai — legacy behaviour, aaj `--omit=dev` explicit better.
+- Har extra prod dependency = ek aur package jiska code prod mein execute ho sakta hai aur jiska maintainer trust karna padta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye beginner-friendly par revealing question hai: "`dependencies` aur `devDependencies` mein farak?", "`nodemon` kahan rakhoge?", "prod image chhota kaise karoge?". Interviewer dekhta hai ki tumne kabhi deploy kiya hai ya sirf local pe run karte ho.
+
+Achhe jawaab ka shape:
+
+1. **Rule** — "kya running production process ise import karega? haan → `dependencies`, nahi → `devDependencies`."
+2. **Examples** — runtime: `express`, `pg`, `zod`. dev: `typescript`, `jest`, `eslint`, `nodemon`, `@types/*`.
+3. **`-D` flag** — dev dep add karne ke liye.
+4. **Prod install** — `npm ci --omit=dev` → chhota image, tez start, chhoti attack surface. Docker multi-stage.
+5. **Dono direction ke bugs** — build tool in `dependencies` = bloat; runtime dep in `devDependencies` = prod crash (`Cannot find module`).
+6. **Peer/optional** — one-liner: peer = host provides (plugins, singletons); optional = fail ho toh chalega (platform-specific).
+
+Red flag: "farak nahi padta, dono install ho jate hain" — image size aur attack surface ko ignore karna, aur prod-parity check ki samajh na hona.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Build tool ko `dependencies` mein daal dena.** `npm install typescript` (bina `-D`) `typescript` ko runtime bucket mein daal deta hai. `npm ci --omit=dev` bhi ise install karega — ~50MB bloat, badi attack surface, aur compiled JS ko `tsc` ki zaroorat hai hi nahi. Build tools hamesha `-D`.
+
+</Mistake>
+
+<Mistake>
+
+**Runtime dependency ko `devDependencies` mein chhod dena.** `pg` ya `dotenv` ko `-D` se install kar diya. Local aur CI dono pe chalta hai (dev deps present). Production `npm ci --omit=dev` chalata hai → package missing → boot pe `Cannot find module` crash. Agar prod code `require` karta hai → `dependencies`.
+
+</Mistake>
+
+<Mistake>
+
+**Sirf `npm install` se test karna, `npm ci --omit=dev` se kabhi nahi.** Local `npm install` dono buckets laata hai, isliye galat classification chhupi rehti hai. CI mein ek job `npm ci --omit=dev && node dist/index.js` chala ke prod-parity verify karo.
+
+</Mistake>
+
+<Mistake>
+
+**`@types/*` packages ko `dependencies` mein daalna.** Type definitions sirf TypeScript **compile** ke time chahiye. Compiled `.js` mein koi type nahi rehta. `@types/express`, `@types/node` — sab `devDependencies`. (Exception: agar tum ek library publish kar rahe ho jiske public API mein us type ka reference hai.)
+
+</Mistake>
+
+<Mistake>
+
+**`peerDependencies` ko `dependencies` samajh ke plugin mein wo package hard-install karna.** Ek React component library agar `react` ko `dependencies` mein rakhe toh consumer app mein React ki do copies aa sakti hain — hooks aur context toot jaate hain. Plugins/libraries `react`, `express` jaise host frameworks ko `peerDependencies` mein rakhein.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Naya package add karna hai"] --> B{"Kya running production process ise import/require karega?"}
+    B -->|Haan — express, pg, zod, dotenv| C["npm install pkg -> dependencies"]
+    B -->|Nahi — sirf build/test/lint/dev| D["npm install -D pkg -> devDependencies"]
+    C --> E["npm ci --omit=dev — prod image me aata hai"]
+    D --> F["npm ci --omit=dev — prod image me SKIP"]
+    E --> G["Chhoti image, tez start, kam attack surface"]
+    F --> G
+`}
+  caption="Ek sawaal se bucket decide hota hai: kya production process ise import karega? Prod install --omit=dev se sirf dependencies laata hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Rule**: "kya running production process ise import karega?" — haan → `dependencies`, nahi → `devDependencies`.
+- **`dependencies`** = runtime prod: `express`, `pg`, `zod`, `jsonwebtoken`, `bcrypt`, `axios`.
+- **`devDependencies`** = build/test/lint/dev only: `typescript`, `jest`, `eslint`, `prettier`, `nodemon`, `ts-node`, `@types/*`.
+- Add dev dep: `npm install -D <pkg>` (= `--save-dev`). Default (no flag) = `dependencies`.
+- `npm install` (no flag) = **dono** buckets (local dev). `npm ci --omit=dev` = **sirf** `dependencies` (prod).
+- Prod `--omit=dev` → chhota image (100-200MB kam), tez cold start, **chhoti attack surface**.
+- Docker: multi-stage — build stage `npm ci` + compile, runtime stage `npm ci --omit=dev` + copy `dist/`.
+- **Bug A**: build tool in `dependencies` → bloated prod image. **Bug B**: runtime dep in `devDependencies` → prod `Cannot find module` crash.
+- Galat classification local mein nahi pakdi jati → CI mein `npm ci --omit=dev && node dist/index.js` check.
+- **`peerDependencies`** = host app provides (plugins/singletons like `react`, `express`). **`optionalDependencies`** = install fail ho toh skip (platform-specific like `fsevents`).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek project mein `npm install express` aur `npm install -D nodemon` chalao. `package.json` kholo — dono kis bucket mein gaye confirm karo. Phir `npm ci --omit=dev` chala ke `node_modules` mein check karo `nodemon` folder hai ya nahi.
+
+**Medium:** Ek chhota `dist/index.js` banao jo `require("dotenv")` kare. `dotenv` ko galti se `-D` se install karo. `npm install` ke baad `node dist/index.js` chalao (chalega). Phir `rm -rf node_modules && npm ci --omit=dev && node dist/index.js` chalao aur crash observe karo. `dotenv` ko `dependencies` mein move karke fix karo.
+
+**Bada:** Ek do-stage Dockerfile likho ek TS Node app ke liye: stage 1 `node:20` pe `npm ci` + `npm run build`; stage 2 `node:20-slim` pe `npm ci --omit=dev` + stage 1 se `dist/` copy + `CMD ["node", "dist/index.js"]`. Dono stages ke bina aur ke saath image size compare karo (`docker images`). Explain karo ki `typescript` final image mein kyun nahi hai.
+
+</Callout>
+

@@ -1,0 +1,318 @@
+---
+slug: "eventemitter-and-custom-events"
+title: "EventEmitter & Custom Events"
+section: "nodejs"
+module: "http-and-events"
+order: 4
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: []
+tags: ["nodejs", "events", "eventemitter", "observer-pattern", "architecture"]
+englishDefinition: "EventEmitter is Node's built-in implementation of the observer pattern, from the events module. You register listeners with on/once/off and trigger them with emit(name, ...args). emit is synchronous — listeners run in registration order, before emit returns. The 'error' event is special: an emitted 'error' with no listener throws and can crash the process. Node warns at more than 10 listeners on one event (MaxListenersExceededWarning). You build custom event sources by extending EventEmitter."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`EventEmitter` is Node's built-in **observer pattern**, from the `events` module. You register listeners with `on` / `once` / `off` and fire them with `emit(name, ...args)`. `emit` is **synchronous** — every listener runs in registration order, before `emit` returns. The `"error"` event is special: emitting `"error"` with **no listener attached** throws and can crash the process. Node prints a `MaxListenersExceededWarning` when one event has more than 10 listeners. You create your own event sources by writing a class that `extends EventEmitter`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node ka bahut saara core — `http.Server`, streams, `process`, child processes — `EventEmitter` ke upar bana hai. Agar tum `EventEmitter` ka API aur uske do "gotchas" (sync emit, special `"error"` event) samajh lo, toh Node ke aadhe core modules ka behaviour predict kar sakte ho, aur apne code mein decoupled, event-driven design likh sakte ho.
+
+### Ye kya hai — EventEmitter
+
+```javascript
+const EventEmitter = require("events");
+
+const bus = new EventEmitter();
+
+bus.on("user:signup", (user) => {
+  console.log("welcome email:", user.email);
+});
+
+bus.on("user:signup", (user) => {
+  console.log("analytics track:", user.id);
+});
+
+bus.emit("user:signup", { id: 7, email: "a@b.com" });
+```
+
+Ek object jispe tum named events "sun" sakte ho (`on`) aur "bhej" sakte ho (`emit`). Ek event ke multiple listeners ho sakte hain — sab chalenge, jis order mein register hue.
+
+### Core API
+
+- **`emitter.on(name, fn)`** — `fn` ko `name` event ka listener banao. Har `emit` par chalega. Alias: `addListener`.
+- **`emitter.once(name, fn)`** — `fn` sirf **ek baar** chalega, phir automatically remove.
+- **`emitter.off(name, fn)`** — listener hatao (same function reference chahiye). Alias: `removeListener`.
+- **`emitter.emit(name, ...args)`** — saare listeners ko `args` ke saath **synchronously** call karo. Return `true` agar koi listener tha, `false` agar nahi.
+- **`emitter.removeAllListeners(name?)`** — sab hatao (ya sirf `name` ke).
+- **`emitter.listenerCount(name)`** — kitne listeners.
+- **`emitter.eventNames()`** — jin events ke listeners hain unke naam.
+- **`emitter.prependListener(name, fn)`** — listener ko list ke **aage** lagao (pehle chale).
+- **`emitter.setMaxListeners(n)`** — warning threshold badlo (default 10).
+
+### emit SYNCHRONOUS hai — ye sabse important gotcha
+
+```javascript
+const bus = new EventEmitter();
+bus.on("ping", () => console.log("2. listener"));
+
+console.log("1. before emit");
+bus.emit("ping");
+console.log("3. after emit");
+// Output: 1, 2, 3 — hamesha isi order mein
+```
+
+`emit` listeners ko turant, isi call stack par, registration order mein chalata hai — aur **jab tak saare listeners khatam nahi hote, `emit` return nahi karta**. Ye `setTimeout` ya Promise jaisa deferred nahi hai. Iska matlab:
+
+- Ek slow/blocking listener `emit` ke baad ke code ko rok deta hai.
+- Ek listener ke andar thrown error (agar `try/catch` nahi) `emit` caller tak propagate karta hai.
+- Agar tumhe listener ko "baad mein" chalana hai, tumhe khud `setImmediate(() => ...)` karna padega.
+
+### Special "error" event
+
+```javascript
+const bus = new EventEmitter();
+bus.emit("error", new Error("kuch toot gaya"));
+// koi 'error' listener nahi → ye Error THROW hoga → process crash (unhandled)
+```
+
+Node mein convention: agar `EventEmitter` `"error"` emit karta hai aur **koi listener nahi**, to wo `Error` throw ho jata hai. Agar wo async context mein hua (jaise ek stream) to `uncaughtException` ban ke process crash kara sakta hai. Isliye **har EventEmitter jo error emit kar sakta hai — streams, sockets, child processes — uspe hamesha `.on("error", ...)` lagao**, chahe sirf log karne ke liye.
+
+### MaxListenersExceededWarning
+
+Agar ek single event par **10 se zyada** listeners lag jate hain, Node stderr par warning deta hai — ye ek **memory leak detector** hai (aksar galti se loop mein `on` call ho raha hota hai). Agar tumhe legitimately zyada chahiye: `emitter.setMaxListeners(20)` ya `EventEmitter.defaultMaxListeners = 20` (global — soch samajh ke). `0` matlab unlimited.
+
+### Internally kaise kaam karta hai
+
+`EventEmitter` andar ek plain object rakhta hai: `{ eventName: listenerFnOrArray }`. Ek listener par wo seedha function store karta hai; do ya zyada par array. `emit(name, ...args)` us entry ko dekhta hai, listeners ki ek copy leke (taaki emit ke dauran `off` safe rahe) har ek ko `fn.apply(this, args)` se call karta hai — sequentially, sync. `once` internally ek wrapper function lagata hai jo pehle call par `off` khud karta hai phir original ko call karta hai.
+
+### Simple real-life analogy
+
+`EventEmitter` ek **office notice board + subscriber list** hai. `on("fire-drill", fn)` = "fire drill hone par mujhe batao" list mein naam likhwana. `emit("fire-drill")` = ghanti bajana — **har** subscriber ko turant, ek ek karke, khabar di jaati hai, aur jab tak sabko bata nahi diya, ghanti bajane wala wapas apni seat par nahi jaata (sync). `once` = "sirf agli baar batao, phir mera naam kaat do". `"error"` ki ghanti special hai — agar us list mein **koi** naam nahi, to poori building khali (process crash).
+
+### Custom event source — class extends EventEmitter
+
+```javascript
+const EventEmitter = require("events");
+
+class Job extends EventEmitter {
+  constructor(steps) {
+    super();
+    this.steps = steps;
+  }
+
+  async run() {
+    try {
+      for (let i = 0; i < this.steps.length; i++) {
+        await this.steps[i]();
+        this.emit("progress", {
+          done: i + 1,
+          total: this.steps.length,
+          percent: Math.round(((i + 1) / this.steps.length) * 100),
+        });
+      }
+      this.emit("done", { steps: this.steps.length });
+    } catch (err) {
+      this.emit("error", err); // listener zaroor hona chahiye
+    }
+  }
+}
+
+const job = new Job([stepA, stepB, stepC]);
+job.on("progress", (p) => console.log(`${p.percent}%`));
+job.on("done", (r) => console.log("finished", r));
+job.on("error", (e) => console.error("job failed:", e.message));
+job.run();
+```
+
+- `extends EventEmitter` + `super()` — `Job` ab ek emitter hai.
+- `this.emit("progress", {...})` — har step ke baad progress broadcast; jitne bhi UI/log listeners hain, sab ko milega.
+- `this.emit("error", err)` — failure ko event banaya; caller `.on("error")` se handle karta hai. **Yahan listener na ho to process crash.**
+- Ek hi `Job` object multiple consumers ko feed kar sakta hai bina unhe jaane.
+
+### Day-to-day use
+
+- `stream.on("data" / "end" / "error")`, `server.on("request" / "connection")`.
+- `process.on("SIGTERM" / "uncaughtException" / "unhandledRejection")`.
+- Ek internal "event bus" for decoupled modules: `bus.emit("order:paid", order)` — email, inventory, analytics modules alag-alag sunte hain.
+- WebSocket / socket.io connections — `socket.on("message", ...)`.
+- Custom domain objects: a download manager emitting `progress`, a parser emitting `row`.
+
+### Kab EventEmitter use karna chahiye
+
+- Ek source se **multiple ya ongoing** notifications aati hain (progress, streaming rows, connection lifecycle).
+- Producer aur consumers ko **decouple** karna hai — producer ko nahi pata kaun sun raha hai.
+- Ek hi event ke **kai independent** reactions chahiye.
+
+### Kab EventEmitter use nahi karna chahiye
+
+- Ek **single, one-shot** async result chahiye — wahan Promise/`async-await` zyada saaf hai (`.then`/`await` ek value, ek error path).
+- Sequential control flow — events se "pehle ye phir wo" express karna spaghetti banata hai.
+- Jab caller ko **return value** chahiye — `emit` `true`/`false` deta hai, tumhare listeners ka result nahi.
+
+### Pros and cons
+
+**Pros**
+
+- Loose coupling — naye consumers add karo bina producer chhue.
+- Multiple listeners, natural fan-out.
+- Node-native, streams/servers ke saath consistent mental model.
+
+**Cons**
+
+- Control flow implicit — "kaun sunega, kab" trace karna mushkil.
+- `emit` sync — slow listener sab kuch block karta hai; ek uncaught throw emit caller tak jaata hai.
+- `"error"` listener bhoolna = crash.
+- Listener leak (`on` in a loop) → `MaxListenersExceededWarning` → memory growth.
+- No back-pressure, no ordering guarantees across event types.
+
+### Alternatives
+
+- **Promise / async-await** — ek-baar-ka async result. Return value + single error path.
+- **Async iterators (`for await...of`)** — ordered stream of values with back-pressure; `events.on(emitter, name)` isi mein convert kar deta hai.
+- **Streams** — jab data volume large ho aur back-pressure chahiye.
+- **Message queue (BullMQ, Kafka, SQS)** — cross-process / durable / retryable events. In-process `EventEmitter` process crash par sab kho deta hai.
+- **RxJS Observables** — complex event composition (debounce, merge, retry) chahiye ho.
+
+### Interview mein "Events vs Promise — kaunsa kab?"
+
+> "Rule of thumb: jab notification **ek hi baar** aani hai aur mujhe ek value/error chahiye — Promise. Jab **baar-baar ya ongoing** aani hai — download progress, stream ke chunks, connection lifecycle — EventEmitter, kyunki Promise sirf ek baar settle hota hai. Callback main tab rakhta hoon jab wo ek single event listener ho (`stream.once('end', cb)`) aur Promise wrap karna over-engineering ho. Custom domain objects (ek Job, ek Parser) jinke consumers alag-alag reactions chahte hain, un par main `extends EventEmitter` karta hoon — aur `'error'` event ka listener kabhi nahi bhoolta, warna wo throw hoke process gira dega."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`once("error", ...)` ke saath ek trap hai: agar tumne `once` use kiya aur pehla error handle hone ke baad doosra error emit hua, ab koi listener nahi — process crash. Jo emitter multiple errors emit kar sakta hai uspe `on("error", ...)` (persistent) use karo, `once` nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Node core streams">
+
+Har Node stream ek `EventEmitter` hai. `fs.createReadStream(file)` `"open"`, `"data"`, `"end"`, `"close"`, aur `"error"` emit karta hai. `"data"` baar-baar fire hota hai (har chunk) — isliye ye events hain, ek Promise nahi. Yahi wajah hai ki file na milne par (`ENOENT`) agar tumne `"error"` listener nahi lagaya, to stream error throw karta hai aur — kyunki wo async tick par hota hai — poora process `uncaughtException` se crash ho sakta hai. Streams ne is model ko itni consistently follow kiya ki `stream.pipeline` / `stream/promises` baad mein add hue error handling automate karne ke liye.
+
+</RealWorld>
+
+<RealWorld company="Application event bus (order lifecycle)">
+
+E-commerce backends mein ek common pattern: checkout complete hone par `bus.emit("order:paid", order)`. Alag-alag modules independently subscribe karte hain — `emailModule` receipt bhejta hai, `inventoryModule` stock decrement karta hai, `analyticsModule` event track karta hai, `loyaltyModule` points add karta hai. Checkout code ko in mein se kisi ka pata nahi — naya module add karna sirf ek `bus.on(...)` line hai. Trade-off: jab kuch "order ke baad hona chahiye tha par nahi hua" debug karna ho, to tumhe saare subscribers dhoondhne padte hain — isliye teams eventually is in-process bus ko ek real queue (BullMQ/Kafka) se replace kar deti hain jahan events durable aur observable hote hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Default max listeners per event: **10**. 11th par `MaxListenersExceededWarning` (stderr). `setMaxListeners(0)` = unlimited.
+- `emit` **0 ms** deferral — listeners synchronously chalte hain, usi call stack par, `emit` return hone se pehle.
+- `once` listener pehli `emit` ke baad hi list se hat jaata hai — `listenerCount` turant `1` se `0` ho jaata hai.
+- `EventEmitter` **v0.1.26 (2010)** se core mein — Node ke sabse purane building blocks mein se ek.
+- Ek `emit` bina kisi listener ke practically free hai (`false` return, no allocation) — chhinta karne ki zaroorat nahi.
+- Modern Node (`v13+`) mein `events.setMaxListeners(n, ...targets)` aur `EventEmitterAsyncResource` bhi hain diagnostics ke liye.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common questions: "`emit` sync hai ya async?", "`'error'` event special kyun hai?", "events vs callback vs promise — kaunsa kab?", aur "ek class likho jo `EventEmitter` extend kare".
+
+Achhe jawaab ka shape:
+
+1. **Kya hai** — "observer pattern; `on`/`once`/`off` se listen, `emit(name, ...args)` se fire; ek event, multiple listeners, registration order."
+2. **emit sync** — "listeners turant, usi stack par, order mein chalte hain; `emit` unke khatam hone tak return nahi karta. Slow listener sab block karta hai."
+3. **error event** — "listener na ho to emitted `'error'` throw hota hai — async context mein process crash. Har error-emitting emitter par `.on('error')` mandatory."
+4. **MaxListeners** — "10 par warning; leak detector; genuine case mein `setMaxListeners`."
+5. **Decision** — "one-shot result → Promise; multiple/ongoing → EventEmitter; single legacy listener → callback."
+
+Red flag: "`emit` async hota hai, event loop ke baad chalta hai" — galat. Ya `'error'` event ke special behaviour se anjaan hona.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`"error"` event ka listener na lagana.** Ek stream, socket, ya custom emitter `emit("error", err)` karta hai aur koi listener nahi — Node us `Error` ko throw kar deta hai, aur async context mein ye seedha `uncaughtException` → process crash. Har emitter jo fail ho sakta hai uspe `.on("error", ...)` lagao, kam se kam log ke liye.
+
+</Mistake>
+
+<Mistake>
+
+**`emit` ko async samajhna.** "Listener baad mein chalega" maan ke `emit` ke turant baad ke code par bharosa karna. `emit` **synchronous** hai — listener usi line par chal jata hai. Agar tumhe defer chahiye, listener ke andar `setImmediate`/`queueMicrotask` khud lagao.
+
+</Mistake>
+
+<Mistake>
+
+**`off` ke liye alag function reference dena.** `emitter.on("x", () => f())` phir `emitter.off("x", () => f())` — ye do alag anonymous functions hain, kuch remove nahi hoga, listener leak. Remove karna ho to named function rakho: `const h = () => f(); on("x", h); ... off("x", h);`.
+
+</Mistake>
+
+<Mistake>
+
+**Loop/request handler ke andar `on` call karna without `off`.** Har request par `emitter.on("data", ...)` — listeners jamaa hote rehte hain, `MaxListenersExceededWarning`, phir memory growth. Per-request listener ho to `once` use karo ya cleanup mein `off` karo.
+
+</Mistake>
+
+<Mistake>
+
+**Sequential workflow ko events se express karna.** "`step1` done event par `step2` emit karo, uske done par `step3`..." — ye control flow ko poore codebase mein bikher deta hai, debugging nightmare. Sequential steps ke liye `async/await` use karo; events sirf genuine fan-out / ongoing notifications ke liye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["emitter.emit('progress', data)"] --> B["events map me 'progress' entry dhoondo"]
+    B --> C{"listener hai?"}
+    C -->|nahi| D["emit returns false — kuch nahi hua"]
+    C -->|haan| E["listeners ki copy lo"]
+    E --> F["listener 1 ko call karo (sync)"]
+    F --> G["listener 2 ko call karo (sync)"]
+    G --> H["... registration order me sab"]
+    H --> I["emit returns true — ab agli line chalti hai"]
+    J["emit('error', err) + koi listener nahi"] --> K["Error THROW → uncaughtException → crash"]
+`}
+  caption="emit listeners ko synchronously, registration order mein chalata hai; 'error' bina listener ke throw ho jaata hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `EventEmitter` (`require("events")`) = observer pattern: `on`/`once`/`off` + `emit(name, ...args)`.
+- Ek event, **kai listeners**, **registration order** mein chalte hain.
+- `emit` **synchronous** — listeners usi call stack par, `emit` unke khatam hone tak return nahi karta.
+- `"error"` event special: **listener na ho to `Error` throw** → async context mein process crash. Hamesha `.on("error", ...)`.
+- `once` = ek baar chal ke auto-remove. `off` ko **same function reference** chahiye.
+- `> 10` listeners on one event → `MaxListenersExceededWarning` (leak detector). `setMaxListeners(n)`, `0` = unlimited.
+- Custom source: `class X extends EventEmitter { constructor(){ super(); } ... this.emit(...) }`.
+- `emit` return: `true` agar koi listener tha, `false` agar nahi. Listeners ka return value nahi milta.
+- **Decision**: one-shot result → Promise; multiple/ongoing → EventEmitter; single legacy listener → callback.
+- Cross-process / durable events → message queue, in-process `EventEmitter` nahi (crash par sab gaya).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `EventEmitter` banao, `"tick"` par do listeners lagao (`"A"` aur `"B"` print). `emit("tick")` se pehle aur baad mein `console.log` karke confirm karo ki output order `before, A, B, after` hai — yaani `emit` sync hai.
+
+**Medium:** `class Downloader extends EventEmitter` likho with a `start(totalBytes)` method jo ek loop mein (fake) `setInterval` se bytes badhaye aur har tick par `emit("progress", { percent })`, complete par `emit("done")`. Consumer side par `progress` aur `done` sunо aur percentage print karo.
+
+**Bada:** Same `Downloader` mein ek "fail" case add karo jo `emit("error", new Error("network"))` kare. Ise do baar chalao — ek baar `.on("error")` listener ke saath (graceful log), ek baar **bina** listener ke — aur observe karo ki bina listener process crash karta hai. Phir explain karo ki `once("error")` vs `on("error")` mein kya farak padta agar do errors emit hote.
+
+</Callout>

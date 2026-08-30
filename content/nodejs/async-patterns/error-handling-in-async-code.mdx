@@ -1,0 +1,330 @@
+---
+slug: "error-handling-in-async-code"
+title: "Error Handling In Async Code"
+section: "nodejs"
+module: "async-patterns"
+order: 4
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["async-await-in-practice"]
+tags: ["nodejs", "error-handling", "promises", "retry", "timeout", "async"]
+englishDefinition: "Robust async error handling combines a few patterns: try/catch around await, a terminal .catch on a promise chain, Promise.allSettled when you want every result even if some fail, retry-with-backoff for transient failures, a timeout wrapper built on Promise.race, and process 'unhandledRejection' only as a last-resort safety net. The core principle is to catch errors where you can actually do something about them."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Async error handling is a **toolkit**, not one trick. Use `try/catch` around `await`, a terminal `.catch()` on a promise chain, `Promise.allSettled` when you need every result even if some reject, **retry-with-backoff** for transient failures, a **timeout wrapper** built on `Promise.race`, and `process.on('unhandledRejection')` only as a last-resort safety net. The guiding rule: **catch an error where you can actually do something about it** — log-and-rethrow at every level is noise.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle topics mein pattern dekhe — ab error handling ko serious lete hain. Production Node code mein crashes ka sabse bada source galat error handling hai: ya toh error swallow ho jati hai (silent data loss), ya har jagah `try/catch` bikhra hota hai (noise), ya ek transient network blip pura request gira deta hai (koi retry nahi). Ye topic saare async error patterns ek jagah.
+
+### try/catch around await
+
+`await` ki hui rejection ek exception ki tarah throw hoti hai, isliye `try/catch` wapas kaam karta hai:
+
+```javascript
+async function getUserSafe(id) {
+  try {
+    return await getUser(id);
+  } catch (err) {
+    logger.error({ err, id }, "getUser failed");
+    throw new AppError("USER_LOOKUP_FAILED", { cause: err });
+  }
+}
+```
+
+**Zaroori detail**: `return await getUser(id)` — sirf `return getUser(id)` (bina `await`) likha toh rejection is function ke `try` ke bahar hoti hai, `catch` use nahi pakadta. `return`-ke-saath-`await` tab likho jab tum usi function mein error handle karna chahte ho.
+
+### .catch on a chain
+
+Agar tum `.then` chain style use kar rahe ho, terminal `.catch`:
+
+```javascript
+getUser(id)
+  .then((u) => getOrders(u.id))
+  .then((orders) => render(orders))
+  .catch((err) => {
+    logger.error({ err }, "pipeline failed");
+    showErrorPage();
+  });
+```
+
+Chain mein kahin bhi reject/throw ho, wo yahan aayega. Beech mein `.catch` sirf tab jab tum us step se **recover** karna chahte ho (fallback value), warna end mein.
+
+### Promise.allSettled — jab sab results chahiye
+
+`Promise.all` **fail-fast** hai — ek reject, poora throw. Lekin aksar tum chahte ho: "10 services ping karo, jo respond karein unka data lo, jo fail karein unhe note karo."
+
+```javascript
+const results = await Promise.allSettled([
+  fetchPrice("AAPL"),
+  fetchPrice("GOOG"),
+  fetchPrice("BADSYM"),
+]);
+
+const ok = results
+  .filter((r) => r.status === "fulfilled")
+  .map((r) => r.value);
+const failed = results
+  .filter((r) => r.status === "rejected")
+  .map((r) => r.reason.message);
+```
+
+Har result ya `{ status: "fulfilled", value }` ya `{ status: "rejected", reason }`. Kabhi throw nahi karta. Batch jobs, dashboards, "best effort" fan-out ke liye ideal.
+
+### Retry with backoff — transient failures ke liye
+
+Network blips, `ECONNRESET`, 503, DB deadlock — ye aksar **transient** hote hain. Turant retry aksar kaam kar jata hai; thoda ruk ke retry aur behtar (server ko saans lene do).
+
+```javascript
+async function withRetry(fn, { retries = 3, baseMs = 200 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === retries || !isRetryable(err)) throw err;
+      const delay = baseMs * 2 ** attempt + Math.random() * 100; // exp backoff + jitter
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+  throw lastErr;
+}
+
+function isRetryable(err) {
+  return ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED"].includes(err.code)
+    || [502, 503, 504].includes(err.status);
+}
+```
+
+- **Exponential backoff**: 200ms, 400ms, 800ms — har baar double.
+- **Jitter** (random component): saare clients ek saath retry na karein (thundering herd).
+- **`isRetryable` guard**: `400 Bad Request` ya validation error retry karna bekaar hai — wo dobara bhi fail hoga. Sirf transient errors retry karo.
+- **Idempotency**: retry sirf tab safe hai jab operation idempotent ho (GET, ya PUT with idempotency key). Ek non-idempotent POST retry karke double charge ho sakta hai.
+
+### Timeout wrapper — Promise.race se
+
+Ek hang hui request ko forever wait nahi karna. `Promise.race` pehle settle hone wale ko return karta hai:
+
+```javascript
+function withTimeout(promise, ms, label = "operation") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// use
+const data = await withTimeout(fetchReport(id), 3000, "fetchReport");
+```
+
+- `Promise.race([work, timeout])` — jo pehle settle ho. Agar `work` 3s se zyada le, `timeout` reject jeet jata hai.
+- **`clearTimeout` in `.finally`** — warna timer 3s tak live rehta hai chahe `work` 100ms mein done ho jaye, aur process exit rok sakta hai.
+- **Caveat**: timeout jeetne pe underlying `work` **cancel nahi hota** — wo background mein chalta rehta hai (fetch ke liye `AbortController` use karo actual cancellation ke liye).
+
+### process 'unhandledRejection' — last resort, strategy nahi
+
+```javascript
+process.on("unhandledRejection", (reason) => {
+  logger.fatal({ reason }, "unhandled rejection — crashing");
+  process.exit(1); // let the process manager restart
+});
+```
+
+- Ye ek **safety net** hai jo tumhe batata hai ki kahin ek `await`/`.catch` chhoot gaya — bug ka signal, fix karne ka nahi.
+- Best practice: log karo aur **crash** karo (`exit(1)`), phir PM2/Kubernetes restart kare. Silently continue karna khatarnak hai — process ab unknown state mein ho sakta hai.
+- Isko "main saare errors yahan handle kar lunga" ki tarah use karna anti-pattern hai.
+
+### WHERE to catch — sabse important principle
+
+Error wahan pakdo jahan tum uske baare mein **kuch kar sakte ho**:
+
+- **Retry kar sakte ho?** — call site pe catch, `withRetry` lagao.
+- **Fallback value de sakte ho?** — catch karke default return karo (`getConfig().catch(() => DEFAULTS)`).
+- **User ko meaningful message dena hai?** — request handler boundary pe catch, `res.status(4xx/5xx)`.
+- **Kuch nahi kar sakte, sirf context add karna hai?** — catch, wrap with context, **rethrow**. Handle mat karo.
+- **Bilkul kuch nahi?** — catch mat karo. Use upar propagate hone do jahan koi decide kar sake.
+
+Anti-pattern: har function mein `try { ... } catch (e) { console.log(e); throw e; }` — ye sirf duplicate logs deta hai aur asli handler ko chhupa deta hai.
+
+### Day-to-day use
+
+- Express: ek error-handling middleware (`app.use((err, req, res, next) => ...)`) — sab route errors ka single boundary
+- HTTP clients: `withRetry` + `withTimeout` wrap karke resilient client
+- Batch jobs: `Promise.allSettled` + failed items ko dead-letter queue
+- Startup: `await connectDB()` fail = log + `process.exit(1)` (retry karke bhi na chale toh)
+
+### Kab retry karna chahiye / kab nahi
+
+- **Karo**: transient network errors, 5xx, rate-limit 429 (with `Retry-After`), DB deadlock
+- **Mat karo**: 4xx client errors, validation failures, auth failures, non-idempotent ops bina idempotency key ke
+
+### Pros and cons of aggressive handling
+
+**Pros**
+
+- Resilient system — transient failures user ko dikhte nahi
+- Graceful degradation — ek service down, baaki chalti rahe (`allSettled`)
+- Clear failure signals (structured logs, error codes)
+
+**Cons**
+
+- Over-catching se real bugs chhup jaate hain (swallowed errors)
+- Retry se load amplify ho sakta hai (retry storm) agar backoff/jitter na ho
+- Timeout without cancellation se resources leak (background work chalta rehta hai)
+- Har jagah try/catch = noise, readability down
+
+### Alternatives / complements
+
+- **Circuit breaker** (`opossum`) — retry se aage; ek service repeatedly fail kare toh kuch der ke liye call hi mat karo
+- **Error middleware / boundary** — per-request central handling (Express, Fastify)
+- **`AbortController`** — timeout ke saath actual cancellation
+- **Result types** (`{ ok, value }` / `{ ok: false, error }`) — throw ke bajaye explicit return, functional style
+- **Dead-letter queue** — jo permanently fail kare use alag store mein daalo, block mat karo
+
+### Interview mein "How do you handle errors in async code?"
+
+> "Main layer ke hisaab se sochta hoon. Sabse neeche — external calls — pe `withTimeout` aur `withRetry` (exponential backoff + jitter, sirf transient errors, idempotent ops). Service layer mein main errors ko domain errors mein wrap karta hoon (`cause` preserve karke) taaki context mile. Request boundary pe ek error middleware sab kuch pakadta hai aur proper status code deta hai. `Promise.allSettled` main fan-out mein use karta hoon jab partial results acceptable hon. `unhandledRejection` handler sirf log-and-crash karta hai — wo bug ka signal hai, handling strategy nahi. Core rule: error wahi pakdo jahan koi meaningful action le sako, warna propagate hone do."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`return somePromise` vs `return await somePromise` — inke beech ka farak sirf `try/catch` ke andar dikhta hai. Bina `try`: dono practically same. `try` ke andar: `return await` zaroori hai, warna rejection function chhod chuki hoti hai aur local `catch` use miss kar deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Payments — retry without idempotency">
+
+Ek team ne payment API call ke around blanket `withRetry(3)` laga diya kyunki "network flaky tha". Ek din upstream ne charge process kar liya lekin response timeout ho gaya — client ne retry kiya — dusra charge. Kuch customers ko double debit hua. Root cause: retry ko idempotent operations tak restrict nahi kiya tha. Fix: har charge request ke saath ek client-generated `Idempotency-Key` header, aur retry sirf `ETIMEDOUT`/`5xx` pe, `2xx` ambiguous timeout pe nahi. Iske baad reconciliation job bhi add hua as a backstop.
+
+</RealWorld>
+
+<RealWorld company="Dashboard — Promise.all vs allSettled">
+
+Ek ops dashboard 8 microservices se health + metrics laata tha via `Promise.all`. Jab bhi koi ek service deploy ke dauran 10s ke liye down hota, poora dashboard blank — `Promise.all` fail-fast. Switch to `Promise.allSettled`: ab down service ke tile pe "unavailable" dikhta hai aur baaki 7 normally render hote hain. Ek line ka change, par availability perception poori tarah badal gaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Exponential backoff typical: base **200ms**, factor **2** → 200, 400, 800, 1600ms. Jitter **0-100ms** random add.
+- `Promise.all` = fail-fast (1 reject → poora reject); `Promise.allSettled` = **never rejects**, har element ka status.
+- Retry attempts production mein aksar **3** — usse zyada matlab underlying problem hai, retry se nahi chhupega.
+- Node **v15+**: unhandled rejection default behaviour = **process crash** (pehle sirf warning).
+- Timeout wrapper ka bhula hua `clearTimeout` = ek dangling timer jo event loop ko **`ms` tak** alive rakhta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic senior-leaning hai — interviewer resilience thinking dekhta hai, sirf `try/catch` syntax nahi. Common: "ek flaky external API ke saath kaise deal karoge?" ya "Promise.all vs allSettled kab?"
+
+Achhe jawaab ka shape:
+
+1. **Where to catch** — "jahan meaningful action le sako: retry, fallback, user message, ya context add karke rethrow. Warna propagate."
+2. **Retry** — "exponential backoff + jitter, sirf transient errors (`isRetryable`), sirf idempotent ops, cap ~3."
+3. **Timeout** — "`Promise.race` se wrapper, `clearTimeout` in `finally`, aur yaad rakho underlying work cancel nahi hota bina `AbortController`."
+4. **allSettled** — "partial results acceptable hon toh; dashboards, fan-out, batch."
+5. **unhandledRejection** — "last-resort log-and-crash, strategy nahi."
+
+Red flag: "main sab kuch ek try/catch mein wrap kar deta hoon top level pe" — ye errors swallow karta hai aur recovery ka mauka khatam.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`try` ke andar `return promise` bina `await`.** `async function f() { try { return doWork(); } catch (e) { ... } }` — `doWork()` ki rejection `f` ke `try` ke bahar hoti hai (kyunki `f` already return kar chuka), local `catch` miss ho jata hai. `try` ke andar hamesha `return await doWork();`.
+
+</Mistake>
+
+<Mistake>
+
+**Har error retry karna.** `withRetry` ko `400 Bad Request` ya validation error pe bhi chalana — wo dobara bhi fail hoga, sirf latency 3x aur load 3x. Retry sirf transient errors (`ECONNRESET`, `5xx`, `429`) pe. Ek `isRetryable(err)` guard zaroori.
+
+</Mistake>
+
+<Mistake>
+
+**Non-idempotent operation retry karna.** Ek `POST /charge` timeout hua — retry — do charges. Retry sirf idempotent ops (GET/PUT/DELETE) ya jab client `Idempotency-Key` bhej raha ho. Ambiguous failure (request gaya, response nahi aaya) pe blind retry data corrupt karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Timeout wrapper mein `clearTimeout` bhoolna.** `Promise.race([work, timeoutPromise])` mein agar `work` jaldi jeet gaya, `setTimeout` timer abhi bhi pending hai — wo `ms` tak event loop ko alive rakhta hai, aur short-lived scripts hang lagte hain. `.finally(() => clearTimeout(timer))` hamesha.
+
+</Mistake>
+
+<Mistake>
+
+**`unhandledRejection` handler mein swallow karke continue karna.** `process.on("unhandledRejection", (e) => logger.warn(e));` — process ab chalta rehta hai unknown state mein, aur asli bug (missing `await`) chhup jata hai. Log karo aur `process.exit(1)` — process manager restart karega clean state se.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    E["async error occurs"] --> Q{"can you do something here?"}
+    Q -->|"retryable & idempotent"| R["withRetry: backoff + jitter, cap 3"]
+    Q -->|"fallback value exists"| F["catch, return default"]
+    Q -->|"user-facing request"| B["request boundary: log + 4xx/5xx"]
+    Q -->|"only add context"| W["catch, wrap with cause, rethrow"]
+    Q -->|"nothing meaningful"| P["don't catch — let it propagate"]
+    R -->|"still fails"| B
+    W --> B
+    P --> U["last resort: process.on('unhandledRejection') -> log + exit(1)"]
+`}
+  caption="Har async error pe pehla sawaal: is jagah pe main iska kuch kar sakta hoon? Nahi toh propagate."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `await`ed rejection throw hoti hai → `try/catch` wapas kaam karta hai. `try` ke andar `return await`, sirf `return` nahi.
+- Chain style: terminal `.catch`. Beech ka `.catch` sirf recovery ke liye.
+- `Promise.all` = fail-fast; `Promise.allSettled` = har result ka `{status, value|reason}`, kabhi throw nahi — partial results ke liye.
+- **Retry**: exponential backoff (200/400/800) + jitter, `isRetryable` guard, idempotent ops only, cap ~3.
+- **Timeout**: `Promise.race([work, timeoutReject])`, `clearTimeout` in `.finally`, underlying work cancel nahi hota (use `AbortController`).
+- `process.on("unhandledRejection")` = last-resort **log + `exit(1)`**, handling strategy nahi.
+- **Where to catch**: retry / fallback / user-message / add-context-and-rethrow — warna propagate.
+- Anti-pattern: har function mein `catch (e) { console.log(e); throw e; }` — sirf noise.
+- Non-idempotent retry (bina idempotency key) = double writes / double charge.
+- Over-catching = swallowed errors = silent data loss.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `withTimeout(promise, ms)` likho `Promise.race` se. Test: `withTimeout(delay(100, "ok"), 500)` resolve `"ok"`; `withTimeout(delay(1000, "ok"), 200)` reject "timed out". Confirm karo ki `clearTimeout` ke bina script ~1s hang hoti hai fast case ke baad.
+
+**Medium:** `withRetry(fn, { retries, baseMs })` likho exponential backoff + jitter ke saath. Ek `fn` do jo pehle 2 attempts pe `new Error("ECONNRESET")` (with `.code`) throw kare aur teesre pe resolve kare. Verify 3rd attempt succeed karta hai aur delays ~200ms, ~400ms hain. Phir `fn` ko `code: "EBADREQUEST"` throw karwao aur confirm `isRetryable` false hone se turant throw hota hai.
+
+**Bada:** 6 fake services banao jinme 2 hamesha reject karti hain. `Promise.all` version aur `Promise.allSettled` version likho. Dekho `Promise.all` pehle rejection pe throw karta hai (baaki results gayab), jabki `allSettled` se tumhe 4 fulfilled + 2 rejected mil jaate hain. Failed 2 ko ek "deadLetter" array mein daalo aur baaki 4 process karo.
+
+</Callout>

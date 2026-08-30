@@ -1,0 +1,337 @@
+---
+slug: "event-loop-worked-examples"
+title: "Event Loop: Worked Examples"
+section: "nodejs"
+module: "event-loop"
+order: 5
+difficulty: "advanced"
+readingTime: 22
+prerequisites: ["event-loop-phases"]
+tags: ["nodejs", "event-loop", "worked-examples", "code-output", "microtask", "settimeout", "setimmediate"]
+englishDefinition: "A guided set of six output-prediction exercises that build from a single setTimeout to a nested mix of setTimeout, setImmediate, process.nextTick and Promises. Each example shows the code, asks you to predict the console order, then explains it tick by tick using the phase model and the microtask-drain rule. This is the format Node interviews use to test whether you truly understand the event loop rather than having memorised a definition."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Wipro", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A guided set of **six output-prediction exercises**, easy to hard, that build from a single `setTimeout` up to a nested mix of `setTimeout`, `setImmediate`, `process.nextTick`, and Promises. Each example shows the code, asks you to **predict the console order**, then explains it **tick by tick** using two rules: (1) the six-phase loop order, and (2) both microtask queues drain completely — `process.nextTick` first, then Promises — after every callback and between every phase. This "guess the output" format is exactly how Node interviews check whether you *understand* the event loop or just memorised a definition.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Theory padh li — call stack, thread pool, queues, 6 phases. Ab wo apply karte hain. Node interview mein event loop ka asli test yahi hota hai: ek 6-10 line ka snippet dikhake "output order batao". Neeche 6 examples hain, easy se hard. **Har ek pe pehle khud predict karo**, phir explanation padho.
+
+### Do rules jo har example solve kar dete hain
+
+1. **Phase order**: sync code pehle poora chalta hai. Phir loop: timers (`setTimeout`) → poll (I/O callbacks) → check (`setImmediate`) → close → repeat.
+2. **Microtask drain**: har callback ke baad aur har phase ke beech — pehle **poori** `process.nextTick` queue, phir **poori** Promise queue (`.then`/`.catch`/`.finally`, `await` continuations). Empty hone tak.
+
+Priority yaad rakho: **sync > process.nextTick > Promise > (macrotasks: timers / I/O / setImmediate)**.
+
+### Example 1 — sync vs setTimeout(0)
+
+```javascript
+console.log("A");
+setTimeout(() => console.log("B"), 0);
+console.log("C");
+```
+
+**Predict karo.** Phir aage padho.
+
+**Answer: `A`, `C`, `B`.**
+
+Tick by tick:
+
+- `console.log("A")` — sync, call stack pe, print `A`.
+- `setTimeout(cb, 0)` — `cb` ko **timers phase** ki macrotask queue mein daala. Abhi kuch print nahi.
+- `console.log("C")` — sync, print `C`.
+- Main script khatam, call stack khali. Microtask queues khali hain.
+- Loop timers phase pe jata hai — `cb` ready (delay 0, clamp ~1ms nikal chuka). Print `B`.
+
+**Seekh**: `setTimeout(fn, 0)` ka matlab "abhi" nahi — "jitni jaldi ho sake, lekin sync code aur microtasks ke baad".
+
+### Example 2 — setTimeout(0) vs setImmediate (main module se)
+
+```javascript
+setTimeout(() => console.log("timeout"), 0);
+setImmediate(() => console.log("immediate"));
+```
+
+**Predict karo.**
+
+**Answer: non-deterministic** — kabhi `timeout, immediate`, kabhi `immediate, timeout`.
+
+Kyun:
+
+- `setTimeout(0)` `~1ms` pe clamp hota hai.
+- Main script khatam hone ke baad loop start hota hai. Wo timers phase pe aata hai.
+- **Agar** process startup + script execution mein `~1ms` se zyada laga → timer "ready" hai → `timeout` pehle, phir agli iteration ke check phase mein `immediate`.
+- **Agar** `1ms` se kam laga → timer abhi ready nahi → loop poll phase se hote hue check phase mein pahunchta hai → `immediate` pehle, phir agli iteration ke timers phase mein `timeout`.
+- Startup time machine load pe depend karti hai → order bhi.
+
+**Seekh**: main context se in dono ka relative order pe **kabhi logic mat banao**. Test isi wajah se flaky hote hain.
+
+### Example 3 — Promise.then vs setTimeout
+
+```javascript
+console.log("start");
+setTimeout(() => console.log("timeout"), 0);
+Promise.resolve().then(() => console.log("promise"));
+console.log("end");
+```
+
+**Predict karo.**
+
+**Answer: `start`, `end`, `promise`, `timeout`.**
+
+Tick by tick:
+
+- `console.log("start")` — sync, print.
+- `setTimeout(cb, 0)` — `cb` → timers macrotask queue.
+- `Promise.resolve().then(cb)` — promise already resolved, `cb` → **Promise microtask queue**.
+- `console.log("end")` — sync, print.
+- Main script khatam, stack khali. **Ab microtasks drain hoti hain — timers phase se pehle.** Promise queue: print `promise`.
+- Microtasks empty. Loop timers phase: print `timeout`.
+
+**Seekh**: microtask (`.then`) hamesha macrotask (`setTimeout`) se pehle — chahe timeout `0` ho. Yeh **deterministic** hai, unlike Example 2.
+
+### Example 4 — process.nextTick vs Promise.then
+
+```javascript
+console.log("1");
+Promise.resolve().then(() => console.log("2: promise"));
+process.nextTick(() => console.log("3: nextTick"));
+console.log("4");
+```
+
+**Predict karo.**
+
+**Answer: `1`, `4`, `3: nextTick`, `2: promise`.**
+
+Tick by tick:
+
+- `console.log("1")` — sync, print.
+- `Promise.resolve().then(cb)` — `cb` → Promise microtask queue.
+- `process.nextTick(cb)` — `cb` → **nextTick microtask queue** (alag queue, higher priority).
+- `console.log("4")` — sync, print.
+- Main script khatam. Microtask drain: **pehle poori nextTick queue** → print `3: nextTick`. **Phir poori Promise queue** → print `2: promise`.
+
+**Seekh**: `process.nextTick` ki queue Promise queue se **pehle** drain hoti hai, chahe `.then` code mein pehle likha ho. Do alag microtask queues hain, aur nextTick jeetta hai.
+
+### Example 5 — a mix of all four
+
+```javascript
+console.log("A: sync");
+
+setTimeout(() => console.log("B: setTimeout"), 0);
+
+setImmediate(() => console.log("C: setImmediate"));
+
+Promise.resolve().then(() => console.log("D: promise"));
+
+process.nextTick(() => console.log("E: nextTick"));
+
+console.log("F: sync");
+```
+
+**Predict karo — dhyaan se.**
+
+**Answer: `A`, `F`, `E`, `D`, then `B` and `C` in EITHER order.**
+
+Tick by tick:
+
+- `console.log("A: sync")` — print `A`.
+- `setTimeout(cb, 0)` — → timers macrotask queue.
+- `setImmediate(cb)` — → check macrotask queue.
+- `Promise.resolve().then(cb)` — → Promise microtask queue.
+- `process.nextTick(cb)` — → nextTick microtask queue.
+- `console.log("F: sync")` — print `F`.
+- Main script khatam, stack khali. **Microtask drain**: nextTick queue pehle → print `E`. Promise queue phir → print `D`.
+- Microtasks empty. Loop ab macrotasks pe. **`B` (timers) aur `C` (check) ka order Example 2 wali wajah se non-deterministic hai** — dono main module se schedule hue. Aksar `C` (immediate) pehle aata hai kyunki startup ke baad timer abhi ready nahi hota, lekin guarantee nahi.
+
+**Seekh**: sync → nextTick → promise deterministic hai; uske baad `setTimeout(0)` vs `setImmediate` main context ki purani non-determinism.
+
+### Example 6 — nested: setTimeout that schedules a Promise that schedules a setImmediate
+
+```javascript
+console.log("start");
+
+setTimeout(() => {
+  console.log("timeout fired");
+  Promise.resolve().then(() => {
+    console.log("promise inside timeout");
+    setImmediate(() => console.log("immediate inside promise"));
+  });
+}, 0);
+
+process.nextTick(() => console.log("nextTick (top level)"));
+
+console.log("end");
+```
+
+**Predict karo — poori chain.**
+
+**Answer: `start`, `end`, `nextTick (top level)`, `timeout fired`, `promise inside timeout`, `immediate inside promise`.**
+
+Tick by tick:
+
+- `console.log("start")` — print `start`.
+- `setTimeout(cb, 0)` — `cb` → timers macrotask queue.
+- `process.nextTick(cb2)` — `cb2` → nextTick microtask queue.
+- `console.log("end")` — print `end`.
+- Main script khatam, stack khali. **Microtask drain**: nextTick queue → print `nextTick (top level)`. Promise queue khali.
+- Loop **timers phase**: `cb` chalta hai.
+  - `console.log("timeout fired")` — print.
+  - `Promise.resolve().then(inner)` — `inner` → Promise microtask queue.
+  - `cb` khatam. **Ab — agla timer callback ya agle phase se pehle — microtask drain hoti hai** (yeh key hai). nextTick queue khali. Promise queue: `inner` chalta hai.
+    - `console.log("promise inside timeout")` — print.
+    - `setImmediate(cb3)` — `cb3` → check macrotask queue.
+  - `inner` khatam. Microtasks empty.
+- Loop timers phase khatam (aur koi timer nahi). poll phase (kuch nahi). **check phase**: `cb3` chalta hai — print `immediate inside promise`.
+
+**Seekh**: microtasks har callback ke baad drain hoti hain — timer callback ke andar schedule kiya `.then` **usi tick mein**, agle phase se pehle chal jata hai. Aur us `.then` ke andar ka `setImmediate` naturally check phase mein aata hai jo timers ke baad hi hai.
+
+### Ek galti jo sab karte hain
+
+"`setImmediate` ka naam hai 'immediate' toh wo sabse pehle chalega." Nahi. `setImmediate` ek **macrotask** hai (check phase). `process.nextTick` aur Promise `.then` — dono microtasks — usse pehle chalenge hamesha. Naam bhramita karta hai; wo actually "next check phase" hai.
+
+### Interview mein yeh kaise poocha jata hai
+
+> Interviewer ek snippet likhta hai (aksar Example 3, 4, ya 5 jaisa) aur bolta hai "output order?". Wo dekhta hai ki tum (1) sync code alag karte ho, (2) nextTick ko Promise se pehle rakhte ho, (3) macrotasks ko microtasks ke baad rakhte ho, (4) jahan non-determinism hai (setTimeout(0) vs setImmediate main se) wahan "yeh guaranteed nahi" bol dete ho — yeh last point aksar bonus deta hai kyunki bahut kam log bolte hain.
+
+</Hinglish>
+
+<Callout type="tip">
+
+Jab bhi confuse ho, teen buckets banao: **[sync]**, **[micro: nextTick, then promise]**, **[macro: timers, poll, check]**. Har line ko uske bucket mein daalo. Order: pura sync bucket → pura micro bucket (nextTick sub-bucket pehle) → macro bucket phase-order mein, aur har macro item ke baad micro bucket dobthe check karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Debugging a 'my callback runs too late' ticket">
+
+Ek dev ne bug report kiya: "`setTimeout(refresh, 0)` mera cache refresh nahi kar raha turant, 200ms lag rahe hain." Investigation se pata chala ki us tick ke poll phase mein ek bada `fs.readFile` callback tha jo synchronously roughly 200ms ka JSON transform karta tha. `setTimeout` ka callback timers phase mein tha jo us I/O callback ke **baad** aata hai us iteration mein — toh wo poore 200ms block hua. Fix: JSON transform ko chunk kiya `setImmediate` yields ke saath. Yeh Example 6 ka real-world version tha — phase order aur "ek phase mein lamba callback baaki sab ko delay karta hai".
+
+</RealWorld>
+
+<RealWorld company="A library that changed nextTick to queueMicrotask and broke ordering">
+
+Ek popular library ne ek minor release mein internal deferral ko `process.nextTick` se `queueMicrotask` pe move kiya "modernise" karne ke liye. Kuch downstream users ka code toota — unhone (galat tareeke se) assume kiya tha ki library ka callback unke apne `Promise.resolve().then` se **pehle** chalega, jo tab true tha jab library `nextTick` use karti thi (nextTick queue Promise queue se pehle drain hoti hai). `queueMicrotask` pe move karne se library ka callback ab Promise queue mein aa gaya, same priority as user code, aur registration order pe depend karne laga. Lesson: nextTick vs Promise-microtask ka priority farak real hai aur uspe unintentionally depend kiya ja sakta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Priority ladder: **sync** → **process.nextTick queue** → **Promise job queue** → **timers** → **poll (I/O)** → **check (setImmediate)** → **close**.
+- Microtask drain har macrotask ke baad **aur** har phase ke beech — ek tick mein **kai baar**.
+- Example 2 aur Example 5 ka tail: `setTimeout(0)` vs `setImmediate` **main module se non-deterministic** — dono orders valid.
+- Example 3, 4, 6: **fully deterministic** — koi bhi Node version pe same output.
+- `setTimeout(fn, 0)` effective floor **~1ms** (nested timers pe 4ms).
+- Ek I/O callback ke andar: `setImmediate` **hamesha** `setTimeout(0)` se pehle — deterministic.
+- Sabse common interview snippet shape: 4-6 lines, ek `setTimeout`, ek `Promise.then`, ek `process.nextTick`, kabhi ek `setImmediate`.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Yeh "output batao" round hai — Node ke liye sabse high-signal question. Interviewer memorised definition vs real understanding distinguish karna chahta hai. Wo dekhta hai ki tum systematically solve karte ho, guess nahi.
+
+Achha approach jo bolna/dikhana hai:
+
+1. **Sync pehle** — "poora synchronous code top se bottom chalega, koi callback nahi."
+2. **Microtasks next** — "phir nextTick queue poori, phir Promise queue poori."
+3. **Macrotasks phase order mein** — "phir timers, phir poll, phir check (`setImmediate`)."
+4. **Har callback ke baad microtasks re-check** — "nested `.then` ya `nextTick` usi tick mein drain."
+5. **Non-determinism call out** — "`setTimeout(0)` vs `setImmediate` main se — yeh guaranteed nahi, dono order valid."
+
+Red flags: guess karke jump karna; `setImmediate` ko sabse pehle rakhna; nextTick aur Promise ko same maan lena; nested microtask ko "agle tick" mein daal dena.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`setImmediate` ko "sabse pehle chalega" samajhna kyunki naam "immediate" hai.** `setImmediate` check-phase **macrotask** hai. `process.nextTick` aur Promise `.then` (dono microtasks) usse pehle chalenge, har baar. Naam se dhoka mat khao — socho "next check phase".
+
+</Mistake>
+
+<Mistake>
+
+**Nested microtask ko "agle event loop tick" mein daal dena.** Example 6 mein `timeout fired` ke andar schedule kiya `.then` **usi tick mein**, agle phase se pehle chalta hai — kyunki microtasks har callback ke baad drain hoti hain. Log galti se ise agli iteration mein rakh dete hain.
+
+</Mistake>
+
+<Mistake>
+
+**`setTimeout(0)` vs `setImmediate` ka order deterministic maan lena (main module se).** Example 2 — startup timing pe depend karta hai, dono orders normal hain. Interview mein ise "non-deterministic" bolna actually points deta hai. Ise "hamesha X pehle" bolna galti hai.
+
+</Mistake>
+
+<Mistake>
+
+**`process.nextTick` aur `Promise.resolve().then` ko ek hi queue samajhna.** Do alag microtask queues hain. **Poori** nextTick queue pehle drain hoti hai, phir **poori** Promise queue. Example 4 exactly yeh test karta hai — `nextTick` code mein baad mein likha hone par bhi pehle print hota hai.
+
+</Mistake>
+
+<Mistake>
+
+**Synchronous code ko bhool jana aur seedha callbacks ka order sochna shuru karna.** Har snippet mein pehle **saara** top-level synchronous code chalta hai (sab `console.log` jo kisi callback ke andar nahi). Wo hamesha sabse pehla output block hai. Uske baad hi queues ki baari aati hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Run ALL top-level synchronous code"] --> B["Drain nextTick queue (fully)"]
+    B --> C["Drain Promise job queue (fully)"]
+    C --> D["timers phase — expired setTimeout / setInterval"]
+    D --> E["after each callback: drain nextTick then Promise queue"]
+    E --> F["poll phase — ready I/O callbacks"]
+    F --> G["after each callback: drain microtasks again"]
+    G --> H["check phase — setImmediate callbacks"]
+    H --> I["after each callback: drain microtasks again"]
+    I --> J["close callbacks"]
+    J --> D
+`}
+  caption="The mental model for every 'guess the output' question: all sync first, then microtasks, then each macrotask phase in order — re-draining microtasks after every single callback."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Solve order: **[sync] → [nextTick queue] → [Promise queue] → [timers] → [poll/I/O] → [check/setImmediate] → [close]**.
+- Saara top-level sync code sabse pehle — poora, koi callback nahi.
+- **nextTick queue Promise queue se pehle** — dono alag microtask queues.
+- Microtasks har callback ke baad **aur** har phase ke beech drain — nested `.then`/`nextTick` **usi tick mein**.
+- `.then` (micro) **hamesha** `setTimeout(0)` (macro) se pehle — deterministic.
+- `setTimeout(0)` vs `setImmediate` **main module se**: non-deterministic (~1ms clamp + startup timing).
+- `setTimeout(0)` vs `setImmediate` **I/O callback ke andar se**: `setImmediate` hamesha pehle.
+- `setImmediate` ka naam bhramita hai — wo check-phase macrotask hai, microtasks ke baad.
+- Interview tip: non-determinism ko explicitly call out karo — bonus points.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Example 3 aur Example 4 ko bina chalaye kaagaz pe solve karo. Phir `node` mein chala ke verify karo. Agar galat hue, kaunsa rule miss kiya — micro vs macro, ya nextTick vs Promise priority?
+
+**Medium:** Yeh naya snippet solve karo aur explain karo: `console.log("a"); setImmediate(() => console.log("b")); Promise.resolve().then(() => { console.log("c"); process.nextTick(() => console.log("d")); }); process.nextTick(() => console.log("e")); console.log("f");`. (Hint: `d` ka nextTick ek Promise job ke andar schedule hua hai — wo kab drain hoga?)
+
+**Bada:** Ek snippet **khud likho** jismein `setTimeout`, `setImmediate`, `process.nextTick`, aur `Promise.then` — chaar ke chaar — nested tareeke se hon (kam se kam ek callback doosre ko schedule kare). Pehle apna predicted output likho with tick-by-tick reasoning, phir chala ke check karo. Agar mismatch hua, exact phase/queue identify karo jahan tumhara mental model toota.
+
+</Callout>

@@ -1,0 +1,276 @@
+---
+slug: "event-driven-architecture"
+title: "Event-Driven Architecture"
+section: "nodejs"
+module: "node-internals"
+order: 6
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["what-is-nodejs"]
+tags: ["nodejs", "event-driven", "reactor-pattern", "eventemitter", "concurrency", "internals"]
+englishDefinition: "Event-driven architecture means the program registers interest in events (a request arrives, a file finishes reading, a timer fires) and a single loop watches for them and dispatches each one to its callback. This is the reactor pattern, and Node's whole runtime is built on it. EventEmitter is the same idea packaged as a class you use in your own code. It contrasts with the thread-per-request model, where a web server spawns one OS thread per connection."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+**Event-driven architecture** means your program does not sit and wait for work — it **registers interest** in events (a request arrives, a socket has data, a file finishes reading, a timer fires) and a single **loop** watches for all of them and **dispatches** each one to the callback that asked for it. This design is called the **reactor pattern**, and Node's entire runtime is built on it. `EventEmitter` is that same idea packaged as a class you use in your own code. It is the opposite of the **thread-per-request** model (classic Apache, older Java servlet containers), where the server dedicates one OS thread to each connection.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node ko samajhne ke liye ek architectural shift samajhna zaroori hai: purane servers har kaam ke liye ek **thread** dete the; Node ek hi thread rakhta hai aur us par **events** ka ek loop chalata hai. Ye choice hi Node ki saari strengths aur saari weaknesses ki jad hai — interview mein "Node event-driven kyun hai aur iska trade-off kya hai" bahut common hai.
+
+### Ye kya hai — event-driven architecture aur reactor pattern
+
+Ek normal ("imperative, blocking") program aisa sochta hai: "line 1 chalao, line 2 chalao, agar file padhni hai to padhi jaane tak **ruk jao**, phir line 3." Rukna (blocking) ka matlab wo thread us dauran kuch aur nahi kar sakta.
+
+Event-driven program alag sochta hai: "mujhe jab file padh jaye tab batana — tab tak main doosra kaam karta hoon." Concretely:
+
+- Program **event sources** register karta hai — sockets, files, timers, child processes.
+- Ek **event loop** (Node mein libuv ke through) OS se poochta rehta hai: "kaunse events ready hain?" OS `epoll` / `kqueue` / IOCP jaise mechanisms se ek hi call mein hazaaron file descriptors ka status de deta hai.
+- Har ready event ke liye loop uska registered **callback** (handler) call karta hai.
+- Callback chhota hona chahiye — kaam karo, ya aur async kaam schedule karo, aur return ho jao taaki loop agla event handle kar sake.
+
+Is "register interest → ek loop → dispatch to handlers" pattern ka naam **reactor pattern** hai. Node ka core, libuv, ek reactor implementation hai.
+
+### Ye kyun exist karta hai — the C10k problem
+
+2000 ke aas-paas servers ek **problem** se takra rahe the: "C10k" — ek machine par **10,000 concurrent connections** kaise handle karein. Thread-per-request model mein har connection ek thread leta hai, aur har thread ~1 MB stack + kernel scheduling overhead. 10,000 threads = ~10 GB sirf stacks, aur CPU ka bada hissa context-switching mein chala jata hai. Zyaadatar connections **idle** hote hain (slow client, keep-alive) — matlab hazaaron threads bas wait kar rahe hote hain, resources ghere hue.
+
+Event-driven model isko todta hai: 10,000 idle connections = 10,000 file descriptors ek loop mein, memory bas har connection ki chhoti state jitni. CPU sirf **actually ready** events pe kaam karta hai. Isi wajah se Nginx (event-driven) ne Apache (thread/process-per-request, us daur mein) ko high-concurrency par beat kiya, aur isi philosophy par Node bana.
+
+### Internally kaise kaam karta hai
+
+- **Ek main thread** JavaScript chalata hai — tumhara code, callbacks, sab isi par.
+- **libuv** event loop 6 phases mein ghoomta hai (timers → pending → poll → check → close), har iteration OS se ready I/O events uthata hai.
+- **Non-blocking I/O**: network sockets OS-level non-blocking hote hain — `read()` turant return karta hai "abhi data nahi" ke saath, thread block nahi hota.
+- **Thread pool (default 4)**: kuch cheezein OS non-blocking nahi deta (file system, DNS `lookup`, `crypto.pbkdf2`) — libuv unhe ek chhote background thread pool par chalata hai aur complete hone par unka callback loop ki queue mein daal deta hai.
+- **EventEmitter** JavaScript-land mein wahi pattern deta hai: ek object jispe tum `.on("name", handler)` se interest register karte ho, aur koi `.emit("name", data)` se sab registered handlers ko **synchronously** call kar deta hai.
+
+`http.Server`, `net.Socket`, `fs.ReadStream`, `process` — Node ke bahut se core objects `EventEmitter` se extend karte hain. Matlab "event-driven" sirf internal nahi, tumhare API surface mein bhi hai.
+
+### Simple real-life analogy
+
+**Thread-per-request** = ek restaurant jahan har customer ke liye ek **dedicated waiter**. 200 customers = 200 waiters. Zyaadatar waiter khade hain, customer ke khaana khatam karne ka wait kar rahe hain. Mehnga, aur bheed mein waiters ek doosre se takrate hain (context switching).
+
+**Event-driven** = ek **super-efficient waiter** jo kabhi kisi ek table par khada nahi rehta. Wo round ghoomta hai (event loop), sirf un tables par rukta hai jinhe **abhi** kuch chahiye (ready event), kaam karta hai, aage badh jata hai. Ek waiter 200 tables sambhal leta hai jab tak har interaction chhota ho. Lekin agar ek table par wo 10 minute ka kaam le le (CPU-heavy task), baaki 199 tables **wait** karte hain — yahi Node ki weakness hai.
+
+### Code — line by line
+
+```javascript
+const EventEmitter = require("node:events");
+
+class Uploader extends EventEmitter {
+  start(file) {
+    this.emit("begin", file);
+    let sent = 0;
+    const total = 100;
+    const tick = setInterval(() => {
+      sent += 25;
+      this.emit("progress", { file, percent: sent });
+      if (sent >= total) {
+        clearInterval(tick);
+        this.emit("done", file);
+      }
+    }, 10);
+  }
+}
+
+const up = new Uploader();
+up.on("begin", (f) => console.log("start:", f));
+up.on("progress", (p) => console.log("progress:", p.percent));
+up.on("done", (f) => console.log("done:", f));
+up.on("error", (err) => console.error("failed:", err.message));
+
+up.start("report.pdf");
+```
+
+- `require("node:events")` — core module; default export **hai** `EventEmitter` class.
+- `class Uploader extends EventEmitter` — apne domain object ko event source bana diya, bilkul jaise `http.Server` hai.
+- `this.emit("progress", {...})` — is naam ke **saare** registered listeners ko, registration order mein, **synchronously** call karta hai.
+- `up.on("progress", handler)` — interest register kiya. `once` bhi hota hai (ek baar chal ke khud remove).
+- `up.on("error", ...)` — special convention: agar `"error"` emit ho aur **koi listener na ho**, Node process ko **crash** kar deta hai (unhandled). Isliye har emitter par `error` listener lagana zaroori hai.
+- `up.start(...)` — `setInterval` ek event source hai; har tick par callback loop ke timers phase mein chalta hai, koi thread block nahi hota.
+
+### Day-to-day use
+
+- HTTP servers — `server.on("request", handler)` har request ek event.
+- Streams — `stream.on("data" | "end" | "error", ...)`.
+- `process.on("SIGTERM", ...)` — graceful shutdown.
+- Custom decoupling — ek `orderCreated` event emit karo, alag modules (email, analytics, inventory) apne apne listeners lagayein bina order code ko chhue.
+
+### Kab use karna chahiye
+
+- I/O-bound workloads: web APIs, proxies, gateways, real-time (WebSocket) servers, BFF layers — hazaaron concurrent, mostly-waiting connections.
+- Jab components ko **loosely couple** karna ho — emitter/listener se producer ko consumers ka pata nahi hota.
+- Streaming pipelines jahan data chunks over time aate hain.
+
+### Kab use nahi karna chahiye
+
+- CPU-bound kaam (video encode, big JSON transform, image processing, cryptographic KDF sync) — ek loop, ek thread; heavy sync kaam poore server ko freeze kar deta hai. Worker threads / child process / alternate runtime chahiye.
+- Jab ek request ke andar ka logic sach mein sequential aur compute-heavy hai — thread-per-request wala model wahan simpler mental model deta hai.
+- Kaam jahan `emit` ka fire-and-forget error handling ka bhaari cost ho — `error` event miss = crash.
+
+### Pros and cons
+
+**Pros**
+
+- Bahut kam memory per connection — C10k+ ek process mein.
+- Koi lock/mutex nahi user code mein — ek thread, koi shared-memory race nahi.
+- Idle connections lagbhag muft.
+- Loose coupling — emitter/listener se modular design.
+
+**Cons**
+
+- Ek CPU-heavy callback poore loop ko block karta hai — "one slow guest starves the rest".
+- Control flow bikhar jata hai — callbacks/listeners mein logic follow karna mushkil.
+- Error propagation manual — `error` event bhoola to crash; async callback mein `throw` upar tak nahi jata.
+- Ek buggy listener (exception, infinite loop) baaki sabko affect karta hai.
+
+### Alternatives
+
+- **Thread-per-request** (Java/Spring, Apache prefork) — har connection ek thread; simple mental model, lekin high concurrency par memory/context-switch heavy.
+- **Goroutines / green threads** (Go, modern JVM Loom) — lightweight user-space threads; blocking-style code likho, runtime scheduler multiplex karta hai — event-driven ke throughput + sequential code ki readability.
+- **Worker threads / multi-process** (Node ke andar) — event-driven model rakho lekin CPU-heavy kaam alag thread/process par bhejo.
+- **Actor model** (Erlang/Akka) — event-driven ka structured version, har actor ka apna mailbox.
+
+### Interview mein "Node event-driven hai iska matlab kya, aur trade-off?"
+
+> "Node register-interest-plus-single-loop model use karta hai — reactor pattern. Har I/O operation (socket read, file read, timer) ke liye main ek callback deta hoon, aur libuv ka event loop ek hi thread par ready events ko unke callbacks pe dispatch karta hai. Iska fayda: ek process hazaaron concurrent, mostly-idle connections ko chhoti memory mein sambhal leta hai — thread-per-request model mein har connection ~1 MB thread leta, C10k par machine gir jaati. Trade-off: sab kuch ek thread par hai, to ek CPU-heavy synchronous callback poore loop ko block kar deta hai aur baaki saare requests ruk jaate hain. Isliye main I/O async rakhta hoon aur CPU-bound kaam worker threads ya ek alag service par bhejta hoon. `EventEmitter` isi pattern ka class version hai — `http.Server`, streams, sab usi par bane hain."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`emitter.emit("x")` **synchronous** hai — sab listeners `emit` call ke andar hi, us line par chal jaate hain, agle await/tick par nahi. Isliye ek slow listener `emit` karne wale ko block karta hai, aur listener ke andar ka `throw` `emit` call ko throw karwa deta hai. Async decoupling chahiye to listener ke andar `setImmediate(() => ...)` ya `queueMicrotask(...)` use karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Nginx vs Apache — the original proof">
+
+Apache (us daur ke prefork/worker MPM mein) har connection ke liye ek process ya thread deta tha; ~10,000 concurrent slow clients par memory aur context-switching se throughput gir jata tha. Nginx ne event-driven (reactor) architecture liya — ek small number of worker processes, har ek ek event loop chala raha, `epoll` se hazaaron sockets watch kar raha. Same hardware par Nginx ne static content aur reverse-proxy workloads par kai guna zyada concurrency handle ki, flat memory ke saath. Node ne yahi model application server layer mein le aaya — JavaScript + libuv + `epoll`/`kqueue`.
+
+</RealWorld>
+
+<RealWorld company="Node core objects are all EventEmitters">
+
+Jab tum `const server = http.createServer()` likhte ho, wo object `EventEmitter` se extend karta hai. `server.on("request", ...)`, `server.on("connection", ...)`, `server.on("close", ...)` — sab wahi `.on`/`.emit` API. Ek incoming TCP connection par libuv `"connection"` event fire karta hai; HTTP parser jab poora request head padh leta hai to `"request"` fire hota hai. `req` (readable stream) khud `"data"`/`"end"`/`"error"` emit karta hai. Matlab ek Express app internally sirf event listeners ki ek chain hai jo libuv ke reactor ke upar baithi hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Thread-per-request: har thread ka default stack usually **512 KB - 1 MB**. 10,000 threads ≈ **5-10 GB** sirf stacks ke liye.
+- Event-driven: per idle connection cost = bas socket ki state, typically **kai KB** — ek process mein **lakhs** connections possible (OS `ulimit` / file-descriptor limit tak).
+- "C10k problem" term Dan Kegel ne **1999** mein coin kiya; iska modern extension "C10M".
+- Node ka JavaScript **1 thread** par; libuv thread pool default **4** (`UV_THREADPOOL_SIZE`, max historically 128).
+- `EventEmitter` par ek naam ke **10+ listeners** lagane par Node ek **memory-leak warning** print karta hai (`defaultMaxListeners = 10`) — configurable.
+- `emit` ka dispatch **O(n)** listeners ke saath, synchronous, registration order mein.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic architecture/scaling round mein aata hai. Interviewer dekhta hai ki tum (1) reactor pattern ko apne shabdon mein bata sako, (2) thread-per-request se concrete contrast kar sako (memory, context-switching, C10k), (3) event-driven ki **weakness** (CPU-bound work blocks the loop) khud se bolo, (4) `EventEmitter` ko isi pattern se jodo.
+
+Achhe jawaab ka shape:
+
+1. **What** — "register interest in events; ek loop watch karke callbacks pe dispatch karta hai — reactor pattern."
+2. **Why** — "C10k: thread-per-request memory/context-switch se nahi scale karta jab connections mostly idle hain."
+3. **How in Node** — "libuv event loop + non-blocking OS I/O + chhota thread pool for fs/dns/crypto."
+4. **EventEmitter** — "wahi pattern class ki tarah — `http.Server`, streams sab usi par."
+5. **Trade-off** — "ek thread; CPU-heavy callback poore server ko block karta hai — worker threads / alag service."
+
+Red flag jo nahi bolna: "Node multi-threaded hai to fast hai" (nahi — JS ek thread), ya "event-driven har workload ke liye best hai" (CPU-bound ke liye nahi).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`EventEmitter` par `"error"` listener na lagana.** Agar koi emitter `"error"` emit kare aur us naam ka koi listener registered na ho, Node use ek uncaught exception ki tarah treat karke **process crash** kar deta hai. Har emitter (streams, sockets, custom) par kam se kam ek `.on("error", handler)` hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**Event loop ko ek CPU-heavy callback se block karna aur usse "concurrency" ki tarah sochna.** `socket.on("data", d => heavyParse(d))` jahan `heavyParse` 300ms sync leta hai — us dauran koi doosra request, timer, ya callback nahi chalta. Event-driven concurrency **I/O wait** ke dauran kaam overlap karta hai, CPU kaam parallel nahi karta. Heavy compute worker thread par bhejo.
+
+</Mistake>
+
+<Mistake>
+
+**`emit` ko asynchronous samajhna.** `emitter.emit("x"); console.log("after");` — saare `"x"` listeners `"after"` se **pehle** chal chuke hote hain, kyunki `emit` synchronous hai. Log galti se maante hain ki listeners "next tick" par chalenge.
+
+</Mistake>
+
+<Mistake>
+
+**Listeners add karna par kabhi remove na karna.** Ek long-lived emitter (jaise `process` ya ek shared bus) par har request/connection par `.on(...)` karna aur `.off(...)` na karna — listeners jama hote rehte hain, memory leak, aur Node ka "possible EventEmitter memory leak, 11 listeners added" warning. Per-request listeners ke liye `once`, ya explicit `removeListener`/`off`.
+
+</Mistake>
+
+<Mistake>
+
+**Har cheez ke liye events use karna, ek simple function call ki jagah.** Ek single, known caller aur single response ke liye event emitter over-engineering hai — control flow chhup jata hai, refactoring tools trace nahi kar paate. Events tab jab genuinely **multiple, unknown consumers** hain ya **repeated occurrences over time** hain (streams). Ek-baar-ka async result ke liye Promise better.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Your code: register interest — server.on('request'), fs.readFile(cb), setTimeout(cb)"] --> B["libuv event loop (single thread)"]
+    B --> C["Ask OS: which FDs are ready? (epoll / kqueue / IOCP)"]
+    C --> D{"Event ready?"}
+    D -->|"network socket readable"| E["Run its callback on the main thread"]
+    D -->|"timer expired"| E
+    D -->|"fs / dns / crypto done (thread pool)"| E
+    E --> F["Callback does small work, schedules more async, returns"]
+    F --> B
+    G["CPU-heavy sync work inside a callback"] -.->|"blocks the loop — every other event waits"| B
+`}
+  caption="Ek loop, ek thread: ready events unke callbacks pe dispatch hote hain. Ek callback ka heavy sync kaam poore loop ko rok deta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Event-driven architecture** = register interest in events → ek loop watch karta hai → har event uske callback pe dispatch. Naam: **reactor pattern**.
+- Node ka core (libuv) ek reactor hai: non-blocking OS I/O + chhota thread pool (fs, dns, crypto) + 6-phase loop.
+- **Thread-per-request** ke against: har connection ek OS thread (~1 MB stack) — 10k idle connections par memory/context-switch se dhah jata hai (**C10k problem**).
+- Event-driven: idle connection ≈ bas socket state; ek process lakhs connections (FD limit tak).
+- **`EventEmitter`** = wahi pattern ek class ki tarah: `.on(name, fn)` interest, `.emit(name, data)` sab listeners ko **synchronously** call.
+- `http.Server`, `net.Socket`, streams, `process` — sab `EventEmitter` se bane.
+- **`"error"` event**: listener na ho to process crash — har emitter par `.on("error", ...)` lagao.
+- **Weakness**: ek thread — CPU-heavy sync callback poore loop ko block karta hai. Compute → worker threads / alag service.
+- Use for I/O-bound, high-concurrency, real-time, loose-coupling. Avoid for CPU-bound work.
+- `emit` synchronous hai; async decoupling chahiye to `setImmediate`/`queueMicrotask` listener ke andar.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `class Timer extends EventEmitter` banao jo `start(ms)` par ek `setTimeout` lagaye aur `"timeout"` emit kare. Do listeners lagao aur confirm karo dono chalte hain, registration order mein.
+
+**Medium:** Ek `Uploader extends EventEmitter` likho jo `"progress"` events fire kare. Ab jaan-boojh ke ek listener ke andar ek 500ms `while` loop daalo aur observe karo ki `"progress"` emit karne wala interval bhi delay ho jata hai — kyunki `emit` aur listeners synchronous hain aur sab ek thread par hain.
+
+**Bada:** Ek chhota `EventBus` banao (`on`, `off`, `emit`) aur ek "order pipeline" bina events wale version se compare karo: pehle `createOrder()` ke andar seedhe `sendEmail()`, `updateInventory()`, `trackAnalytics()` call karo; phir wahi teen ko `bus.on("orderCreated", ...)` listeners bana do aur `createOrder` sirf `bus.emit("orderCreated", order)` kare. Likho ki kaunsa version test karna aasan hai, kaunsa control-flow follow karna aasan hai, aur kaunsi situation mein kaunsa better hai.
+
+</Callout>

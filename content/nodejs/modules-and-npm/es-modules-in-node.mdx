@@ -1,0 +1,306 @@
+---
+slug: "es-modules-in-node"
+title: "ES Modules in Node (import / export)"
+section: "nodejs"
+module: "modules-and-npm"
+order: 2
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["commonjs-modules"]
+tags: ["nodejs", "modules", "esm", "import", "export", "top-level-await"]
+englishDefinition: "ES Modules (ESM) are JavaScript's standard, built-in module system, supported natively by Node. You declare imports and exports with static import/export statements that the engine analyzes before running any code. Node treats a file as ESM when package.json has \"type\": \"module\" or the file uses the .mjs extension. ESM loads its dependency graph asynchronously, supports top-level await, gives you import.meta.url instead of __dirname, and uses live bindings rather than value copies."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+ES Modules (ESM) are JavaScript's **standard** module system, built into the language and supported natively by Node. You use `import` and `export` statements, which are **static** — the engine reads them before running any code, so the whole dependency graph is known up front. Node treats a file as ESM when the nearest `package.json` has `"type": "module"`, or the file ends in `.mjs`. ESM loads its graph **asynchronously**, allows **top-level `await`**, replaces `__dirname` with `import.meta.url`, and uses **live bindings** instead of value copies.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+CommonJS Node ka apna solution tha; ESM **JavaScript language ka official** module system hai — browser aur Node dono mein wahi syntax. 2024+ ke naye Node projects aksar ESM-first hote hain, aur bahut si modern libraries ab sirf ESM publish karti hain. Isliye `import`/`export` ke rules aur CJS se differences pakke aane chahiye.
+
+### Ye kya hai — ES Module
+
+Ek file jisme tum `import` aur `export` **statements** likhte ho (functions nahi):
+
+```javascript
+// math.mjs
+export function add(a, b) {
+  return a + b;
+}
+export const PI = 3.14159;
+export default function multiply(a, b) {
+  return a * b;
+}
+
+// app.mjs
+import multiply, { add, PI } from "./math.mjs";
+console.log(add(2, 3), PI, multiply(2, 4));
+```
+
+- **Named exports** — `export function add`, `export const PI`. Import karte waqt `{ }` mein exact naam.
+- **Default export** — `export default ...`. Ek file mein sirf ek. Import karte waqt koi bhi naam, bina `{ }`.
+- Dono ek saath import: `import multiply, { add, PI } from ...`.
+
+### Ye kyun exist karta hai
+
+- **Ek standard** — browser, Node, Deno, bundlers sab ek hi syntax samajhte hain. CJS sirf Node ka tha.
+- **Static structure** — `import`/`export` sirf top-level pe, conditionally nahi. Isse engine/bundler poora graph **run se pehle** jaan leta hai — yahi **tree-shaking** (unused exports hataana) ko possible banata hai.
+- **Async loading** — graph ko parallel, non-blocking fetch/parse kiya ja sakta hai.
+- **Top-level await** — module khud `await` kar sakta hai apne top pe, bina `async` function wrapper ke.
+
+### Internally kaise kaam karta hai — 3 phases
+
+ESM ko load karna 3 alag phases mein hota hai:
+
+1. **Construction / parse** — Node entry file padhta hai, saare `import` specifiers nikaalta hai, har imported file ko fetch/parse karta hai, recursively — poora **module graph** ban jaata hai. Abhi tak kisi module ka code **chala nahi**.
+2. **Instantiation / linking** — engine har module ke exports ke liye memory mein slots banata hai aur har `import` ko us slot se **link** kar deta hai. Ye link ek **live binding** hai — pointer, value copy nahi.
+3. **Evaluation** — ab modules ka code chalta hai, graph ke leaves se root ki taraf (depth-first, post-order). Top-level `await` yahan pause kar sakta hai.
+
+CJS mein parse aur execute ek saath, synchronously, `require` call ke waqt hote hain. ESM mein resolve/link pehle, execute baad mein — isiliye ESM ko "async graph" bolte hain.
+
+### Live bindings vs CJS value copy
+
+```javascript
+// counter.mjs
+export let count = 0;
+export function inc() {
+  count++;
+}
+
+// app.mjs
+import { count, inc } from "./counter.mjs";
+console.log(count); // 0
+inc();
+console.log(count); // 1  <-- update dikha!
+```
+
+ESM mein `count` ek **live view** hai counter.mjs ke `count` variable ka. Jab `inc()` use badhata hai, importer ko naya value turant dikhta hai. CJS mein `const { count } = require("./counter")` ek **snapshot** hai — `inc()` ke baad bhi `count` `0` hi rehta. (Note: importer khud `count` ko reassign nahi kar sakta — imported bindings read-only hote hain.)
+
+### Simple real-life analogy
+
+CJS `require` = kisi se poochke uska **phone number likh lena** ek parchi pe. Baad mein wo number badal le toh tumhari parchi purani.
+
+ESM `import` = uske contact ko apne phone mein **link/sync** kar lena. Wo apna number update kare toh tumhare phone mein bhi apne aap update ho jaata hai (live binding).
+
+Aur ESM ka graph loading = ek shaadi ki guest list: pehle poori list bana lete ho (kaun kise laa raha hai — construction), phir sabko seat assign karte ho (linking), **phir** function shuru hota hai (evaluation).
+
+### Code — line by line
+
+```javascript
+// data.mjs
+export const users = await fetchUsers();   // top-level await
+console.log("data.mjs evaluate ho gaya");
+
+// main.mjs
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+import { users } from "./data.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+console.log(users.length, __dirname);
+```
+
+- `export const users = await fetchUsers()` — top-level `await`. `data.mjs` ki evaluation yahan **pause** hoti hai jab tak promise resolve na ho; koi `async function` wrapper nahi chahiye.
+- `import { users } from "./data.mjs"` — `main.mjs` ki evaluation tab tak nahi shuru hoti jab tak `data.mjs` (uske top-level await samet) poora evaluate na ho jaaye. ESM ne dependency ko pehle settle kiya.
+- `import.meta.url` — is module ka URL (`file:///D:/.../main.mjs`). ESM mein `__filename`/`__dirname` **nahi hote**.
+- `fileURLToPath(import.meta.url)` + `dirname(...)` — isi se `__dirname` wapas banate hain jab path chahiye.
+
+### Dynamic `import()` — async, kahin bhi
+
+Static `import` sirf top-level pe. Conditional/lazy load ke liye **`import()` function** use karo — ye ek **Promise** return karta hai:
+
+```javascript
+if (config.enablePlugins) {
+  const { start } = await import("./plugins/index.mjs");
+  start();
+}
+```
+
+`import()` CJS files ko bhi load kar sakta hai — CJS ka `module.exports` `.default` property par milta hai.
+
+### Day-to-day use
+
+- Naye project: `package.json` mein `"type": "module"`, phir har `.js` file ESM.
+- `import express from "express"` — modern setup mein.
+- `node:` prefix built-ins ke liye — `import { readFile } from "node:fs/promises"`.
+- Top-level await se config/DB connect module load hote hi ready.
+- `await import(...)` se feature-flagged ya heavy modules lazy load.
+
+### Kab use karna chahiye
+
+- **Har naya project** — 2024+ ka default.
+- Jab code browser aur Node dono mein chalna ho (isomorphic).
+- Jab bundler se tree-shaking ka fayda chahiye (frontend, libraries).
+- Jab startup pe kuch `await` karna ho bina IIFE hack ke (top-level await).
+
+### Kab use nahi karna chahiye
+
+- Bada existing CJS codebase — sab convert karna high-risk; naye ESM-only dep aane tak ruko.
+- Jab tumhe `require` ki tarah **synchronous conditional load** chahiye ek hot path mein — `await import()` async hai.
+- Kuch purane tools / Jest setups jo ESM ke saath extra config maangte hain (ab kaafi behtar ho gaya, par abhi bhi friction).
+
+### Pros and cons
+
+**Pros**
+
+- Language standard — ek syntax har jagah.
+- Static graph → tree-shaking, better tooling, dead-code elimination.
+- Top-level await.
+- Live bindings — circular deps zyada predictable.
+- `import()` se first-class async lazy loading.
+
+**Cons**
+
+- `__dirname`/`__filename` nahi — `import.meta.url` se recreate karo.
+- CJS interop mein rough edges: CJS ka named exports hamesha detect nahi hote; default `.default` pe aata hai.
+- File extensions relative imports mein zaroori (`./math.mjs`, `./math.js` — `./math` nahi).
+- Async nature — kuch sync-`require` patterns direct translate nahi hote.
+- Purane npm packages jo sirf CJS hain, unke saath dhyan se.
+
+### Alternatives
+
+- **CommonJS** — legacy codebase, ya jab synchronous dynamic `require` chahiye.
+- **Dual package (CJS + ESM builds)** — library authors ke liye, `package.json` `exports` conditional se.
+- **Bundler (esbuild/webpack/Vite)** — dono syntax ko normalize karke ek output deta hai; app-level pe interop dard kam karta hai.
+
+### Interview mein "Why ESM for this service?"
+
+> "Naya service tha, aur do concrete reasons the: humein startup pe secrets manager se config `await` karni thi — top-level await se wo module load hote hi ready ho jaata hai, IIFE hack ke bina. Doosra, humari internal shared library ESM-only publish hoti hai aur tree-shaking se hamara bundle chhota rehta hai. `__dirname` ke liye humne ek chhota `import.meta.url` helper banaya. Legacy CJS packages ko humne default import se use kiya aur jahan named export nahi mila wahan `pkg.default.foo` kar liya."
+
+</Hinglish>
+
+<Callout type="tip">
+
+ESM mein relative imports ka **extension likhna zaroori** hai: `import x from "./util.js"` — `"./util"` nahi chalega (CJS ke ulat). `node_modules` packages aur `node:` built-ins iska exception hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Modern npm libraries (ESM-only)">
+
+`node-fetch@3`, `chalk@5`, `nanoid@4`, `execa@6` aur bahut si popular libraries ne v-bump ke saath **ESM-only** publish karna shuru kiya. Iska matlab: agar tumhari app CommonJS hai aur tum `chalk@5` ko `require("chalk")` karne ki koshish karo toh `ERR_REQUIRE_ESM` error aata hai. Teams ke saamne do raaste bachte: ya toh `chalk@4` (aakhri CJS version) pe ruko, ya poori app ko ESM pe le jao. Isi push ki wajah se 2022-2024 mein bahut si Node services `"type": "module"` pe migrate huin.
+
+</RealWorld>
+
+<RealWorld company="Serverless config loading (top-level await)">
+
+ESM se pehle, Lambda/Cloud Functions mein secrets ya remote config load karne ke liye log ek `let config; const ready = (async () => { config = await load(); })();` jaisa IIFE pattern likhte the aur har handler mein `await ready` karte the. ESM ke top-level await se ye module ke top pe `export const config = await load()` ban jaata hai — module import hote hi config guaranteed ready hoti hai, aur handler code saaf rehta hai. Trade-off: cold start thoda badhta hai kyunki wo `await` module evaluation ko block karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- ESM Node mein **v12** se flag ke peeche tha, **v13.2 (Nov 2019)** se unflagged, aur **v14+** se production-ready maana jaata hai.
+- ESM loading ke **3 phases**: construction (parse + resolve), instantiation (link live bindings), evaluation (run code).
+- Top-level await Node mein **v14.8** se available hai (ESM modules mein).
+- `import.meta.url` ek **`file://` URL string** deta hai — `fileURLToPath()` se hi normal path banta hai (Windows pe seedha slice karna toota hua path deta hai).
+- CJS module ko `import` karo toh uska `module.exports` **`.default`** par aata hai; named exports Node "cjs-module-lexer" se best-effort detect karta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic mid-level round mein aata hai, aksar "ESM aur CJS mein farak?" ke roop mein — ya ek trap: "ESM mein `__dirname` kaise laoge?". Interviewer dekhta hai ki tum **static vs dynamic**, **sync vs async graph**, aur **live bindings** samajhte ho, sirf `import` vs `require` syntax nahi.
+
+Achhe jawaab ka shape:
+
+1. **Standard vs Node-only** — ESM language ka hissa; CJS Node ka.
+2. **Static analyzable** — `import`/`export` top-level only → tree-shaking possible.
+3. **Async graph, 3 phases** — resolve/link pehle, evaluate baad mein; top-level await isi wajah se possible.
+4. **Live bindings** — importer ko exporter ke variable ka updated value dikhta hai; CJS mein snapshot.
+5. **Enable kaise** — `"type": "module"` ya `.mjs`; `__dirname` ke liye `import.meta.url` + `fileURLToPath`.
+
+Red flag: "`import` bas `require` ka naya naam hai" — nahi; timing, analyzability, aur binding semantics alag hain.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Relative import mein file extension chhodna.** `import { add } from "./math"` ESM mein `ERR_MODULE_NOT_FOUND` deta hai — `"./math.js"` likhna padta hai. CJS `require` extension guess kar leta tha; native ESM by design nahi karta (resolution fast aur unambiguous rakhne ke liye). `node_modules` packages aur `node:` built-ins pe ye rule laagu nahi hota.
+
+</Mistake>
+
+<Mistake>
+
+**ESM mein `__dirname` ya `require` seedha use karna.** Dono ESM scope mein defined nahi hote — `ReferenceError` milega. `__dirname` ke liye `const __dirname = dirname(fileURLToPath(import.meta.url))`. `require` ki jagah `import`, ya `import { createRequire } from "node:module"` se ek `require` banao agar sach mein zaroori ho.
+
+</Mistake>
+
+<Mistake>
+
+**CJS package se named export destructure karne ki koshish.** `import { Router } from "some-cjs-pkg"` kabhi-kabhi `undefined` deta hai kyunki Node CJS ke named exports ko sirf best-effort detect karta hai. Safe pattern: `import pkg from "some-cjs-pkg"` phir `const { Router } = pkg` — kyunki poora `module.exports` `default` par guaranteed aata hai.
+
+</Mistake>
+
+<Mistake>
+
+**`import` ko conditionally ya function ke andar likhna.** `if (x) { import "./a.js" }` syntax error hai — static `import` sirf module ke top-level pe. Conditional/lazy loading ke liye `const m = await import("./a.js")` (dynamic import, Promise return karta hai) use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`import.meta.url` ko string slice karke path banana.** `import.meta.url` ek `file://` URL hai, plain path nahi — Windows pe `file:///D:/...` hota hai. Manually `.replace("file://", "")` karoge toh leading slash ya drive letter galat aayega. Hamesha `fileURLToPath(import.meta.url)` use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["node app.mjs"] --> B["Phase 1: Construction — saare import specifiers padho, har file fetch+parse, pura graph banao"]
+    B --> C["Phase 2: Instantiation — har export ke liye memory slot, har import ko slot se link (live binding)"]
+    C --> D["Phase 3: Evaluation — leaves se root tak code chalao (post-order)"]
+    D --> E{"Top-level await mila?"}
+    E -->|haan| F["Us module ki evaluation pause, promise settle hone tak"]
+    E -->|nahi| G["Module ka code sync complete"]
+    F --> G
+`}
+  caption="ESM pehle poora graph resolve aur link karta hai, phir code chalata hai — isliye 'async graph' aur top-level await dono possible hain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- ESM = JavaScript ka **standard** module system; `import`/`export` **statements**, functions nahi.
+- Enable: `package.json` mein `"type": "module"`, ya file extension `.mjs`.
+- **Static** — `import`/`export` sirf top-level → engine graph ko run se pehle jaanta → tree-shaking.
+- Loading **3 phases**: construction (parse+resolve) → instantiation (link live bindings) → evaluation (run).
+- **Async graph** — dependencies pehle settle, phir importer chalta hai; **top-level await** isi wajah se milta hai.
+- **Live bindings** — importer ko exporter ke variable ka current value dikhta hai (CJS = snapshot). Imported binding read-only.
+- `__dirname`/`__filename`/`require` **nahi** hote — `fileURLToPath(import.meta.url)` + `dirname(...)`.
+- Relative imports mein **extension zaroori**: `"./util.js"`, `"./util"` nahi.
+- **Named vs default**: `export function` / `export const` (import `{ }` mein exact naam); `export default` (ek per file, koi bhi naam).
+- **`import()`** = dynamic, Promise return; conditional/lazy load ke liye. CJS module ka `module.exports` `.default` par.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek folder mein `package.json` `{ "type": "module" }` ke saath banao. `math.js` mein `export const add` aur `export default` ek `multiply` rakho. `main.js` mein dono import karke print karo. Phir `import add from "./math"` (extension aur braces dono galat) likh ke error padho aur samjhao.
+
+**Medium:** `counter.js` mein `export let count = 0` aur `export function inc()` rakho. `main.js` mein `{ count, inc }` import karke `count` print karo, `inc()` do baar, phir `count` dobara print karo. Output likho, phir wahi CJS mein (`module.exports` + `require`) likh ke difference explain karo.
+
+**Bada:** `config.js` mein `export const config = await new Promise(r => setTimeout(() => r({ port: 3000 }), 500))` (top-level await) rakho. `server.js` `config` import karke turant `config.port` print kare. Chalao aur naapo ki `server.js` ka print 500ms baad kyun aaya — 3 phases ke terms mein samjhao.
+
+</Callout>

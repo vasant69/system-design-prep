@@ -1,0 +1,298 @@
+---
+slug: "nodejs-performance-concepts"
+title: "Node.js Performance Concepts"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 5
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["nodejs-is-single-threaded-what-that-means"]
+tags: ["nodejs", "performance", "event-loop-lag", "caching", "streaming", "profiling"]
+englishDefinition: "Node performance work is a short checklist, each item with a reason: never block the event loop (offload CPU work), prefer async APIs, stream large payloads instead of buffering, pool connections and reuse keep-alive sockets, cache hot reads, compress responses, keep JSON small and paginated, keep logging off the hot path, reduce garbage-collection churn, size the libuv thread pool deliberately, use cluster or replicas for multiple cores, and always measure before optimising. The metrics that matter are event loop lag, RSS vs heapUsed, p99 latency, GC pause time, and requests per second."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Node performance work is a **short checklist, and every item has a reason**: never block the event loop (offload CPU work), prefer async APIs over their `*Sync` versions, **stream** large payloads instead of buffering them, **pool** DB connections and reuse HTTP keep-alive sockets, **cache** hot reads, **compress** responses, keep JSON small and **paginated**, keep logging **off the hot path**, reduce garbage-collection churn, size the **libuv thread pool** deliberately, use **cluster/replicas** to use every core, and **measure before optimising**. The metrics that matter: **event loop lag**, **RSS vs heapUsed**, **p99 latency**, **GC pause time**, and **requests per second**.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node performance ek mystery nahi hai — ye ek checklist hai jismein har point ka ek clear **kyun** hai. Interview mein "aap Node app ko fast kaise banate ho" pe list ratna kam, har item ka reason batana zyada value deta hai. Aur sabse important rule: **pehle measure karo, phir optimize karo** — guess karke tuning aksar cheezein bigadti hai.
+
+### Rule 0 — event loop ko block mat karo
+
+Node ka JavaScript ek thread par chalta hai. Ek synchronous CPU-heavy operation (bada `JSON.parse`, `crypto.*Sync`, image resize, `for` loop lakhs iterations, regex catastrophic backtracking) us dauran **poore server** ko rok deta hai — koi doosra request, timer, ya I/O callback nahi chalta.
+
+**Kyun matter karta hai:** ek endpoint ka 200ms CPU spike sirf us request ko slow nahi karta — us dauran aayi **har** request ka p99 latency badha deta hai. 50 req/s par ek 200ms block = ~10 requests stalled.
+
+**Fix:** CPU-bound kaam `worker_threads` (ya `piscina` pool) par bhejo, ya ek alag service/queue mein. Result cache karo taaki dobara compute na ho.
+
+### Rule 1 — async APIs prefer karo, `*Sync` nahi
+
+`fs.readFileSync`, `crypto.scryptSync`, `zlib.gzipSync`, `child_process.execSync` — sab main thread block karte hain.
+
+**Kyun:** async version I/O ya CPU kaam ko libuv thread pool / OS ko de deta hai, event loop free rehta hai baaki requests handle karne ke liye.
+
+**Exception:** startup / CLI scripts mein `*Sync` theek hai — wahan concurrency nahi hai, aur code simpler rehta hai. Request handlers mein **kabhi nahi**.
+
+### Rule 2 — bade payloads stream karo, buffer nahi
+
+Poori file ya poora DB result RAM mein load karke `res.end(bigBuffer)` karna: memory spike (N concurrent × payload size), slow time-to-first-byte, DoS surface.
+
+**Kyun:** `pipeline(fs.createReadStream(file), res)` file ko `~64 KB` chunks mein behata hai — memory payload size se **independent**, pehla byte turant. Backpressure automatically handle hota hai.
+
+### Rule 3 — connections pool karo (DB + HTTP keep-alive)
+
+Har request par nayi DB connection kholna = TCP handshake + auth roundtrip + TLS. Har outbound HTTP call par nayi socket = same overhead.
+
+**Kyun:** ek connection **pool** (pg `Pool`, mysql2 pool) connections reuse karta hai — bas query bhejo. Outbound HTTP ke liye `keepAlive: true` agent socket ko reuse karta hai, handshake har baar nahi hota. Latency mein aksar 20-50ms per call ka farak.
+
+**Catch:** pool size soch-samajh ke — bahut chhota = queueing, bahut bada = DB par connection storm.
+
+### Rule 4 — hot reads cache karo (in-proc LRU vs Redis)
+
+Jo data baar-baar padha jata hai aur kam badalta hai (config, feature flags, reference data, expensive aggregates) — har baar DB hit karna waste.
+
+- **In-process LRU** (`lru-cache`) — sabse fast (memory access, koi network nahi), lekin **per-process** (cluster/replicas mein har worker ka apna, aur invalidation mushkil), aur process memory kha jata hai.
+- **Redis** — shared across all instances, bada capacity, TTL/invalidation clean — lekin ek network hop (sub-ms LAN par, phir bhi > memory).
+
+**Kyun:** ek 30ms DB query ko 0.1ms memory lookup ya 1ms Redis lookup se replace karna throughput ko multiply karta hai. Rule of thumb: chhota + super-hot + staleness-tolerant → in-proc; shared + larger + needs invalidation → Redis; aksar dono layers.
+
+### Rule 5 — responses compress karo (gzip / brotli)
+
+Text/JSON responses ko gzip/brotli 70-90% chhota kar deta hai.
+
+**Kyun:** kam bytes = kam transfer time, khaaskar mobile/slow networks par — response latency directly girti hai. `compression` middleware ek size threshold (default 1 KB) ke upar hi compress karta hai.
+
+**Catch:** already-compressed content (`.jpg`, `.zip`, `.mp4`) ko dobara gzip mat karo — ~0% benefit + CPU waste. Aur bahut high throughput par compression ka CPU cost event loop time kha sakta hai — tab CDN/reverse proxy par offload karo.
+
+### Rule 6 — JSON chhota rakho, paginate karo
+
+Ek endpoint jo 10,000 rows ek array mein return karta hai: bada serialization CPU cost (`JSON.stringify` synchronous hai), bada payload, client par slow parse.
+
+**Kyun:** pagination (`limit` + cursor) response ko bounded rakhta hai — predictable latency aur memory. Sirf zaroori fields bhejo (`SELECT` mein bhi, response mein bhi) — `SELECT *` + poora object return karna bytes aur DB I/O dono waste karta hai.
+
+### Rule 7 — hot path mein synchronous logging mat karo
+
+`console.log` `stdout` par, ya ek logger jo har call par `fs.writeSync` ya `JSON.stringify` + format karta hai — request path mein CPU + potentially blocking.
+
+**Kyun:** `pino` jaisa logger minimal work karta hai request path mein (fast serialization) aur actual write ko async / ek alg process (`pino` transport) par bhejta hai. High-throughput services mein logging overhead measurable hota hai — per-request `console.log` remove karne se alone req/s badh sakta hai.
+
+### Rule 8 — GC churn kam karo
+
+Har request par bade temporary objects/arrays/buffers banana → V8 ka garbage collector zyada baar chalta hai, aur GC pauses (even minor) event loop ko rok dete hain.
+
+**Kyun:** kam allocation = kam GC = kam pause = smoother p99. Practical steps: streaming (buffer poora payload mat banao), object reuse jahan safe ho, unnecessary `.map().filter().reduce()` chains jo intermediate arrays banati hain unhe ek pass mein karo, aur bade `Buffer.concat` se bacho. Premature micro-optimization mat karo — ise tab dekho jab profiler GC ko culprit dikhaye.
+
+### Rule 9 — `UV_THREADPOOL_SIZE` soch-samajh ke set karo
+
+libuv thread pool (default **4**) file system, DNS `lookup`, `crypto.pbkdf2`/`scrypt`, aur `zlib` async operations run karta hai.
+
+**Kyun:** agar tumhari app bahut saara concurrent file I/O ya password hashing karti hai, 4 threads bottleneck ban jate hain — kaam queue mein baithta hai chahe CPU free ho. `UV_THREADPOOL_SIZE=8` (ya cores ke hisaab se) badha sakte ho.
+
+**Catch:** ise blindly 128 mat karo — har thread memory leta hai aur CPU cores se zyada threads context-switching overhead dete hain. Measure: agar thread-pool operations queue ho rahe hain (latency badhti hai load par bina CPU saturate hue), tab badhao.
+
+### Rule 10 — saare cores use karo (cluster / replicas)
+
+Ek Node process = ek core ka JS. 8-core box par ek process = 7 cores idle.
+
+**Kyun:** `cluster` (ya PM2 `-i max`) ek port par N worker processes chalata hai; orchestrated setups mein N container replicas behind a load balancer. Throughput cores ke saath scale karta hai.
+
+**Catch:** per-request CPU stall isse fix nahi hota (har worker ka apna loop block hoga) — wo `worker_threads` ka kaam hai. Aur shared in-memory state (sessions, LRU cache, counters) ko Redis/DB par move karna padta hai.
+
+### Rule 11 — measure before optimising
+
+Sabse important. "Ye slow lag raha hai" ke bharose tuning se aksar wrong cheez optimize hoti hai.
+
+**Kyun:** bottleneck aksar counter-intuitive jagah hota hai — ek missing DB index, ek N+1 query, ek accidental `await` in a loop, ek sync `JSON.parse`. Profiler (`node --prof`, `clinic`, flamegraph) actual hot spot dikhata hai. Load test (`autocannon`) baseline aur "after" numbers deta hai. Bina numbers ke tum bas guess kar rahe ho.
+
+### Metrics jo matter karti hain
+
+- **Event loop lag** — ek timer scheduled `T` ms baad kitni der se actually chala. `< 10ms` healthy; consistently `> 100ms` matlab loop congested (CPU block ya overload). Measure: `perf_hooks.monitorEventLoopDelay()`.
+- **RSS vs heapUsed** — `process.memoryUsage()`. `heapUsed` = live JS objects; `rss` = poora process memory (heap + buffers + native). Gap bada aur badhta = native/Buffer leak. Dono ka steady growth = memory leak.
+- **p99 latency** — 99th percentile response time. Average jhoot bolta hai; p99 batata hai worst-case user experience. Ise SLO banao.
+- **GC pause time** — `--trace-gc` ya `perf_hooks`. Frequent long pauses = allocation problem.
+- **Requests per second (throughput)** — `autocannon -c <conns> -d <secs>`. Baseline lo, change karo, dobara measure karo. Saath mein error rate dekho — high req/s with 5% errors is not a win.
+
+### Day-to-day use
+
+- Naya endpoint likha → `autocannon` se baseline lo.
+- Latency spike report → event loop lag + slow query log check karo pehle.
+- Memory alert → `heapUsed` vs `rss` trend, heap snapshot.
+- Before a big refactor "for performance" → profile karke confirm karo bottleneck wahi hai.
+
+### Kab optimize karna chahiye
+
+- Jab ek metric ek SLO todti hai (p99 > target, error rate up, memory climbing).
+- Jab profiler ek clear hot spot dikhata hai jo effort ke worth hai.
+- Load test se pehle production traffic 2-3x badhne wala ho.
+
+### Kab NAHI
+
+- "Lag raha hai fast nahi" ke bharose, bina measurement.
+- Micro-optimizations (loop unrolling, `for` vs `forEach`) jab bottleneck I/O hai.
+- Readability/maintainability ko trade karke jab performance already SLO ke andar hai.
+
+### Pros and cons of a checklist approach
+
+**Pros**
+
+- Har item ka clear reason — cargo-culting nahi.
+- Zyaadatar wins high-level hain (streaming, caching, pooling) — chhote tweaks nahi.
+- Metrics-first — regressions pakde jate hain.
+
+**Cons**
+
+- Checklist se blindly sab lagana bhi over-engineering hai (Redis jab in-proc kaafi tha).
+- Kuch items (thread pool size, GC tuning) sirf specific workloads par matter karti hain.
+
+### Interview mein "Node app ko fast kaise banaoge?"
+
+> "Pehle measure — `autocannon` se baseline throughput/latency, `clinic` ya `--prof` se flamegraph, aur event loop lag monitor. Uske baad checklist: event loop ko kabhi block na karo — CPU kaam worker threads par; async APIs, `*Sync` nahi, request path mein; bade payloads stream karo, buffer nahi; DB connections pool karo aur outbound HTTP par keep-alive; hot reads cache karo — chhota aur super-hot in-proc LRU, shared/larger Redis; text responses gzip; JSON chhota aur paginated; logging hot path se hataao (`pino`, async transport); GC churn kam karo streaming aur kam allocation se; `UV_THREADPOOL_SIZE` tab badhao jab thread-pool ops queue ho rahi hon; aur saare cores use karne ke liye cluster/replicas. Har change ke baad dobara measure — main guess karke tune nahi karta."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Sabse common Node performance bug ek "loop mein `await`" hai: `for (const id of ids) { await fetchRow(id); }` — 1000 ids × 20ms = 20 seconds, jabki `await Promise.all(ids.map(fetchRow))` (ya bounded `p-limit`) seconds ko milliseconds bana deta hai. Ye CPU ya memory ka issue nahi — bas accidental serialization. Profiler nahi, code review isse pakadta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Adding a cache layer to a config endpoint">
+
+Ek internal API ka `/config` endpoint har request par 4 DB queries chalata tha (feature flags, limits, rates, templates) — data din mein ek-do baar badalta tha. p99 latency ~90ms tha aur DB CPU high. Fix do layers mein: ek `lru-cache` (60s TTL) har worker mein — turant hits ke liye — aur uske peeche Redis (5 min TTL) taaki naya worker ya cold instance DB ko na hit kare. p99 90ms se ~3ms, DB query volume us endpoint se ~99% kam. Invalidation: config update par ek Redis pub/sub message jo saare workers ka local LRU clear karta hai.
+
+</RealWorld>
+
+<RealWorld company="A sync crypto call tanking p99 under load">
+
+Ek login endpoint `crypto.pbkdf2Sync` use kar raha tha password verify ke liye — dev par theek dikha (ek request at a time). Production load test mein p99 latency 40ms se 1200ms tak chala gaya sirf 30 concurrent logins par. Reason: `pbkdf2Sync` har call ~80ms CPU block, aur wo saare requests ek hi thread par serialize ho gaye. Fix: async `crypto.pbkdf2` par switch (libuv thread pool, default 4) + `UV_THREADPOOL_SIZE=8` kyunki login bursts mein 4 threads bhi queue ban rahe the. p99 wapas ~90ms (ek hash ka expected cost) par, aur baaki endpoints unaffected.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Healthy **event loop lag**: `< 10ms`. Consistently `> 100ms` = loop congested (CPU block ya overload).
+- libuv **thread pool** default = **4** (`UV_THREADPOOL_SIZE`). File I/O, DNS `lookup`, `crypto` KDFs, async `zlib` isi par.
+- gzip/brotli text/JSON ko typically **70-90%** chhota karta hai; already-compressed data par **~0%** + CPU waste.
+- `fs.createReadStream` default chunk = **64 KB** — ek 2 GB file constant `~64 KB` memory mein serve hoti hai vs buffering mein poore 2 GB.
+- DB connection pool typical size **10-25**; nayi connection ka cost (handshake + auth + TLS) aksar **20-50ms**.
+- HTTP `keepAlive` agent socket reuse karne se per-call latency **20-50ms** bach sakta hai.
+- **p99**, not average, SLO ka basis — average ek 2s outlier ko hide kar deta hai jo 1% users ko hit karta hai.
+- Ek Node process ka JS **1 core** use karta hai — 8-core box par cluster/replicas ke bina **~87%** CPU idle.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye scaling/performance round ka core question hai: "Node app slow hai, kya karoge?" ya "throughput kaise badhaoge?". Interviewer dekhta hai ki tum (1) **measure-first** bolte ho, (2) har suggestion ka **kyun** de sakte ho, (3) event-loop-blocking ko #1 concern rakhte ho, (4) sahi metrics (event loop lag, p99, RSS vs heapUsed) jaante ho.
+
+Achhe jawaab ka shape:
+
+1. **Measure** — baseline `autocannon`, flamegraph (`clinic`/`--prof`), event loop lag.
+2. **Don't block the loop** — CPU work → worker threads; no `*Sync` in handlers.
+3. **I/O efficiency** — stream large payloads; pool DB connections; HTTP keep-alive.
+4. **Do less work** — cache hot reads (in-proc vs Redis trade-off), paginate, small JSON, compress.
+5. **Off the hot path** — async logging.
+6. **Use the hardware** — thread pool sizing, cluster/replicas.
+7. **Re-measure** after every change.
+
+Red flags: "`for` loop ko `while` se replace karo" type micro-advice jab I/O bound; caching without invalidation story; "bas cluster laga do" as a cure for a per-request CPU stall.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Bina profile kiye "performance" refactor shuru kar dena.** Team ek endpoint ko rewrite karti hai maan ke serialization slow hai, jabki asli problem ek missing DB index tha. Hamesha pehle `--prof`/`clinic`/slow-query-log se bottleneck confirm karo — actual hot spot aksar guess se alag hota hai.
+
+</Mistake>
+
+<Mistake>
+
+**Request handler mein `*Sync` API use karna.** `fs.readFileSync`, `crypto.scryptSync`, `zlib.gzipSync` — dev par fine dikhte hain (ek request at a time), production load par p99 phat jaata hai kyunki wo event loop ko serialize kar dete hain. Async versions request path mein; `*Sync` sirf startup/CLI mein.
+
+</Mistake>
+
+<Mistake>
+
+**Average latency dekhna, p99 nahi.** Average 45ms healthy lag sakta hai jabki p99 1.5s ho — 1% users ko har baar bad experience. SLOs aur alerts p99 (ya p99.9) par set karo, aur monitoring dashboard mein percentiles dikhao, mean nahi.
+
+</Mistake>
+
+<Mistake>
+
+**Caching bina invalidation strategy ke.** Ek in-proc LRU laga diya bina TTL ya invalidation ke — ab stale data serve hota hai aur cluster ke har worker ka apna alag stale copy hai. Cache add karne se pehle decide karo: TTL kya, invalidate kaise (event/pub-sub), aur staleness kitna tolerable.
+
+</Mistake>
+
+<Mistake>
+
+**`UV_THREADPOOL_SIZE` ko blindly 128 kar dena "for performance".** CPU cores se zyada threads context-switching overhead dete hain aur har thread memory leta hai. Ise sirf tab badhao jab measurement dikhaye ki thread-pool operations (file I/O, KDFs) queue ho rahi hain (load par latency badhti hai bina CPU saturate hue), aur cores ke aas-paas rakho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["App slow / high latency"] --> B["MEASURE first: autocannon baseline, flamegraph, event loop lag, slow-query log"]
+    B --> C{"Bottleneck?"}
+    C -->|"CPU block on main thread"| D["Offload to worker_threads; cache the result; no *Sync in handlers"]
+    C -->|"Slow / too many DB calls"| E["Index, fix N+1, connection pool, cache hot reads (LRU / Redis)"]
+    C -->|"Large payloads / memory spikes"| F["Stream (pipeline), paginate, compress, smaller JSON"]
+    C -->|"Not using all cores"| G["cluster / replicas + move shared state to Redis"]
+    C -->|"GC pauses"| H["Reduce allocations, stream instead of buffer"]
+    D --> I["RE-MEASURE — compare p99, req/s, error rate"]
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+`}
+  caption="Har performance change measurement se shuru aur measurement par khatam hota hai; bottleneck type decide karta hai kaunsa checklist item lagana hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Measure before optimising** — `autocannon` baseline, `clinic`/`--prof` flamegraph, event loop lag. Bottleneck aksar guess se alag.
+- **Never block the event loop** — CPU-heavy sync kaam poore server ko rokta hai; worker threads / alag service. No `*Sync` in request handlers.
+- **Stream large payloads** — `pipeline(readStream, res)` = constant memory + fast TTFB vs buffering (memory spike, DoS).
+- **Pool connections** — DB pool (10-25) aur HTTP `keepAlive` socket reuse; nayi connection = 20-50ms handshake+auth+TLS.
+- **Cache hot reads** — in-proc LRU (fastest, per-process, hard to invalidate) vs Redis (shared, network hop, clean TTL). Aksar dono; hamesha ek invalidation story.
+- **Compress** text/JSON responses (gzip/brotli, 70-90% smaller); skip already-compressed types.
+- **Small JSON, paginate** — bounded response size = predictable latency/memory; sirf zaroori fields.
+- **Logging off the hot path** — `pino` + async transport, not per-request `console.log`.
+- **Reduce GC churn** — kam allocation, streaming, fewer intermediate arrays — smoother p99.
+- **`UV_THREADPOOL_SIZE`** (default 4) — badhao jab file I/O / KDFs queue ho rahe hon; cores ke aas-paas rakho, 128 nahi.
+- **Use all cores** — cluster / replicas; per-request CPU stall ke liye worker threads (cluster nahi).
+- **Metrics**: event loop lag (`<10ms` healthy), RSS vs heapUsed (gap growth = leak), p99 latency (not average), GC pause time, req/s (with error rate).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek endpoint par ek 200ms `while` loop (busy-wait) daalo. `autocannon -c 20 -d 10` chalao aur p99 latency note karo. Ab us busy-wait ko hata do aur dobara measure karo — farak dekho ki ek block sirf ek request ko nahi, sabko affect karta hai.
+
+**Medium:** Ek `/users` endpoint jo DB se 5000 rows return karta ho, use `limit`/`offset` pagination ke saath 50-per-page banao. `process.memoryUsage().heapUsed` aur response time dono compare karo before/after. Phir `compression` middleware add karke payload size compare karo.
+
+**Bada:** Ek endpoint jo har request par ek 40ms DB query karta hai — uske aage `lru-cache` (30s TTL) lagao. `autocannon` se req/s aur p99 measure karo cache ke saath aur bina. Phir process ke do copies chalao (`cluster.fork()` × 2) aur dekho ki har worker ka apna LRU hai (cache hit rate girta hai) — ise Redis se replace karke shared cache banao aur dobara measure karo. Likho kis point par in-proc LRU kaafi tha aur kab Redis zaroori hua.
+
+</Callout>

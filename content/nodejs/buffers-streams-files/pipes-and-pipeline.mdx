@@ -1,0 +1,332 @@
+---
+slug: "pipes-and-pipeline"
+title: "Pipes & pipeline()"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 4
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["readable-and-writable-streams"]
+tags: ["nodejs", "streams", "pipe", "pipeline", "backpressure", "error-handling"]
+englishDefinition: "src.pipe(dest) connects a Readable to a Writable, automatically handling backpressure and most of the wiring, but it does NOT forward errors and does not reliably destroy every stream on failure, which leaks file descriptors and sockets. stream.pipeline(a, b, c, callback) — and its promise form require('stream/promises').pipeline — connects any number of streams, propagates errors to one place, and destroys all streams on failure. Rule: pipeline in production, pipe only for throwaway scripts."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`src.pipe(dest)` connects a Readable to a Writable and **automatically handles backpressure** plus most of the wiring — but it does **not** forward errors and does **not** reliably destroy every stream on failure, which leaks file descriptors and sockets. **`stream.pipeline(a, b, c, callback)`** — and its promise form `require("stream/promises").pipeline` — connects any number of streams, sends all errors to **one** place, and **destroys every stream** on failure. Rule of thumb: `pipeline` in production, `pipe` only for throwaway scripts.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic mein tumne manual backpressure ka 12-line dance dekha. `pipe` aur `pipeline` wo dance tumhare liye karte hain. Difference sirf ek: **error handling aur cleanup** — aur wahi difference production mein file descriptor leaks aur zombie sockets ka farak hai. Interview mein "pipe vs pipeline" bahut common hai.
+
+### Ye kya hai — `.pipe()`
+
+`readable.pipe(writable)` — ek line mein:
+
+- `readable` ke `'data'` ko `writable.write()` se jodta hai
+- `writable.write()` `false` de toh `readable.pause()`, `'drain'` pe `readable.resume()` — **backpressure automatic**
+- `readable` `'end'` pe `writable.end()` call karta hai
+- `writable` return karta hai, isliye chain ho sakta hai: `a.pipe(b).pipe(c)`
+
+Jo `.pipe()` **nahi** karta:
+
+- **Errors forward nahi karta.** `readable` error kare toh `writable` ko pata nahi chalta, aur agar tumne `readable.on("error")` nahi lagaya toh **process crash**.
+- **Failure pe streams destroy nahi karta.** Agar `writable` fail ho jaye, `readable` khula rehta hai, file descriptor / socket leak hota hai. Multi-stage mein beech wale streams bhi hang.
+
+### Ye kya hai — `stream.pipeline()`
+
+`stream.pipeline(source, ...transforms, destination, callback)`:
+
+- Wahi backpressure + wiring jo `pipe` karta hai
+- **Har stream ka error ek jagah** — `callback(err)` mein (ya promise reject)
+- **Failure pe saare streams `destroy()`** — koi fd/socket leak nahi
+- Kitne bhi stages: `pipeline(read, gunzip, parse, transform, write, cb)`
+
+Do forms:
+
+```javascript
+// Callback form
+const { pipeline } = require("stream");
+pipeline(src, gzip, dst, (err) => {
+  if (err) console.error("pipeline fail:", err);
+  else console.log("done");
+});
+
+// Promise form — prefer this
+const { pipeline } = require("stream/promises");
+try {
+  await pipeline(src, gzip, dst);
+  console.log("done");
+} catch (err) {
+  console.error("pipeline fail:", err);
+}
+```
+
+### Ye kyun exist karta hai
+
+`.pipe()` 2012 se hai. Log ne jaldi hi paaya ki `a.pipe(b).pipe(c)` mein agar `b` (gzip) fail ho:
+
+- `a` khula reh jaata hai — agar `a` ek file hai, fd leak; agar HTTP request, socket hang
+- `c` ko `'end'` kabhi nahi milta — wo bhi hang
+- error kahin catch nahi hota — ya crash, ya silent
+
+Log manually `a.on("error")`, `b.on("error")`, `c.on("error")`, plus har error handler mein baaki streams `.destroy()` — 15+ lines har pipe ke liye, aur ek bhalso toh leak. 2017 mein Node ne `stream.pipeline()` add kiya jo ye sab correct tareeke se karta hai. **Ab `.pipe()` chain production code mein bug hai.**
+
+### Internally kaise kaam karta hai
+
+- **`pipe`**: `readable` pe `'data'`, `'end'`, `'drain'` (source aur dest ke beech) listeners lagata hai. `'error'` pe koi listener **nahi** — wo tumhari zimmedari.
+- **`pipeline`**: har adjacent pair ko internally `.pipe()` jaisa jodta hai, **plus** `stream.finished()` har stream pe lagata hai jo `'error'`, `'close'`, premature termination detect karta hai. Kisi bhi stream mein `'error'`/early close → pipeline saare **doosre** streams pe `.destroy(err)` call karta hai aur final callback/promise ko `err` deta hai.
+- **Cleanup order** — pipeline destroy ko upstream aur downstream dono direction mein propagate karta hai, isliye ek bhi stream hang nahi hota.
+- **Return value** — callback form Readable-ish stream return karta hai (chaining ke liye rarely used); promise form ek Promise.
+
+### Simple real-life analogy
+
+`.pipe()` = do garden hose ko jodna. Paani bahta hai (backpressure: aage wala nozzle band karo toh peeche pressure). Lekin agar beech wale hose mein **crack** aa jaye — paani farsh pe, aur peeche wala tap khula reh jaata hai, aage wala sink dry. Koi automatic shut-off nahi.
+
+`stream.pipeline()` = wahi hoses **plus** har joint pe ek automatic shut-off valve. Kahin bhi leak/crack → poori chain ki supply band, ek alarm (callback/promise) baj jaata hai btata ki kahan toota. Koi tap khula nahi rehta.
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+const zlib = require("zlib");
+const { pipeline } = require("stream/promises");
+
+async function gzipFile(input, output) {
+  const source = fs.createReadStream(input);
+  const gzip = zlib.createGzip();
+  const destination = fs.createWriteStream(output);
+
+  await pipeline(source, gzip, destination);
+  console.log(`${input} -> ${output}.gz done`);
+}
+
+gzipFile("app.log", "app.log.gz").catch((err) => {
+  console.error("compression failed:", err.message);
+});
+```
+
+- `fs.createReadStream(input)` — Readable source. Agar file missing hai, ye `'error'` (`ENOENT`) emit karega.
+- `zlib.createGzip()` — Transform stream; input bytes ko gzip-compressed bytes mein badalta hai.
+- `fs.createWriteStream(output)` — Writable sink. Disk full / permission denied → `'error'`.
+- `await pipeline(source, gzip, destination)` — teeno ko jodta hai, backpressure handle karta hai, aur **kisi bhi** stage ke error pe: baaki do streams `.destroy()`, aur promise reject.
+- `.catch(err => ...)` — ek jagah **saare** teen streams ke errors. `source` ka `ENOENT`, `gzip` ka corruption, `destination` ka `ENOSPC` — sab yahan.
+- Bina `pipeline` ke: `source.on("error")`, `gzip.on("error")`, `destination.on("error")`, har ek mein baaki streams destroy — 15 lines, aur ek miss = fd leak.
+
+### Multi-stage example
+
+```javascript
+const { pipeline } = require("stream/promises");
+const fs = require("fs");
+const zlib = require("zlib");
+const crypto = require("crypto");
+
+// read -> gunzip -> decrypt -> parse -> write
+await pipeline(
+  fs.createReadStream("data.json.gz.enc"),
+  crypto.createDecipheriv("aes-256-cbc", key, iv),
+  zlib.createGunzip(),
+  someTransformThatParsesJson(),
+  fs.createWriteStream("data.ndjson")
+);
+```
+
+Har stage independent, memory-bounded (`highWaterMark` per stage), aur agar decrypt fail (galat key) hota hai toh baaki 4 streams turant destroy ho jaate hain — koi partial file handle, koi hang nahi.
+
+### Day-to-day use
+
+- **File compress/decompress** — `pipeline(readStream, zlib.createGzip(), writeStream)`.
+- **HTTP file serve** — `pipeline(fs.createReadStream(path), res, err => { if (err) log(err); })` — client disconnect ho toh file stream destroy ho jaata hai.
+- **Upload to S3 / storage** — `pipeline(req, uploadWritable)` — request body seedha storage mein, memory mein nahi.
+- **ETL** — `pipeline(dbCursor, transformRows(), csvStringify(), gzip(), fileWrite())`.
+- **`stream.finished(stream, cb)`** — single stream ke complete/error/close ka reliable signal jab pipeline overkill ho.
+
+### Kab `.pipe()` chalega
+
+- Ek **throwaway script** jo tum khud chalate ho aur crash acceptable hai.
+- REPL / debugging mein quick `readStream.pipe(process.stdout)`.
+- Jab tum 100% sure ho ki na source na dest kabhi error karega (practically kabhi nahi).
+
+### Kab `.pipe()` NAHI — yaani `pipeline()` use karo
+
+- **Koi bhi long-running service** — HTTP servers, workers, daemons.
+- **Multi-stage** transforms (2+ streams beech mein).
+- Jahan source ya dest **network** hai (client disconnect, upstream reset common hain).
+- Jahan file descriptors / sockets involved hain aur leak unacceptable hai (yaani har production case).
+
+### Pros and cons
+
+**`.pipe()` — Pros**
+
+- Sabse chhota syntax, chaining natural (`a.pipe(b).pipe(c)`).
+- Backpressure automatic.
+
+**`.pipe()` — Cons**
+
+- Errors forward nahi hote — ek unhandled `'error'` = process crash.
+- Failure pe streams destroy nahi hote — **fd / socket leak**.
+- Multi-stage mein beech wale streams hang.
+- Har stream pe manual `'error'` + manual cross-destroy chahiye — verbose aur fragile.
+
+**`stream.pipeline()` — Pros**
+
+- Ek jagah error (callback ya `await`/`try-catch`).
+- Failure pe **saare** streams `destroy()` — koi leak nahi.
+- Kitne bhi stages.
+- Promise form `async/await` ke saab clean.
+
+**`stream.pipeline()` — Cons**
+
+- Thoda zyada type karna.
+- Callback form purana; `stream/promises` yaad rakhna padta hai.
+- Transform stream khud galat likha ho toh pipeline usse magically theek nahi karta.
+
+### Alternatives
+
+- **`stream.finished(stream, cb)`** — single stream ke liye reliable "done or failed" — pipeline se halka jab ek hi stream ho.
+- **`for await...of` + manual `write`** — jab har chunk pe branching/routing chahiye jo linear pipeline express nahi kar sakta.
+- **Web Streams `pipeTo` / `pipeThrough`** — standard API; `pipeTo` errors ko properly propagate karta hai (Node streams ka `pipe` nahi karta). Node 18+.
+- **Libraries (`pump`)** — `pipeline` se pehle log `pump` npm package use karte the; ab `pipeline` core mein hai, `pump` ki zaroorat nahi.
+
+### Interview mein "pipe vs pipeline — kaunsa aur kyun?"
+
+> "Main production mein hamesha `stream.pipeline` (promise form) use karta hoon. `.pipe()` backpressure toh handle karta hai par errors forward nahi karta aur failure pe streams destroy nahi karta — ek gzip stage fail ho jaye toh source file descriptor leak ho jaata hai aur destination hang. `pipeline` saare stages ke errors ko ek `try/catch` mein le aata hai aur kisi bhi failure pe baaki sab streams `destroy()` kar deta hai, isliye fd/socket leak nahi hote. `.pipe()` main sirf ek-baar chalne wali local script mein use karta hoon jahan crash se koi fark nahi padta."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`.pipe()` ka ek chhupa hua bug: agar destination stream error kare, `pipe` source ko **unpipe nahi karta** — source data emit karta rehta hai jaane ke lie kahin nahi, aur us data ka koi consumer na hone se wo memory mein ruk sakta hai ya source hang ho jaata hai. `pipeline` is case mein source ko turant destroy kar deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Log archival service">
+
+Ek platform team har ghante application logs ko compress karke S3 pe bhejti hai. Original code `fs.createReadStream(logFile).pipe(zlib.createGzip()).pipe(s3UploadStream)` tha. Jab S3 upload intermittently timeout hota (network blip), gzip aur read streams destroy nahi hote the — har failed run ek file descriptor leak karta tha. `ulimit` hit hone pe service `EMFILE: too many open files` ke saath dead ho jaati thi, ~2 din mein. Fix: `await pipeline(fs.createReadStream(logFile), zlib.createGzip(), s3UploadStream)` — ab S3 timeout pe teeno streams destroy ho jaate hain, `catch` block retry schedule karta hai, aur fd count flat rehta hai.
+
+</RealWorld>
+
+<RealWorld company="PDF generation endpoint">
+
+Ek reporting API server-side PDF banata hai aur `res` pe stream karta hai: `pdfDocStream.pipe(res)`. Users jo PDF generate hote hi tab band kar dete the (client disconnect) — `res` `'close'` ho jata par `pdfDocStream` chalta rehta, CPU aur memory kha ke, kabhi khatam na hone wale documents ke liye. `pipeline(pdfDocStream, res, () => {})` pe switch karne se client disconnect turant `pdfDocStream` destroy karta hai — generation ruk jaata hai, resources free. Server ka p99 memory 40% gir gaya kyunki abandoned generations pile-up nahi hote.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `stream.pipeline()` Node **v10.0.0 (2018)** mein aaya; `require("stream/promises").pipeline` **v15.0.0**.
+- `.pipe()` v0.x se hai — 10+ saal purana, aur uske error/cleanup gaps kabhi fix nahi honge (backward compat).
+- Ek leaked fd per failed pipe; default `ulimit -n` Linux pe aksar **`1024`** — yaani ~1024 failures mein service `EMFILE` se marti hai.
+- `pipeline` mein stages ki koi hard limit nahi — practically 3-6 common (read, decompress, decrypt, parse, transform, write).
+- `pipeline` failure pe cleanup latency ~1 event-loop tick — effectively immediate.
+- Web Streams `pipeTo()` promise return karta hai aur errors properly propagate karta hai — Node streams ke `.pipe()` ke against ek design fix.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+"`pipe` aur `pipeline` mein farak?" ek near-guaranteed Node streams question hai. Interviewer dekhta hai: (1) dono backpressure karte hain — ye difference **nahi** hai, (2) `pipe` errors forward nahi karta aur streams leak karta hai, (3) `pipeline` errors ek jagah laata hai aur sab destroy karta hai, (4) production = `pipeline`.
+
+Model answer shape:
+
+1. **Common** — "dono Readable ko Writable se jodte hain aur backpressure automatic handle karte hain."
+2. **`pipe` gaps** — "errors forward nahi karta (unhandled = crash), failure pe streams destroy nahi karta (fd/socket leak), multi-stage mein beech wale hang."
+3. **`pipeline` fix** — "kitne bhi stages, saare errors ek callback/promise mein, failure pe har stream `destroy()`."
+4. **Rule** — "production/services mein hamesha `pipeline` (promise form); `pipe` sirf throwaway scripts."
+
+Red flag: "`pipe` aur `pipeline` basically same hain" ya "`pipe` backpressure nahi karta" (wo karta hai) ya `.pipe()` chain ko production-ready btana.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Production code mein `.pipe()` chain use karna.** `readStream.pipe(gzip).pipe(writeStream)` — ek stage fail hote hi source ka fd leak hota hai, dest hang hota hai, aur agar kisi stream pe `'error'` listener missing hai toh process crash. Long-running service ke liye hamesha `stream.pipeline()`.
+
+</Mistake>
+
+<Mistake>
+
+**`.pipe()` ke saath `'error'` handler sirf source pe lagana.** `readStream.on("error", ...)` laga diya par `gzip` aur `writeStream` pe nahi. Un dono mein se ek fail kare toh unhandled `'error'` — crash. `.pipe()` ke saath **har** stream pe alag `'error'` chahiye; isse aasan `pipeline` hai.
+
+</Mistake>
+
+<Mistake>
+
+**`pipeline` ka error handle na karna.** Callback form `pipeline(a, b, c)` bina callback ke — Node throw karta hai (`callback required`). Promise form `pipeline(a, b, c)` bina `await`/`.catch()` — unhandled promise rejection. Callback ya `try/catch` mandatory hai.
+
+</Mistake>
+
+<Mistake>
+
+**`pipeline` ke stages ko galat order mein dena.** `pipeline(gzip, readStream, writeStream)` — pehla arg source hona chahiye (Readable), aakhri destination (Writable), beech mein Transforms in flow order. Galat order pe `ERR_STREAM_CANNOT_PIPE` ya data kuch nahi bahta.
+
+</Mistake>
+
+<Mistake>
+
+**HTTP response ke saath `pipeline(src, res)` mein `res` ko dobara touch karna.** `pipeline` fail hone pe `res` already destroyed hota hai — `catch` block mein `res.status(500).send(...)` karoge toh `ERR_STREAM_WRITE_AFTER_END` / headers-already-sent. `catch` mein bas log karo, ya `res.headersSent` check karke hi respond karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    subgraph pipe[".pipe() chain — a.pipe(b).pipe(c)"]
+    A1["Readable a"] -->|"data + backpressure"| B1["Transform b"]
+    B1 -->|"data + backpressure"| C1["Writable c"]
+    B1 -. "b errors: NOT forwarded, a stays open (fd leak), c hangs" .-> X1["crash or leak"]
+    end
+    subgraph pl["stream.pipeline(a, b, c, cb)"]
+    A2["Readable a"] -->|"data + backpressure"| B2["Transform b"]
+    B2 -->|"data + backpressure"| C2["Writable c"]
+    B2 -. "any error" .-> D2["destroy a, b, c + call cb(err) / reject"]
+    end
+`}
+  caption="Dono backpressure karte hain. Farak: pipe error pe kuch clean nahi karta; pipeline har stream destroy karta hai aur error ek jagah deta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **`src.pipe(dest)`** — Readable ko Writable se jodta hai, **backpressure automatic**, `end` propagate, chainable.
+- **`.pipe()` NAHI karta**: errors forward, failure pe streams destroy. → fd/socket leak, hang, ya crash.
+- **`stream.pipeline(a, ...mids, z, cb)`** — wahi backpressure + **saare errors ek jagah** + failure pe **har stream `destroy()`**.
+- Promise form: `const { pipeline } = require("stream/promises"); await pipeline(a, b, c)` — prefer this.
+- `pipeline` args: pehla = Readable source, aakhri = Writable dest, beech = Transforms in flow order.
+- **Production rule**: hamesha `pipeline`. `.pipe()` sirf throwaway/REPL scripts.
+- Dono backpressure karte hain — ye difference **nahi** hai (common interview trap).
+- `pipeline(fs.createReadStream(p), res, cb)` — client disconnect pe file stream destroy, resource free.
+- Callback form bina callback = throw; promise form bina `await`/`.catch()` = unhandled rejection.
+- Single stream ke liye `stream.finished(s, cb)` — pipeline se halka.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek file ko gzip karo `pipeline(fs.createReadStream("x.txt"), zlib.createGzip(), fs.createWriteStream("x.txt.gz"))` se (promise form, `await` + `try/catch`). Phir input filename galat de do aur dekho error `catch` mein aata hai — same cheez `.pipe()` chain se karo aur dekho process crash hota hai.
+
+**Medium:** Ek helper `copyWithProgress(src, dest)` likho jo `pipeline` use kare lekin beech mein ek `PassThrough` (ya custom Transform) daale jo har chunk pe total bytes count kare aur har `1 MB` pe progress log kare. Verify final count file size ke barabar hai, aur galat `dest` path pe error properly reject hota hai.
+
+**Bada:** Ek mini HTTP file server banao: `GET /file/:name` pe `pipeline(fs.createReadStream(path), res, err => {...})`. Test karo: (a) valid file — download hota hai; (b) missing file — `catch`/callback mein `ENOENT`, `res` ko `res.headersSent` check karke `404` bhejo; (c) `curl` se download beech mein `Ctrl+C` — server logs mein dekho ki read stream destroy hua (ek `console.log` `pipeline` callback mein). Confirm karo `lsof` / handle count nahi badhta repeated aborted downloads pe.
+
+</Callout>
+

@@ -1,0 +1,278 @@
+---
+slug: "streams-introduction"
+title: "Streams: Introduction"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 2
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["buffers"]
+tags: ["nodejs", "streams", "memory", "backpressure", "eventemitter", "objectmode"]
+englishDefinition: "A stream is an abstraction for reading or writing data piece by piece instead of all at once. Reading a 2 GB file with readFile needs 2 GB of RAM and makes you wait for the whole read; a stream processes the same file in roughly 64 KB chunks at near-constant memory and starts working immediately. Node has four stream types — Readable, Writable, Duplex, and Transform — and every stream is an EventEmitter."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **stream** is a way to read or write data **piece by piece** instead of all at once. Reading a 2 GB file with `fs.readFile` needs 2 GB of RAM and makes you wait for the entire read to finish. A stream processes that same file in roughly 64 KB chunks, at near-constant memory, and starts working on the first chunk immediately. Node has **four** stream types — `Readable`, `Writable`, `Duplex`, `Transform` — and every stream is an `EventEmitter`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node ka sabse powerful — aur sabse dara dene wala — feature streams hai. Agar tumhari service badi files, video, ya lambi HTTP responses handle karti hai aur memory spike karti hai, toh 90% chance hai ki kahin stream ke bajaye `readFile` use ho raha hai. Ye topic mental model set karta hai; agle do topics mechanics dete hain.
+
+### Ye kya hai — stream
+
+Stream ek **sequence of data over time** hai jise tum tukdon (chunks) mein consume ya produce karte ho. Poora data ek hi jagah memory mein kabhi nahi hota — sirf current chunk aur ek chhota internal buffer.
+
+Char types:
+
+| Type | Kya karta hai | Example |
+| --- | --- | --- |
+| **Readable** | data **nikalta** hai (source) | `fs.createReadStream`, `req` (HTTP server), `process.stdin` |
+| **Writable** | data **leta** hai (sink) | `fs.createWriteStream`, `res` (HTTP server), `process.stdout` |
+| **Duplex** | dono — read aur write, independent | TCP `net.Socket` |
+| **Transform** | Duplex jo data ko **badalta** hai beech mein | `zlib.createGzip`, `crypto.createCipheriv` |
+
+### Ye kyun exist karta hai
+
+Do concrete problems:
+
+1. **Memory** — `const data = fs.readFileSync("2gb.log")` poori 2 GB RAM mein laata hai. 10 concurrent requests = 20 GB. Container OOM-kill ho jaata hai. Stream ke saath har request sirf `~64 KB` rakhti hai — 10 requests = under 1 MB.
+2. **Latency (time to first byte)** — `readFile` tumhe pehla byte tab deta hai jab **poori** file padh li jaaye. Stream pehla chunk milte hi aage bhej deta hai. Video streaming, large CSV export, log tailing — sabme user ko turant kuch dikhna chahiye.
+
+Bonus: **composability** — `source.pipe(gzip).pipe(encrypt).pipe(upload)` — har stage independent, memory-bounded, reusable.
+
+### Internally kaise kaam karta hai
+
+- Har stream ke andar ek **internal buffer** hota hai. Readable ke liye: source se data aata hai aur buffer mein jama hota hai jab tak consumer maangta nahi. Writable ke liye: `write()` kiya data buffer mein jaata hai jab tak underlying resource (disk, socket) use likh nahi leta.
+- **`highWaterMark`** — buffer ki soft limit. Byte streams mein default **`65536` (64 KB)**; object mode mein **`16` objects**. Jab Readable ka buffer isse bhar jaata hai, wo source se padhna **rok deta hai**. Jab Writable ka buffer bhar jaata hai, `write()` **`false`** return karta hai — ye backpressure ka signal hai (agla topic).
+- Streams **`EventEmitter`** extend karte hain — `data`, `end`, `error`, `finish`, `drain`, `close` events emit hote hain. Isliye `stream.on("error", ...)` **hamesha** lagao — unhandled `error` event process crash karta hai.
+- **`objectMode: true`** — chunks bytes/strings nahi, arbitrary JS objects hote hain. Database row streams, CSV parser output, log pipelines isme chalte hain. Tab `highWaterMark` "kitne objects" ho jaata hai.
+
+### Simple real-life analogy
+
+`readFile` = ek **tanker truck** — poora paani ek baar mein aata hai; tumhe truck bharne tak wait karna hai aur usse rakhne ki jagah chahiye.
+
+Stream = ek **conveyor belt** — dibbe ek-ek karke aate hain, tum har dibba process karke aage badhate ho, aur belt pe kabhi 4-5 se zyada dibbe nahi hote. Agar aage wala worker slow hai, belt **ruk jaati hai** (backpressure) — dibbe farsh pe girke dher nahi lagte.
+
+`process.stdin | grep | wc -l` — Unix pipe bilkul yahi hai. Node streams Unix pipes ka JavaScript version hai.
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+
+// Galat tareeka — poori file memory mein
+const bad = fs.readFileSync("big.log");   // 2 GB RAM spike
+fs.writeFileSync("copy.log", bad);
+
+// Sahi tareeka — chunk by chunk, constant memory
+const src = fs.createReadStream("big.log");   // Readable
+const dst = fs.createWriteStream("copy.log"); // Writable
+
+src.on("data", (chunk) => {
+  console.log("mila chunk:", chunk.length, "bytes");
+  dst.write(chunk);
+});
+src.on("end", () => {
+  dst.end();
+  console.log("poori file copy ho gayi");
+});
+src.on("error", (err) => console.error("read error:", err.message));
+dst.on("error", (err) => console.error("write error:", err.message));
+```
+
+- `fs.createReadStream("big.log")` — ek Readable banata hai; abhi file khuli nahi, koi data nahi pada. Lazy.
+- `fs.createWriteStream("copy.log")` — ek Writable; file open hoti hai, par kuch likha nahi.
+- `src.on("data", chunk => ...)` — `data` listener lagte hi stream **flowing mode** mein chala jaata hai aur `~64 KB` chunks emit karne lagta hai.
+- `chunk` ek **Buffer** hai (encoding na di ho toh) — pichhle topic ka connect.
+- `dst.write(chunk)` — chunk ko write buffer mein daalta hai. Iska return value (`true`/`false`) yahan ignore ho raha hai — **ye is code ka bug hai** (no backpressure), agla topic fix karega.
+- `src.on("end")` — source khatam; `dst.end()` se Writable ko batao "aur data nahi aayega, flush karke band ho jao".
+- `src.on("error")` / `dst.on("error")` — **zaroori**. Ek bhi missing ho aur wo stream fail kare toh process crash.
+
+### Day-to-day use
+
+- **File copy / transform** — `fs.createReadStream(a).pipe(fs.createWriteStream(b))`.
+- **HTTP** — `req` ek Readable (uploaded body), `res` ek Writable (response). `fs.createReadStream("video.mp4").pipe(res)` — large file serve without buffering.
+- **Compression** — `readStream.pipe(zlib.createGzip()).pipe(writeStream)`.
+- **CSV / NDJSON** — `fs.createReadStream("data.csv").pipe(csvParser()).on("data", row => ...)` — millions of rows, constant memory.
+- **`process.stdin` / `process.stdout`** — CLI tools jo piped input process karte hain.
+- **DB cursors** — `queryStream` se lakhon rows ko batch job mein process karna bina sab load kiye.
+
+### Kab use karna chahiye
+
+- Data ka size **bada** ya **unbounded/unknown** ho (file uploads, logs, exports, video).
+- **Time to first byte** matter kare — user ko turant kuch dikhна ho.
+- Multi-stage processing ho jise pipeline mein compose karna hai (read → parse → filter → write).
+- Memory-bounded rehna ho — cloud containers, Lambda, limited RAM.
+
+### Kab use nahi karna chahiye
+
+- Data **chhota aur bounded** ho (config file, chhota JSON, `< 1 MB`) — `fs.readFile` simpler aur code readable.
+- Tumhe **poora data ek saath** chahiye ho processing se pehle (e.g. `JSON.parse` ko complete string chahiye, ya tumhe file ka checksum chahiye jise incremental nahi kar sakte — actually checksum incremental ho sakta hai, par arbitrary "need it all" cases exist karte hain).
+- Ek chhoti script jahan clarity > efficiency aur file guaranteed chhoti hai.
+
+### Pros and cons
+
+**Pros**
+
+- Constant, predictable memory — chahe file 10 KB ho ya 100 GB.
+- Fast time-to-first-byte — processing turant shuru.
+- Composable — `pipe`/`pipeline` se stages jodo.
+- Backpressure built-in — fast producer slow consumer ko flood nahi karta.
+
+**Cons**
+
+- Event-based API callback-heavy aur beginners ke liye confusing.
+- Error handling har stage pe — ek missed `error` listener = crash.
+- `data`/`end`/`error`/`drain` ka lifecycle yaad rakhna padta hai.
+- Debugging mushkil — data "beech raste mein" hota hai, ek jagah inspect nahi kar sakte.
+- Random access nahi — sirf sequential (seek ke liye alag `fd` operations).
+
+### Alternatives
+
+- **`fs.readFile` / `fs.promises.readFile`** — chhoti bounded files ke liye; poora Buffer/string milta hai.
+- **Async iterators (`for await...of stream`)** — stream ke upar hi ek readable syntax; event soup se bachata hai (agla topic).
+- **`ReadableStream` (Web Streams API, Node 18+)** — cross-platform standard; `fetch` ke saath. Node streams se interop `Readable.fromWeb` / `.toWeb`.
+- **Message queues (Kafka, SQS)** — jab "stream" cross-process/cross-machine ho, in-process stream nahi.
+
+### Interview mein "Streams kyun use kiye?"
+
+> "Export feature mein user 500 MB tak ka report CSV maang sakta tha. Pehle version `readFile` + build-in-memory-string karta tha — 3-4 concurrent exports pe pod OOM-kill ho raha tha. Maine ise `DB queryStream → csv-stringify Transform → gzip → res` pipeline mein badla. Ab har export ~10 MB peak leti hai chahe result 5 MB ho ya 5 GB, aur user ko download turant shuru hota dikhta hai kyunki response streaming hai. Chhoti internal config files ke liye maine deliberately `readFile` rakha — wahan stream over-engineering hoti."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`data` listener lagana ya `.pipe()` karna Readable ko **flowing mode** mein daal deta hai. Agar tum `.pipe()` karte ho par consumer slow hai, tab bhi memory bounded rehti hai kyunki `pipe` backpressure handle karta hai. Lekin `.on("data")` khud backpressure nahi karta — tumhe `pause()`/`resume()` ya `write()` ka return value dekhna padta hai (agla topic).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Video-on-demand platform">
+
+Ek OTT service (Hotstar-style) apni CDN origin se video files serve karti hai. Agar wo `fs.readFile("movie-4k.mkv")` karti — 8 GB — toh ek request poora RAM kha jaati aur user ko pehla frame minutes baad milta. Iske bajaye `fs.createReadStream(path, { start, end }).pipe(res)` use hota hai, jahan `start`/`end` HTTP `Range` header se aate hain (seek/scrubbing support). Har connection sirf ek `highWaterMark` (64 KB) chunk memory mein rakhta hai; hazaaron concurrent viewers ek machine pe fit ho jaate hain. Player 2 second buffer ke baad `res` par backpressure daal deta hai aur origin padhna slow kar deta hai.
+
+</RealWorld>
+
+<RealWorld company="Bank statement batch job">
+
+Ek BFSI reconciliation job har raat 40 million transaction rows ko DB se padh ke ek fixed-width file banati hai jo settlement partner ko jaati hai. `SELECT * ... ` ka poora result set kabhi memory mein nahi aata — job Postgres `pg-query-stream` (objectMode Readable) use karti hai, har row ko ek Transform mein format karti hai, aur `fs.createWriteStream` pe likhti hai, poora `pipeline()` se joda hua. Memory usage flat `~150 MB` rehta hai chahe 10 million rows hon ya 100 million. Pehle jo in-memory version tha wo 8 million rows pe hi `JavaScript heap out of memory` deta tha.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Byte streams ka default `highWaterMark` = **`65536` bytes (64 KB)**. Object mode mein = **`16` objects**.
+- `fs.createReadStream` default chunk size ~`64 KB`; `highWaterMark` badha ke `256 KB` karne se disk-bound copy ~`10-20%` tez ho sakti hai, par memory 4x.
+- `readFile` ki practical file-size limit `buffer.constants.MAX_LENGTH` (~`2 GB`+) — usse badi file `readFile` se padh hi nahi sakte, stream mandatory.
+- 2 GB file, `readFile`: peak RSS ~`2+ GB`. Same file, stream copy: peak RSS ~`few MB` — teen orders of magnitude farak.
+- Streams Node mein **v0.10 (2013)** se "streams2" API pe hain (paused/flowing, backpressure). Purane "streams1" code aaj bhi thoda alag behave karta hai.
+- `stream/promises.pipeline` Node **v15+**; `for await...of` on streams **v10+**.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic har Node backend interview mein aata hai, aksar "aap ek 5 GB file kaise process karenge" ya "aapki memory kyun spike kar rahi hai" ke roop mein. Interviewer dekhta hai: (1) kya tum `readFile` vs stream ka memory/latency trade-off articulate kar sakte ho, (2) char stream types, (3) streams `EventEmitter` hain aur `error` handle karna zaroori hai.
+
+Model answer shape:
+
+1. **Problem** — "`readFile` poori file RAM mein laata hai aur pehla byte tab deta hai jab poori padh li jaaye."
+2. **Solution** — "Stream file ko `~64 KB` chunks mein deta hai, constant memory, pehla chunk turant."
+3. **Types** — "Readable (source), Writable (sink), Duplex (socket), Transform (gzip/cipher)."
+4. **Composition** — "`pipe`/`pipeline` se stages jodte hain; backpressure automatically handle hota hai."
+5. **Trade-off** — "chhoti bounded file ke liye stream over-engineering; `readFile` rakho."
+
+Red flag: "stream matlab bas fast hota hai" bina memory/backpressure samjhe, ya `error` listener bhool jaana.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Badi ya unbounded file ke liye `fs.readFile` use karna.** User-uploaded file, log file, DB export — inka size predict nahi kar sakte. `readFile` in par 500 MB+ spike deta hai, aur `MAX_LENGTH` se badi file pe seedha `RangeError`. Size unknown ho toh stream default choice hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**`error` event listener na lagana.** Streams `EventEmitter` hain; agar `error` emit ho aur koi listener na ho, Node poora process crash kar deta hai (`Unhandled 'error' event`). Har stream pe — source, destination, har transform — `.on("error", ...)` chahiye, ya `pipeline()` use karo jo ye sambhaal leta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`.on("data")` ko backpressure-safe maan lena.** `src.on("data", c => dst.write(c))` — agar `dst` (disk, slow socket) `src` se dheema hai, `dst` ka internal buffer unbounded badhta hai aur memory phat jaati hai. `.on("data")` khud producer ko rok nahi sakta jab tak tum `src.pause()` na karo. Isliye `.pipe()` ya `pipeline()` use karo, jo ye khud karte hain.
+
+</Mistake>
+
+<Mistake>
+
+**`data`/`end` events ke saath `for await...of` mix karna, ya stream ko do baar consume karna.** Ek Readable ek hi baar flow hota hai. `data` listener bhi lagaya aur `for await` bhi — chunks kho jaate hain ya double-process hote hain. Ek stream, ek consumption strategy.
+
+</Mistake>
+
+<Mistake>
+
+**Object-mode data ko default (byte) stream se bhejna.** Ek Readable jo JS objects push karta hai bina `objectMode: true` ke — Node object ko Buffer mein convert karne ki koshish karta hai aur `[object Object]` ya `TypeError` aata hai. Row/record pipelines ke liye har stage pe `objectMode: true` set karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    subgraph readFile["fs.readFile — 2 GB file"]
+    A["Wait for ENTIRE file"] --> B["2 GB in RAM"] --> C["Then process"]
+    end
+    subgraph stream["fs.createReadStream — same file"]
+    D["Chunk 1 (64 KB)"] --> E["Process + forward"]
+    E --> F["Chunk 2 (64 KB)"]
+    F --> G["Process + forward"]
+    G --> H["... buffer capped at highWaterMark"]
+    end
+`}
+  caption="readFile: poori file memory mein, phir kaam shuru. Stream: har 64 KB chunk turant process hota hai aur internal buffer kabhi highWaterMark se upar nahi jaata."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Stream** = data ko chunk-by-chunk read/write karna, poora memory mein laaye bina.
+- **Kyun** — (1) constant memory chahe file kitni bhi badi, (2) fast time-to-first-byte.
+- **4 types**: Readable (source), Writable (sink), Duplex (dono, socket), Transform (badalta hai — gzip, cipher).
+- Har stream ek **`EventEmitter`** — `data`, `end`, `error`, `finish`, `drain`, `close`.
+- **`error` listener hamesha lagao** — unhandled `error` event = process crash.
+- **`highWaterMark`** = internal buffer ki soft limit; byte mode `64 KB`, object mode `16` objects.
+- **`objectMode: true`** — chunks bytes nahi, JS objects (DB rows, parsed records).
+- `.on("data")` / `.pipe()` = **flowing mode** shuru.
+- Chhoti bounded file → `readFile`. Badi / unknown / streaming-to-client → stream.
+- Mental model: **conveyor belt** (Unix pipe), tanker truck nahi.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `fs.createReadStream` se koi text file padho aur count karo ki kitne `data` events fire hue aur total kitne bytes aaye. Phir `highWaterMark: 1024` set karke dobara chalao — events ki count kaise badli?
+
+**Medium:** Do versions likho jo ek badi file copy karein: (a) `fs.readFileSync` + `fs.writeFileSync`, (b) `createReadStream().pipe(createWriteStream())`. Dono ke liye `process.memoryUsage().rss` before/after log karo, aur ek `~200 MB` file pe farak measure karo.
+
+**Bada:** Ek "log level filter" CLI banao: `process.stdin` (Readable) se lines padho, sirf wo lines jinme `"ERROR"` hai unhe `process.stdout` (Writable) pe likho, backpressure respect karte hue (`stdout.write()` `false` de toh `stdin.pause()`, `drain` pe `resume()`). Test: `cat big.log | node filter.js > errors.log`. Verify memory flat rehti hai chahe input 1 GB ho.
+
+</Callout>

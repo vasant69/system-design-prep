@@ -1,0 +1,291 @@
+---
+slug: "transform-streams"
+title: "Transform Streams"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 5
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["pipes-and-pipeline"]
+tags: ["nodejs", "streams", "transform", "backpressure", "zlib", "pipeline"]
+englishDefinition: "A Transform stream is a Duplex stream where the output is computed from the input. It sits in the middle of a pipeline: data is read in on the writable side, your transform function reshapes each chunk, and the result is pushed out on the readable side. Node built-ins like zlib.createGzip and crypto.createCipheriv are Transform streams, and you write your own by passing a transform(chunk, enc, cb) function to new Transform()."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Cognizant", "Wipro", "Accenture"]
+---
+
+<SimpleDefinition>
+
+A **Transform stream** is a Duplex stream where the output is computed from the input. It sits in the **middle** of a pipeline: data comes in on the writable side, your `transform` function reshapes each chunk, and the result is pushed out on the readable side. Node built-ins like `zlib.createGzip` and `crypto.createCipheriv` are Transform streams; you write your own by passing a `transform(chunk, enc, cb)` function to `new Transform()`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Streams padhne ke baad ye topic sabse zyada "aha" moment deta hai. Ek Transform stream wo jagah hai jahan tum data ke beech mein baithke use badal sakte ho — bina poori file memory mein laaye. Gzip compression, encryption, CSV-to-JSON parsing, line splitting — sab isi ek pattern pe bane hain.
+
+### Ye kya hai — Transform stream
+
+Transform ek **Duplex** stream hai (readable + writable dono), lekin ek khaas rishte ke saath: jo readable side se nikalta hai wo writable side pe aaye data ka **result** hota hai. Pipeline mein iski jagah hamesha beech mein hoti hai:
+
+```text
+source (Readable)  -->  Transform  -->  destination (Writable)
+   file.txt              gzip              file.txt.gz
+```
+
+Plain Duplex stream mein readable aur writable ends **independent** ho sakte hain (jaise TCP socket — jo tum bhejte ho aur jo aata hai, unmein koi seedha rishta nahi). Transform mein wo rishta define karna hi tumhara kaam hai.
+
+### Ye kyun exist karta hai
+
+Bade data pe do hi cheezein chahiye: (1) use process karo, (2) memory constant rakho. Agar tum `fs.readFile` se 2 GB log padhoge aur phir `.replace()` chalaoge, process 2 GB+ RAM khaa jayega. Transform stream chunk-by-chunk kaam karta hai — ek waqt mein sirf 64 KB memory mein, baaki disk/network pe. Aur `pipeline()` ke saath use karo toh **backpressure** khud handle ho jata hai: agar destination slow hai toh source apne aap ruk jata hai.
+
+### Internally kaise kaam karta hai
+
+Andar do buffers hote hain: ek **writable-side buffer** (input jo abhi process hona baaki hai) aur ek **readable-side buffer** (output jo consumer ne abhi tak nahi liya).
+
+1. Koi tumhare Transform mein `.write(chunk)` karta hai (ya pipe karta hai). Chunk writable buffer mein jaata hai.
+2. Node tumhara `_transform(chunk, encoding, callback)` call karta hai.
+3. Tum chunk process karke `this.push(result)` karte ho — result readable buffer mein jaata hai.
+4. Tum `callback()` call karte ho — iska matlab "is chunk ka kaam ho gaya, agla bhejo". Agar tum `callback(err)` doge toh stream error kar dega.
+5. Jab input khatam ho jaata hai, Node tumhara `_flush(callback)` call karta hai (agar tumne diya ho) — yahan tum koi bacha-khucha buffered data push kar sakte ho.
+
+`highWaterMark` (default object mode mein 16, byte mode mein 64 KB) decide karta hai ki readable buffer kitna bharne par Node tumhe `_transform` call karna band kar dega — yahi backpressure ka mechanism hai. Isliye `callback()` time pe call karna aur `push()` ka return value respect karna zaroori hai.
+
+### Simple real-life analogy
+
+Ek **factory assembly line** socho. Ek taraf se kaccha maal aata hai (writable side), ek worker har item pe kuch kaam karta hai — paint, cut, pack (`transform`), aur doosri taraf tayyar maal nikalta hai (readable side). Agar aage packing wala slow hai, toh line pe items jama ho jaate hain aur ek point pe worker ko bola jaata hai "ruk jao, aage jagah nahi" — yahi backpressure hai. Line khatam hone par supervisor poochta hai "koi aadha item bacha?" — yahi `flush()` hai.
+
+### Code — line by line
+
+```javascript
+const { Transform, pipeline } = require("node:stream");
+const fs = require("node:fs");
+
+const upperCase = new Transform({
+  transform(chunk, encoding, callback) {
+    const out = chunk.toString("utf8").toUpperCase();
+    this.push(out);
+    callback();
+  },
+});
+
+pipeline(
+  fs.createReadStream("input.txt"),
+  upperCase,
+  fs.createWriteStream("output.txt"),
+  (err) => {
+    if (err) {
+      console.error("pipeline fail:", err.message);
+      return;
+    }
+    console.log("done");
+  }
+);
+```
+
+- `require("node:stream")` — `Transform` class aur `pipeline` helper dono yahin se.
+- `new Transform({ transform(...) {} })` — subclass banaye bina inline transform. Andar `this` stream hi hota hai (isliye arrow function mat use karo yahan — `this` chahiye).
+- `chunk` — ek `Buffer` (ya object mode mein koi bhi value). `.toString("utf8")` se text milta hai.
+- `this.push(out)` — result readable side pe daal do. Ek `_transform` call mein `push` **kai baar** bhi kar sakte ho (jaise ek chunk se do lines nikli).
+- `callback()` — "is chunk ka kaam khatam, agla do". Bhoolna = pipeline hang. `callback(null, out)` likhna `this.push(out); callback()` ka shortcut hai.
+- `pipeline(...)` — source, transform(s), destination, phir ek error-first callback. `pipeline` sab streams ko jodta hai, backpressure handle karta hai, aur kisi ek ke fail hone par baaki sabko destroy kar deta hai (ye `.pipe()` se better hai — `.pipe()` errors forward nahi karta).
+
+### flush() hook
+
+Kuch transforms ka output tabhi bana sakta hai jab poora input aa gaya ho — jaise "line splitter" ka aakhri chunk jismein newline nahi tha, ya ek aggregator jo total count deta hai.
+
+```javascript
+const lineSplitter = new Transform({
+  readableObjectMode: true,
+  transform(chunk, enc, callback) {
+    this._buf = (this._buf || "") + chunk.toString("utf8");
+    const lines = this._buf.split("\n");
+    this._buf = lines.pop(); // aakhri adhoora piece rok lo
+    for (const line of lines) this.push(line);
+    callback();
+  },
+  flush(callback) {
+    if (this._buf) this.push(this._buf); // bacha hua aakhri line
+    callback();
+  },
+});
+```
+
+`flush` sirf ek baar chalta hai, `end` se pehle, jab saara input consume ho chuka hota hai.
+
+### Day-to-day use
+
+- `zlib.createGzip()` / `createGunzip()` — HTTP responses compress, `.gz` files banana.
+- `crypto.createCipheriv()` / `createDecipheriv()` — file encryption at rest.
+- CSV parsing: `csv-parse` library ek Transform deta hai jo Buffer chunks ko row objects mein badalta hai.
+- NDJSON: har line ko `JSON.parse` karke object stream banana.
+- Log processing: filter/redact lines while copying a huge log.
+
+### Kab use karna chahiye
+
+- Data **flow ke beech mein** modify karna hai aur input bada hai (file, HTTP body, DB cursor).
+- Ek hi transformation ko alag-alag sources/destinations ke saath reuse karna hai (stream composable hote hain).
+- Memory constant rakhni hai chahe input 1 KB ho ya 10 GB.
+
+### Kab use nahi karna chahiye
+
+- Input chhota hai aur poora already memory mein hai — `data.map()` ya ek plain function seedha likho, stream ka setup overhead bekaar hai.
+- Transformation ko poore dataset ka global view chahiye (jaise "sort all rows", "dedupe across whole file") — streaming mein wo natural nahi, tumhe sab buffer karna padega, toh fayda khatam.
+- Har chunk pe heavy CPU kaam (image resize per chunk) — event loop block hoga; worker threads better.
+
+### Pros and cons
+
+**Pros**
+
+- Constant memory, chahe input kitna bhi bada ho.
+- `pipeline()` ke saath backpressure aur error propagation free.
+- Composable — same Transform ko kisi bhi readable/writable ke beech laga do.
+
+**Cons**
+
+- Debugging mushkil — error kis chunk pe aayi, pata karna hard.
+- Chunk boundaries tumhari marzi se nahi aate — ek "line" do chunks mein bat sakti hai, tumhe khud jodna padta hai.
+- `callback()` bhoolna ya `push()` ka return value ignore karna silent hang / memory blow-up deta hai.
+- Object mode mein `highWaterMark` items count hai, bytes nahi — log iske count ko bytes samajh lete hain.
+
+### Alternatives
+
+- **`stream.Transform` subclass** — jab reusable named class chahiye (`class CsvToJson extends Transform`), inline object ke bajaye.
+- **`node:stream` promise helpers** — `stream/promises` ka `pipeline` `await` hota hai; aur `Readable.from(asyncGenerator)` se async generator ko stream bana sakte ho, jo aksar Transform likhne se saaf rehta hai.
+- **Async generators as transforms** — `pipeline(src, async function* (source) { for await (const c of source) yield transform(c); }, dest)` — modern, no `Transform` class at all.
+- **`through2` library** — purana tareeka (pre-Node-10). Aaj built-in `Transform` kaafi hai; `through2` sirf legacy codebases mein dikhega.
+- **`Array.prototype.map` / plain loop** — agar data already memory mein hai, stream mat use karo.
+
+### Interview mein "Why did you use a Transform stream here?"
+
+> "Humein ek 4 GB export file ko client ko bhejne se pehle kuch columns redact karne the. `readFile` + `replace` se pod OOM ho jaata. Maine ek Transform stream banaya jo line-by-line redact karta hai aur use `pipeline(readStream, redactor, res)` mein daal diya — memory ~50 MB constant rahi, aur agar client slow tha toh backpressure ne disk read apne aap dhima kar diya. `pipeline` isliye chuna `.pipe()` ke bajaye kyunki wo error hone par saare streams ko clean destroy karta hai, warna file descriptor leak hota."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`_transform` ke andar `callback()` call karna kabhi mat bhoolo — chahe tumne `push()` kar diya ho. `callback()` ka matlab "agla chunk do" hai; use skip karoge toh pipeline chup-chaap hang kar jayega, koi error bhi nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="HTTP compression (Express / nginx-style gzip)">
+
+Jab server `Content-Encoding: gzip` bhejta hai, andar ek `zlib.createGzip()` Transform stream lagta hai: `pipeline(fileStream, gzip, res)`. File disk se chunk-by-chunk aati hai, gzip Transform har chunk ko compress karta hai, aur compressed bytes seedhe socket pe jaate hain. Poori file kabhi memory mein nahi aati — isi wajah se ek 500 MB file bhi 40 MB RAM wale process se serve ho jaati hai. Agar client (mobile network) slow hai, socket ka buffer bhar jaata hai, gzip ruk jaata hai, aur file read bhi ruk jaata hai — pura chain apne aap client ki speed pe adjust ho jaata hai.
+
+</RealWorld>
+
+<RealWorld company="Data pipelines (CSV import at a services company)">
+
+Ek common project: client se roz ek 2 GB CSV aata hai jise DB mein daalna hai. Pattern: `pipeline(fs.createReadStream(csv), csvParse(), batchTransform(500), dbWriter())`. `csvParse()` ek Transform hai jo Buffer chunks ko row objects mein badalta hai; `batchTransform(500)` ek custom Transform hai jo 500 rows jama karke ek array push karta hai (taaki DB pe batch insert ho); `dbWriter()` ek Writable hai. Poora import ~100 MB RAM mein chalta hai aur agar DB slow ho toh parsing apne aap dheere ho jaati hai — koi manual "sleep" nahi likhna padta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Default `highWaterMark`: byte streams mein **64 KB**, object mode mein **16 objects**. Isse zyada readable buffer bharne par Node `_transform` calls rok deta hai (backpressure).
+- Ek `_transform` call mein `this.push()` **kitni bhi baar** call kar sakte ho — 0 se N tak.
+- `through2` library ka last meaningful release **2019** ke aas-paas; Node 10+ (2018) ke baad built-in `Transform` ne use practically retire kar diya.
+- `pipeline()` Node **v10.0.0** se hai; `stream/promises` ka `await pipeline(...)` **v15.0.0** se stable.
+- Typical memory footprint: streaming transform pe **constant ~50-100 MB** vs `readFile` pe **file size + overhead** (2 GB file = 2 GB+ spike, aksar OOM).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye mid-to-senior round ka topic hai. Interviewer teen cheezein test karta hai: (1) tum Transform ki jagah pipeline mein samajhte ho (beech mein, input ka output), (2) tum backpressure aur `callback()`/`push()` ka role bata sakte ho, (3) tumne real mein kabhi bade data pe use kiya hai.
+
+Achhe jawaab ka shape:
+
+1. **Definition** — "Duplex jahan readable output writable input ka result hai; pipeline ke beech mein baithta hai."
+2. **Mechanism** — "`_transform(chunk, enc, cb)` — process karo, `push()` karo, `cb()` karo; `_flush` aakhri buffered data ke liye."
+3. **Backpressure** — "`pipeline()` use karta hoon; agar destination slow hai toh source apne aap ruk jaata hai, mujhe manual throttle nahi likhna."
+4. **Trade-off** — "chhota data already memory mein ho toh plain `map`; global operations (sort/dedupe) ke liye streaming natural nahi."
+
+Red flag: "Transform aur Duplex same cheez hai" — nahi, plain Duplex ke ends independent ho sakte hain; Transform mein output input se derive hota hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`callback()` call karna bhool jana.** `_transform` ke andar `this.push(result)` kar diya lekin `callback()` nahi. Node samajhta hai ki tum abhi is chunk pe kaam kar rahe ho, isliye agla chunk nahi bhejta — pipeline silently hang ho jaata hai, na error na output. Har code path pe `callback()` (ya `callback(err)`) exactly ek baar call hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**Chunk boundaries pe assume karna ki ek chunk = ek line / ek record.** Streams tumhe arbitrary-size Buffers dete hain — ek "line" do chunks mein bat sakti hai, ya ek chunk mein 50 lines aa sakti hain. Line/record splitting ke liye ek internal buffer rakho, `\n` pe split karo, aakhri adhoora piece agle chunk ke liye rok lo, aur `_flush` mein use push karo.
+
+</Mistake>
+
+<Mistake>
+
+**Arrow function use karna `transform` option ke liye.** `new Transform({ transform: (chunk, enc, cb) => { this.push(...) } })` — arrow function apna `this` nahi rakhta, toh `this.push` `undefined` pe crash karega. Regular function `function transform(chunk, enc, cb) {}` use karo taaki `this` stream ko point kare.
+
+</Mistake>
+
+<Mistake>
+
+**`.pipe()` use karna error-prone chain ke liye.** `src.pipe(transform).pipe(dest)` — agar `transform` error karta hai, `src` aur `dest` destroy nahi hote, file descriptors leak ho jaate hain, aur error kahin propagate nahi hota. Hamesha `pipeline(src, transform, dest, cb)` use karo — wo errors forward karta hai aur sabko clean karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Object mode ke `highWaterMark` ko bytes samajhna.** Object mode mein `highWaterMark: 16` ka matlab 16 **items**, 16 bytes nahi. Log `highWaterMark: 64 * 1024` object-mode stream pe likh dete hain, jisse 65536 items buffer ho jaate hain aur memory blow ho jaati hai. Object mode mein chhota count rakho (default 16 aksar theek hai).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    S["Readable source (file / socket)"] --> WB["Transform: writable-side buffer"]
+    WB --> T["_transform(chunk, enc, cb): process + this.push()"]
+    T --> RB["Transform: readable-side buffer"]
+    RB --> D["Writable destination"]
+    D -. "buffer full = backpressure" .-> RB
+    RB -. "stop calling _transform" .-> WB
+    T --> F["_flush(cb) once input ends"]
+    F --> RB
+`}
+  caption="Transform ke andar do buffers hain; destination bhar jaane par backpressure ulta chalke source ko rok deta hai. _flush aakhri buffered data ke liye end se pehle chalta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Transform** = Duplex jahan readable output writable input ka **result** hai; pipeline ke **beech** mein.
+- API: `new Transform({ transform(chunk, enc, cb) {} , flush(cb) {} })` ya `class X extends Transform`.
+- `_transform`: process karo, `this.push(out)` (0..N baar), phir `cb()` (ya `cb(err)`). `cb(null, out)` = `push(out); cb()`.
+- `_flush(cb)`: end se pehle ek baar — bacha hua buffered data push karne ke liye (line splitter ka aakhri line).
+- **Backpressure** free hai agar `pipeline()` use karo aur `cb()`/`push()` sahi se handle karo.
+- `pipeline(src, t1, t2, dest, cb)` beats `.pipe()` — errors forward hote hain, streams clean destroy hote hain.
+- Built-in Transforms: `zlib.createGzip`, `crypto.createCipheriv`, `csv-parse`.
+- `through2` = purana tareeka; ab built-in `Transform` ya async generators.
+- `transform` option regular function ho (arrow nahi) — `this` chahiye.
+- Chhota in-memory data = plain `map`; global ops (sort/dedupe) streaming ke liye natural nahi.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek Transform banao jo har incoming chunk ko uppercase karke aage bheje, aur use `process.stdin` se `process.stdout` tak `pipeline` se jodo. Terminal mein type karke test karo.
+
+**Medium:** Ek `lineSplitter` Transform likho (`readableObjectMode: true`) jo Buffer input ko complete lines mein todke ek-ek line push kare, aur `flush` mein aakhri bina-newline wali line bhi push kare. Ek multi-line file pe test karo, count karo lines match hoti hain.
+
+**Bada:** Ek `csvToJson` Transform banao jo pehli line ko header maane aur baaki har line ko `{col: value}` object mein badle (object mode output). Use `pipeline(fs.createReadStream("data.csv"), csvToJson, new Writable({ objectMode: true, write(obj, e, cb) { console.log(obj); cb(); } }))` se chalao. Phir ek 100k-row file pe chalao aur `process.memoryUsage().heapUsed` print karke confirm karo memory constant rehti hai.
+
+</Callout>

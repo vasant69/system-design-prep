@@ -1,0 +1,275 @@
+---
+slug: "closures-in-node"
+title: "Closures in Node"
+section: "nodejs"
+module: "js-for-node"
+order: 2
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["first-class-functions-and-callbacks"]
+tags: ["javascript", "closures", "lexical-scope", "private-state", "middleware", "fundamentals"]
+englishDefinition: "A closure is a function together with the variables from the scope where it was defined. When a function is returned or passed somewhere else, it still remembers and can read and write those outer variables even after the outer function has finished. Closures are how JavaScript gets private state, factory functions, and stateful callbacks."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **closure** is a function bundled together with the variables from the scope in which it was created. Even after the outer function has returned, the inner function still holds a live reference to those outer variables — it can read them and change them. This is how JavaScript gives you private state, factory functions that "remember" their configuration, and callbacks that carry data with them.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Closure JavaScript ka wo concept hai jo interview mein sabse zyada poocha jata hai aur samajhne ke baad lagta hai "itna hi tha?". Lekin Node codebase mein — Express middleware, config-bound handlers, rate limiters, DB connection wrappers — closure har jagah chhupa hota hai. Isko theek se samajhna zaroori hai.
+
+### Ye kya hai — closure
+
+Jab tum ek function ke **andar** doosra function likhte ho, toh andar wala function bahar wale function ke variables ko "dekh" sakta hai. Ye normal baat hai. Closure ka **asli** point tab aata hai jab andar wala function bahar chala jaye — return ho jaye ya kahin pass ho jaye — aur **phir bhi** un bahar wale variables ko yaad rakhe.
+
+```javascript
+function banao() {
+  let count = 0;
+  return function () {
+    count = count + 1;
+    return count;
+  };
+}
+
+const counter = banao();
+counter(); // 1
+counter(); // 2
+counter(); // 3
+```
+
+`banao()` toh khatam ho gaya, uska kaam done. Normally `count` garbage collect ho jata. Lekin returned function abhi bhi `count` ko use kar raha hai, isliye `count` **zinda** rehta hai — sirf us returned function ke liye.
+
+### Ye kyun exist karta hai
+
+Do badi wajahein:
+
+1. **Private state** — JavaScript mein purane time pe `private` keyword nahi tha. Agar tumhe ek aisi value chahiye thi jise sirf kuch specific functions chhoo sakein aur bahar se koi na, toh closure hi tarika tha. `count` upar ke example mein bahar se `counter.count` karke access nahi hota — wo poori tarah chhupa hai.
+2. **Configuration yaad rakhna** — ek function banao jo kisi setting ke saath "bandha" ho. `createLogger("payment-service")` ek aisa log function de jo hamesha `payment-service` prefix lagaye, bina har call pe wo string dobara diye.
+
+### Internally kaise kaam karta hai
+
+V8 (Node ka engine) har function ke saath ek chhupi hui reference rakhta hai jise `[[Environment]]` bolte hain — wo scope jahan function **define** hua tha (jahan call hua wo nahi). Jab function body kisi variable ko dhoondti hai jo local nahi hai, engine is `[[Environment]]` chain ko upar ki taraf follow karta hai jab tak variable mil na jaye.
+
+Closure jo variables use karta hai, wo variables **heap** pe move ho jate hain (normal local variables stack pe hote hain aur function khatam hote hi chale jate hain). Isliye wo function ke khatam hone ke baad bhi survive karte hain. Jab returned function ka koi reference nahi bachta, tabhi wo variables garbage collect hote hain.
+
+Important: closure poore **scope** ko capture karta hai, ek-ek variable ki copy nahi. Isliye do functions jo ek hi outer scope se banein, wo **same** `count` share karte hain.
+
+### Simple real-life analogy
+
+Socho ek office mein tumhe ek locker diya gaya. Locker ke andar ek notebook hai. Tum office chhod ke ghar aa gaye, lekin tumhare paas locker ki chaabi hai. Jab bhi tum us chaabi (returned function) ka use karte ho, tum usi notebook (captured variable) ko padh aur likh sakte ho. Koi doosra bina chaabi ke notebook nahi chhoo sakta. Aur jab tak ek bhi chaabi kisi ke paas hai, office wale wo notebook phenk nahi sakte.
+
+### Code — line by line
+
+```javascript
+function createAccount(starting) {
+  let balance = starting;
+
+  return {
+    deposit(amount) {
+      balance += amount;
+      return balance;
+    },
+    withdraw(amount) {
+      if (amount > balance) return "insufficient";
+      balance -= amount;
+      return balance;
+    },
+    getBalance() {
+      return balance;
+    },
+  };
+}
+
+const acc = createAccount(100);
+acc.deposit(50);   // 150
+acc.withdraw(30);  // 120
+acc.getBalance();  // 120
+acc.balance;       // undefined
+```
+
+- `function createAccount(starting)` — factory function; ek naya account banata hai.
+- `let balance = starting` — ye local variable **teeno** returned methods ka shared closure variable ban jayega.
+- `return { deposit, withdraw, getBalance }` — ek object return kiya jisme 3 functions hain. Teeno ne same `balance` capture kiya.
+- `deposit(amount) { balance += amount }` — bahar ke `balance` ko **modify** kar raha hai, sirf padh nahi raha. Closure read aur write dono deta hai.
+- `withdraw` mein guard: `amount > balance` toh mana kar do — business logic private state ke andar.
+- `acc.balance` — `undefined`, kyunki `balance` returned object ki property nahi hai, wo `createAccount` ke andar chhupa closure variable hai. Yahi **encapsulation** hai.
+
+### Day-to-day use
+
+- **Express middleware factory** — `app.use(requireRole("admin"))`. `requireRole` ek middleware function return karta hai jisne `"admin"` string capture ki hui hai.
+- **Rate limiter** — ek counter aur timestamp closure mein rakho, har request pe check karo.
+- **Memoization** — result cache ek `Map` closure mein, baar-baar wahi computation mat karo.
+- **Module-level private state** — file ke top pe `let cache` likha, module functions us pe kaam karte hain, bahar se dikhta nahi.
+- **Event handlers jo data carry karein** — loop mein `arr.forEach(item => btn.on("click", () => use(item)))` — har handler apna `item` yaad rakhta hai.
+
+### Kab use karna chahiye
+
+- Jab thodi si state chahiye jo kuch functions ke beech share ho lekin bahar se hidden rahe.
+- Jab ek "configured" function chahiye — factory pattern (`createX(config)` returns a function).
+- Jab callback ke saath kuch context bhejna ho bina global variable banaye.
+
+### Kab use nahi karna chahiye
+
+- Jab ek proper **class** zyada clear hoga — bahut saari state + methods ho toh `class` with `#private` fields padhna aasan hai team ke liye.
+- Jab captured variable **bada** ho (badi array, buffer, DB result) aur closure **lambi zindagi** wala ho (jaise ek permanent event listener). Tab wo bada object kabhi free nahi hoga — memory leak. Neeche Mistakes mein detail hai.
+- Hot loops mein bahut saare chhote closures banana — har closure ek allocation hai; V8 fast hai lekin lakhon-per-second pe farak padta hai.
+
+### Pros and cons
+
+**Pros**
+
+- Sachchi private state — bahar se access ka koi rasta nahi.
+- Factory pattern bahut clean — config ek baar do, function baar-baar use karo.
+- Callbacks apna context khud carry karte hain, global state ki zaroorat nahi.
+
+**Cons**
+
+- Captured variables garbage collect nahi hote jab tak closure zinda hai — long-lived listener + bada object = leak.
+- Debugging thodi mushkil — variable "kahan se aaya" turant nahi dikhta.
+- Shared closure variable ko galti se do jagah se modify karna race-jaisa confusion de sakta hai (single-threaded hone se race nahi, lekin logic bug ho sakta hai).
+- `var` ke saath loop mein classic bug (neeche).
+
+### Alternatives
+
+- **`class` with `#private` fields** — jab state + behaviour ka ek proper bundle chahiye. `#balance` truly private hai (V8 enforced), aur `instanceof` / inheritance milta hai.
+- **Module scope** — ek `.js` file ke top-level `let` variables us module ke liye private hain; sirf jo `export` karo wahi bahar dikhta hai. Singleton cache ke liye best.
+- **Explicit parameter passing** — closure ke bajaye bas value ko har call mein argument ki tarah do. Zyada verbose lekin sabse predictable.
+- **`Map` keyed by id** — per-user state ke liye ek module-level `Map` closure/module scope mein rakho instead of ek closure per user.
+
+### Interview mein "Why did you use a closure here?"
+
+> "Mujhe ek middleware chahiye tha jo har route pe alag role check kare — `requireRole('admin')`, `requireRole('teller')`. Closure isliye use kiya kyunki `requireRole` ek function return karta hai jisne role string capture ki hui hai, toh main ek hi factory se kai configured middlewares bana leta hoon bina role ko har request pe dobara diye. State minimal thi (ek string), isliye poori class banana over-engineering hota. Jaha state bipari — connection pool, retry counters, metrics — wahan maine `class` with `#private` fields use kiya taaki team ke liye readable rahe aur `instanceof` checks kaam karein."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Loop mein closure banate waqt `let`/`const` use karo, `var` nahi. `for (var i = 0; i < 3; i++) setTimeout(() => console.log(i))` teen baar `3` print karega — sab closures ek hi `i` share karte hain. `let i` se har iteration ka apna `i` banta hai: `0 1 2`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express / middleware factories">
+
+Express ecosystem ka standard pattern hai "configurable middleware": `express-rate-limit`, `cors`, `multer` — sab ek options object lete hain aur ek middleware function return karte hain. Andar wo middleware closure ke through apne options aur apne running counters ko access karta hai. `rateLimit({ windowMs: 60000, max: 100 })` ke andar ek `hits` map closure mein rehta hai jo har IP ka count track karta hai, aur har request pe wahi map check hota hai — koi global variable nahi, koi DB nahi, sab process memory mein closure ke andar.
+
+</RealWorld>
+
+<RealWorld company="Node module-level caching">
+
+Bahut se npm packages aur internal modules ek "config load once" pattern use karte hain: file ke top pe `let cachedConfig = null`, aur `getConfig()` function pehli baar file padh ke `cachedConfig` set karta hai, uske baad har call cached value return karti hai. `cachedConfig` module scope mein private hai — bahar se koi reset ya corrupt nahi kar sakta. Ye technically closure/module-scope encapsulation hai, aur Node ki `require` caching ke saath milke ek natural singleton ban jata hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Ek closure banane ka cost roughly ek chhote object allocation jitna hai — V8 mein order of **tens of nanoseconds**; normal code mein ignore karo, per-request hot path mein millions/sec pe measure karo.
+- Captured variable **heap** pe jata hai, normal local stack pe — isliye closure variables ka lifetime function call se lamba ho sakta hai.
+- Memory leak ka classic case: ek long-lived `emitter.on(...)` listener jo ek 10 MB buffer close kar leta hai — wo 10 MB tab tak zinda jab tak listener `removeListener` se hataya na jaye.
+- `let` in loops V8 mein **ES6 (Node 4+, 2015)** se sahi per-iteration binding deta hai; usse pehle `var` + IIFE pattern likhna padta tha.
+- `#private` class fields Node mein **v12 (2019)** se stable hain — closure-based privacy ka modern alternative.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Closure "define kya hai" se shuru hota hai aur "counter likho jismein `count` private ho" pe khatam hota hai. Interviewer 3 cheezein test karta hai: (1) kya tum jaante ho closure lexical scope capture karta hai, call-site scope nahi; (2) kya tum private state banane ke liye use kar sakte ho; (3) kya tum `var`-in-loop bug pehchante ho aur `let` se fix karte ho.
+
+Achhe jawaab ka shape:
+
+1. **Definition** — "function + jis scope mein wo bana us scope ke variables; outer function return hone ke baad bhi wo variables zinda rehte hain."
+2. **Demo** — chhota counter ya `createAccount` likh do jisme state bahar se `undefined` dikhe.
+3. **Mechanism** — "captured variables heap pe rehte hain, garbage collect tab hote hain jab closure ka reference chhoot jaye."
+4. **Trade-off** — "long-lived listener bade object ko capture kare toh memory leak; tab `class #private` ya explicit param better."
+
+Red flag: "closure matlab function ke andar function" — ye adhoora hai; asli baat hai return/pass hone ke baad bhi outer variables yaad rehna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`var` ke saath loop mein closure banana.** `for (var i = 0; i < 3; i++) arr.push(() => i)` — teeno functions ek hi `i` share karte hain, jo loop khatam hone par `3` hai. Sab `3` return karenge. Fix: `let i` use karo — har iteration ka apna binding milta hai — ya loop body ko ek function mein wrap karke `i` ko argument ki tarah pass karo.
+
+</Mistake>
+
+<Mistake>
+
+**Long-lived listener mein bada object capture karna.** `bigBuffer` (10 MB) scope mein hai, aur tum `server.on("request", () => { ...bigBuffer... })` likh dete ho. Ab wo 10 MB server ki poori zindagi zinda rahega, bhale hi ek request ke baad zaroorat na ho. Sirf wo chhota data capture karo jo chahiye, ya listener ka kaam khatam hone par `removeListener` karo.
+
+</Mistake>
+
+<Mistake>
+
+**Sochna ki closure variable ki copy banti hai.** `let x = 1; const read = () => x; x = 99; read()` — `99` deta hai, `1` nahi. Closure live reference rakhta hai, snapshot nahi. Agar snapshot chahiye toh us waqt value ko naye variable mein rakho.
+
+</Mistake>
+
+<Mistake>
+
+**Har user/request ke liye alag closure bana ke unhe kahin store na karna, phir leak dhoondhna.** `sessions.push(makeSession(user))` — agar `sessions` array kabhi clear nahi hota, har `makeSession` closure aur uska captured `user` hamesha memory mein. Per-id state ke liye ek `Map` rakho jise tum explicitly delete kar sako.
+
+</Mistake>
+
+<Mistake>
+
+**Closure aur `this` ko mix karna.** Regular `function () {}` ka apna `this` hota hai; wo closure se aane wale outer `this` ko chhupa (shadow) deta hai. Object method ke andar callback likhte waqt agar `this` chahiye toh **arrow function** use karo — wo `this` capture karta hai lexically, bilkul closure ki tarah. (Agla topic: arrow functions.)
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["createAccount(100) called"] --> B["local var balance = 100 (heap)"]
+    B --> C["return object with deposit / withdraw / getBalance"]
+    C --> D["createAccount frame pop ho gaya"]
+    D --> E["balance zinda — 3 methods use kar rahe hain"]
+    F["acc.deposit(50)"] --> E
+    G["acc.getBalance()"] --> E
+    H["acc.balance"] --> I["undefined — object property nahi hai"]
+`}
+  caption="createAccount khatam ho gaya lekin balance zinda hai kyunki returned methods usko closure ke through hold kiye hue hain; bahar se balance dikhta nahi."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Closure** = function + jis scope mein bana us scope ke variables; outer function return hone ke baad bhi wo variables accessible aur mutable.
+- Lexical scope capture hota hai — jahan function **define** hua, jahan **call** hua wo nahi.
+- Captured variables **heap** pe jate hain; garbage collect tab jab closure ka koi reference na bache.
+- Ek outer scope se bane multiple functions **same** variables share karte hain (copy nahi).
+- **Use cases**: private state, factory / configured functions, memoization, module-level cache, context-carrying callbacks.
+- **`var` in loop** = sab closures ek `i` share karte hain → `let` use karo per-iteration binding ke liye.
+- **Leak risk**: long-lived listener + bada captured object → `removeListener` karo ya sirf chhota data capture karo.
+- **Alternatives**: `class` with `#private` (bada state), module scope (singleton cache), explicit params (max predictability).
+- Interview: chhota private `count` counter likhne ke liye taiyar raho.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `function makeCounter(start)` likho jo ek function return kare. Har call current value return kare phir increment kare. `const c = makeCounter(5); c(); // 5, c(); // 6`. Confirm karo ki bahar se `start` ya current value access nahi hoti.
+
+**Medium:** `function once(fn)` likho jo `fn` ko wrap kare taaki wo **sirf pehli baar** chale; uske baad har call pehla wala result return kare bina `fn` dobara chalaye. Hint: ek `called` boolean aur ek `result` variable closure mein. Test: `const init = once(() => { console.log("run"); return 42; }); init(); init();` — "run" ek hi baar print ho.
+
+**Bada:** `function createRateLimiter(maxPerMinute)` likho jo ek function `allow()` return kare. `allow()` `true` de agar pichhle 60 seconds mein `maxPerMinute` se kam calls hui hain, warna `false`. Timestamps ki ek array closure mein rakho aur purane entries filter karte raho. Fir socho: agar ye limiter ek permanent Express middleware mein use ho, toh wo timestamps array kabhi bahut badi kaise ho sakti hai, aur usko kaise bound karoge.
+
+</Callout>

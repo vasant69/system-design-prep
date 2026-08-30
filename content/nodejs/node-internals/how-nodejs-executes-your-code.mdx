@@ -1,0 +1,332 @@
+---
+slug: "how-nodejs-executes-your-code"
+title: "How Node.js Executes Your Code"
+section: "nodejs"
+module: "node-internals"
+order: 5
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["what-is-nodejs", "what-is-a-runtime-environment"]
+tags: ["nodejs", "event-loop", "commonjs", "module-wrapper", "process-lifecycle", "internals"]
+englishDefinition: "When you run `node app.js`, Node reads the file, V8 parses it, and Node wraps the module body in a function (the CommonJS wrapper) and runs all top-level synchronous code to completion. Only then does Node enter the event loop, which keeps looping as long as there are pending timers, pending callbacks, or open handles such as a listening server. When nothing is left, the process exits on its own; calling process.exit() ends it immediately."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+When you run `node app.js`, Node reads the file, V8 **parses** it, and Node **wraps the module body in a function** (the CommonJS wrapper) so it gets its own `require`, `module`, `exports`, `__dirname`, `__filename`. It then runs **all top-level synchronous code to completion**. Only *after* that does Node **enter the event loop**, which keeps spinning as long as there are pending **timers**, pending **callbacks**, or **open handles** (like a listening server). When nothing is left, the process **exits on its own**; `process.exit()` ends it right away.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Do sawaal har Node developer ko kabhi na kabhi confuse karte hain: **"mera program turant exit kyun ho gaya, kuch print hi nahi hua async se?"** aur **"mera program khatam kyun nahi ho raha, hang kyun hai?"** Dono ka jawaab ek hi cheez samajhne mein hai — Node tumhari code ko chalata kaise hai, aur event loop kab tak zinda rehta hai.
+
+### Ye kya hai — execution lifecycle
+
+`node app.js` chalane par ye sequence hota hai:
+
+1. **Node process start** — V8 initialize, libuv event loop create, `process`/`global` set up.
+2. **File read** — `app.js` disk se padhi jaati hai (ye ek synchronous read hai).
+3. **Module wrap** — Node tumhari file ke code ko ek function ke andar lapет deta hai (neeche detail).
+4. **Parse + compile** — V8 us wrapped code ko AST → bytecode banata hai.
+5. **Run top-level sync code** — wrapper function call hota hai. Tumhari saari **synchronous** top-level lines yahin, ek ke baad ek, poori chalti hain.
+6. **`process.nextTick` queue + microtask (Promise) queue drain** — sync code ke turant baad, event loop shuru hone se pehle.
+7. **Enter event loop** — libuv ka loop shuru. Har iteration ("tick") mein phases: timers → pending callbacks → poll (I/O) → check (`setImmediate`) → close callbacks. Har phase ke beech `nextTick` + microtasks drain hote hain.
+8. **Loop continues** — jab tak koi pending timer, pending I/O callback, ya open handle (server, socket, `setInterval`) hai.
+9. **Exit** — jab loop ke paas karne ko kuch nahi bacha, process exit code `0` ke saath khatam. Ya `process.exit(code)` turant khatam kar deta hai.
+
+### Ye kyun aise design kiya
+
+Sync-first isliye taaki tumhari **setup code** (require modules, read config, create server) puri tarah chal jaye **isse pehle** ki koi async callback beech mein aa jaye. Agar async callbacks setup ke beech mein interleave hote, toh reasoning namumkin ho jaata — tumhe kabhi pata nahi hota ki server bana bhi hai jab pehla request handler chala.
+
+Event loop "jab tak kaam hai tab tak zinda" isliye hai taaki server jaise programs khud-ba-khud chalte rahein — tumhe manually "keep alive" nahi likhna padta — aur chhote scripts khud-ba-khud khatam ho jayein jab kaam pura ho, bina `process.exit()` ke.
+
+### Internally kaise kaam karta hai — the CommonJS module wrapper
+
+Node tumhari file ka code **as-is** nahi chalata. Wo use is function mein wrap karta hai:
+
+```javascript
+(function (exports, require, module, __filename, __dirname) {
+  // ... tumhari file ka poora code yahan ...
+});
+```
+
+Isse teen important baatein hoti hain:
+
+- **`require`, `module`, `exports`, `__filename`, `__dirname` "magically" available hain** — actually ye function parameters hain, globals nahi. Har file ko apna set milta hai.
+- **Top-level `var`/`function` file-scoped hain, global nahi** — kyunki wo function ke andar hain. (Browser mein top-level `var` `window` par chipak jaata hai; Node mein nahi.)
+- **`this` top level par `module.exports` ko point karta hai**, `global` ko nahi (CommonJS mein).
+
+ESM (`.mjs` ya `"type": "module"`) mein wrapper nahi hota — wahan `import`/`export` static hote hain aur `__dirname` nahi milta (`import.meta.url` use karo).
+
+### Internally — call stack, queues, event loop
+
+- **Call stack** — jo function abhi chal raha hai. Sync code isi par chalta hai. Stack khali hone par hi event loop next callback uthata hai.
+- **`process.nextTick` queue** — highest priority; current operation ke turant baad, event loop ke agle phase se pehle drain hota hai.
+- **Microtask queue** — resolved Promises ke `.then`/`await` continuations; `nextTick` ke baad drain hota hai.
+- **Macrotask phases (libuv)** — `timers` (`setTimeout`/`setInterval` due callbacks), `poll` (incoming I/O), `check` (`setImmediate`), `close` (`socket.on('close')`).
+- **Open handles / refs** — ek listening server, ek active `setInterval`, ek open socket loop ko "ref" karte hain — matlab loop inke rehte exit nahi karega. `unref()` se tum ek handle ko "loop ko zinda mat rakho" bol sakte ho.
+
+### Simple real-life analogy
+
+Socho tum ek **office manager** ho (event loop). Subah aake tum pehle **saari standing instructions padhte ho** (top-level sync code) — poori, bina ruke. Tab tak koi visitor nahi aata.
+
+Uske baad tum apni **desk par baith jaate ho** aur ek rule follow karte ho: "jab tak inbox mein kaam hai (pending tasks) ya koi appointment scheduled hai (open handle), main office mein rahunga. Jis din inbox khali aur koi appointment nahi — main ghar chala jaunga (process exit)."
+
+"Program turant exit ho gaya" = tumne subah instructions padhe, inbox already khali tha, koi appointment nahi thi — tum turant ghar chale gaye, chahe tumne "shaam ko ye karna" (async callback) likha ho, kyunki wo abhi "scheduled" nahi hua tha jab tumne exit check kiya. (Actually async I/O loop ko ref karta hai — real reason neeche.)
+
+"Program hang hai" = ek appointment permanently scheduled hai (`setInterval` ya listening server) — tum kabhi ghar nahi jaate.
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+
+console.log("A: sync start");
+
+setTimeout(() => console.log("D: timeout 0"), 0);
+
+Promise.resolve().then(() => console.log("C: microtask"));
+
+fs.readFile(__filename, () => console.log("E: file read done"));
+
+console.log("B: sync end");
+```
+
+- `require("fs")` — sync; `fs` module load hota hai abhi.
+- `console.log("A...")` — sync; turant print.
+- `setTimeout(cb, 0)` — `cb` ko **timers phase** ke liye register kiya; abhi nahi chalta. Ye ek pending timer hai — loop ko zinda rakhta hai (jab tak fire na ho).
+- `Promise.resolve().then(cb)` — `cb` ko **microtask queue** mein daala; sync code ke turant baad, event loop se pehle chalega.
+- `fs.readFile(__filename, cb)` — file read libuv thread pool par shuru; `cb` baad mein poll phase mein. Ye ek pending I/O callback hai — loop ko zinda rakhta hai.
+- `console.log("B...")` — sync; turant print.
+
+Output:
+
+```text
+A: sync start
+B: sync end
+C: microtask
+D: timeout 0
+E: file read done
+```
+
+- `A`, `B` — saara sync code pehle.
+- `C` — microtask, event loop ke pehle tick se bhi pehle drain hota hai.
+- `D` — timers phase.
+- `E` — file read complete hone par poll phase mein (thoda time lagta hai). `D` aur `E` ka order kabhi swap ho sakta hai depending on timing, lekin usually timeout pehle.
+
+### "Program turant exit kyun ho gaya"
+
+Common wajah: tumhare paas koi pending async kaam hai **hi nahi** jab sync code khatam hua.
+
+```javascript
+// Ye TURANT exit hota hai — kuch print nahi hoga async se
+const arr = [1, 2, 3];
+arr.forEach((n) => {
+  someAsyncThatYouForgotToAwait(n); // agar ye promise return karta hai aur tum await nahi karte...
+});
+// ...aur agar wo internally koi real I/O nahi karta ya immediately resolve ho jaata hai,
+// loop ke paas kuch nahi bacha -> exit
+```
+
+- Sync code chal gaya, koi timer/open handle/pending I/O nahi → loop khali → exit `0`.
+- `async` function ko call karna lekin uska Promise `await`/`.then` na karna — agar `main().catch(...)` nahi likha, aur andar ka I/O bhi loop ko ref nahi kar raha, program bina tumhara kaam kiye exit ho sakta hai.
+- Fix: apne entrypoint ko `main().catch((e) => { console.error(e); process.exitCode = 1; })` se drive karo.
+
+### "Program hang kyun hai"
+
+Common wajah: ek **open handle** loop ko ref kar raha hai jise tum band nahi kar rahe.
+
+```javascript
+const server = http.createServer(handler);
+server.listen(3000);          // listening socket = open handle -> loop zinda
+const timer = setInterval(poll, 1000); // active interval = open handle -> loop zinda
+db.connect();                 // open DB socket -> loop zinda
+```
+
+- Jab tak `server.close()`, `clearInterval(timer)`, `db.end()` na karo, process khatam nahi hoga — jo servers ke liye **sahi** hai, scripts ke liye **bug**.
+- Ek "silent hang" bhi hota hai: ek unresolved Promise jispe tum `await` kar rahe ho — loop chal raha hai lekin kuch productive nahi. `--unhandled-rejections` aur timeouts se pakdo.
+- Debug: `process.getActiveResourcesInfo()` (newer Node) ya `why-is-node-running` package se dekho kaunsa handle zinda hai.
+
+### Day-to-day use
+
+- CLI script likhte waqt: kaam khatam hone par `db.end()`, `clearInterval`, `server.close()` — warna terminal par hang.
+- Entrypoint pattern: `async function main() { ... } main().catch(err => { console.error(err); process.exit(1); });`
+- Test runner ka "did not exit" warning — koi handle open reh gaya, cleanup missing.
+- `process.exit()` se bachо jab tak zaroori na ho — wo pending writes (jaise `console.log` ka stdout buffer, log flush) ko cut kar sakta hai. `process.exitCode = 1` set karke naturally exit hone do.
+
+### Kab `process.exit()` use karna theek hai
+
+- Ek CLI jisme kaam done hai aur tum jaante ho koi buffered output pending nahi.
+- Ek fatal, unrecoverable error jahan aur kuch karna safe nahi.
+- Signal handlers (`SIGTERM`) mein graceful shutdown ke baad, timeout ke saath forced exit as a fallback.
+
+### Kab `process.exit()` NAHI
+
+- Ek web request handler ke andar — poore server ko gira dega.
+- Turant `console.log(...)` ke baad — output truncate ho sakta hai (stdout async ho sakta hai pipe par).
+- Sirf "script khatam karne" ke liye — natural exit better hai; agar hang hai toh asli handle band karo.
+
+### Pros and cons (is execution model ke)
+
+**Pros**
+
+- Predictable setup — saara sync init pehle, tabhi callbacks.
+- Servers khud zinda rehte hain, scripts khud exit hote hain — koi boilerplate nahi.
+- Module wrapper se har file ka apna scope — global pollution nahi.
+
+**Cons**
+
+- "Turant exit" aur "hang" beginners ko confuse karte hain — root cause invisible hota hai.
+- `process.exit()` ka misuse output truncate karta hai.
+- Ek blocking sync line (bada loop, `readFileSync`) event loop shuru hi nahi hone deti jab tak khatam na ho.
+
+### Alternatives / related
+
+- **Top-level `await`** (ESM) — entrypoint ko `main().catch()` se wrap kiye bina async likhne ka tareeka; module tab tak "settle" nahi hota.
+- **`setImmediate` vs `setTimeout(fn, 0)`** — dono "next tick ke baad", lekin alag phases (`check` vs `timers`); I/O callback ke andar `setImmediate` deterministically pehle.
+- **`--trace-event-categories` / `why-is-node-running`** — debug tools for "why is it hanging".
+- **Worker threads** — CPU-bound sync work ko alag thread par bhejkar main event loop ko free rakhna.
+
+### Interview mein "`node app.js` chalane par kya hota hai?"
+
+> "Node file read karta hai, use ek CommonJS wrapper function mein lapет deta hai jisse `require`, `module`, `exports`, `__dirname`, `__filename` parameters ki tarah milte hain, phir V8 use parse-compile karta hai. Uske baad saara top-level synchronous code poora chalta hai — koi async callback beech mein nahi aata. Fir `process.nextTick` aur microtask queues drain hote hain, aur tab event loop shuru hota hai. Loop tab tak chalta hai jab tak koi pending timer, pending I/O callback, ya open handle — jaise listening server ya `setInterval` — hai. Jab kuch nahi bacha, process apne aap exit code 0 ke saath khatam ho jaata hai. Isiliye ek script jisme koi real async kaam nahi wo turant exit hoti hai, aur ek server hamesha chalta rehta hai jab tak tum `server.close()` na karo."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`process.exit()` ko `console.log()` ke turant baad mat lagao. `stdout` jab pipe ya file par redirect ho toh async hota hai — `process.exit()` buffered output ko flush hone se pehle kaat sakta hai, aur tumhari aakhri log line gayab. Sahi tareeka: `process.exitCode = 1` set karo aur process ko naturally khatam hone do, ya `process.exit()` ko `stdout` ke `drain`/callback mein rakho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="CLI tools — 'command finished but terminal hangs'">
+
+Ek bahut common bug report internal tools mein: "script ka kaam ho gaya, 'Done' print ho gaya, lekin terminal wapas nahi aa raha, Ctrl+C dabana padta hai." Wajah har baar same: script ne ek database pool khola (`pg.Pool`), ya ek `setInterval` metrics reporter chalu kiya, ya ek Redis client connect kiya — aur end par `pool.end()` / `clearInterval()` / `redis.quit()` call nahi kiya. Wo open handle event loop ko ref karta rehta hai. Fix ek `finally` block mein saare resources close karna hai, ya as a last resort `process.exit(0)` — lekin pehla wala saaf hai.
+
+</RealWorld>
+
+<RealWorld company="Serverless (AWS Lambda) — 'response returned but work didn't finish'">
+
+Lambda mein Node handler ke andar agar tum ek async operation (jaise ek analytics event bhejna) fire karo lekin usska Promise `await` na karo, toh do cheezein ho sakti hain: purane `context.callbackWaitsForEmptyEventLoop` default `true` ke saath Lambda event loop drain hone ka wait karega (latency add), aur agar `false` set kiya toh handler return hote hi execution freeze ho jaata hai — tumhara analytics call **kabhi complete nahi hota**, kabhi next invocation par aadha chalta hai. Ye exactly is topic ka lesson hai: jo async kaam tumhe chahiye use `await` karo; event loop tumhare liye "background" kaam guarantee nahi karta jab process/handler khatam ho raha ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- CommonJS module wrapper **5** parameters inject karta hai: `exports`, `require`, `module`, `__filename`, `__dirname`.
+- Natural exit code jab loop khali ho: **0**. `process.exitCode` set karke tum ise badal sakte ho bina turant exit kiye.
+- libuv event loop ke **6** phases: timers, pending callbacks, idle/prepare (internal), poll, check, close callbacks.
+- `process.nextTick` callbacks **har phase ke beech** drain hote hain — microtasks se bhi pehle — isliye ek `nextTick` recursion event loop ko permanently bhookha ("starve") kar sakta hai.
+- `setTimeout(fn, 0)` ka effective minimum delay Node mein historically **~1 ms**.
+- `unref()` kiya hua timer/handle loop ko exit hone se **nahi** rokта — background housekeeping timers ke liye useful.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Do classic questions: **"`node app.js` step-by-step kya karta hai?"** aur **"ye program kyun turant exit / kyun hang ho raha hai?"** Dono ek hi mental model test karte hain.
+
+Model answer shape:
+
+1. **Read + wrap** — file read, CommonJS wrapper `(exports, require, module, __filename, __dirname)`.
+2. **Parse + run sync** — V8 compile, saara top-level sync code poora chalta hai first.
+3. **Drain queues** — `process.nextTick` phir microtasks (Promises).
+4. **Event loop** — phases (timers → poll → check → close); har phase ke beech nextTick + microtasks.
+5. **Alive rule** — pending timers / I/O callbacks / open handles loop ko zinda rakhte hain.
+6. **Exit** — kuch nahi bacha → auto exit `0`; ya `process.exit()` forced.
+7. **Debug hang** — `why-is-node-running` / `process.getActiveResourcesInfo()`; usual culprits: DB pool, `setInterval`, listening socket.
+
+Red flags: "Node line-by-line chalata hai aur async ke liye rukta hai" (nahi — sync poora, phir loop); "`process.exit()` script khatam karne ka normal tareeka hai" (nahi — output truncate); "async callback background mein chalta rahega chahe main function return kar de" (nahi — `await` karo).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`async` entrypoint ko call karke uska Promise ignore karna.** `main()` likha lekin `main().catch(...)` nahi. Agar `main` ke andar ki koi error reject karti hai, tumhe silent unhandled rejection milti hai; aur agar andar real I/O nahi hai, program tumhara kaam pura kiye bina exit ho sakta hai. Hamesha: `main().catch((e) => { console.error(e); process.exitCode = 1; });`
+
+</Mistake>
+
+<Mistake>
+
+**Script ke end mein resources close na karna.** `pg.Pool`, Redis client, `setInterval`, `fs.watch` — ye open handles hain. Inhe `pool.end()` / `client.quit()` / `clearInterval()` / `watcher.close()` se band nahi kiya toh script "hang" karti hai. `try/finally` mein cleanup rakho.
+
+</Mistake>
+
+<Mistake>
+
+**`console.log()` ke turant baad `process.exit()`.** `stdout` pipe/file par async hai — exit buffered output ko flush se pehle kaat deta hai, aakhri lines gayab. `process.exitCode = 1` set karo aur naturally exit hone do.
+
+</Mistake>
+
+<Mistake>
+
+**Top-level `var`/`function` ko global samajhna (browser habit).** Node mein module wrapper ki wajah se ye file-scoped hain. `var x = 1` top level par `global.x` nahi banata. Cross-file sharing ke liye `module.exports` use karo, global par mat chipkao.
+
+</Mistake>
+
+<Mistake>
+
+**Ek bada synchronous line likhkar expect karna ki event loop "meanwhile" chal raha hai.** `const data = fs.readFileSync(hugeFile)` ya ek 5-second `while` loop — jab tak wo line khatam nahi hoti, event loop shuru hi nahi hota (ya aage nahi badhta). Timers fire nahi hote, requests queue mein atkte hain. Sync-first model ka matlab: ek blocking line poore program ko rok deti hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["node app.js"] --> B["File read + CommonJS wrap: (exports, require, module, __filename, __dirname)"]
+    B --> C["V8 parse + compile"]
+    C --> D["Top-level SYNC code poora chalta hai"]
+    D --> E["process.nextTick queue drain"]
+    E --> F["Microtask (Promise) queue drain"]
+    F --> G["Event loop enter"]
+    G --> H["Phase: timers -> pending -> poll -> check -> close (beech me nextTick + microtasks)"]
+    H --> I{"Pending timer / I/O callback / open handle bacha?"}
+    I -->|haan| H
+    I -->|nahi| J["Process exit code 0"]
+`}
+  caption="Sync code hamesha poora pehle; event loop uske baad; loop tab tak zinda jab tak koi pending kaam ya open handle hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `node app.js`: file read → **CommonJS wrapper** `(exports, require, module, __filename, __dirname)` → V8 parse/compile.
+- **Saara top-level sync code poora chalta hai pehle** — koi async callback beech mein nahi.
+- Sync ke baad: **`process.nextTick` queue**, phir **microtask (Promise) queue** drain — phir event loop.
+- **Event loop phases** (libuv): timers → pending callbacks → poll → check (`setImmediate`) → close; har phase ke beech nextTick + microtasks.
+- Loop **zinda** rehta hai jab tak: pending timer, pending I/O callback, ya open handle (listening server, `setInterval`, open socket).
+- Kuch nahi bacha → **auto exit code 0**. `process.exit(code)` = turant, forced.
+- **"Turant exit"** = koi real pending async kaam nahi (aksar un-awaited Promise). Fix: `main().catch(e => { console.error(e); process.exitCode = 1; })`.
+- **"Hang"** = open handle band nahi kiya (DB pool, `setInterval`, socket). Fix: `finally` mein `pool.end()`/`clearInterval()`/`server.close()`. Debug: `why-is-node-running`.
+- `process.exit()` `console.log` ke turant baad output truncate kar sakta hai — `process.exitCode` set karke naturally exit hone do.
+- Ek blocking sync line (`readFileSync` on huge file, long `while`) event loop ko aage nahi badhne deti.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ye chalao aur output order predict karo pehle: `console.log(1); setTimeout(() => console.log(2), 0); Promise.resolve().then(() => console.log(3)); process.nextTick(() => console.log(4)); console.log(5);`. Phir run karke likho ki `4` aur `3`, `2` se pehle kyun aaye.
+
+**Medium:** Ek script likho jo ek `setInterval` har second ek counter print kare, aur 5 counts ke baad khud clean exit ho jaye (bina `process.exit()` ke). Hint: `clearInterval`. Confirm karo ki terminal wapas aa gaya.
+
+**Bada:** Ek script `hang.js` likho jo deliberately hang kare — ek `http` server `listen` kare aur ek `pg.Pool` (ya `setInterval`) khole, lekin end par kuch close na kare. `npm i why-is-node-running` karke uska use karke print karo ki kaunse handles process ko zinda rakhe hue hain. Phir sab close karke confirm karo ki ab clean exit hota hai.
+
+</Callout>

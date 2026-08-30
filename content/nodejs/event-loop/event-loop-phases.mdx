@@ -1,0 +1,261 @@
+---
+slug: "event-loop-phases"
+title: "The Event Loop Phases"
+section: "nodejs"
+module: "event-loop"
+order: 4
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["callback-queue-and-microtask-queue"]
+tags: ["nodejs", "event-loop", "phases", "poll", "setimmediate", "settimeout", "internals"]
+englishDefinition: "One iteration of Node's event loop runs through six ordered phases: timers (expired setTimeout/setInterval callbacks), pending callbacks (some deferred system callbacks), idle/prepare (internal only), poll (retrieve new I/O events and run their callbacks, and block here waiting for I/O if there is nothing else to do), check (setImmediate callbacks), and close callbacks (like socket 'close'). Between every phase, and after every individual callback, both microtask queues are drained. setTimeout(0) versus setImmediate ordering is non-deterministic from the main module but deterministic — setImmediate always first — when both are scheduled from inside an I/O callback."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Wipro", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+One iteration ("tick") of Node's event loop runs through **six ordered phases**: **timers** (expired `setTimeout`/`setInterval` callbacks), **pending callbacks** (a few deferred system-level callbacks, e.g. some TCP errors), **idle/prepare** (internal only), **poll** (collect new I/O events, run their callbacks, and *block here* waiting for I/O if there is nothing else scheduled), **check** (`setImmediate` callbacks), and **close callbacks** (`socket.on("close")` and similar). Between **every phase** and after **every individual callback**, both microtask queues (`process.nextTick`, then Promises) are drained completely. `setTimeout(0)` vs `setImmediate` ordering is **non-deterministic** from the main module, but **deterministic** — `setImmediate` first — when both are scheduled from **inside an I/O callback**.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Call stack, thread pool, aur queues samajh liye. Ab wo cheez jo sabko jodti hai: **event loop** khud, jo libuv ke andar ek C loop hai. Ek "tick" mein wo 6 fixed phases se guzarta hai, ek order mein, baar-baar. Yeh section wahi hai jo "Node event loop explain karo" ka core jawaab hai.
+
+### Ye kya hai — 6 phases
+
+Har iteration mein, is order mein:
+
+1. **timers** — jinke `setTimeout` / `setInterval` ka delay expire ho chuka hai, unke callbacks yahan chalte hain.
+2. **pending callbacks** — kuch system operations ke deferred callbacks (jaise kuch TCP socket errors `ECONNREFUSED`). Application code mein yeh phase rarely dikhta hai.
+3. **idle, prepare** — sirf libuv internal use. Tumhare liye kuch nahi.
+4. **poll** — do kaam: (a) I/O jo complete ho chuka hai (file read done, socket readable) uske callbacks chalao; (b) agar aur kuch pending nahi (na timer imminent, na `setImmediate`), toh yahin **block** karo, naye I/O events ka wait karte hue.
+5. **check** — `setImmediate` ke callbacks yahan aur sirf yahan chalte hain.
+6. **close callbacks** — `socket.on("close", ...)`, `emitter.emit("close")` type cleanup.
+
+Phir wapas phase 1. **Har phase ke beech** aur **har ek callback ke baad**: `process.nextTick` queue phir Promise queue drain — poori.
+
+### Ye kyun exist karta hai
+
+libuv ko alag-alag "kaam ke types" ko fair, predictable order mein chalana tha. Timers ka apna phase isliye taaki `setTimeout` roughly on-time fire ho. Poll phase alag isliye kyunki wahi asli "I/O wait" karne ki jagah hai — server yahan idle baithta hai jab tak koi request/data na aaye. `check` phase (`setImmediate`) isliye add hua taaki tumhe ek "poll ke turant baad, agle timers se pehle" hook mile — poll ke andar se recursion ke bina defer karne ke liye.
+
+### Internally kaise kaam karta hai
+
+Ek tick ka pseudo-flow:
+
+```text
+loop {
+  update loop time (now)
+  run TIMERS phase   -> har expired timer cb; cb ke baad microtasks drain
+  run PENDING phase  -> deferred system cbs; microtasks drain
+  run IDLE/PREPARE   -> internal
+  calculate poll timeout:
+      - agar setImmediate scheduled hai -> timeout 0 (block mat karo)
+      - agar timers pending hain -> timeout = nearest timer tak
+      - warna -> block indefinitely (naye I/O ka wait)
+  run POLL phase     -> ready I/O cbs; har cb ke baad microtasks drain
+  run CHECK phase    -> setImmediate cbs; microtasks drain
+  run CLOSE phase    -> close cbs; microtasks drain
+  agar koi ref'd handle nahi bacha -> loop exit (process ends)
+}
+```
+
+**Poll phase blocking** samajhna zaroori: agar timers aur `setImmediate` dono khaali hain aur sirf ek socket pe data ka wait hai, toh Node poll phase mein `epoll_wait` pe **so jata hai** — CPU 0%. Data aate hi jaagta hai, callback chalata hai. Isiliye idle Node server CPU nahi khata.
+
+### `setTimeout(0)` vs `setImmediate` — order kyun badalta hai
+
+**Main module se (top-level code):**
+
+```javascript
+setTimeout(() => console.log("timeout"), 0);
+setImmediate(() => console.log("immediate"));
+```
+
+Iska output kabhi `timeout, immediate` aur kabhi `immediate, timeout` hota hai. Kyun? `setTimeout(0)` actually **~1ms** pe clamp hota hai. Jab loop pehli baar timers phase pe pahunchta hai, agar process startup mein **1ms se zyada** lag gaya toh timer ready hai → wo pehle. Agar startup **1ms se kam** raha toh timer abhi ready nahi → loop poll se hote hue check phase mein `setImmediate` chala deta hai → wo pehle. Yeh timing machine load pe depend karti hai — **non-deterministic**.
+
+**Ek I/O callback ke andar se:**
+
+```javascript
+const fs = require("fs");
+fs.readFile(__filename, () => {
+  setTimeout(() => console.log("timeout"), 0);
+  setImmediate(() => console.log("immediate"));
+});
+```
+
+Yahan output **hamesha** `immediate, timeout`. Kyun? `readFile` ka callback **poll phase** mein chal raha hai. Poll ke turant baad **check** phase aata hai → `setImmediate` turant. `setTimeout` ko agli iteration ke **timers** phase tak wait karna padta hai. Order ab **deterministic**.
+
+### Simple real-life analogy
+
+Ek ghadi ki tarah socho jo har round mein 6 fixed stations pe rukti hai: "alarm check" (timers), "pending slips", "internal", "mailbox" (poll — yahan sabse zyada wait), "express tray" (check / setImmediate), "closing desk" (close). Har station ke baad clerk apni personal "abhi karo" list (nextTick) aur "jaldi karo" list (promises) clear karta hai, phir agle station.
+
+### Day-to-day use
+
+- 99% code ismein directly nahi jhankta — bas kaam karta hai. Yeh knowledge tab kaam aati hai jab timing weird lage.
+- `setImmediate` use karo jab tumhe "current I/O callback ke turant baad, lekin event loop ko block kiye bina" kuch chalana ho — bade kaam ko chunk karna, ya recursion todna.
+- Debugging: "mera `setTimeout(fn, 0)` late chal raha hai" — kyunki poll phase mein ek lamba I/O callback baitha tha, ya microtask starvation hai.
+
+### Kab `setImmediate` prefer karo (`setTimeout(0)` ke bajaye)
+
+- Jab code kisi I/O callback ke andar hai aur tumhe guaranteed "isi tick ke check phase mein" chahiye — deterministic.
+- Recursive chunking ke liye — `setImmediate` I/O ke saath fair share leta hai, `setTimeout(0)` timers phase ko baar-baar hit karta hai aur poll ke I/O ko thoda pichhe dhakel sakta hai.
+
+### Kab `setTimeout` chahiye
+
+- Jab tumhe sach mein ek **minimum delay** chahiye (`setTimeout(fn, 50)`).
+- Timeout/deadline patterns (`Promise.race` ke saath).
+
+### Pros and cons
+
+**Phase-based loop**
+
+- **Pros**: predictable categories, timers roughly on-time, poll phase efficient blocking (idle = 0% CPU).
+- **Cons**: samajhna mushkil; `setTimeout(0)` vs `setImmediate` ka non-determinism confusing; ek phase mein lamba callback baaki sab phases ko delay karta hai.
+
+**`setImmediate`**
+
+- **Pros**: deterministic "after poll", I/O ke saath fair, recursion-safe deferral.
+- **Cons**: browser mein nahi hai (Node-only); naam se lagta hai "immediate" par actually check phase tak wait.
+
+### Alternatives
+
+- **`process.nextTick`** — har phase ke beech, sabse jaldi — lekin I/O se pehle, starvation risk (pichhla topic).
+- **`queueMicrotask`** — Promise-timing, I/O se pehle.
+- **`setTimeout(fn, ms)`** — jab minimum delay chahiye.
+
+### Interview mein "Node event loop ke phases batao"
+
+> "Ek tick 6 phases se guzarta hai: **timers** (expired setTimeout/setInterval), **pending callbacks** (kuch deferred system callbacks), **idle/prepare** (internal), **poll** (ready I/O ke callbacks, aur agar kuch aur pending nahi toh yahin block karke naye I/O ka wait), **check** (setImmediate), aur **close callbacks**. Har phase ke beech aur har callback ke baad Node process.nextTick queue phir Promise queue ko poora drain karta hai. Ek important detail: `setTimeout(0)` vs `setImmediate` ka order main module se non-deterministic hai kyunki setTimeout ~1ms pe clamp hota hai, lekin ek I/O callback ke andar se hamesha setImmediate pehle, kyunki hum already poll phase mein hote hain aur check phase turant next hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Poll phase ka ek subtle rule: agar poll queue khaali ho jaye aur `setImmediate` callbacks pending hon, toh Node poll mein **wait nahi karta** — turant check phase pe chala jata hai. Isliye ek I/O callback ke andar `setImmediate` "abhi ke abhi" jaisa feel deta hai, jabki `setTimeout(0)` ko poori loop ghoom ke wapas timers phase pe aana padta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Streaming file processor using setImmediate to yield">
+
+Ek ETL job ek badi CSV file ko `fs.createReadStream` se padhta tha aur har `"data"` chunk pe kai rows parse karta tha. Parsing CPU-bound thi. Agar poore chunk ko ek sync loop mein process kiya jata, toh poll phase mein wo callback lamba baithta aur naye incoming HTTP admin requests (same process) ruk jati. Solution: har roughly 500 rows ke baad `await new Promise(r => setImmediate(r))`. `setImmediate` check phase mein chalta hai, aur beech mein Node wapas poll phase mein jaake pending sockets serve kar leta hai. Throughput thoda kam hua par admin API responsive raha — ek conscious trade-off.
+
+</RealWorld>
+
+<RealWorld company="A flaky test that depended on setTimeout(0) vs setImmediate order">
+
+Ek test suite mein ek helper `setTimeout(done, 0)` se assertions schedule karta tha, aur code under test `setImmediate` use karta tha. Test kabhi pass, kabhi fail — CI pe zyaada fail kyunki loaded machine pe process startup 1ms se zyaada le leta tha, jisse timer pehle ready ho jata aur assertions code ke complete hone se pehle chal jate. Fix: helper ko `setImmediate(done)` pe move kiya (ya better, actual promise await kiya). Lesson: kabhi bhi `setTimeout(0)` vs `setImmediate` ke relative order pe logic mat build karo — wo main context se non-deterministic hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- **6** phases: timers → pending callbacks → idle/prepare → poll → check → close callbacks.
+- Sirf **3** phases mein tumhara code aata hai normally: timers, poll (I/O), check (`setImmediate`). Baaki internal ya rare.
+- `setTimeout(fn, 0)` → OS/Node minimum clamp historically **1ms** (nested/long-running timers pe 4ms tak).
+- Idle Node process poll phase mein CPU **~0%** — `epoll_wait` pe blocked, event-driven wakeup.
+- Microtask drain points per tick: har phase ke baad + har individual callback ke baad — ek tick mein **kai baar**.
+- Ek I/O callback ke andar: `setImmediate` **hamesha** `setTimeout(0)` se pehle — 100% deterministic.
+- Main module se: order **non-deterministic** — dono outcomes normal hain.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Yeh senior-level Node interview ka centrepiece hai. Interviewer chahta hai: (1) 6 phases naam se aur sahi order mein, (2) poll phase ka special blocking behaviour, (3) `setTimeout(0)` vs `setImmediate` ka non-determinism aur uska exception (I/O callback ke andar), (4) microtasks har phase ke beech.
+
+Achhe jawaab ka shape:
+
+1. **Phases list** — timers, pending callbacks, idle/prepare, poll, check, close (order yaad rakho).
+2. **Har phase mein kya** — 1-line each; poll pe extra detail (I/O callbacks + blocking wait).
+3. **Microtasks** — "har phase ke beech aur har callback ke baad, nextTick phir Promise queue, poori."
+4. **The classic gotcha** — "`setTimeout(0)` vs `setImmediate`: main se non-deterministic (setTimeout ~1ms clamp), I/O callback ke andar se hamesha setImmediate pehle (already poll phase mein, check next hai)."
+5. **Practical** — "chunking/deferral ke liye `setImmediate` prefer karta hoon."
+
+Red flags: phases ka galat order, "poll phase timers ke baad nahi aata", "`setImmediate` `setTimeout(0)` se hamesha pehle" (main context se galat), "microtasks sirf poore loop ke baad".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Yeh kehna ki `setImmediate` hamesha `setTimeout(0)` se pehle chalta hai.** Sirf **I/O callback ke andar** yeh guaranteed hai (already poll phase, check next). **Main module se** order non-deterministic hai — `setTimeout(0)` ~1ms pe clamp hota hai, aur agar startup us se zyada le le toh timer pehle ready ho jata hai.
+
+</Mistake>
+
+<Mistake>
+
+**Phases ka order galat batana.** Common galti: poll ko timers se pehle rakhna, ya check aur close ko swap karna. Sahi: timers → pending callbacks → idle/prepare → poll → check → close callbacks. Yeh rote yaad karna padta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Sochna ki microtasks sirf poore loop iteration ke baad drain hoti hain.** Wo har **phase** ke beech aur har **individual callback** ke baad drain hoti hain. Isliye ek I/O callback ke andar schedule kiya `.then` agle I/O callback se pehle chal jata hai, poori loop ka wait kiye bina.
+
+</Mistake>
+
+<Mistake>
+
+**Poll phase ke blocking ko na samajhna aur "Node busy-loops" sochna.** Jab kuch pending nahi, Node poll phase mein `epoll_wait` pe genuinely block karta hai — CPU 0%. Wo spin nahi karta. `setImmediate` ya pending timer hone pe wo block **nahi** karta (timeout 0 ya nearest-timer).
+
+</Mistake>
+
+<Mistake>
+
+**`setTimeout(0)` vs `setImmediate` ke order pe application/test logic build karna.** Yeh main context se flaky hai. Agar sequencing chahiye toh explicit promise chaining ya event use karo, order-of-scheduling pe bharosa mat karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["timers — expired setTimeout / setInterval callbacks"] --> B["pending callbacks — deferred system callbacks"]
+    B --> C["idle / prepare — libuv internal"]
+    C --> D["poll — run ready I/O callbacks; block here waiting for I/O if nothing else pending"]
+    D --> E["check — setImmediate callbacks"]
+    E --> F["close callbacks — socket 'close' etc."]
+    F --> A
+    D -.->|"microtasks drained between every phase and after every callback"| G["nextTick queue -> Promise job queue"]
+`}
+  caption="One tick = six phases in this fixed order; microtasks (nextTick then Promises) drain between every phase and after every single callback. Poll is where Node blocks and waits for I/O."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **6 phases, fixed order**: timers → pending callbacks → idle/prepare → poll → check → close callbacks.
+- **timers**: expired `setTimeout`/`setInterval`. **poll**: ready I/O callbacks + block-and-wait for new I/O. **check**: `setImmediate`. **close**: `socket.on("close")`.
+- **Microtasks** (`process.nextTick` then Promises) drain **between every phase** and **after every callback** — poori, empty hone tak.
+- **poll blocking**: kuch pending nahi → Node `epoll_wait` pe block, CPU ~0%. `setImmediate`/timer pending → block nahi.
+- `setTimeout(fn, 0)` → **~1ms** clamp.
+- `setTimeout(0)` vs `setImmediate` **main module se**: non-deterministic (startup timing).
+- `setTimeout(0)` vs `setImmediate` **I/O callback ke andar se**: `setImmediate` **hamesha pehle** (already poll, check next).
+- Chunking/deferral: `setImmediate` prefer karo — I/O ke saath fair, recursion-safe.
+- Loop exit: koi `ref`'d handle na bache → process ends.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek file mein sirf yeh do lines: `setTimeout(() => console.log("timeout"), 0); setImmediate(() => console.log("immediate"));`. 10 baar chalao (`for i in 1..10; do node f.js; done`). Kitni baar `timeout` pehle aaya aur kitni baar `immediate`? Non-determinism dekh lo.
+
+**Medium:** Ab wahi do lines ek `fs.readFile(__filename, () => { ... })` callback ke andar daalo. 10 baar chalao. Ab order kya hai? Har baar same? Explain karo kyun `immediate` ab jeetta hai.
+
+**Bada:** Ek function `chunkedSum(arr, chunkSize)` likho jo ek bade array ka sum nikale lekin har `chunkSize` elements ke baad `setImmediate` se yield kare (`await new Promise(r => setImmediate(r))`). Sath mein ek `setInterval(() => console.log("tick", Date.now()), 20)` chalao. 50 lakh elements ke array pe `chunkedSum` chalao aur observe karo ki interval ke `tick` beech-beech mein aate rehte hain (event loop breathe kar raha hai). Ab `setImmediate` yield hata do — ab `tick` kya hota hai? 2-3 line mein likho.
+
+</Callout>

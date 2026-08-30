@@ -1,0 +1,358 @@
+---
+slug: "util-module"
+title: "The util Module"
+section: "nodejs"
+module: "builtin-modules"
+order: 6
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["first-class-functions-and-callbacks"]
+tags: ["nodejs", "util", "promisify", "inspect", "parseargs", "builtin-modules"]
+englishDefinition: "util is Node's grab-bag of internal helper functions that are also useful in application code. The ones worth knowing: util.promisify turns an error-first callback function into a Promise-returning one (with util.promisify.custom to override the conversion), util.callbackify does the reverse, util.types.isX gives reliable type checks for exotic values, util.inspect controls how objects are formatted in the console, util.deprecate wraps a function to print a one-time deprecation warning, util.format is the printf-style formatter console.log uses, and util.parseArgs is a small built-in command-line argument parser."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`util` is Node's **grab-bag of helper functions** — utilities Node uses internally that are also handy in your own code. The ones worth knowing: **`util.promisify`** turns an error-first callback function into a Promise-returning one (with **`util.promisify.custom`** to override how); **`util.callbackify`** does the reverse; **`util.types.isX`** gives reliable checks for exotic values (`Date`, `Promise`, typed arrays); **`util.inspect`** controls how objects print in the console (depth, colors, a custom-format symbol); **`util.deprecate`** wraps a function to print a one-time deprecation warning; **`util.format`** is the `printf`-style formatter `console.log` itself uses; and **`util.parseArgs`** is a small built-in CLI argument parser.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`util` ek "utility drawer" hai — Node ke andar jo chhote helpers use hote hain, unme se kuch tumhare kaam ke bhi hain. Isse poora yaad karne ki zaroorat nahi; bas pata hona chahiye ki **kaunsi problem ke liye kaunsa helper** hai, taaki tum apna buggy version na likho.
+
+### Ye kya hai — util module
+
+`const util = require("node:util")`. Ek single "theme" nahi hai — ye alag-alag chhote tools ka collection hai. Sabse zyada use hone wale:
+
+- `util.promisify` / `util.callbackify` — callback aur Promise ke beech convert.
+- `util.types.*` — reliable type checks.
+- `util.inspect` — console formatting control.
+- `util.deprecate` — ek function ko "purana ho gaya" mark karna.
+- `util.format` — `console.log` jaisa string formatting.
+- `util.parseArgs` — CLI arguments parse karna bina library ke.
+
+### util.promisify — error-first callback ko Promise banao
+
+Node ke purane core APIs aur bahut se npm packages **error-first callback** convention par hain: `fn(...args, (err, result) => {})`. `util.promisify` isi shape ko samajhta hai aur ek naya function deta hai jo Promise return karta hai:
+
+```javascript
+const util = require("node:util");
+const dns = require("node:dns");
+
+const lookup = util.promisify(dns.lookup);
+
+async function main() {
+  const { address } = await lookup("example.com");
+  console.log(address);
+}
+```
+
+- `util.promisify(dns.lookup)` ek naya function deta hai jo wahi args leta hai **minus** callback.
+- Callback mein `err` mila → Promise **reject**; warna result se **resolve**.
+- Sirf **error-first, single-result** callbacks par kaam karta hai out of the box.
+- **`this` binding**: `util.promisify(obj.method)` ke andar `this` `undefined` ho jata hai — `util.promisify(obj.method.bind(obj))` likho.
+
+### util.promisify.custom — jab default conversion galat ho
+
+Kuch functions ka callback error-first nahi hai, ya wo multiple success values deta hai (`(err, a, b)`). Library author ek symbol par apna Promise version attach kar sakta hai, aur `util.promisify` usko prefer karega:
+
+```javascript
+const kCustom = util.promisify.custom;
+
+function measure(path, cb) {
+  // cb(err, widthPx, heightPx) — do success values
+  getDims(path, (err, w, h) => cb(err, w, h));
+}
+
+measure[kCustom] = (path) =>
+  new Promise((resolve, reject) => {
+    getDims(path, (err, w, h) => (err ? reject(err) : resolve({ w, h })));
+  });
+
+const measureP = util.promisify(measure); // custom version use hoga
+```
+
+- Node core khud ye karta hai: `child_process.exec` ka promisified version ek `{ stdout, stderr }` object deta hai, do alag args nahi.
+- `util.promisify(setTimeout)` ek special version deta hai jo `(ms, value)` leta hai — wahi `require("timers/promises").setTimeout`.
+
+### util.callbackify — ulta
+
+Ek `async` (Promise-returning) function ko error-first callback style mein badalta hai. Zaroorat tab jab tumhara code modern hai lekin koi purana caller sirf callbacks samajhta hai:
+
+```javascript
+async function getUser(id) {
+  return { id, name: "Asha" };
+}
+
+const getUserCb = util.callbackify(getUser);
+
+getUserCb(42, (err, user) => {
+  if (err) return console.error(err);
+  console.log(user);
+});
+```
+
+- Promise fulfil → `cb(null, value)`; Promise reject → `cb(reason)`.
+- Gotcha: agar `async` function `null`/`undefined` se reject kare, `callbackify` use ek special wrapper error mein bhejta hai taaki `cb(err)` mein `err` truthy rahe.
+
+### util.types — reliable type checks
+
+`typeof` aur `instanceof` kuch cases mein jhoot bolte hain — especially cross-realm values (jaise `vm` module se, ya worker se aaye objects) par `instanceof` fail ho jata hai. `util.types` C++-level checks deta hai:
+
+```javascript
+util.types.isDate(new Date());          // true
+util.types.isPromise(Promise.resolve()); // true
+util.types.isAsyncFunction(async () => {}); // true
+util.types.isTypedArray(new Uint8Array()); // true
+util.types.isNativeError(new TypeError()); // true — cross-realm bhi
+```
+
+Day-to-day mein zaroorat kam padti hai, lekin serialization libraries, loggers, aur framework internals ise use karte hain jab input kisi bhi source se aa sakta hai.
+
+### util.inspect — console formatting control
+
+`console.log(obj)` internally `util.inspect(obj)` call karta hai. Tum use directly bula ke behaviour tune kar sakte ho:
+
+```javascript
+const deep = { a: { b: { c: { d: { e: 1 } } } } };
+
+console.log(util.inspect(deep, { depth: null }));   // poora nested — default depth 2
+console.log(util.inspect(obj, { colors: true }));   // ANSI colors
+console.log(util.inspect(obj, { maxArrayLength: 5 })); // bade arrays truncate
+```
+
+- **`depth`** default `2` — isliye deeply nested objects `[Object]` dikhate hain. `depth: null` = unlimited.
+- **Custom formatting**: ek class ke `[util.inspect.custom]` method se tum decide karte ho wo console mein kaise dikhe (jaise ek secret ko `***` karna).
+
+```javascript
+class Token {
+  constructor(v) { this.value = v; }
+  [util.inspect.custom]() { return "Token(***)"; }
+}
+console.log(new Token("s3cr3t")); // Token(***) — value log mein leak nahi hoti
+```
+
+### util.deprecate — purana API mark karna
+
+Ek library maintainer ke liye: ek function ko wrap karo taaki wo call hone par **ek baar** ek deprecation warning `stderr` par print kare:
+
+```javascript
+const oldApi = util.deprecate(
+  function oldApi() { /* ... */ },
+  "oldApi() deprecated hai — newApi() use karo",
+  "DEP0001",
+);
+```
+
+- Warning har unique call site par ek baar aati hai, spam nahi.
+- `node --throw-deprecation` se warning ko error bana sakte ho (tests mein useful).
+- `node --no-deprecation` se silence.
+
+### util.format — printf-style strings
+
+`console.log` jo `%s`, `%d`, `%j`, `%o` substitutions karta hai, wo `util.format` hai:
+
+```javascript
+util.format("%s is %d years old", "Asha", 30); // "Asha is 30 years old"
+util.format("data: %j", { a: 1 });             // 'data: {"a":1}'
+util.format("%s", "x", "extra");               // "x extra" — leftover args append
+```
+
+Aajkal template literals (`` `${name} is ${age}` ``) zyaadatar jagah simpler hain; `util.format` tab kaam aata hai jab tum apna logger bana rahe ho aur `console.log`-jaisa behaviour chahiye.
+
+### util.parseArgs — built-in CLI arg parser
+
+Chhote scripts ke liye `process.argv` ko haath se parse karne ki jagah:
+
+```javascript
+const { values, positionals } = util.parseArgs({
+  options: {
+    verbose: { type: "boolean", short: "v" },
+    out: { type: "string", short: "o", default: "dist" },
+  },
+  allowPositionals: true,
+});
+// node build.js -v --out build src/  ->
+// values = { verbose: true, out: "build" }, positionals = ["src/"]
+```
+
+- Node **v18.3+** (stable v20+). `boolean` aur `string` types, short flags, defaults.
+- `yargs` / `commander` jitna feature-rich nahi (no subcommands, no auto-help), lekin **zero dependency** — chhoti internal CLIs ke liye enough.
+
+### Kab kaunsa reach karna
+
+- **Legacy callback API ko await karna** → `util.promisify` (ya seedhe `fs.promises` / `timers/promises` agar Node ne diya ho).
+- **Modern async function purane callback caller ko dena** → `util.callbackify`.
+- **Object console mein truncated dikh raha (`[Object]`)** → `util.inspect(x, { depth: null })`.
+- **Secret / noisy field ko log mein hide karna** → `[util.inspect.custom]` method.
+- **Library mein API retire karna** → `util.deprecate`.
+- **Chhoti script ke flags parse karne** → `util.parseArgs`.
+
+### Kab use nahi karna
+
+- Bade production CLI ke liye `util.parseArgs` — subcommands/help/validation chahiye to `commander`/`yargs`.
+- App logic mein `util.format` — template literals clearer hain.
+- `util.isArray`, `util.isDate` jaise **purane** top-level `util.is*` helpers — ye **deprecated** hain; `Array.isArray` / `util.types.isDate` use karo.
+- `util._extend` — deprecated; `Object.assign` / spread use karo.
+
+### Pros and cons
+
+**Pros**
+
+- Built-in, zero dependency.
+- `promisify`/`callbackify` se do async worlds ke beech clean bridge.
+- `inspect` se debugging aur safe logging control.
+- `parseArgs` chhoti CLIs ke liye enough.
+
+**Cons**
+
+- Ek jagah bahut alag-alag cheezein — discoverability kam.
+- Kai purane `util.*` helpers deprecated — galti se use ho jate hain.
+- `parseArgs` limited — badi CLI needs ke liye jaldi chhota pad jata hai.
+
+### Alternatives
+
+- **`fs.promises` / `timers/promises` / `stream/promises`** — Node ne khud promisified versions de diye; `promisify` ki zaroorat nahi.
+- **`commander` / `yargs`** — full-featured CLI parsing.
+- **`pino` / `winston`** — structured logging, apna `util.format` logger banane ki jagah.
+- **`Array.isArray`, `Number.isInteger`, `util.types.*`** — purane `util.is*` ke replacement.
+
+### Interview mein "util.promisify kyun, manual wrap kyun nahi?"
+
+> "`dns.lookup` ya `crypto.pbkdf2` jaise standard error-first callbacks ke liye `util.promisify` ek line hai aur convention-correct — main `new Promise` haath se likh ke IV-jaisa nahi par phir bhi ek subtle bug (jaise callback do baar resolve karna, ya error case bhoolna) introduce karne ka risk nahi leta. Jab callback multi-value tha, maine `util.promisify.custom` symbol par apna wrapper diya taaki call site consistent rahe. Aur agar Node ne pehle se `fs.promises` de rakha hai to main promisify use hi nahi karta. Object methods ke liye `.bind` zaroori hai warna `this` `undefined` ho jata hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Top-level `util.isArray`, `util.isNullOrUndefined`, `util.isDate`, `util._extend` — ye sab **deprecated** hain (bahut purane Node se). Modern replacements: `Array.isArray(x)`, `x == null`, `util.types.isDate(x)`, `Object.assign({}, x)` / `{ ...x }`. Naya code inme se koi bhi purana `util.is*` use na kare.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Node core — child_process.exec promisified">
+
+Jab tum `const { promisify } = require("util"); const execP = promisify(require("child_process").exec);` likhte ho, tumhe `execP("ls")` se ek Promise milta hai jo `{ stdout, stderr }` object se resolve hota hai — do alag positional args nahi. Ye isliye kaam karta hai kyunki `child_process.exec` par Node ne khud `util.promisify.custom` symbol set kar rakha hai. Bina custom ke, default promisify sirf callback ke doosre argument (`stdout`) ko resolve karta, aur `stderr` kho jata. Ye exactly wahi pattern hai jo tum apni multi-value callback APIs ke liye use kar sakte ho.
+
+</RealWorld>
+
+<RealWorld company="Loggers hiding secrets with util.inspect.custom">
+
+Production codebases mein aksar ek `class Secret` ya `class Config` hoti hai jispe `[util.inspect.custom]()` method define hota hai jo `"[Secret]"` ya masked value return karta hai. Reason: log statements (`logger.info({ config })`), error dumps, aur crash reports sab internally `util.inspect` se guzarte hain — agar raw object mein API keys ya DB passwords hain, wo plaintext logs mein chale jaate hain aur log aggregation service tak pahunch jaate hain. Custom inspect se object apne aap ko "safe" tareeke se serialize karta hai chahe kahin bhi log ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `util.promisify` Node **v8.0.0 (2017)** se. `util.callbackify` bhi **v8.2.0**.
+- `util.inspect` ka default `depth` = **2** — isse gehre nested objects `[Object]` / `[Array]` dikhate hain; `{ depth: null }` = unlimited.
+- `util.inspect` default `maxArrayLength` / `maxStringLength` = **128** — bade values truncate ho ke `... N more items` dikhate hain.
+- `util.deprecate` ka warning har unique call site par **sirf ek baar** print hota hai.
+- `util.parseArgs` stable Node **v20+** mein (introduced v18.3, experimental pehle).
+- `EventEmitter.defaultMaxListeners` = **10** (ye `events` module ka hai, `util` ka nahi — par saath aata hai).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+`util` khud rarely poocha jata hai — lekin `util.promisify` aur `util.inspect` indirectly aate hain: "callback API ko async kaise banaoge?", "console mein nested object pura kaise dekhoge?", "sensitive fields log mein kaise hide karoge?"
+
+Achhe jawaab ka shape:
+
+1. **promisify** — "error-first `(err, res)` callback ko Promise-returning function banata hai; multi-value ke liye `promisify.custom` symbol; object method ke liye `.bind`."
+2. **callbackify** — "ulta — modern `async` function ko purane callback caller ko dene ke liye."
+3. **inspect** — "`console.log` isi ko call karta hai; `depth: null` se full nesting; `[util.inspect.custom]` method se object ka console representation control (secrets masking)."
+4. **deprecate** — "library authors ke liye — call par one-time warning."
+5. **parseArgs** — "chhoti CLIs ke liye built-in, zero-dep; badi needs ke liye commander/yargs."
+
+Red flag: `util.isArray` / `util._extend` jaise deprecated helpers ko "current" batana.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`util.promisify(obj.method)` ko bina `.bind(obj)` use karna.** Promisified function ke andar jab wo original method call hota hai, `this` `undefined` hota hai — `TypeError: Cannot read properties of undefined`. Fix: `util.promisify(obj.method.bind(obj))`. Ye DB clients aur EventEmitter-style objects par khaas kar bites.
+
+</Mistake>
+
+<Mistake>
+
+**Non-error-first callback ko `util.promisify` karna.** `setTimeout(cb, ms)` ka callback `(err, res)` shape mein nahi. Plain `util.promisify(setTimeout)` galat resolve karta — Node ne iske liye `promisify.custom` diya hai (`timers/promises`). Non-standard callbacks ko pehchaano aur manual `new Promise` wrap karo ya custom symbol use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Console mein `[Object]` ya `[Array]` dikhne par sochna ki data missing hai.** Wo `util.inspect` ka default `depth: 2` truncation hai. `console.log(util.inspect(x, { depth: null }))` ya `console.dir(x, { depth: null })` — full structure. `JSON.stringify(x, null, 2)` bhi ek option hai (par circular refs par throw karta hai).
+
+</Mistake>
+
+<Mistake>
+
+**Deprecated `util.is*` helpers use karna.** `util.isArray`, `util.isDate`, `util.isNullOrUndefined`, `util.isRegExp` — sab deprecated. `Array.isArray`, `util.types.isDate`, `x == null`, `x instanceof RegExp` use karo. Purane blog posts inhe abhi bhi dikhate hain — lint rule laga do.
+
+</Mistake>
+
+<Mistake>
+
+**`util.parseArgs` se badi CLI banane ki koshish.** `parseArgs` mein subcommands, auto-generated `--help`, type coercion beyond boolean/string, aur validation nahi hai. Ek do-flag script ke liye perfect; ek `mytool deploy --env prod --dry-run` jaisi tool ke liye `commander` ya `yargs` use karo, warna tum wo saara missing infra khud likh rahe hoge.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Problem?"] --> B{"?"}
+    B -->|"error-first callback ko await karna hai"| C["util.promisify (ya fs.promises / timers/promises)"]
+    B -->|"async function ko callback-style caller ko dena hai"| D["util.callbackify"]
+    B -->|"console mein object truncated ([Object]) dikh raha"| E["util.inspect(x, { depth: null })"]
+    B -->|"secret/noisy field ko log mein mask karna"| F["class [util.inspect.custom]() method"]
+    B -->|"library API retire kar rahe ho"| G["util.deprecate(fn, msg, code)"]
+    B -->|"chhoti script ke CLI flags parse karne"| H["util.parseArgs (zero-dep)"]
+`}
+  caption="util ek theme wala module nahi — har helper ek alag problem solve karta hai; pata hona chahiye kaunsa kab reach karna hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `util` = Node ke internal helpers ka collection, application code mein bhi useful. `require("node:util")`.
+- **`util.promisify(fn)`** — error-first `(err, res)` callback → Promise-returning function. Object method: `.bind(obj)` warna `this` lost.
+- **`util.promisify.custom`** symbol — library apna Promise version de sakti hai (multi-value / non-standard callbacks). `child_process.exec` isse `{ stdout, stderr }` deta hai.
+- **`util.callbackify(asyncFn)`** — ulta: Promise-returning function ko error-first callback style mein.
+- **`util.types.isX`** — reliable type checks (`isDate`, `isPromise`, `isTypedArray`, `isNativeError`) — cross-realm par bhi sahi, `instanceof` ke unlike.
+- **`util.inspect(x, opts)`** — `console.log` isi ko call karta hai. `depth` default **2** (`null` = unlimited), `colors`, `maxArrayLength`.
+- **`[util.inspect.custom]()`** method — object ka console representation control karo (secrets ko `***`).
+- **`util.deprecate(fn, msg, code)`** — wrapped function call par one-time `stderr` warning. `--throw-deprecation` se error.
+- **`util.format("%s %d %j", ...)`** — `console.log` ka printf-style formatter. App code mein template literals prefer karo.
+- **`util.parseArgs({ options })`** — built-in zero-dep CLI parser (Node v18.3+/stable v20+). Boolean/string, short flags, defaults. Badi CLI → `commander`/`yargs`.
+- Deprecated, mat use karo: `util.isArray`, `util.isDate`, `util.isNullOrUndefined`, `util._extend`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `dns.lookup` ko `util.promisify` se wrap karo aur `await` se ek domain resolve karo. Phir `require("dns").promises.lookup` se wahi karo — same result, aur note karo ki dusre tareeke mein promisify ki zaroorat nahi.
+
+**Medium:** Ek `class ApiKey` banao jisme ek `value` field ho aur ek `[util.inspect.custom]()` method jo `"ApiKey(****" + last4 + ")"` return kare. `console.log(new ApiKey("sk_live_abcd1234"))` karo aur confirm karo poori key log mein nahi aati. Phir `JSON.stringify` bhi try karo aur dekho wo custom inspect ko ignore karta hai (uske liye `toJSON()` chahiye).
+
+**Bada:** `util.parseArgs` se ek chhoti CLI `count.js` likho jo `--file <path>` (string, required), `--lines` / `--words` (boolean) le. File padho aur requested counts print karo. Ab ek missing `--file` ke saath chalao aur dekho `parseArgs` khud validation nahi karta — tumhe manually check karke ek helpful error dena padta hai. Likho ki kis point par tum `commander` par switch karoge.
+
+</Callout>

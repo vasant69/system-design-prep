@@ -1,0 +1,320 @@
+---
+slug: "promises-from-scratch"
+title: "Promises From Scratch"
+section: "nodejs"
+module: "js-for-node"
+order: 3
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["first-class-functions-and-callbacks", "closures-in-node"]
+tags: ["javascript", "promises", "async", "then-catch", "callbacks", "fundamentals"]
+englishDefinition: "A Promise is an object that represents a value that is not ready yet. It is always in one of three states: pending, fulfilled, or rejected. You attach handlers with then, catch, and finally, and those handlers run later when the Promise settles. Promises replace deeply nested callbacks with a flat chain and a single place to handle errors."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **Promise** is an object that stands in for a value that will exist later — the result of a network call, a file read, a timer. It is always in exactly one of three states: **pending** (not settled yet), **fulfilled** (succeeded, has a value), or **rejected** (failed, has a reason). You register callbacks with `.then()`, `.catch()`, and `.finally()`; the engine runs them after the Promise settles. Promises turn nested callbacks into a flat chain with one error path.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Callbacks se async kaam ho toh jata hai, lekin 3-4 steps ke baad code "pyramid of doom" ban jata hai aur har level pe error handling repeat hoti hai. Promise isi dard ka jawaab hai. Aur interview mein sirf "Promise use karna" nahi — "Promise **hai kya**, andar kaise kaam karta hai" poocha jata hai. Isliye hum ek chhota sa Promise khud bhi banayenge.
+
+### Ye kya hai — Promise
+
+Promise ek **object** hai jo ek future value ko represent karta hai. Jab tum `fetch(url)` ya `fs.promises.readFile(path)` call karte ho, wo **turant** ek Promise object return karta hai — value abhi nahi hai, lekin object hai. Us object pe tum handlers lagate ho: "jab value aa jaye toh ye karo (`then`), agar fail ho jaye toh ye karo (`catch`), aur dono case mein ye karo (`finally`)."
+
+Teen states:
+
+- **pending** — abhi kuch settle nahi hua. Naya Promise yahan se shuru hota hai.
+- **fulfilled** — kaam successful, ek **value** attach ho gayi. `resolve(value)` call hone se.
+- **rejected** — kaam fail, ek **reason** (aksar `Error`) attach ho gaya. `reject(reason)` call hone se.
+
+Ek baar `fulfilled` ya `rejected` ho gaya (dono ko milake **settled** bolte hain), state **kabhi nahi badalti** aur value **kabhi nahi badalti**. Promise "immutable once settled" hai.
+
+### Ye kyun exist karta hai
+
+Raw callbacks ke 4 problems the:
+
+1. **Nesting** — sequential steps ka pyramid.
+2. **Error handling duplicate** — har callback mein `if (err) return`.
+3. **`try/catch` kaam nahi karta** async callback pe.
+4. **Inversion of control** — tum apna callback ek third-party library ko de dete ho aur bharosa karte ho ki wo use **sahi baar**, **ek hi baar**, sahi arguments ke saath call karegi. Buggy library do baar call kar sakti hai.
+
+Promise ye teeno-chaar theek karta hai: chain flat hota hai, `.catch()` ek jagah poori chain ke errors pakadta hai, aur Promise spec **guarantee** karta hai ki handler exactly ek baar chalega, hamesha async (agle microtask mein), chahe Promise pehle se settled ho.
+
+### Internally kaise kaam karta hai
+
+Ek Promise object ke andar hota hai:
+
+- `state` — `"pending"` / `"fulfilled"` / `"rejected"`.
+- `value` — fulfilled value ya rejection reason.
+- do lists — `onFulfilled` callbacks aur `onRejected` callbacks jo abhi tak pending hone ki wajah se wait kar rahe hain.
+
+`new Promise((resolve, reject) => {...})` — tum ek "executor" function dete ho. Constructor use **turant, synchronously** chala deta hai, aur usmein `resolve` aur `reject` functions inject karta hai. Jab tum `resolve(v)` call karte ho: state `"fulfilled"` ho jata hai, `value = v`, aur saari queued `onFulfilled` callbacks **microtask queue** mein schedule ho jati hain (turant nahi chaltin — current synchronous code khatam hone ke baad).
+
+`.then(onFulfilled, onRejected)` — agar Promise abhi pending hai toh ye handlers un internal lists mein push ho jate hain. Agar Promise pehle se settled hai toh handler turant microtask queue mein daal diya jata hai. `.then()` **ek naya Promise** return karta hai — isi wajah se chaining possible hai.
+
+Microtask queue important hai: Promise callbacks `setTimeout` (macrotask) se **pehle** chalte hain, har event loop tick ke end pe, call stack khali hote hi.
+
+### Simple real-life analogy
+
+Restaurant mein order diya. Waiter turant ek **token/receipt** de deta hai — ye Promise hai (pending). Tum receipt lekar baith jate ho, apna kaam karte ho. Do cheezein ho sakti hain: khana ban jata hai aur wo aata hai (fulfilled, value = plate), ya kitchen bolti hai "ingredient khatam" (rejected, reason = error). Tumne pehle hi bata diya tha "khana aaye toh table pe rakh dena (`then`), na bane toh paise wapas (`catch`), aur dono case mein bill le aana (`finally`)". Token ek hi baar valid hai — khana do baar nahi milta.
+
+### Code — line by line
+
+Pehle **use** karna:
+
+```javascript
+const fsp = require("fs/promises");
+
+fsp
+  .readFile("config.json", "utf8")
+  .then((text) => JSON.parse(text))
+  .then((config) => connectDb(config.dbUrl))
+  .then((db) => db.query("SELECT 1"))
+  .then((rows) => console.log("ok", rows))
+  .catch((err) => console.error("kuch fail hua:", err.message))
+  .finally(() => console.log("done, chahe pass ho ya fail"));
+```
+
+- `fsp.readFile(...)` — ek Promise return karta hai, pending. File background mein padhi ja rahi hai.
+- pehla `.then((text) => JSON.parse(text))` — jab file text aa jaye, use parse karo. Jo **return** karoge wo agle `.then` ki value ban jayegi.
+- `.then((config) => connectDb(...))` — yahan hum ek **Promise return** kar rahe hain. Chain isko "unwrap" karti hai — agla `.then` `db` receive karega, `Promise<db>` nahi.
+- `.catch((err) => ...)` — chain mein **kahin bhi** error (readFile fail, JSON parse throw, db connect reject) — sab yahan aayega. Ek hi jagah.
+- `.finally(...)` — value ya error kuch bhi ho, ye chalega. Cleanup ke liye — spinner band karo, connection release karo.
+
+Ab ek **chhota Promise khud** banao — mechanism dikhane ke liye:
+
+```javascript
+class MiniPromise {
+  constructor(executor) {
+    this.state = "pending";
+    this.value = undefined;
+    this.cbs = []; // { onOk, onFail }
+    const resolve = (v) => this._settle("fulfilled", v);
+    const reject = (e) => this._settle("rejected", e);
+    try {
+      executor(resolve, reject);
+    } catch (e) {
+      reject(e);
+    }
+  }
+
+  _settle(state, value) {
+    if (this.state !== "pending") return; // ek hi baar
+    this.state = state;
+    this.value = value;
+    queueMicrotask(() => this.cbs.forEach((cb) => this._run(cb)));
+  }
+
+  _run({ onOk, onFail }) {
+    if (this.state === "fulfilled") onOk && onOk(this.value);
+    else onFail && onFail(this.value);
+  }
+
+  then(onOk, onFail) {
+    if (this.state === "pending") this.cbs.push({ onOk, onFail });
+    else queueMicrotask(() => this._run({ onOk, onFail }));
+    return this; // (real spec: naya Promise; yahan simple rakha)
+  }
+
+  catch(onFail) {
+    return this.then(undefined, onFail);
+  }
+}
+```
+
+- `state`, `value`, `cbs` — wahi teen cheezein jo upar theory mein bataayi.
+- `resolve` / `reject` — dono `_settle` ko call karte hain alag state ke saath. `executor` ko turant chalaya, `try/catch` se — executor mein `throw` bhi rejection ban jaye.
+- `_settle` ki pehli line: `if (this.state !== "pending") return` — **ye** wo guarantee hai ki Promise ek hi baar settle hota hai. Do baar `resolve` bekaar.
+- `queueMicrotask(...)` — callbacks **kabhi synchronously nahi** chalte, hamesha agle microtask mein. Spec ka rule: `.then` handler async hi chalega, chahe Promise pehle se settled ho. Isse code ka order predictable rehta hai.
+- `then` — pending hai toh queue karo, settled hai toh microtask schedule karo. Real Promise ek **naya** Promise return karta hai taaki chain ban sake; yahan `this` return karke simple rakha.
+
+### Day-to-day use
+
+- `fs/promises`, `fetch` (Node 18+ built-in), `axios`, har modern DB driver — sab Promises return karte hain.
+- `util.promisify(fn)` — purane error-first callback function ko Promise-returning bana do.
+- `Promise.all([p1, p2, p3])` — teeno parallel chalao, sabke result ek array mein, koi bhi fail toh poora reject.
+- `Promise.allSettled([...])` — sab chalao, har ek ka `{status, value/reason}` do — koi fail ho toh baaki cancel nahi.
+- `Promise.race([...])` — jo pehle settle ho wahi jeet; timeout pattern ke liye.
+- `new Promise((res) => setTimeout(res, ms))` — `sleep(ms)` banane ka standard tarika.
+
+### Kab use karna chahiye
+
+- Koi bhi **ek-baar-ka** async result — HTTP call, DB query, file read.
+- Jab kai async steps **ek ke baad ek** chahiye — chain flat rehti hai.
+- Jab kai async kaam **parallel** chahiye aur sabke result — `Promise.all`.
+- Jab error handling **ek jagah** chahiye poore flow ke liye.
+
+### Kab use nahi karna chahiye
+
+- Jab ek source se **baar-baar** values aayengi over time — stream ke `data` events, `EventEmitter`. Promise sirf **ek baar** settle hota hai; har chunk ke liye naya Promise banana galat pattern hai. Async iterators / streams use karo.
+- Pure synchronous computation ke liye — Promise wrap karna sirf delay aur complexity add karta hai.
+- Jab tumhe cancellation chahiye — native Promise cancel nahi hota. `AbortController` alag se lagana padta hai.
+
+### Pros and cons
+
+**Pros**
+
+- Flat chaining — pyramid khatam.
+- Ek `.catch()` poori chain ke errors ke liye.
+- Spec guarantees: handler exactly ek baar, hamesha async, settled Promise pe bhi.
+- `Promise.all` / `race` / `allSettled` se composition aasan.
+- async/await isi ke upar bana hai — Promise samajh liya toh async/await free.
+
+**Cons**
+
+- Native cancellation nahi.
+- `.then` chain lambi ho toh `async/await` se kam readable.
+- Ek missing `.catch()` = unhandled rejection (Node 15+ mein process crash).
+- Microtask starvation: bahut saari Promise chains bina yield kiye event loop ko block-jaisa kar sakti hain.
+- Ek hi value — repeated events ke liye galat tool.
+
+### Alternatives
+
+- **Raw callbacks** — sirf single event listener ya legacy API ke liye; sequential steps mat likho inse.
+- **async/await** — same Promises, better syntax; `try/catch` wapas kaam karta hai. Default choice aaj.
+- **EventEmitter / Streams / async iterators** — jab multiple values over time aayein.
+- **Observables (RxJS)** — complex event pipelines, debounce/retry/merge; Node backend mein aksar overkill.
+- **Callback + `util.promisify`** — beech ka rasta jab library callback-only ho.
+
+### Interview mein "Callback vs Promise — kyun Promise?"
+
+> "Callback single event ya legacy API ke liye theek hai, lekin jaise hi 2-3 async steps sequential ho ya parallel results chahiye, callback nesting aur duplicate error handling problem ban jate hain. Promise ek object hai jo future value represent karta hai — main use flat chain kar sakta hoon, ek `.catch()` poore flow ko cover karta hai, aur spec guarantee karta hai ki mera handler exactly ek baar aur hamesha async chalega, isliye buggy library-wala 'double callback' problem nahi hota. Jaha multiple values aati hain — stream chunks, socket events — wahan main Promise nahi, async iterator ya EventEmitter use karta hoon, kyunki Promise sirf ek baar settle hota hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`.then()` ke andar se **return karna** aur **Promise return karna** dono chain ki agli value set karte hain — agar tum Promise return karte ho, chain uske settle hone ka intezaar karti hai aur us Promise ki value unwrap karke deti hai. Bhoolna mat `return` karna — `.then(row => { doSomething(row); })` bina return ke agli `.then` ko `undefined` deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Node core: fs/promises and fetch">
+
+Node ne 2020 ke aas-paas `fs/promises` ko stable kiya aur v18 (2022) mein global `fetch` add kiya — dono Promise-based. Modern Node code ka default shape ab `await fsp.readFile(...)` / `await fetch(...)` hai, aur poori chain ek `try/catch` ya ek `.catch()` se guard hoti hai. Purana `fs.readFile(path, cb)` aaj bhi kaam karta hai backward compatibility ke liye, lekin naya code Promise version use karta hai.
+
+</RealWorld>
+
+<RealWorld company="Database drivers (pg, mongodb, prisma)">
+
+Har mainstream Node DB client Promise return karta hai: `pool.query("SELECT ...")`, `collection.findOne({...})`, `prisma.user.findMany()`. Ek typical request handler mein 3-4 queries `await` hoti hain sequentially jahan agli pichhli pe depend karti hai, aur `Promise.all([...])` jahan independent queries parallel chal sakti hain — jaise ek dashboard jo 5 alag counts ek saath fetch karta hai. Ek `.catch()` / `try/catch` poore handler ki errors ko ek jagah convert karta hai `500` response mein.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Promise callbacks **microtask queue** mein chalte hain — har event loop tick ke end pe, `setTimeout`/`setImmediate` (macrotasks) se **pehle**.
+- Native Promises JavaScript mein **ES2015 (Node 4, 2015)** se hain; `Promise.allSettled` **ES2020 (Node 12.9)**, `Promise.any` **Node 15**.
+- Unhandled promise rejection Node **v15+** mein process ko **crash** kar deta hai (pehle sirf warning tha).
+- `util.promisify` **Node v8.0 (2017)** se — error-first callback ko Promise mein badalne ka standard tarika.
+- Ek Promise object roughly **ek chhote object** jitni memory leta hai; `Promise.all` ki cost N ke saath linear hai.
+- 3 states, lekin sirf **2 transitions** possible: pending→fulfilled ya pending→rejected. Uske baad frozen.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic har Node interview mein hai. Interviewer test karta hai: (1) Promise **kya hai** — object jo future value represent karta hai, teen states; (2) settle hone ke baad immutable — do baar resolve bekaar; (3) callbacks hamesha async, microtask mein; (4) callback vs Promise trade-off; (5) `Promise.all` vs `allSettled` vs `race`.
+
+Achhe jawaab ka shape:
+
+1. **Definition** — "ek object jo abhi-nahi-ready value represent karta hai; pending / fulfilled / rejected."
+2. **Immutability** — "ek baar settle, state aur value fixed; dobara resolve/reject ignore."
+3. **Mechanism** — "andar state + value + pending handler lists; resolve pe handlers microtask queue mein."
+4. **Why over callbacks** — "flat chain, ek `.catch()`, spec-guaranteed single async call — inversion-of-control bug nahi."
+5. **When NOT** — "repeated values (streams) ke liye nahi — wo ek hi baar settle hota hai."
+
+Red flag: "Promise aur callback same cheez hai" — nahi, Promise ek object hai; callback sirf ek function. Aur: `.then` ke andar `return` bhoolna, phir agle `.then` mein `undefined` aane par confuse hona.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`.then()` ke andar `return` bhool jana.** `.then((user) => { fetchOrders(user.id); }).then((orders) => ...)` — pehla `.then` kuch return nahi karta, isliye doosre `.then` ko `orders` nahi `undefined` milta, aur `fetchOrders` ka Promise chain se bahar "float" karta hai (uska error kahin nahi pakda jayega). Hamesha `return fetchOrders(user.id)`.
+
+</Mistake>
+
+<Mistake>
+
+**Chain ke end pe `.catch()` na lagana.** Ek bhi step reject ho aur `.catch()` na ho toh Node 15+ mein "unhandled promise rejection" process ko **crash** kar deta hai. Har Promise chain ka ya toh `.catch()` ho, ya wo kisi aise function se return ho jiska caller `await` + `try/catch` karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Executor ke andar async kaam ka error `reject` na karna.** `new Promise((resolve) => { doRisky(); resolve(); })` — agar `doRisky()` throw kare toh Promise reject ho jayega (constructor try/catch karta hai), lekin agar `doRisky` **async** hai aur uska error ek callback mein aata hai, tum use manually `reject(err)` karo — warna Promise hamesha pending rahega (silent hang).
+
+</Mistake>
+
+<Mistake>
+
+**Sequential `await`/`.then` chain use karna jab kaam independent hai.** Teen queries jo ek doosre pe depend nahi karti — unhe chain karna 3x slow hai. `Promise.all([q1(), q2(), q3()])` se parallel chalao. Ulta bhi galat: dependent kaam ko `Promise.all` mein daal dena.
+
+</Mistake>
+
+<Mistake>
+
+**Promise ko har chunk ke liye banana — streams pe.** `stream.on("data", chunk => new Promise(...))` — Promise ek hi baar settle hota hai; har chunk ke liye naya Promise banana state ko sambhalna mushkil kar deta hai aur backpressure toot jata hai. Streams ke liye `for await (const chunk of stream)` (async iterator) use karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["new Promise(executor) — state: pending"] --> B{"executor kya call karta hai?"}
+    B -->|"resolve(value)"| C["state: fulfilled, value set (FROZEN)"]
+    B -->|"reject(reason)"| D["state: rejected, reason set (FROZEN)"]
+    B -->|"kuch nahi / hang"| E["pending hamesha ke liye — silent hang"]
+    C --> F["then handlers microtask queue me"]
+    D --> G["catch handler microtask queue me"]
+    F --> H["call stack khali hote hi handler chalta hai"]
+    G --> H
+`}
+  caption="Promise pending se shuru hota hai; resolve ya reject se exactly ek baar settle hota hai aur phir immutable; handlers hamesha microtask queue ke through async chalte hain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Promise** = object jo future value represent karta hai; states: **pending → fulfilled / rejected**.
+- Settle hone ke baad state aur value **immutable**; doosra `resolve`/`reject` ignore.
+- Andar: `state` + `value` + pending handler lists. `resolve` handlers ko **microtask queue** mein daalta hai.
+- Handlers **hamesha async** chalte hain (agle microtask mein), settled Promise pe bhi — spec guarantee.
+- `.then` ek **naya Promise** return karta hai → chaining. `.then` mein `return` karna zaroori hai.
+- `.catch()` chain mein **kahin bhi** aaya error pakadta hai — ek jagah error handling.
+- Microtasks `setTimeout` (macrotask) se **pehle** chalte hain.
+- **`Promise.all`** (sab pass ya poora fail), **`allSettled`** (har ek ka result), **`race`** (pehla settle).
+- **Kab NOT**: repeated values (streams, events) → async iterator / EventEmitter; native cancel nahi hota.
+- Missing `.catch()` = unhandled rejection = Node 15+ crash.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `function sleep(ms)` likho jo ek Promise return kare jo `ms` millisecond baad resolve ho. `sleep(500).then(() => console.log("half second baad"))` test karo. Hint: `new Promise((resolve) => setTimeout(resolve, ms))`.
+
+**Medium:** `function retry(fn, times)` likho — `fn` ek Promise-returning function hai. `retry` `fn()` call kare; reject ho toh dobara try kare, max `times` baar; sab fail ho toh aakhri error se reject kare. Test ek aise `fn` se jo pehle 2 baar reject aur 3rd baar resolve ho.
+
+**Bada:** `MiniPromise` (upar wala) ko extend karo taaki `then` ek **naya** `MiniPromise` return kare — proper chaining — aur `then` handler ke andar `throw` ya returned-Promise ko sahi se handle kare. Fir `p.then(x => x + 1).then(x => { throw new Error("boom"); }).catch(e => console.log("caught", e.message))` chalao aur confirm karo output real `Promise` jaisa hai.
+
+</Callout>

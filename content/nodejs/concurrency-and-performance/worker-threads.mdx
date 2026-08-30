@@ -1,0 +1,281 @@
+---
+slug: "worker-threads"
+title: "Worker Threads"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 2
+difficulty: "advanced"
+readingTime: 17
+prerequisites: ["nodejs-is-single-threaded-what-that-means"]
+tags: ["nodejs", "worker-threads", "cpu-bound", "concurrency", "piscina", "performance"]
+englishDefinition: "The worker_threads module lets you run JavaScript on a separate OS thread, each with its own V8 isolate, event loop, and memory. It exists for CPU-bound JavaScript work that would otherwise block the main event loop. Threads communicate by copying messages (postMessage / structured clone), by sharing memory (SharedArrayBuffer), or by initial data (workerData). Because spawning a worker costs tens of milliseconds and real memory, production code uses a pool rather than one worker per task."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Cognizant", "Accenture", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`worker_threads` lets you run JavaScript on a **separate OS thread**, each with its own V8 isolate, its own event loop, and its own heap. Use it for **CPU-bound JavaScript** — work that would otherwise freeze the main event loop. Threads talk to each other by **copying messages** (`postMessage`, structured clone), by **sharing raw memory** (`SharedArrayBuffer`), or via a one-time **`workerData`** payload at startup. Spawning a worker isn't free (tens of ms + memory), so real systems keep a **pool** of workers (e.g. `piscina`) instead of one per task.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic mein hum ne dekha ki ek CPU-bound function poore event loop ko rok deta hai. `worker_threads` uska seedha jawaab hai jab wo bhaari kaam **JavaScript** mein hi likha ho. Ye ek **decision topic** hai — asli sawaal "kaise use karein" se zyada "kab worker thread, kab kuch aur" hai.
+
+### Ye kya hai — worker_threads
+
+`worker_threads` ek core module hai (`require("worker_threads")`, Node **12+** se stable). `new Worker(filename)` ek **naya OS thread** banata hai. Us thread ke andar:
+
+- ek alag **V8 isolate** — apna JS heap, apne globals
+- apna **event loop** — wo bhi async I/O kar sakta hai
+- same **process** — same PID, same file descriptors, memory address space technically shared but V8 isolates alag
+
+Toh main thread aur worker **sach mein parallel** chalte hain — do CPU cores ek saath use ho sakte hain. Ye `child_process` se halka hai (naya V8, naya process nahi) aur `cluster` se alag maksad rakhta hai.
+
+### Ye kyun exist karta hai
+
+Node I/O ke liye already non-blocking hai. Lekin CPU-bound JS — bada `JSON.parse`, `bcrypt`/`argon2`, image processing pure JS mein, data crunching, template rendering at scale, PDF generation, compression in JS — ye main thread par chale to har doosri request slow. Pehle iske liye `child_process.fork` use hota tha (bhaari), ya kaam kisi aur service mein bhejna padta tha. `worker_threads` ne "same process ke andar, halke se, ek extra core par JS chalao" possible kiya.
+
+### Internally kaise kaam karta hai
+
+- `new Worker(path)` — libuv ek naya thread banata hai, usme ek naya V8 isolate + Node environment boot hota hai. Ye boot ~**10-50 ms** aur kuch **MB memory** leta hai.
+- **Communication channels:**
+  - **`workerData`** — `new Worker(path, { workerData })` — startup par ek baar structured-clone hoke worker ko milta hai. Read-only initial input ke liye.
+  - **`parentPort.postMessage(x)` / `worker.postMessage(x)`** — dono taraf. Value **structured clone** hoti hai — matlab ek **copy** bhejta hai, reference nahi. Functions, class instances (plain data ke alawa) clone nahi hote. Bade objects clone karna khud CPU/memory cost hai.
+  - **`SharedArrayBuffer`** — raw bytes jo dono threads **sach mein share** karte hain. Koi copy nahi. Numeric data (typed arrays) ke liye. `Atomics` se safe read/write/lock. Yahan tumhe khud race conditions se bachna padta hai.
+  - **`MessageChannel` / `MessagePort`** — do workers ko aapas mein direct connect karne ke liye.
+- Worker ke andar `require("worker_threads").isMainThread` `false` hota hai — isse ek hi file ko dono roles mein use kar sakte ho.
+- Worker khatam karo: worker khud `process.exit()` ya kaam khatam; parent se `await worker.terminate()`.
+
+### Simple real-life analogy
+
+Tum ek busy reception desk ho (main thread). Ek customer 40-page tax calculation maangta hai. Tum ek **accountant ko alag cabin** (worker thread) mein bithate ho, use file ki copy dete ho (`postMessage` — copy, isliye tumhari original file safe), aur khud baaki customers attend karte raho. Accountant kaam khatam karke result ki parchi (`postMessage` back) tumhe de deta hai.
+
+Agar har chhote sawaal ke liye naya accountant hire-and-fire karo (naya `Worker` per task), to hiring ka time hi kaam se zyada lag jaata hai — isliye tum 4 accountants ka **permanent panel** (pool) rakhte ho.
+
+### Code — line by line
+
+```javascript
+// hash-worker.js  — worker file
+const { parentPort, workerData } = require("worker_threads");
+const crypto = require("crypto");
+
+let hash = workerData.seed;
+for (let i = 0; i < workerData.rounds; i++) {
+  hash = crypto.createHash("sha256").update(hash).digest("hex");
+}
+parentPort.postMessage(hash);
+```
+
+```javascript
+// main.js
+const { Worker } = require("worker_threads");
+
+function hashInWorker(seed, rounds) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker("./hash-worker.js", {
+      workerData: { seed, rounds },
+    });
+    worker.on("message", resolve);
+    worker.on("error", reject);
+    worker.on("exit", (code) => {
+      if (code !== 0) reject(new Error("Worker exit code " + code));
+    });
+  });
+}
+
+hashInWorker("start", 500_000).then((h) => console.log("done", h));
+```
+
+- `require("worker_threads")` — core module, koi install nahi.
+- `parentPort` — worker se main thread tak ka channel. `null` hota hai agar file main thread par chale.
+- `workerData` — jo `new Worker(..., { workerData })` mein diya, uska structured-clone copy.
+- `for` loop — CPU-bound kaam, **worker ke thread par** chalta hai. Main thread iske dauraan free hai.
+- `parentPort.postMessage(hash)` — result wapas main thread ko copy karke bhejta hai.
+- `new Worker("./hash-worker.js", { workerData })` — naya thread spawn, ~10-50 ms cost.
+- `worker.on("message", resolve)` — jab worker `postMessage` kare, Promise resolve.
+- `worker.on("error", ...)` — worker ke andar uncaught exception yahan aata hai.
+- `worker.on("exit", ...)` — cleanup / non-zero exit detect. **Memory leak se bachne ke liye** exit handle karna zaroori — warna terminate hue workers reference mein reh sakte hain.
+
+### Day-to-day use
+
+- CPU-heavy endpoints: password hashing (`bcrypt` at high RPS), report generation, PDF/Excel export, image thumbnails (pure JS), large `JSON.parse`.
+- Data pipelines: parsing/transforming bade CSV, gzip/brotli in JS, cryptographic operations.
+- Production pattern: ek **pool** — `piscina` library, ya khud ka fixed array of workers with a job queue. Pool size ~ `os.cpus().length - 1`.
+
+### Kab use karna chahiye
+
+- Kaam **CPU-bound** hai (JS thread ko seconds/hundreds-of-ms ke liye busy rakhta hai), aur
+- Kaam **JavaScript / WASM** mein hai (kisi external binary ki zaroorat nahi), aur
+- Tum **same process** ke andar rehna chahte ho (shared config, no IPC serialization of a separate program), aur
+- Load itna hai ki blocking noticeable hai (ek-do requests par nahi, sustained load par).
+
+### Kab use nahi karna chahiye
+
+- **I/O-bound kaam** — DB query, HTTP call, file read. Yeh already non-blocking hai; worker thread sirf overhead add karega.
+- **Ek external program chalana** (`ffmpeg`, `git`, Python script) — wo `child_process` ka kaam hai.
+- **Poora HTTP server multi-core scale karna** — wo `cluster` / replicas ka kaam.
+- **Bahut chhota CPU kaam** — spawn + postMessage clone cost kaam se zyada. Threshold roughly: agar kaam < ~10-20 ms hai, worker ka overhead justify nahi hota.
+- **Bade objects frequently pass karna** — structured clone khud mehenga; agar aisa hai to `SharedArrayBuffer` socho ya design badlo.
+
+### Pros and cons
+
+**Pros**
+
+- Real parallelism — multiple cores, same process
+- `child_process` se halka — naya V8 isolate, naya process nahi
+- Shared memory possible (`SharedArrayBuffer`) — zero-copy for numeric data
+- Ek crash worker ko `error` event se pakad sakte ho (poora process nahi girta, agar aap handle karo)
+
+**Cons**
+
+- Spawn cost (~10-50 ms) + per-worker memory (few MB+) — isliye pool zaroori
+- `postMessage` data **copy** karta hai (structured clone) — bade payloads mehenge
+- Debugging harder — do event loops, message-passing bugs
+- Shared memory use karo to race conditions khud manage karne padte hain (`Atomics`)
+- Har cheez transferable/cloneable nahi (functions, DB connections, sockets nahi)
+
+### Alternatives
+
+- **Just use async I/O** — agar kaam I/O-bound hai, worker ki zaroorat hi nahi.
+- **`child_process` (`spawn`/`fork`)** — alag program chalana, ya crash-isolation (worker crash same process ko affect kar sakta hai; child_process nahi).
+- **`cluster`** — poore HTTP server ke N copies, har core par ek — different problem (throughput scaling, not offloading one heavy task).
+- **Native addon / `sharp` / `bcrypt` native** — ye libraries CPU kaam native code mein libuv thread pool par kar deti hain — often simplest.
+- **External job queue + worker fleet** — bahut bhaari / bursty kaam ke liye, alag machines par scale.
+
+### Interview mein "Worker thread kyun, async ya cluster kyun nahi?"
+
+> "Kaam CPU-bound tha — pure-JS report generation jo har request par event loop ko ~300 ms block kar raha tha, aur load test mein p99 5s tak chala gaya. Async se help nahi milti kyunki koi I/O wait nahi tha — CPU hi busy tha. `cluster` alag problem solve karta — wo poore server ko multi-core scale karta hai, lekin har worker mein wahi CPU function abhi bhi us worker ka event loop block karta. Mujhe chahiye tha ki wo ek function main event loop se hat jaaye, isliye maine ek 4-worker `piscina` pool banaya, report generation usme bheja, aur main thread bas request/response handle karta raha. p99 wapas 120 ms par aa gaya. Agar kaam ek external binary hota — jaise `ffmpeg` — to main `child_process.spawn` use karta, worker thread nahi."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Naya `Worker` **per request** mat banao. Spawn cost (~tens of ms) tumhari latency mein seedha add hoga aur high load par tum thousands of threads bana ke process ko OOM kar doge. Ek **fixed pool** (size ~ CPU count) + job queue — `piscina` ye out-of-the-box deta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Piscina (used by Node.js team's own tooling)">
+
+`piscina` ek chhoti library hai jo `worker_threads` ke upar ek pool aur job queue deti hai. Tum ek worker file point karte ho, `pool.run(data)` call karte ho, aur ek Promise milta hai. Ye idle workers ko reuse karta hai, queue depth manage karta hai, aur `maxThreads` / `idleTimeout` jaise knobs deta hai. Node.js documentation aur kai bade projects ise recommend karte hain kyunki manually pool likhne mein edge cases (worker crash, backpressure, graceful shutdown) miss ho jaate hain. Rule: `worker_threads` seekho, lekin production mein pool piscina se chalao.
+
+</RealWorld>
+
+<RealWorld company="Ek fintech PDF-statement service">
+
+Ek team monthly account statements PDF mein generate karti thi ek pure-JS PDF library se. Har PDF ~250 ms CPU. Month-end par jab lakhs statements request hote, single Node instance ka event loop lag 2-4 seconds tak chala jaata — unrelated APIs (login, transactions) sab timeout hone lage. Solution: PDF generation ko `piscina` pool (8 workers, 8-core box) mein move kiya, aur bulk runs ke liye ek queue add ki. Interactive API latency wapas normal, aur PDF throughput 8x ho gaya kyunki ab 8 cores use ho rahe the. `cluster` bhi consider hua tha lekin usme har worker process apni memory rakhta (statement templates duplicate) — worker threads ne V8-level isolation ke saath kam memory use ki.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Worker spawn cost: roughly **10-50 ms** (V8 isolate boot). Isliy per-task spawn avoid; pool once at startup.
+- Per-worker memory: baseline **few MB** for the isolate, plus jo bhi tumhara code allocate kare.
+- Practical pool size: **`os.cpus().length - 1`** (ek core main thread ke liye chhodo). CPU-bound work ke liye zyada workers throughput nahi badhaate.
+- `postMessage` structured clone: roughly **same cost as `JSON.parse`+`stringify`** of that object — big payloads (MBs) noticeably slow.
+- Task granularity threshold: agar ek task **< ~10-20 ms** CPU leta hai, worker overhead (clone + scheduling) usse zyada ho sakta hai — batch karo ya main thread par hi rakho.
+- `SharedArrayBuffer` pass karna: **O(1)** — sirf ek pointer, koi copy nahi.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic mid-to-senior interviews mein aata hai, aksar ek scenario ke saath: "tumhare API ka ek endpoint CPU-heavy hai aur baaki sab slow kar raha hai — kya karoge?" Interviewer dekhta hai ki tum (1) CPU-bound vs I/O-bound distinguish kar sakte ho, (2) worker_threads / child_process / cluster ke beech sahi tool chun sakte ho, (3) pool aur communication cost (clone vs shared memory) jaante ho.
+
+Model answer ka shape:
+
+1. **Diagnose** — "Event loop lag measure karunga; agar CPU-bound confirm hua..."
+2. **Tool choice** — "Kaam JS mein hai aur same process mein rehna hai to `worker_threads`. External binary hota to `child_process`. Poora server multi-core karna hota to `cluster`."
+3. **Pool** — "Per-request Worker nahi — fixed pool (`piscina`), size ~CPU count, job queue ke saath."
+4. **Communication** — "`workerData` for init, `postMessage` for results (copy — bade payloads avoid), `SharedArrayBuffer` agar numeric bulk data zero-copy chahiye."
+5. **Measure** — "Before/after p99 aur event loop lag."
+
+Red flag: "worker thread use karke DB queries parallel kar dunga" — DB queries already non-blocking hain; worker sirf overhead. Ya: "har request par naya Worker" — spawn cost aur OOM risk.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**I/O-bound kaam worker thread mein daalna.** DB query, HTTP call, `fs.readFile` — ye already event loop ko block nahi karte. Inhe worker mein bhejne se sirf spawn cost, message-passing overhead, aur ek extra event loop add hota hai — throughput girta hai. Worker threads **sirf CPU-bound** kaam ke liye hain.
+
+</Mistake>
+
+<Mistake>
+
+**Per request ek naya `Worker` banana.** Spawn cost (~10-50 ms) har request ki latency mein add hota hai, aur burst load par tum hazaaron threads bana ke process ko OOM ya OS thread limit tak le jaate ho. Startup par ek fixed pool banao (`piscina` ya khud ka), aur tasks queue karo.
+
+</Mistake>
+
+<Mistake>
+
+**`postMessage` ko free maan lena.** Message structured-clone hota hai — ek **copy** banti hai, roughly `JSON` round-trip jitni mehengi. Ek 20 MB object har baar pass karna khud ek naya CPU cost hai jo main thread par lagta hai. Bade numeric datasets ke liye `SharedArrayBuffer` use karo (zero-copy), ya kaam ko re-design karo taaki input chhota ho.
+
+</Mistake>
+
+<Mistake>
+
+**`worker.on("error")` aur `"exit"` handle na karna.** Worker ke andar uncaught exception `error` event se aata hai — agar tum listen nahi karte, wo unhandled ho ke process gira sakta hai. Aur `exit` handle na karne se terminated workers ki cleanup miss hoti hai aur pool mein "dead" slots reh jaate hain. Har worker par teeno: `message`, `error`, `exit`.
+
+</Mistake>
+
+<Mistake>
+
+**Yeh sochna ki worker crash main thread ko isolate karta hai jaise `child_process` karta hai.** Worker same process mein hai. Ek worker ka `process.exit()` sirf us worker ko band karta hai, lekin native code crash (segfault in a bad addon) poore process ko le jaa sakta hai. Agar tumhe **crash isolation** chahiye (untrusted ya flaky code), `child_process` use karo, worker thread nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Main thread: HTTP request aayi, CPU-heavy job"] --> B{"Pool mein free worker hai?"}
+    B -->|haan| C["pool.run(jobData) — job ek idle worker ko"]
+    B -->|nahi| D["Job internal queue mein wait"]
+    D --> C
+    C --> E["Worker thread: apna V8, apna event loop — CPU kaam parallel"]
+    E -->|"postMessage(result)"| F["Main thread: Promise resolve, res.json(result)"]
+    E -.->|error event| G["Main thread: reject, worker replace"]
+    C -.->|"main thread free rehta hai"| H["Doosri requests normal serve hoti rahti hain"]
+`}
+  caption="Fixed pool + queue: main event loop kabhi CPU kaam nahi karta, sirf jobs dispatch aur results collect karta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `worker_threads` = alag OS thread, apna V8 isolate + event loop + heap, **same process**. Node 12+ stable.
+- Sirf **CPU-bound JavaScript/WASM** ke liye. I/O-bound kaam ke liye kabhi nahi.
+- Communication: **`workerData`** (init, one-time copy), **`postMessage`** (both ways, structured-clone = copy), **`SharedArrayBuffer`** (zero-copy raw bytes, use `Atomics`).
+- Spawn cost **~10-50 ms** + few MB — isliy **pool** banao (`piscina`), per-request Worker mat banao.
+- Pool size ~ **`os.cpus().length - 1`**.
+- Har worker par: `message`, **`error`**, **`exit`** teeno handle karo.
+- **Decision table** — async I/O: bas use karo. worker_threads: CPU-bound JS, same process. `child_process`: alag program chalana / crash isolation. `cluster`: poora HTTP server multi-core scale.
+- `postMessage` bade objects = `JSON` round-trip jitna mehenga. Bade numeric data → `SharedArrayBuffer`.
+- Worker crash **same process** ke andar hai — native crash pura process gira sakta hai; true isolation ke liye `child_process`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `fib-worker.js` banao jo `workerData.n` par slow recursive Fibonacci compute kare aur `parentPort.postMessage` se return kare. `main.js` se `fib(42)` worker mein chalao aur saath hi har 100 ms par `console.log("main alive", Date.now())` — dekho main thread free rehta hai.
+
+**Medium:** `piscina` install karo. `fib-worker.js` ko piscina task file banao, ek pool (`maxThreads: os.cpus().length`) banao. Ek `http` server banao jisme `GET /fib?n=40` pool ko job de. `autocannon -c 20 -d 15` chala ke, saath hi ek `/ping` route jo turant respond kare — `/ping` p99 measure karo.
+
+**Bada:** Ek `SharedArrayBuffer` version banao: main thread ek `Int32Array` (over SAB) allocate kare, 3 workers alag-alag ranges pe kaam karein (sum, min, max) bina copy ke. `Atomics.add` se ek shared counter update karo aur verify karo koi lost update nahi hai. Phir same cheez `postMessage` (copy) se karo aur dono ka time compare karo bade array (10M ints) par.
+
+</Callout>

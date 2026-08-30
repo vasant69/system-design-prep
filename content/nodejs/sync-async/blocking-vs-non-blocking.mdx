@@ -1,0 +1,302 @@
+---
+slug: "blocking-vs-non-blocking"
+title: "Blocking vs Non-Blocking"
+section: "nodejs"
+module: "sync-async"
+order: 1
+difficulty: "beginner"
+readingTime: 15
+prerequisites: []
+tags: ["nodejs", "blocking", "non-blocking", "event-loop", "performance", "fundamentals"]
+englishDefinition: "A blocking operation keeps Node's single JavaScript thread busy so no other request or callback can run until it finishes. Synchronous I/O like fs.readFileSync and long CPU loops both block. A non-blocking operation hands the work to libuv or the OS and returns immediately, leaving the thread free to serve other work while the task completes in the background."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **blocking** operation keeps Node's single JavaScript thread busy, so no other request, timer, or callback can run until that operation finishes. Synchronous I/O such as `fs.readFileSync` and long CPU loops both block. A **non-blocking** operation hands the work off to libuv or the operating system and returns immediately, leaving the thread free to serve other work while the task completes in the background. On a server that handles many users at once, one blocking call freezes everybody.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node.js ka pura selling point yahi hai: ek hi thread pe hazaaron concurrent connections handle karna. Ye tabhi kaam karta hai jab tum thread ko **kabhi rokte nahi**. Blocking vs non-blocking samajhna Node ke har performance sawaal ki jadd hai — interview ho ya production incident.
+
+### Ye kya hai — blocking aur non-blocking
+
+Node mein tumhara JavaScript code **ek single thread** pe chalta hai (event loop wala thread). Us thread pe ek waqt pe sirf ek cheez chal sakti hai.
+
+- **Blocking operation** = wo call jo return hone se pehle thread ko busy rakhti hai. Jab tak wo khatam nahi hoti, event loop aage nahi badhta — matlab koi doosri request, koi timer, koi callback nahi chal sakta.
+- **Non-blocking operation** = wo call jo kaam ko libuv / OS ko de deti hai aur **turant return** ho jati hai. Result baad mein callback ya Promise ke through aata hai. Beech mein thread free rehta hai.
+
+Do tarah ka blocking hota hai, aur dono ko pehchanna zaroori hai:
+
+1. **Synchronous I/O** — `fs.readFileSync`, `fs.writeFileSync`, `child_process.execSync`. Ye naam mein hi `Sync` likha hota hai. Disk ya network ka wait poore thread ko rok deta hai.
+2. **CPU-bound work** — ek `for` loop jo 5 crore baar chala, `JSON.parse` ek 50 MB string pe, `bcrypt.hashSync`, image resize sync. Ismein koi `Sync` I/O nahi hai, phir bhi thread busy hai kyunki calculation khud lambi hai.
+
+### Ye kyun exist karta hai
+
+Traditional servers (Apache, purana Java) har request ke liye ek **naya thread** ya process dete the. 200 concurrent users = 200 threads. Har thread ki apni memory (stack ~1 MB), context-switching ka cost, aur OS limits. 10,000 connections pe machine gir jaati thi — ye "C10k problem" kehlata tha.
+
+Node ne ulta approach liya: **ek thread, non-blocking I/O**. Jab request disk ya DB ka wait karti hai, thread us wait mein baithta nahi — wo doosri requests serve karta hai. I/O complete hone par callback queue mein aata hai. Isse ek machine par bahut zyada concurrent connections aa jate hain, kam memory mein. Lekin ye trick sirf tab kaam karti hai jab tum **thread ko block na karo**. Ek blocking call poore model ko todd deti hai.
+
+### Internally kaise kaam karta hai
+
+`fs.readFile` (non-blocking) call karne par:
+
+1. Node request ko **libuv** ko deta hai.
+2. libuv ke paas ek **thread pool** hai (default **4 threads**, `UV_THREADPOOL_SIZE` se badha sakte ho). File I/O in background threads pe hoti hai.
+3. `readFile` call turant return ho jati hai. Event loop aage badhta hai, doosri requests chalti hain.
+4. Jab background thread file padh leta hai, wo callback ko **event loop ki queue** mein daal deta hai.
+5. Jab main thread ka call stack khali hota hai, event loop callback ko utha ke chalata hai.
+
+`fs.readFileSync` (blocking) call karne par: step 1 se 5 sab ek hi jagah, main thread pe, aur jab tak file nahi padhi jaati, `readFileSync` line se **aage control nahi jata**. Event loop ruk jata hai. Us 200 ms mein aayi har doosri request queue mein sadti rehti hai.
+
+Network I/O (TCP sockets, DB drivers) thread pool bhi use nahi karta — wo OS ke `epoll` / `kqueue` / IOCP se hota hai, aur bhi efficient. Point ek hi hai: main thread free rehta hai.
+
+### Simple real-life analogy
+
+Ek chef (single thread) restaurant mein. 100 tables (concurrent requests).
+
+- **Blocking**: chef ek dish ka oven timer khatam hone tak oven ke saamne khada rehta hai — 20 minute. Baaki 99 tables ka koi order nahi liya jata, kuch nahi banta. Puri restaurant thami.
+- **Non-blocking**: chef dish oven mein daal ke **timer set** karta hai aur turant agle order pe chala jata hai. Oven "ting" karega toh wapas aayega. 20 minute mein usne 30 aur orders aage badha diye.
+
+CPU-bound blocking = chef khud haath se 20 minute tak aata gooth raha hai. Koi timer nahi, kaam hi lamba hai. Ye bhi sabko rokta hai. Iska fix "async" nahi — iska fix kaam ko chhota karna ya doosre worker ko dena.
+
+### Code — line by line
+
+```javascript
+const http = require("http");
+const fs = require("fs");
+
+const server = http.createServer((req, res) => {
+  if (req.url === "/sync") {
+    const data = fs.readFileSync("./big.log", "utf8");
+    res.end(`sync read ${data.length} bytes`);
+  } else if (req.url === "/async") {
+    fs.readFile("./big.log", "utf8", (err, data) => {
+      if (err) return res.end("error");
+      res.end(`async read ${data.length} bytes`);
+    });
+  } else {
+    res.end("ok");
+  }
+});
+
+server.listen(3000);
+```
+
+- `http.createServer((req, res) => {...})` — har incoming request pe ye callback chalta hai, main thread pe.
+- `/sync` branch: `fs.readFileSync` — agar `big.log` 200 ms leta hai padhne mein, toh un 200 ms mein aayi **har doosri request** (even `/ok`) wait karti hai. Ek slow client ne sab ko slow kar diya.
+- `/async` branch: `fs.readFile` call turant return; callback thread pool se file aane par chalta hai. Beech mein `/ok` requests bina ruke serve hoti rehti hain.
+- Load test: `autocannon -c 100 http://localhost:3000/sync` vs `.../async`. Sync route ka p99 latency aur throughput dramatically kharab dikhega, async ka smooth.
+
+### Blocking ko kaise notice karein — event loop lag
+
+Production mein blocking chupke se aata hai. Isse maapne ka standard tarika **event loop lag / delay** hai: ek timer schedule karo `X` ms ke liye, aur dekho actual mein kitne baad fire hua. Extra time = event loop kitni der block raha.
+
+```javascript
+const start = Date.now();
+setInterval(() => {
+  const drift = Date.now() - start - 1000;
+  console.log(`event loop lag: ${drift} ms`);
+  // reset baseline
+}, 1000);
+```
+
+- Healthy server: lag **under 10 ms**.
+- `perf_hooks` ka `monitorEventLoopDelay()` isi ko precisely deta hai.
+- APM tools (New Relic, Datadog, `clinic doctor`) yahi metric alert karte hain. Agar lag 100+ ms spike kar raha hai, kahin blocking call hai — aksar sync fs, sync crypto, ya ek bada loop / regex.
+
+### Day-to-day use
+
+- Startup / config load / CLI script: `fs.readFileSync` **theek hai** — koi concurrent user nahi hai abhi.
+- Request handler / hot path: kabhi bhi `...Sync` nahi. Hamesha async version ya stream.
+- CPU-heavy kaam (hashing, PDF/image, bade JSON): `worker_threads`, ya alag service, ya kaam ko chhote chunks mein todo.
+- Regex on user input: catastrophic backtracking wala regex ek blocking hai jo attacker trigger kar sakta hai (ReDoS).
+
+### Kab blocking acceptable hai
+
+- **App startup** — server abhi `listen` nahi hua, koi request queue nahi ho rahi. Sync config read, sync `require`, sync key file load — sab fine, aur code simpler.
+- **One-off CLI / build script** — process ek kaam karke exit hota hai, concurrency hai hi nahi. Sync code likhna zyada readable hai.
+- **Test setup / migrations** — same logic.
+
+### Kab blocking nahi karna chahiye
+
+- Kisi bhi request-serving code path mein — ek user ka blocking call baaki sabki latency badha deta hai.
+- Kisi shared long-running process mein jahan aur kaam bhi ho raha ho (queue worker jo multiple jobs handle karta hai).
+- Kabhi bhi jab input ka size user-controlled ho — chhoti file test mein theek lagti hai, production mein 500 MB aati hai.
+
+### Pros and cons
+
+**Non-blocking ke pros**
+
+- Ek thread pe massive concurrency, kam memory.
+- Ek slow client baaki sabko slow nahi karta.
+- Predictable latency under load.
+
+**Non-blocking ke cons**
+
+- Code zyada complex — callbacks / Promises / async-await.
+- Error handling zyada careful (async errors `try/catch` se nahi milte plain callbacks mein).
+- CPU-bound problem non-blocking se solve **nahi** hoti — wo alag technique maangti hai.
+
+**Blocking ke pros**
+
+- Code seedha, top-to-bottom padho.
+- Startup/CLI mein zero downside.
+
+**Blocking ke cons (server par)**
+
+- Poora event loop rukta hai — throughput collapse.
+- Ek endpoint ka blocking poore process ko affect karta hai.
+- Debug karna mushkil — symptom "sab kuch random slow" jaisa dikhta hai.
+
+### Alternatives / related tools
+
+- **Async I/O API** — har `...Sync` ka ek callback ya `fs.promises` version hai; wahi default hona chahiye.
+- **Streams** — bade files ke liye pura memory mein load kiye bina chunk-by-chunk, aur non-blocking.
+- **worker_threads** — CPU-bound kaam ke liye alag thread, main event loop free.
+- **Child process / separate service** — bahut heavy kaam (video encode) ko poore alag process mein.
+- **Queue (BullMQ, SQS)** — heavy job ko request cycle se bahar background worker pe.
+
+### Interview mein "Blocking call se kya hota hai?"
+
+> "Node ka JS ek single thread pe chalta hai. Blocking call — jaise `fs.readFileSync` ya ek 50 lakh iteration ka loop — us thread ko busy rakhti hai, toh event loop aage nahi badh sakta aur koi doosri request serve nahi hoti. 100 concurrent users pe ek 200 ms ka sync read sabki latency 200 ms se badha deta hai, cascading. Isliye request path mein hamesha async version use karta hoon; sync sirf startup ya CLI mein jahan concurrency hai hi nahi. CPU-bound kaam ke liye async kaafi nahi — usse worker thread pe daalta hoon. Monitoring ke liye event loop delay metric dekhta hoon, healthy under 10 ms."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Async I/O aur CPU-bound kaam do alag problems hain. `fs.readFile` (async) event loop ko free rakhta hai. Lekin `for (let i = 0; i < 5e8; i++)` ko "async bana do" ka koi matlab nahi — wo calculation khud lambi hai. CPU-bound ka jawaab hai `worker_threads` ya kaam ko todna, na ki callback.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Payment gateway request handler">
+
+Ek BFSI payment service ka `/verify` endpoint har request pe ek local RSA public-key file `fs.readFileSync` se load kar raha tha — dev mein 0.2 ms, kisi ko dikha nahi. Production mein file ek NFS mount pe thi; network hiccup pe read 300 ms lene laga. Peak traffic pe event loop lag 2 seconds tak spike kiya, health checks fail hue, load balancer ne instances ko unhealthy mark kiya, aur ek retry storm shuru ho gaya. Fix do line ka tha: key ko **startup pe ek baar** `readFileSync` se load karke module-level constant mein rakh diya. Startup pe sync bilkul theek hai; per-request sync galti thi.
+
+</RealWorld>
+
+<RealWorld company="Node core: fs and crypto">
+
+Node ke core `fs` module ka har function do roop mein aata hai: `fs.readFile` / `fs.readFileSync`, `fs.stat` / `fs.statSync`, waghairah. Async version libuv ke **4-thread pool** ka use karta hai. `crypto.pbkdf2` (async) bhi wahi pool use karta hai, jabki `crypto.pbkdf2Sync` main thread pe hash karta hai — ek strong KDF 100+ ms le sakta hai, toh sync version ek login endpoint pe rakhna seedha blocking hai. `zlib`, `dns.lookup` — sab isi pattern pe: async = thread pool ya OS, sync = event loop rok do.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- libuv thread pool default size = **4**; `UV_THREADPOOL_SIZE` env var se max **1024** tak.
+- Healthy event loop lag = **under 10 ms**; **100 ms+** sustained lag matlab kahin blocking hai.
+- Ek OS thread ka default stack ~**1 MB** — isliye "thread per connection" model 10k connections pe ~10 GB maang leta tha.
+- `JSON.parse` roughly **50-100 MB/s** parse karta hai single-threaded — ek 100 MB payload ~1-2 second block karega.
+- `bcrypt` cost factor 12 = ~**250-300 ms** per hash; sync version us poore time event loop rokta hai.
+- Network I/O (sockets) thread pool use **nahi** karta — OS event notification (`epoll`/`kqueue`/IOCP) se, practically unlimited concurrency.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye almost har Node interview mein aata hai, aksar is form mein: "Node single-threaded hai toh ye fast kaise hai?" ya "`readFileSync` request handler mein rakhne se kya hoga?"
+
+Interviewer ye 3 cheezein check karta hai: (1) kya tum jaante ho JS ek thread pe chalta hai aur blocking us thread ko rokta hai; (2) kya tum sync I/O aur CPU-bound blocking ko alag kar sakte ho; (3) kya tum jaante ho blocking kab acceptable hai (startup/CLI).
+
+Achhe jawaab ka shape:
+
+1. **Model** — "ek event loop thread; non-blocking I/O libuv/OS ko offload hota hai."
+2. **Blocking ka effect** — "sync call ya lamba loop event loop rokta hai, saari pending requests wait karti hain."
+3. **Do tarah** — "sync I/O aur CPU-bound; dono block karte hain, fix alag hai."
+4. **Kab theek hai** — "startup, CLI, migrations — koi concurrency nahi."
+5. **Detect kaise** — "event loop delay metric, under 10 ms healthy."
+
+Red flag: "async laga do sab kuch theek" — CPU-bound blocking async se solve nahi hota. Aur "sync kabhi use mat karo" — startup pe sync bilkul sahi hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Per-request sync file read jo dev mein kabhi nahi dikha.** Config, cert, template ek chhoti local file se `fs.readFileSync` se har request pe padhna dev mein 0.1 ms leta hai, dikhta nahi. Production mein wahi file network mount pe, ya disk busy, ya file bada — read 200 ms le raha hai aur poora server thok raha hai. Aisi cheezein startup pe ek baar load karo.
+
+</Mistake>
+
+<Mistake>
+
+**CPU-bound blocking ko "async" laga ke fix karne ki koshish.** Ek bade array pe heavy calculation ko `setTimeout(fn, 0)` mein wrap kar diya aur socha "ab non-blocking hai." Kaam ab bhi event loop thread pe hi chalega, bas thoda baad mein. Jab chalega tab utni hi der block karega. CPU-bound ka jawaab `worker_threads` ya kaam ko todna hai.
+
+</Mistake>
+
+<Mistake>
+
+**`JSON.parse` / `JSON.stringify` ko free maan lena.** Ye synchronous aur CPU-bound hai. Ek 80 MB API response ya log line ko `JSON.parse` karna ek second se zyada event loop rok sakta hai. Bade payloads ke liye streaming parser (`stream-json`) ya size limit lagao.
+
+</Mistake>
+
+<Mistake>
+
+**Blocking regex user input pe chalana (ReDoS).** `/(a+)+$/` jaisa nested-quantifier regex ek crafted string pe exponential time leta hai — attacker ek request se poora event loop minute bhar ke liye freeze kar sakta hai. User input pe chalne wale regex simple rakho ya `re2` jaisi linear-time library use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`console.log` ko production mein high-frequency loop mein rakhna.** `process.stdout` jab pipe/file pe redirect ho toh writes synchronous ho jaati hain — ek tight loop mein hazaaron `console.log` blocking ban jate hain. Structured logger (pino) use karo jo async transport pe likhta hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    R1["100 requests aayi"] --> EL["Event Loop (single JS thread)"]
+    EL --> D{"Handler kya call karta hai?"}
+    D -->|"fs.readFileSync — BLOCKING"| B["Thread 200ms tak busy"]
+    B --> Q["Baaki 99 requests queue me wait"]
+    Q --> B2["200ms baad ek-ek serve"]
+    D -->|"fs.readFile — NON-BLOCKING"| N["libuv thread pool ko offload"]
+    N --> F["Event loop turant free"]
+    F --> S["Baaki requests bina ruke serve"]
+    N -->|"file ready"| CB["Callback queue me"]
+    CB --> S
+`}
+  caption="Sync branch me ek call poora thread rokti hai; async branch me kaam offload hota hai aur thread free rehta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Node ka JS **ek thread** pe chalta hai; blocking us thread ko rokta hai, saari pending requests wait karti hain.
+- Do tarah ka blocking: **synchronous I/O** (`fs.readFileSync`) aur **CPU-bound** (bada loop, `JSON.parse` on huge string, sync hashing).
+- Non-blocking I/O libuv thread pool (default **4**) ya OS event notification ko offload hota hai; call turant return.
+- Async se **CPU-bound blocking solve nahi hoti** — uske liye `worker_threads` ya kaam ko todna.
+- Blocking **acceptable**: startup, CLI, migrations, tests — koi concurrency nahi.
+- Blocking **kabhi nahi**: request handler, shared queue worker, user-controlled input size.
+- Detect: **event loop delay / lag** metric — healthy **under 10 ms**, sustained **100 ms+** matlab problem.
+- Classic traps: per-request `readFileSync`, huge `JSON.parse`, ReDoS regex, sync `console.log` in tight loop.
+- Har `...Sync` ka async version hai; async default hona chahiye.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script `lag.js` banao jo `setInterval` se har 500 ms pe event loop drift print kare (expected 500 ms se kitna zyada). Phir ek jagah `for (let i = 0; i < 3e9; i++) {}` daal do aur dekho drift kaise spike karta hai.
+
+**Medium:** Ek `http` server banao do routes ke saath: `/sync` jo ek 20 MB file `fs.readFileSync` se padhe, `/async` jo `fs.readFile` se. `npx autocannon -c 50 -d 10` dono pe chalao aur throughput / p99 latency compare karo. Likho kyun `/sync` gir gaya.
+
+**Bada:** `/sync` route pe blocking read ko (a) `fs.promises.readFile` se, phir (b) `fs.createReadStream(...).pipe(res)` se replace karo. Teenon versions ka autocannon result table banao (req/sec, latency p99, max event loop lag) aur decide karo kaunsa production ke liye best hai aur kyun.
+
+</Callout>

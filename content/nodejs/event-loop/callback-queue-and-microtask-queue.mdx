@@ -1,0 +1,265 @@
+---
+slug: "callback-queue-and-microtask-queue"
+title: "Callback Queue vs Microtask Queue"
+section: "nodejs"
+module: "event-loop"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["libuv-and-the-thread-pool"]
+tags: ["nodejs", "event-loop", "microtask", "process-nexttick", "promises", "queues"]
+englishDefinition: "Node has two kinds of pending-work queues. Macrotask queues hold callbacks scheduled by timers, completed I/O, and setImmediate. Microtask queues hold process.nextTick callbacks (drained first) and then resolved-Promise jobs. After every single macrotask, and between every event-loop phase, Node drains both microtask queues completely before moving on. Because microtasks are drained to empty, a function that keeps re-scheduling itself via process.nextTick or Promise.resolve can starve the loop and stop all I/O and timers from ever running."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Node keeps two *kinds* of pending-work queues. **Macrotask** queues hold callbacks scheduled by **timers** (`setTimeout`/`setInterval`), completed **I/O**, and `setImmediate` (the "check" phase). **Microtask** queues hold `process.nextTick` callbacks — drained **first** — and then resolved-**Promise** jobs (`.then`/`.catch`/`.finally`, `await` continuations). After **every single macrotask**, and **between every event-loop phase**, Node drains **both** microtask queues **completely** before moving on. Because microtasks drain to empty, code that keeps re-scheduling itself via `process.nextTick` or `Promise.resolve().then` can **starve** the loop — no timer or I/O callback ever gets a turn.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ab tak: call stack pe code chalta hai, libuv background kaam karta hai. Beech mein ek layer hai — **queues** — jahan "ready ho chuke lekin abhi chalne ka wait kar rahe" callbacks baithe hote hain. Do tarah ke queues hain aur inka priority order interview ka favourite hai.
+
+### Ye kya hai — do tarah ke queues
+
+**Macrotask queues** (Node inhe internally alag-alag phase queues mein rakhta hai):
+
+- **Timer queue** — `setTimeout` / `setInterval` ke expired callbacks.
+- **I/O callback queue** — file read done, socket data aaya, DB response — inke callbacks.
+- **Check queue** — `setImmediate` ke callbacks.
+- **Close queue** — `socket.on("close")` type cleanup callbacks.
+
+**Microtask queues** (do hain, strict order mein):
+
+1. **`process.nextTick` queue** — sabse pehle, hamesha.
+2. **Promise job queue** — resolved/rejected promises ke `.then` / `.catch` / `.finally`, aur `await` ke baad ka code.
+
+### Ye kyun exist karta hai
+
+Do alag priority levels chahiye the:
+
+- **Microtasks** un cheezon ke liye jo "abhi, isi kaam ke turant baad, kisi bhi I/O se pehle" chahiye — jaise ek promise resolve hua toh uska `.then` bina delay chale. Isse promise chains predictable aur fast rehti hain.
+- **Macrotasks** bade "units of work" hain — ek timer fire hua, ek request aayi. Inke beech Node microtasks flush karke system ko "settled" state mein le aata hai.
+
+`process.nextTick` alag isliye hai ki Node ko chahiye tha ek "even more immediate than a promise" hook — mostly internal use ke liye (error emit karne se pehle listener attach hone dena, waghera).
+
+### Internally kaise kaam karta hai
+
+Ek macrotask uthao aur uska callback stack pe chalao. Wo callback khatam hote hi (stack khali), Node:
+
+1. **Poora `process.nextTick` queue** drain karta hai — aur agar un callbacks ne aur `nextTick` add kiye, toh wo bhi, jab tak queue bilkul khali na ho.
+2. Phir **poora Promise job queue** drain karta hai — same, jo naye jobs add hue wo bhi, empty hone tak. (Aur agar promise job ne `nextTick` add kiya, toh Node wapas step 1 pe.)
+3. Ab jaake Node **agla macrotask** uthata hai ya **agle phase** pe move karta hai.
+
+Yeh drain **har macrotask ke baad** aur **har event-loop phase ke beech** hota hai. Matlab microtasks ko chalne ke liye poore phase ka wait nahi karna padta.
+
+**Starvation:** kyunki drain "empty hone tak" hai, agar ek `nextTick` callback apne andar phir `process.nextTick(sameFn)` call kare, toh queue kabhi khali nahi hoti — Node step 1 se aage badhta hi nahi. Timers, I/O, sab freeze. Same recursive `Promise.resolve().then(fn)` ke saath (thoda kam severe, kyunki nextTick usse bhi pehle hai, lekin phir bhi loop I/O tak nahi pahunchta).
+
+### Simple real-life analogy
+
+Tum ek kaam khatam karte ho (macrotask). Uthne se pehle:
+
+- **Sticky notes jo tumne khud ko likhe the "yeh turant kar"** (`process.nextTick`) — sabhi niptaao, aur likhte-likhte naye bhi aa jayein toh wo bhi.
+- Phir **"jab time mile" wali chhoti follow-ups** (Promise jobs) — sab niptaao.
+- Ab jaake **agla scheduled meeting** (agla macrotask) attend karo.
+
+Agar har sticky note padhte hi tum ek naya sticky note likh do "yeh turant kar", toh tum kabhi agli meeting mein nahi pahunchoge — yahi starvation hai.
+
+### Code — line by line
+
+```javascript
+console.log("1: sync start");
+
+setTimeout(() => console.log("5: setTimeout (macrotask)"), 0);
+
+Promise.resolve().then(() => console.log("4: promise .then (microtask)"));
+
+process.nextTick(() => console.log("3: process.nextTick (microtask, first)"));
+
+console.log("2: sync end");
+```
+
+- `console.log("1...")` — sync, abhi chala. Call stack pe.
+- `setTimeout(cb, 0)` — `cb` ko **timer macrotask queue** mein daala. Abhi nahi chalega.
+- `Promise.resolve().then(cb)` — promise already resolved hai, toh `cb` **Promise job (microtask) queue** mein.
+- `process.nextTick(cb)` — `cb` **nextTick (microtask) queue** mein — yeh Promise queue se pehle drain hoti hai.
+- `console.log("2...")` — sync, abhi chala.
+- Ab main script (ek macrotask jaisa) khatam. Stack khali. Node microtasks drain karta hai:
+  - `nextTick` queue: `"3: process.nextTick"` print.
+  - Promise queue: `"4: promise .then"` print.
+- Microtasks empty. Node agle phase (timers) pe jata hai:
+  - `"5: setTimeout"` print.
+- Final order: `1, 2, 3, 4, 5`.
+
+### Day-to-day use
+
+- Promise chains — har `.then` ek microtask; isliye `await`-heavy code "sync jaisa" fast feel hota hai, timers ke beech nahi latakta.
+- `process.nextTick` mostly libraries use karti hain — ek async API ko "hamesha async" banane ke liye (kabhi sync, kabhi async wala inconsistent behaviour avoid karne ke liye — "release Zalgo").
+- Debugging: agar tumhara `setTimeout(fn, 0)` "kabhi nahi chalta" lag raha, toh dekho kahin koi recursive microtask starvation toh nahi.
+
+### Kab `process.nextTick` use karna chahiye
+
+- Ek constructor ke baad event emit karna hai lekin caller ko `.on()` attach karne ka mauka dena hai — `process.nextTick(() => this.emit("ready"))`.
+- Ek callback ko guarantee async banana hai jab code path kabhi sync ho sakta hai.
+
+### Kab NAHI use karna chahiye
+
+- "Thoda baad mein chalao" ke liye — uske liye `setImmediate` ya `setTimeout` hai. `nextTick` I/O se **pehle** chalta hai, toh usse I/O-starve karne ka risk hai.
+- Recursively / loop mein — pakka starvation.
+- Bade kaam ko defer karne ke liye — wo microtask drain ke andar chalega aur poore loop ko rok dega.
+
+### Pros and cons
+
+**`process.nextTick`**
+
+- **Pros**: sabse jaldi async hook; internal consistency patterns ke liye perfect.
+- **Cons**: I/O aur timers se pehle — misuse se poori loop starve; recursion = deadlock jaisa freeze.
+
+**Promise microtasks**
+
+- **Pros**: predictable ordering, fast chaining, `await` ergonomics.
+- **Cons**: ek lambi synchronous promise chain bhi do macrotasks ke beech I/O ko delay kar sakti hai; infinite `.then` recursion bhi starve karti hai.
+
+### Alternatives
+
+- **`setImmediate(fn)`** — "current phase ke baad, next iteration ke check phase mein" — I/O ko starve kiye bina defer karne ka safe tareeka.
+- **`setTimeout(fn, 0)`** — timer phase mein, minimum ~1ms clamp; `setImmediate` se thoda kam predictable.
+- **`queueMicrotask(fn)`** — Promise job queue mein directly daalne ka standard API, bina ek dummy promise banaye.
+
+### Interview mein "nextTick aur setImmediate mein farak?"
+
+> "`process.nextTick` ka callback **microtask** hai — wo current operation ke turant baad, kisi bhi I/O ya timer se **pehle** chalta hai, aur poori nextTick queue ek saath drain hoti hai. `setImmediate` ka callback **macrotask** hai jo event loop ke **check** phase mein chalta hai, poll phase ke baad. Practically: `nextTick` 'abhi ke abhi', `setImmediate` 'is loop iteration ka kaam nipta ke phir'. Isliye deferring ke liye main `setImmediate` prefer karta hoon — `nextTick` recursion I/O ko bhookha maar deti hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`queueMicrotask(fn)` use karo jab tumhe "promise-timing" chahiye lekin ek asli promise nahi banana. `Promise.resolve().then(fn)` same timing deta hai par ek extra promise object allocate karta hai aur errors ko `.then` ke rejection channel mein bhej deta hai — `queueMicrotask` ka error `uncaughtException` mein jata hai, jo aksar zyada sahi hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="EventEmitter subclass — 'release Zalgo'">
+
+Node core aur bahut si libraries ek pattern follow karti hain: agar ek function kabhi sync aur kabhi async result deta hai, toh callers ke liye reasoning namumkin ho jata hai. Solution: hamesha async raho. Ek `Database` class constructor jo connection ready hone pe `"ready"` emit karta hai — agar connection cached/instant hai, toh `this.emit("ready")` constructor ke andar hi chal jayega, **isse pehle** ki caller `db.on("ready", ...)` likh paye — event miss. Fix: `process.nextTick(() => this.emit("ready"))` — ab emit guaranteed caller ke `.on()` ke baad, lekin phir bhi kisi I/O se pehle, minimum delay.
+
+</RealWorld>
+
+<RealWorld company="Accidental loop starvation in a recursive walker">
+
+Ek service ne ek badi in-memory tree ko process karne ke liye `Promise.resolve().then(() => processNext())` pattern use kiya, yeh soch ke ki "microtask se stack overflow nahi hoga". Tree mein roughly 4 lakh nodes the. Har node ek naya microtask schedule kar raha tha, aur microtask queue kabhi khali nahi hui — Node event loop poll phase tak pahuncha hi nahi jab tak poora tree process na ho. Us dauraan health-check HTTP endpoint (jo ek `setTimeout`-based timeout pe tha) fire nahi hua, load balancer ne instance ko unhealthy mark kar diya. Fix: har N nodes ke baad `await new Promise(r => setImmediate(r))` — event loop ko I/O ke liye saans lene ka mauka.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- **Do** microtask queues: `process.nextTick` (priority 1) phir Promise jobs (priority 2).
+- Microtask drain point: **har macrotask ke baad** + **har event-loop phase ke beech** — poll phase ke pehle bhi.
+- Microtask drain **exhaustive** hai — "empty hone tak", including drain ke dauraan add hue naye microtasks.
+- `setTimeout(fn, 0)` ka effective minimum delay historically **~1ms** clamp; `setImmediate` ka koi delay clamp nahi — bas "next check phase".
+- Recursive `process.nextTick` → I/O aur timers ko **0%** CPU — total starvation, process "hang" dikhta hai bina crash ke.
+- `queueMicrotask` Node **v11 (2018)** se available — usse pehle log `Promise.resolve().then` use karte the.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Yeh dono levels pe poocha jata hai: junior — "microtask kya hai?"; senior — "yeh 8 lines ka output batao" ya "starvation kaise hoti hai?". Interviewer verify karta hai ki tum priority order jaante ho aur "drain to empty" ka matlab samajhte ho.
+
+Achhe jawaab ka shape:
+
+1. **Do types** — "macrotask: timers, I/O, `setImmediate`. Microtask: `process.nextTick` phir Promise jobs."
+2. **Priority** — "har macrotask ke baad aur har phase ke beech, poori nextTick queue phir poori Promise queue drain hoti hai — empty hone tak — tabhi agla macrotask."
+3. **`nextTick` vs Promise** — "`nextTick` Promise jobs se bhi pehle."
+4. **Starvation** — "recursive `nextTick`/`.then` queue ko kabhi khali nahi hone deta, toh loop I/O/timers tak pahunchta hi nahi — process hang."
+5. **Fix** — "defer karne ke liye `setImmediate`, jo macrotask hai aur I/O ke baad aata hai."
+
+Red flag: "`setTimeout(fn, 0)` turant `Promise.then` se pehle chalta hai" — ulta hai, `.then` (microtask) hamesha `setTimeout` (macrotask) se pehle.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Sochna ki `setTimeout(fn, 0)` ka callback `Promise.resolve().then(fn)` se pehle chalega.** Ulta. `.then` ek **microtask** hai jo current macrotask ke turant baad, kisi bhi timer se pehle drain hoti hai. `setTimeout` ka callback ek **macrotask** hai — wo agli loop iteration ke timers phase ka wait karta hai. Microtask hamesha jeetega.
+
+</Mistake>
+
+<Mistake>
+
+**`process.nextTick` ko "thoda baad mein chalao" samajh ke use karna.** `nextTick` I/O se **pehle** hai, "baad" nahi. Ek heavy `nextTick` callback ya recursive `nextTick` poore I/O ko block kar deta hai. Deferring ke liye `setImmediate` ya `setTimeout` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Recursive microtask se "kaam chunk karna".** `Promise.resolve().then(processNext)` loop mein — yeh stack overflow toh nahi karta lekin microtask queue kabhi khali nahi hoti, toh event loop poll/timers phase tak nahi pahunchta. Chunking ke liye `setImmediate` use karo — wo macrotask hai, I/O ke saath fair share leta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Bhoolna ki microtasks har phase ke beech bhi drain hoti hain, sirf macrotasks ke beech nahi.** Log sochte hain "ek pura phase chalega phir microtasks". Actually Node har phase ke ek callback aur agle ke beech bhi microtask queue flush karta hai — isli"e ek I/O callback ke andar `.then` schedule karo toh wo agle I/O callback se pehle chalega.
+
+</Mistake>
+
+<Mistake>
+
+**`Promise.resolve().then` aur `queueMicrotask` ko error-handling ke liye same maan lena.** `queueMicrotask(fn)` mein throw hua error `uncaughtException` mein jata hai. `Promise.resolve().then(fn)` mein throw hua error ek **unhandled rejection** ban jata hai jo alag handler (`unhandledRejection`) mein jata hai aur silently swallow ho sakta hai. Timing same, error semantics alag.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Pick one macrotask — run its callback on the call stack"] --> B["Callback finishes — call stack empty"]
+    B --> C["Drain process.nextTick queue — fully, including new ones added during drain"]
+    C --> D["Drain Promise job queue — fully, including new ones"]
+    D --> E{"Any new nextTick added by a Promise job?"}
+    E -->|"Yes"| C
+    E -->|"No — both microtask queues empty"| F["Move to next macrotask / next event-loop phase"]
+    F --> A
+`}
+  caption="After every macrotask and between every phase: nextTick queue drains completely, then the Promise queue — and if that adds more nextTicks, it loops back. Only then does the next macrotask run."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Macrotask** queues: timers (`setTimeout`), I/O callbacks, check (`setImmediate`), close.
+- **Microtask** queues (2): `process.nextTick` (drains **first**), phir Promise jobs (`.then`/`.catch`/`.finally`, `await` continuations).
+- Drain point: **har macrotask ke baad** aur **har event-loop phase ke beech**.
+- Drain **exhaustive** — queue empty hone tak, including drain ke dauraan add hue microtasks.
+- Priority: sync code → poori nextTick queue → poori Promise queue → agla macrotask.
+- `.then` (microtask) **hamesha** `setTimeout` (macrotask) se pehle — chahe delay `0` ho.
+- **Starvation**: recursive `process.nextTick` ya `Promise.resolve().then` → loop kabhi I/O/timers tak nahi pahunchta → process hang, no crash.
+- Deferring ke liye `setImmediate` (macrotask, I/O ke baad, fair) use karo — `nextTick` nahi.
+- `queueMicrotask(fn)` = Promise job queue mein daalne ka clean API; error `uncaughtException` mein jata hai.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Yeh 4 lines likho aur **chalane se pehle** output order predict karo: `console.log("A"); process.nextTick(() => console.log("B")); Promise.resolve().then(() => console.log("C")); console.log("D");`. Phir chala ke check karo. `B` `C` se pehle kyun?
+
+**Medium:** Ek function `deferByMicrotask(fn)` aur `deferByMacrotask(fn)` likho (pehla `queueMicrotask`, doosra `setImmediate`). Dono se 5-5 numbers print karwao interleaved (`for` loop mein dono call). Output dekho — macrotask wale kaise "phases" mein aate hain jabki microtask wale ek burst mein.
+
+**Bada:** Ek `starve()` function likho jo `process.nextTick(starve)` khud ko call kare. Ek `setTimeout(() => console.log("timer fired"), 100)` bhi lagao aur ek `setInterval` jo har 50ms pe kuch print kare. `starve()` call karo. Observe karo ki timer/interval **kabhi nahi** chalte. Ab `process.nextTick` ko `setImmediate` se replace karo — ab kya hota hai aur kyun? 2-3 line mein likho.
+
+</Callout>

@@ -1,0 +1,291 @@
+---
+slug: "path-module"
+title: "The path Module — Safe Cross-OS Paths"
+section: "nodejs"
+module: "builtin-modules"
+order: 2
+difficulty: "beginner"
+readingTime: 13
+prerequisites: []
+tags: ["nodejs", "path", "filesystem", "cross-platform", "builtin-modules"]
+englishDefinition: "The path module builds, splits, and normalises filesystem paths in a way that works on every operating system. It handles the separator difference (forward slash on POSIX, backslash on Windows), resolves . and .. segments, and pulls apart a path into directory, base name, and extension. path.join concatenates segments; path.resolve builds an absolute path from the current working directory."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+The `path` module builds, splits, and normalises filesystem paths so your code works on every operating system. It hides the separator difference (`/` on POSIX, `\` on Windows), resolves `.` and `..` segments, and pulls a path apart into directory, base name, and extension. `path.join` glues segments together; `path.resolve` builds an **absolute** path, using the current working directory as the anchor when needed.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Paths chhoti si cheez lagti hai, lekin string concatenation se paths banana ek classic bug source hai — Windows pe alag separator, `..` ka galat handling, double slashes, aur "kaam mera machine pe kar raha tha" wali kahani. `path` module ye sab handle karta hai.
+
+### Ye kya hai — path module
+
+Core module (`const path = require("node:path")`). Ye sirf **strings ke saath** kaam karta hai — disk ko touch nahi karta, file exist karti hai ya nahi ye check nahi karta. Iska kaam: segments ko sahi separator ke saath jodna, ek path ko todna (dir / name / extension), aur `.`/`..`/extra slashes ko clean karna.
+
+### Ye kyun exist karta hai
+
+Do bade reasons:
+
+1. **OS separator farak** — POSIX (Linux/Mac) pe `/`, Windows pe `\`. Agar tum `dir + "/" + file` likhoge toh Windows pe kabhi-kabhi chalega (Windows dono accept karta hai) aur kabhi break hoga. `path.join` current OS ka sahi separator use karta hai.
+2. **`..` aur `.` ka resolution** — `"a/b/../c"` ka matlab `"a/c"` hai. String concat ise nahi samajhta; `path.join` / `path.normalize` samajhta hai. Ye security ke liye bhi matter karta hai (path traversal — neeche).
+
+### Internally kaise kaam karta hai
+
+`path` module ka behaviour **platform pe depend karta hai** jahan code chal raha hai. `require("node:path")` tumhe automatically `path.win32` deta hai Windows pe aur `path.posix` deta hai baaki jagah. Dono explicitly bhi available hain: `path.posix.join(...)` hamesha `/` use karega chahe tum Windows pe ho — ye tab useful hai jab tum URLs ya cross-platform config files bana rahe ho.
+
+Constants: `path.sep` = current separator (`"/"` ya `"\\"`), `path.delimiter` = PATH env variable ka separator (`":"` POSIX, `";"` Windows).
+
+### Simple real-life analogy
+
+`path.join` ek address-format expert hai. Tum use house number, street, city alag-alag deto ho; wo current desh (OS) ke rules se ek sahi address bana deta hai — sahi separators, extra commas hataake. Tum khud "number, street, city" ko string mein jodoge toh kisi ek country mein format galat ho jayega.
+
+### Code — line by line
+
+```javascript
+const path = require("node:path");
+
+// join — segments ko OS separator se jodo, . aur .. resolve karo
+path.join("uploads", "2024", "..", "2025", "file.pdf");
+// -> "uploads/2025/file.pdf"  (Windows: "uploads\\2025\\file.pdf")
+
+// resolve — right-to-left, jab tak absolute na mile; phir cwd prepend
+path.resolve("src", "index.js");
+// -> "/home/vasant/app/src/index.js"  (cwd = /home/vasant/app)
+
+path.resolve("/etc", "nginx", "nginx.conf");
+// -> "/etc/nginx/nginx.conf"  (pehla segment absolute tha, cwd ignore)
+
+// todna
+const p = "/var/log/app/error.log";
+path.dirname(p);   // "/var/log/app"
+path.basename(p);  // "error.log"
+path.basename(p, ".log"); // "error"
+path.extname(p);   // ".log"
+path.parse(p);
+// { root: "/", dir: "/var/log/app", base: "error.log", name: "error", ext: ".log" }
+
+// __dirname ko base banao — script ke relative, cwd ke nahi
+const templatePath = path.join(__dirname, "templates", "email.html");
+```
+
+- `path.join` — segments jodta hai + normalize. Result **relative** rehta hai agar koi segment absolute nahi tha.
+- `path.resolve` — segments ko **right se left** process karta hai jab tak ek absolute path na ban jaye; agar phir bhi absolute nahi bana toh `process.cwd()` prepend karta hai. Result **hamesha absolute**.
+- `dirname` / `basename` / `extname` — path ke teen hisse.
+- `parse` — ek object mein sab; `format` iska ulta (object → string).
+- `__dirname` — current file ka folder. `path.join(__dirname, ...)` se path script ke location se banta hai, na ki jahan se `node` run hua (cwd).
+
+### join vs resolve — sabse important farak
+
+| | `path.join(a, b)` | `path.resolve(a, b)` |
+|---|---|---|
+| Kaam | segments jodo + normalize | absolute path banao |
+| Result | relative reh sakta hai | hamesha absolute |
+| cwd ka role | koi nahi | jab koi segment absolute na ho to prepend |
+| Absolute segment | as-is jodta hai | us point se restart karta hai (pehle wale discard) |
+
+Rule of thumb: file ka **poora location** chahiye jo cwd pe depend na kare → `path.resolve(__dirname, ...)`. Bas do relative pieces jodne hain → `path.join`.
+
+### Path traversal — security angle
+
+Agar user input se path banate ho — `path.join("./uploads", req.query.name)` — aur `name` `"../../etc/passwd"` hai, toh `join` normalize karke tumhe `/etc/passwd`-jaisa path de dega, tumhare `uploads` folder ke bahar. Fix:
+
+```javascript
+const base = path.resolve("./uploads");
+const target = path.resolve(base, req.query.name);
+if (!target.startsWith(base + path.sep)) {
+  throw new Error("path traversal blocked");
+}
+```
+
+`resolve` karke phir check karo ki result base folder ke **andar** hi hai.
+
+### __dirname vs import.meta
+
+CommonJS mein `__dirname` aur `__filename` free variables hain. ES Modules (`.mjs` ya `"type": "module"`) mein ye nahi hote — wahan:
+
+```javascript
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// ya newer Node: import.meta.dirname
+```
+
+### Day-to-day use
+
+- `path.join(__dirname, "views", "index.html")` — static/template files
+- `path.extname(file)` — upload ka type check (`.pdf` allowed?)
+- `path.basename(url)` — URL se filename nikalna
+- `path.resolve(process.cwd(), configArg)` — CLI se diya relative config path
+- `path.parse` — batch rename scripts
+
+### Kab use karna chahiye
+
+- Har baar jab do path pieces jodne hon — bina exception.
+- Jab code Windows + Linux dono pe chalega (CI Linux, dev Windows).
+- User/config-supplied path segments ke saath — normalization + traversal check.
+
+### Kab use nahi karna chahiye
+
+- **URLs ke liye `path.join` mat use karo Windows pe** — wo `\` daal dega. URL paths ke liye `path.posix.join` ya `new URL()`.
+- Jab tumhare paas already ek clean absolute path hai aur koi user input nahi — extra `resolve` noise hai.
+
+### Pros and cons
+
+**Pros**
+
+- Cross-OS correctness free mein.
+- `.`/`..`/double-slash cleanup built-in.
+- `posix` / `win32` variants se explicit control.
+
+**Cons**
+
+- Disk ko touch nahi karta — "path valid hai" ka matlab "file exist karti hai" nahi.
+- `join` vs `resolve` confuse karna common bug.
+- ESM mein `__dirname` na hone se boilerplate.
+
+### Alternatives
+
+- **`new URL(relative, import.meta.url)`** — ESM mein file paths ke liye clean.
+- **`path.posix` / `path.win32`** — jab tumhe specific OS ka behaviour chahiye (URLs → posix).
+- **Template literals** — sirf tab jab dono pieces already normalized aur same-OS ho (mostly avoid).
+
+### Interview mein "Paths kaise handle karte ho cross-platform?"
+
+> "Kabhi string concat nahi — hamesha `path.join` ya `path.resolve`. Script-relative files ke liye `path.resolve(__dirname, ...)` taaki cwd pe depend na kare. User ya config se aaye path segments ko `path.resolve` karke check karta hoon ki wo allowed base folder ke andar hai (traversal guard). URLs ke liye `path.posix` use karta hoon taaki Windows pe backslash na aaye. ESM files mein `__dirname` ko `fileURLToPath(import.meta.url)` se derive karta hoon."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`path.join("/a", "/b")` → `"/a/b"` (dono jud gaye). `path.resolve("/a", "/b")` → `"/b"` (doosra segment absolute tha, pehla discard ho gaya). Ye ek-line farak interview mein aksar poocha jata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Static file serving in an internal tool">
+
+Ek internal reporting tool Express se static PDFs serve karta hai. Handler `const file = path.resolve(REPORTS_DIR, req.params.name)` banata hai, phir `if (!file.startsWith(REPORTS_DIR + path.sep)) return res.sendStatus(403)`. Iske bina koi `../../` bhej ke server ki config ya `/etc/passwd` padh sakta tha. `REPORTS_DIR` khud `path.resolve(__dirname, "..", "reports")` se banti hai taaki service kisi bhi cwd se start ho, path sahi rahe (systemd unit aksar `/` cwd se start karta hai).
+
+</RealWorld>
+
+<RealWorld company="Build script running on Windows dev + Linux CI">
+
+Ek team ka build script dev machines (Windows) aur CI (Ubuntu) dono pe chalta hai. Pehle `outDir + "/" + name + ".js"` use hota tha — Windows pe kaam kar jata tha kyunki Windows `/` bhi accept karta hai, par jab ek path `path.dirname` se aage process hota tha toh mixed `\` aur `/` se glob patterns fail hone lage. `path.join` pe switch karne ke baad dono platforms pe consistent. Jahan generated file ke andar import paths likhne the (jo hamesha `/` chahiye), wahan `path.posix.join` use kiya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `path.sep` = `"/"` POSIX pe, `"\\"` Windows pe.
+- `path.delimiter` (PATH env var splitter) = `":"` POSIX, `";"` Windows.
+- `path.resolve()` bina args ke = `process.cwd()`.
+- `path.join()` ka result **relative** rehta hai unless koi segment absolute ho; `path.resolve()` ka result **hamesha absolute**.
+- Windows pe max path length historically **260** chars (`MAX_PATH`) — long-path support ke bina.
+- `import.meta.dirname` / `import.meta.filename` Node **v20.11 / v21.2** se available (ESM mein `__dirname` ka replacement).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Chhota par sharp topic. Interviewer dekhta hai ki tum "works on my machine" wale path bugs se bachna jaante ho.
+
+Achhe jawaab ka shape:
+
+1. **Never concat** — `path.join` / `path.resolve` hamesha, kyunki separator OS-specific hai aur `..` ko resolve karna padta hai.
+2. **join vs resolve** — join glue + normalize (relative reh sakta hai); resolve absolute banata hai, right-to-left, cwd anchor.
+3. **__dirname anchor** — script-relative files ke liye `path.resolve(__dirname, ...)` taaki cwd matter na kare.
+4. **Traversal guard** — user input se path banao toh `resolve` karke base-folder containment check.
+5. **posix vs win32** — URLs / cross-platform config ke liye `path.posix`.
+
+Red flag: "Windows pe bhi `/` chalta hai na, toh concat theek hai" — kabhi-kabhi chalta hai, phir mixed separators pe kuch aur toota hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Strings concat karke path banana** — `dir + "/" + file`. Windows pe separator `\` hai; kaam kabhi chal jata hai (Windows `/` tolerate karta hai) aur kabhi mixed `\`/`/` se glob, `dirname`, ya downstream tooling tootta hai. Hamesha `path.join` ya `path.resolve`.
+
+</Mistake>
+
+<Mistake>
+
+**`path.join` aur `path.resolve` ko interchangeable samajhna.** `join("/a", "/b")` = `"/a/b"`; `resolve("/a", "/b")` = `"/b"` (doosra absolute segment pehle wale ko discard karta hai). Poora, cwd-independent location chahiye → `resolve(__dirname, ...)`. Sirf relative pieces jodne → `join`.
+
+</Mistake>
+
+<Mistake>
+
+**Path ko `__dirname` ke bajaye `process.cwd()` (ya implicit relative) se banana.** `require("./config.json")` chalta hai, par `fs.readFile("./config.json")` cwd pe depend karta hai — service systemd/pm2 se `/` cwd pe start ho toh file nahi milegi. Script-relative assets ke liye `path.resolve(__dirname, "config.json")`.
+
+</Mistake>
+
+<Mistake>
+
+**User input ko bina traversal check ke path mein daalna.** `path.join("./uploads", req.query.name)` with `name = "../../etc/passwd"` → uploads folder ke bahar. `path.resolve` karke `result.startsWith(baseDir + path.sep)` verify karo, warna 403.
+
+</Mistake>
+
+<Mistake>
+
+**URL banane ke liye `path.join` use karna.** Windows pe `path.join("api", "v1", "users")` → `"api\\v1\\users"` — invalid URL. URLs ke liye `path.posix.join` ya `new URL()`. `path` filesystem ke liye hai, web paths ke liye nahi.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["path.resolve(segments...)"] --> B["Right se left process karo"]
+    B --> C{"Absolute path ban gaya?"}
+    C -->|"Nahi, aur segments bache"| B
+    C -->|"Nahi, segments khatam"| D["process.cwd() prepend karo"]
+    C -->|"Haan"| E["Normalize: . aur .. resolve"]
+    D --> E
+    E --> F["Absolute normalized path return"]
+`}
+  caption="resolve right-to-left chalta hai jab tak absolute na bane; nahi bana to cwd anchor. join isse alag — sirf jodta hai aur normalize karta hai, absolute force nahi karta."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `path` sirf strings pe kaam karta hai — disk touch nahi, existence check nahi.
+- Kabhi string concat mat karo. `path.join` (glue + normalize) ya `path.resolve` (absolute banao).
+- `join("/a", "/b")` → `"/a/b"`; `resolve("/a", "/b")` → `"/b"`.
+- `resolve` right-to-left; absolute na bane toh `process.cwd()` prepend; result hamesha absolute.
+- Script-relative files → `path.resolve(__dirname, ...)`, cwd pe kabhi depend mat karo.
+- `dirname` / `basename` / `extname` / `parse` / `format` — path ko todo aur jodo.
+- `path.sep` = separator; `path.delimiter` = PATH env splitter (`:` vs `;`).
+- `path.posix` / `path.win32` — force a specific OS's rules; URLs ke liye `posix`.
+- ESM mein `__dirname` nahi — `path.dirname(fileURLToPath(import.meta.url))` ya `import.meta.dirname`.
+- User input se path → `resolve` + base-folder containment check (traversal guard).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script likho jo `"/srv/app/logs/../data/report.2024.csv"` ko `path.parse` se todke `root`, `dir`, `base`, `name`, `ext` print kare. Note karo ki `..` resolve hua ya nahi, aur `name` mein `.2024` kyun hai.
+
+**Medium:** `function safeJoin(baseDir, userPath)` likho jo `path.resolve` se full path banaye aur throw kare agar wo `baseDir` ke bahar jaata hai. Test cases: `"a/b.txt"` (ok), `"../secret"` (block), `"a/../../secret"` (block), `"/etc/passwd"` (block).
+
+**Bada:** Ek script jo dono `path.join` aur `path.posix.join` se same segments `["assets", "img", "..", "logo.png"]` join kare, dono outputs print kare, aur ek short comment likhe ki Windows pe difference kya hoga aur URL ke liye kaunsa sahi hai.
+
+</Callout>

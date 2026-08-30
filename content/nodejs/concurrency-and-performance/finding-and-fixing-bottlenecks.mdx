@@ -1,0 +1,380 @@
+---
+slug: "finding-and-fixing-bottlenecks"
+title: "Finding & Fixing Bottlenecks (Case Study)"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 6
+difficulty: "advanced"
+readingTime: 22
+prerequisites: ["nodejs-performance-concepts", "worker-threads"]
+tags: ["nodejs", "performance", "profiling", "flamegraph", "case-study", "event-loop-lag"]
+englishDefinition: "A worked case study of diagnosing a slow POST /report endpoint under load. It walks through reproducing and measuring with autocannon, suspecting the event loop and measuring loop lag, generating a flamegraph with clinic doctor and node --cpu-prof, identifying three separate causes (a synchronous parse of a large body, a synchronous crypto hash, and no caching), fixing them one at a time while re-measuring each, and comparing before-and-after numbers. It ends with the follow-up questions an interviewer asks next."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A worked case study: a `POST /report` endpoint is fast in isolation but **collapses under load**. We reproduce and measure it with **autocannon**, suspect the **event loop** and confirm with a **loop-lag** measurement, generate a **flamegraph** with `clinic doctor` and `node --cpu-prof`, and find **three separate causes** — a synchronous parse of a large request body, a synchronous `crypto` hash, and no caching of an expensive lookup. We fix them **one at a time, re-measuring after each**, and compare before/after numbers. The point is the *method*, not the specific fixes: measure, form a hypothesis, profile, change one thing, measure again.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic ek real debugging session ki tarah likha hai. Ek endpoint hai jo dev machine par 30ms leta hai, lekin production load par 4 second p99 deta hai aur error rate 8% par pahunch jaata hai. Hum step-by-step isko diagnose karenge — guessing se nahi, tools se — aur har fix ke baad numbers dobara lenge. Interview mein "ek slow endpoint kaise debug karoge" ka ye exact walkthrough hai.
+
+### Setup — the endpoint and the symptom
+
+Endpoint: `POST /report`. Client ek JSON body bhejta hai (transactions ki list, aksar `2-5 MB`), server usko parse karta hai, ek **content hash** banata hai idempotency ke liye, ek `orgId` se **org settings** fetch karta hai (currency, rounding rules), report compute karke JSON return karta hai.
+
+Symptom (production, ~60 req/s peak):
+
+- p50 latency: `~120ms` (theek lagta hai)
+- p99 latency: `~4200ms`
+- error rate: `~8%` (client timeouts at 5s)
+- CPU: `~95%` on a 2-core instance
+- Ye dev par reproduce nahi hota — dev par ek request at a time chalti hai.
+
+"Dev par theek, load par kharab" — ye lgabhag hamesha ek **event-loop-blocking** signature hai.
+
+### Step 1 — Reproduce and measure a baseline
+
+Guess mat karo. Pehle ek **repeatable load test** banao, local machine par, production jaisa payload use karke.
+
+```bash
+# ek realistic 3 MB payload file: sample-report.json
+
+autocannon \
+  -m POST \
+  -H "content-type=application/json" \
+  -b @sample-report.json \
+  -c 50 -d 30 \
+  http://localhost:3000/report
+```
+
+Baseline result (numbers is case study ke, illustrative):
+
+```text
+Requests/sec:   41
+Latency p50:    180 ms
+Latency p99:    4900 ms
+Latency max:    9100 ms
+2xx:            96%   |   non-2xx / errors: 4%
+```
+
+Ab humare paas ek **number** hai jise improve karna hai. Har change ke baad ye exact command dobara chalayenge.
+
+### Step 2 — Form a hypothesis: is the event loop blocked?
+
+"Dev fine, load bad" + "high CPU" + "p50 OK but p99 terrible" — ye classic event-loop-congestion pattern hai. Confirm karne ke liye **event loop lag** measure karo — server ke andar, load test ke dauran chalu:
+
+```javascript
+const { monitorEventLoopDelay } = require("node:perf_hooks");
+
+const h = monitorEventLoopDelay({ resolution: 20 });
+h.enable();
+
+setInterval(() => {
+  console.log(
+    "loop lag ms — mean:", (h.mean / 1e6).toFixed(1),
+    "p99:", (h.percentile(99) / 1e6).toFixed(1),
+    "max:", (h.max / 1e6).toFixed(1),
+  );
+  h.reset();
+}, 2000);
+```
+
+Load ke dauran output:
+
+```text
+loop lag ms — mean: 210.4  p99: 980.0  max: 1400.0
+```
+
+Healthy loop lag `< 10ms` hota hai. `mean 210ms`, `p99 980ms` — loop **buri tarah congested** hai. Matlab kuch synchronous kaam har request par event loop ko sekron milliseconds ke liye rok raha hai. Ab pata karna hai **kya**.
+
+### Step 3 — Profile: get a flamegraph
+
+Do easy tools:
+
+**Option A — `clinic doctor` (high-level diagnosis):**
+
+```bash
+npx clinic doctor --on-port 'autocannon -m POST -H "content-type=application/json" -b @sample-report.json -c 50 -d 20 http://localhost:3000/report' -- node server.js
+```
+
+`clinic doctor` ek HTML report deta hai jo bolta hai: "event loop delay high hai" aur "likely cause: synchronous work" — plus CPU/memory/handles graphs. Ye tumhe **direction** deta hai, exact line nahi.
+
+**Option B — `node --cpu-prof` (exact functions):**
+
+```bash
+node --cpu-prof --cpu-prof-dir=./prof server.js
+# load test chalao, phir server ko SIGINT
+# ./prof/*.cpuprofile ko Chrome DevTools (Performance tab) ya speedscope.app mein kholo
+```
+
+Flamegraph mein **width = time spent**. Sabse chauda (widest) frames tumhare hot spots hain. Is case mein flamegraph teen fat towers dikhata hai:
+
+1. `JSON.parse` — poore self-time ka `~45%`. Call stack: `parseBody` → `JSON.parse`.
+2. `pbkdf2Sync` / `createHash...digest` — `~35%`. Call stack: `computeContentHash` → `crypto` sync.
+3. `getOrgSettings` → `pg` query — `~15%`, aur ye har request par firing (koi cache nahi).
+
+Teen **alag** problems, teeno ek hi endpoint par. Ab inhe **ek-ek karke** fix karenge, har baar Step 1 wala `autocannon` dobara chalayenge.
+
+### Step 4a — Fix #1: the large synchronous body parse
+
+Problem: framework ka body parser (ya manual code) poore `2-5 MB` string ko buffer karke ek hi `JSON.parse` call karta hai. `JSON.parse` **synchronous aur CPU-bound** hai — ek 3 MB payload par ~60-90ms, jo poore loop ko block karta hai.
+
+Do sub-fixes:
+
+1. **Body size limit lagao.** Zyaadatar reports `< 1 MB` hote hain; ek `10 MB` payload ek bug ya abuse hai. `express.json({ limit: "1mb" })` — bade payloads jaldi `413` reject, blocking parse hi nahi hota.
+2. **Jo genuinely bade hain, unke liye streaming parse.** Poore object ko RAM mein banane ki jagah ek streaming JSON parser (`stream-json`, `clarinet`) use karo jo chunks process karta hai aur loop ko beech-beech mein yield karta hai. Agar report ek array of records hai, tum records ko stream karke process kar sakte ho bina poora array materialize kiye.
+
+Yahan hum limit `1mb` lagate hain aur bade clients ko batate hain ki wo `POST /report/bulk` (async, queue-backed) use karein.
+
+Re-measure:
+
+```text
+Requests/sec:   58   (was 41)
+Latency p99:    3100 ms   (was 4900)
+loop lag mean:  120 ms   (was 210)
+```
+
+Better, lekin loop abhi bhi congested. Agle tower par jao.
+
+### Step 4b — Fix #2: the synchronous crypto hash
+
+Problem: `computeContentHash` `crypto.pbkdf2Sync(body, salt, 200000, 64, "sha512")` use kar raha tha — ek deliberately slow KDF, idempotency key ke liye (ye galat tool bhi hai — idempotency ke liye ek plain `createHash("sha256")` kaafi hai, KDF ka slow-ness yahan pointless hai). Lekin maan lo humein cryptographic strength chahiye: `pbkdf2Sync` har call `~120ms` **main thread** block karta hai.
+
+Do options:
+
+1. **Sahi primitive use karo.** Idempotency dedup ke liye `crypto.createHash("sha256").update(body).digest("hex")` — ye chhote-ish inputs par CPU-light aur fast hai (`~5ms` on 3 MB). Agar ye kaafi hai (aur idempotency ke liye ye kaafi hai), problem yahin khatam.
+2. **Agar genuinely ek heavy KDF chahiye** (jaise password verify) — use `worker_threads` par offload karo. Ek chhota worker pool (`piscina`) banao jo hashing kare; main loop free rehta hai.
+
+Is case mein `#1` sahi hai — idempotency key ke liye `sha256` sufficient hai. Agar ye ek password hash hota to `crypto.pbkdf2` (async, thread pool) + `UV_THREADPOOL_SIZE` tuning.
+
+Re-measure:
+
+```text
+Requests/sec:   145   (was 58)
+Latency p99:    620 ms   (was 3100)
+loop lag mean:  14 ms   (was 120)
+```
+
+Bada jump. Loop lag ab lagbhag healthy. Ek tower baaki.
+
+### Step 4c — Fix #3: no caching on org settings
+
+Problem: `getOrgSettings(orgId)` har request par ek DB query firing thi. Org settings **rarely change** (din mein shayad ek baar), aur bahut se requests same `orgId` ke hote hain. Har request par `~15ms` DB roundtrip + connection pool pressure.
+
+Fix: ek in-process **LRU cache** with a short TTL:
+
+```javascript
+const { LRUCache } = require("lru-cache");
+
+const orgCache = new LRUCache({ max: 5000, ttl: 60_000 }); // 60s
+
+async function getOrgSettings(orgId) {
+  const cached = orgCache.get(orgId);
+  if (cached) return cached;
+  const row = await db.query("select * from org_settings where org_id = $1", [orgId]);
+  orgCache.set(orgId, row);
+  return row;
+}
+```
+
+- `ttl: 60_000` — 60s staleness acceptable hai (settings din mein badalti hain).
+- Multi-instance / cluster mein: har worker ka apna LRU — 60s TTL ki wajah se worst-case staleness bounded, aur agar settings-change par immediate consistency chahiye to ek Redis pub/sub message se saare workers ka LRU clear karo.
+- `max: 5000` — memory bounded.
+
+Re-measure:
+
+```text
+Requests/sec:   190   (was 145)
+Latency p99:    240 ms   (was 620)
+Latency p50:    45 ms
+loop lag mean:  6 ms
+error rate:     0%
+```
+
+### Step 5 — Before / after
+
+| Metric | Baseline | After Fix 1 (body limit) | After Fix 2 (hash) | After Fix 3 (cache) |
+| --- | --- | --- | --- | --- |
+| Requests/sec | 41 | 58 | 145 | **190** |
+| p50 latency | 180 ms | 150 ms | 60 ms | **45 ms** |
+| p99 latency | 4900 ms | 3100 ms | 620 ms | **240 ms** |
+| Event loop lag (mean) | 210 ms | 120 ms | 14 ms | **6 ms** |
+| Error rate | 4% | 3% | 0.2% | **0%** |
+
+`~4.6x` throughput, `p99` `4900ms` → `240ms` (`~20x`), zero errors. **Koi naya hardware nahi** — sirf teen synchronous-work problems hataye.
+
+### Why fix one at a time
+
+Agar teeno changes ek saath deploy kar dete aur numbers improve ho jaate — tumhe pata nahi chalta **kaunse** change ne kitna helped, ya kisi change ne kuch **regress** to nahi kiya. Ek-ek karke:
+
+- Har fix ka impact attributable hai (Fix 2 ne sabse zyada — `58 → 145`).
+- Agar koi fix numbers **kharab** kar de (kabhi-kabhi hota hai — jaise ek cache jo memory pressure se GC badha de), tum turant pakad lete ho.
+- Reviewer ko bata sakte ho ki har change kyun kiya, evidence ke saath.
+
+### Failure modes — jo is diagnosis mein galat ho sakta tha
+
+- **Load test payload realistic nahi tha.** Agar humne `10 KB` payload se test kiya hota, `JSON.parse` tower dikhta hi nahi — production ke `3 MB` payloads se hi wo bottleneck banta hai. Load test ko production ke shape (payload size, endpoint mix, concurrency) se match karna zaroori hai.
+- **Profiling without load.** `--cpu-prof` ek single request par lagate to teeno towers chhote dikhte — problem contention/serialization ki thi, jo sirf concurrent load par surface hoti hai.
+- **`p50` dekh ke "theek hai" bol dena.** `p50 180ms` acceptable lagta hai; `p99 4900ms` disaster hai. Percentiles, average nahi.
+- **Micro-optimizing the wrong tower.** Agar hum `getOrgSettings` query ko optimize karne mein 2 din lagate (index tuning) jabki wo sirf `15%` thi — `JSON.parse` aur hash (`80%`) untouched rehte. Widest frame pehle.
+- **`clinic doctor` ke "synchronous work" hint ko ignore karna** aur random cheezein try karna.
+
+### Kab ye method use karna chahiye
+
+- Koi bhi "slow endpoint / high latency / high CPU under load" report.
+- Ek naya feature ship karne se pehle jise heavy traffic milega.
+- Jab p99 SLO todti hai lekin p50 theek hai (congestion signature).
+
+### Kab NAHI (ya alag approach)
+
+- Agar latency **network/downstream** se hai (DB slow, external API slow) — flamegraph flat hoga (CPU idle, sab `await` par). Tab distributed tracing / slow-query log dekho, CPU profiler nahi.
+- Memory leak ke liye — ye CPU profiling nahi, heap snapshots (`--heapsnapshot-signal`) aur `heapUsed` trend chahiye.
+- Ek-off slow request (koi pattern nahi) — shayad ek GC pause ya noisy neighbour; aggregate metrics dekho.
+
+### Interview mein "Ek slow endpoint kaise debug karoge?"
+
+> "Pehle ek repeatable load test banata hoon `autocannon` se, production jaisa payload aur concurrency use karke — aur ek baseline number nikalta hoon (p99, req/s, error rate). Phir hypothesis: 'dev fine, load bad, high CPU, p50 OK p99 bad' ka matlab aksar event loop blocking hai — main event loop lag measure karta hoon `perf_hooks.monitorEventLoopDelay` se. Agar wo high hai, main ek flamegraph leta hoon — `clinic doctor` direction ke liye, `node --cpu-prof` exact functions ke liye — load ke dauran, single request par nahi. Widest frames hot spots hain. Phir ek-ek karke fix karta hoon, har fix ke baad wahi load test dobara — taaki har change ka impact attributable rahe aur koi regression turant pakda jaye. Common findings: synchronous parse of a large body, a sync crypto call, a missing cache, ya loop mein `await`. Aur agar flamegraph flat hai to problem CPU nahi, downstream I/O hai — tab tracing aur slow-query logs."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Flamegraph padhne ka ek rule: **width matters, colour aur y-position nahi**. Widest frame (sabse zyada total time) tumhara #1 target hai. Ek tall-but-thin tower ek deep call chain hai jo time-wise sasti hai — usse pehle mat chhedo. Aur "self time" (frame ka apna time, children ke bina) dekho — ek wide frame jiska saara time children mein hai, wo bas ek dispatcher hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="A reporting API brought down by JSON.parse">
+
+Ek analytics company ka ingest endpoint p99 spikes se pareshan tha, hamesha peak traffic par. Metrics ne CPU-bound congestion dikhaya. `--cpu-prof` flamegraph mein `JSON.parse` self-time ka `~40%` tha — clients batch events bhej rahe the, kabhi-kabhi `8 MB` arrays. Fix: ek `256 KB` body limit + clients ko chhote batches (ya streaming NDJSON endpoint) par migrate karna. p99 `3s` se `180ms`, aur instance count half kiya ja saka. Koi code "optimization" nahi — bas ek input bound aur galat endpoint shape.
+
+</RealWorld>
+
+<RealWorld company="Moving a hash to a worker pool">
+
+Ek document service har upload par ek perceptual hash + SHA-256 compute karti thi, dono synchronously, request handler mein — bade files par `~300ms` CPU. Load par event loop lag `500ms+`, unrelated health-check endpoints bhi timeout. Team ne `piscina` (worker thread pool, size = cores) introduce kiya aur hashing ko wahan move kiya. Main loop lag wapas `<10ms`, p99 `2.4s` se `210ms`. Handler ab bas `await pool.run({ buffer })` karta hai — CPU kaam workers par, event loop free.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Healthy **event loop lag**: `< 10ms`. Is case study mein baseline `mean 210ms`, `p99 980ms` — severe congestion.
+- `JSON.parse` of a `3 MB` string: roughly **60-90ms** of synchronous CPU — poore loop ke liye blocking.
+- `crypto.pbkdf2Sync(..., 200000, ...)`: roughly **100-150ms** per call, main thread par; `createHash("sha256")` on the same input: roughly **5ms**.
+- Flamegraph frame **width = time**; is case ke teen towers: parse `~45%`, hash `~35%`, uncached query `~15%`.
+- Fix impact: throughput `41 → 190 req/s` (`~4.6x`), p99 `4900ms → 240ms` (`~20x`), errors `4% → 0%` — zero new hardware.
+- Biggest single win: moving the hash off the sync path (`58 → 145 req/s`).
+- Body size limit typical for JSON APIs: **100 KB - 1 MB**; anything larger is usually a bug or abuse.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye ek senior-level question hai: "production endpoint slow hai under load — walk me through your debugging." Interviewer dekhta hai ki tum (1) **measure before touching code**, (2) ek testable **hypothesis** banate ho (event loop blocking, given the symptoms), (3) **right tool** — loop lag metric, then flamegraph under load, (4) **read the flamegraph** correctly (width = time, widest first), (5) **change one thing, re-measure**, (6) know when the method *doesn't* apply (flat flamegraph = downstream I/O, not CPU).
+
+Model answer shape:
+
+1. **Repro + baseline** — `autocannon`, production-shaped payload/concurrency, record p99 / req/s / error rate.
+2. **Hypothesis** — symptoms (dev fine, load bad, high CPU, p50 OK / p99 bad) point to event-loop blocking.
+3. **Confirm** — `perf_hooks.monitorEventLoopDelay` during load; healthy is `<10ms`.
+4. **Profile** — `clinic doctor` for direction, `node --cpu-prof` for exact functions; under load, not single request.
+5. **Fix iteratively** — widest frame first, one change at a time, re-run the same load test.
+6. **Common culprits** — sync parse of large body, sync crypto, missing cache, `await` in a loop.
+7. **Negative case** — flat flamegraph means CPU is idle and the wait is downstream (DB/API); use tracing + slow-query logs instead.
+
+Red flags: jumping to "add more instances" without profiling; optimizing a thin flamegraph tower; reporting average latency; testing with a tiny payload that hides the real bottleneck.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Load-testing with an unrealistic payload.** A `10 KB` test body never triggers the `JSON.parse` bottleneck that only appears with production's `3 MB` bodies. Match the load test to production shape — payload size, endpoint mix, concurrency — or the profile will point at the wrong thing (or at nothing).
+
+</Mistake>
+
+<Mistake>
+
+**Profiling a single request instead of under load.** Serialization and contention problems only surface when many requests share one event loop. A `--cpu-prof` of one request makes all three towers look small. Always profile while `autocannon` (or equivalent) is hammering the endpoint.
+
+</Mistake>
+
+<Mistake>
+
+**Deploying all fixes at once.** If three changes ship together and numbers improve, you can't attribute the win, and a change that *regresses* something (e.g. a cache that raises GC pressure) hides behind the net improvement. One change, re-measure, then the next.
+
+</Mistake>
+
+<Mistake>
+
+**Optimizing the narrow flamegraph tower.** Spending two days indexing the `getOrgSettings` query (`15%` of time) while `JSON.parse` and the hash (`80%`) sit untouched. Sort by width; fix the widest frame first; only move on when it's no longer the top.
+
+</Mistake>
+
+<Mistake>
+
+**Assuming a flat flamegraph means "nothing to fix".** If CPU is idle and latency is still high, the flamegraph *should* be flat — the time is spent `await`-ing downstream I/O (DB, external API). Switch tools: distributed tracing, slow-query logs, and check connection pool saturation. A CPU profiler cannot see time spent waiting.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Symptom: POST /report slow under load, high CPU, p99 4900ms"] --> B["Step 1: autocannon baseline with production-shaped payload"]
+    B --> C["Step 2: hypothesis — event loop blocked? measure loop lag (perf_hooks)"]
+    C -->|"lag mean 210ms >> 10ms"| D["Step 3: flamegraph — clinic doctor + node --cpu-prof UNDER LOAD"]
+    D --> E["3 wide towers: JSON.parse 45%, sync crypto 35%, uncached query 15%"]
+    E --> F["Fix 1: body size limit / streaming parse — re-measure"]
+    F --> G["Fix 2: sha256 instead of pbkdf2Sync (or worker pool) — re-measure"]
+    G --> H["Fix 3: LRU cache on org settings (TTL + invalidation) — re-measure"]
+    H --> I["Result: 41 to 190 req/s, p99 4900ms to 240ms, errors 4% to 0%"]
+    D -.->|"flamegraph FLAT = CPU idle"| J["Different problem: downstream I/O — use tracing + slow-query logs, not CPU profiler"]
+`}
+  caption="Measure, hypothesize, profile under load, fix the widest frame one at a time, re-measure. A flat flamegraph sends you to tracing instead."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **"Dev fine, load bad" + high CPU + p50 OK / p99 terrible** = event-loop-blocking signature.
+- **Step 1 — baseline**: `autocannon` with production-shaped payload + concurrency. Record p99, req/s, error rate. Re-run this exact command after every change.
+- **Step 2 — confirm hypothesis**: `perf_hooks.monitorEventLoopDelay()` during load. Healthy `< 10ms`; `> 100ms` = congested.
+- **Step 3 — profile under load**: `clinic doctor` for direction, `node --cpu-prof` (open in DevTools / speedscope) for exact functions. Not a single request.
+- **Read the flamegraph**: width = time; fix the **widest frame first**; check self-time vs children.
+- **Common culprits**: sync `JSON.parse` of a large body, sync `crypto` (`*Sync` / KDF), missing cache on a hot lookup, `await` in a loop.
+- **Fix 1 — large body**: size limit (`express.json({ limit })`), or streaming parser for genuinely large payloads.
+- **Fix 2 — sync crypto**: use the right primitive (`sha256` for dedup, not a KDF); if a heavy KDF is genuinely needed, offload to `worker_threads` / `piscina`.
+- **Fix 3 — missing cache**: in-proc LRU with TTL + an invalidation story (pub/sub to clear across workers).
+- **One change at a time, re-measure** — so each impact is attributable and regressions are caught immediately.
+- **Case study result**: `~4.6x` throughput, `~20x` p99, zero errors, no new hardware.
+- **Flat flamegraph** = CPU idle, wait is downstream → tracing + slow-query logs, not a CPU profiler.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `POST /echo` endpoint banao jo body ko `JSON.parse` karke wapas bheje. `autocannon` se `-c 50` par test karo pehle ek `5 KB` payload se, phir ek `3 MB` payload se. p99 aur req/s compare karo — dekho payload size akela p99 ko kaise phaad deta hai.
+
+**Medium:** Us endpoint mein ek `crypto.pbkdf2Sync(body, "salt", 150000, 64, "sha512")` add karo. `perf_hooks.monitorEventLoopDelay` se loop lag print karo load ke dauran. Phir `pbkdf2Sync` ko `crypto.createHash("sha256")` se replace karo aur loop lag + req/s dobara measure karo. Numbers likho.
+
+**Bada:** Ek endpoint banao jismein teeno problems hon — bada body parse, ek sync hash, aur ek `await db lookup` bina cache ke (DB ko `setTimeout` se fake karo, `15ms`). `node --cpu-prof` se flamegraph lo `autocannon` load ke dauran, teen towers identify karo. Phir teeno ko ek-ek karke fix karo (body limit, sha256, `lru-cache`), har baar `autocannon` dobara chala ke ek before/after table banao jaise is topic mein hai. Aakhir mein likho kaunse fix ne sabse zyada help kiya aur kyun.
+
+</Callout>

@@ -1,0 +1,314 @@
+---
+slug: "choosing-sync-vs-async-in-production"
+title: "Choosing Sync vs Async in Production"
+section: "nodejs"
+module: "sync-async"
+order: 3
+difficulty: "intermediate"
+readingTime: 18
+prerequisites: ["blocking-vs-non-blocking", "synchronous-vs-asynchronous"]
+tags: ["nodejs", "streams", "fs", "performance", "decision-making", "production"]
+englishDefinition: "In production Node code the sync-vs-async choice is decided by context, not preference. On the startup path, in CLI tools, and while loading config, synchronous file reads and require() are fine and keep code simple. On any request-serving hot path, synchronous I/O is never acceptable. The concrete decision for file work is: small file on a cold path use readFileSync, small file on a hot path use fs.promises.readFile, large file or streaming to a response use createReadStream."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+In production Node code, the sync-vs-async choice is decided by **context**, not taste. On the startup path, in CLI tools, and while loading config, synchronous reads and `require()` are fine — and keep the code simpler. On **any request-serving hot path**, synchronous I/O is never acceptable because it freezes every concurrent user. The concrete decision for file work: small file on a cold path use `fs.readFileSync`; small file on a hot path use `fs.promises.readFile`; large file, or streaming a file into an HTTP response, use `fs.createReadStream`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle do topics ne mechanism samjhaya: blocking event loop rokta hai, aur sync/async ek API shape hai. Ab **decision**: real code mein tum kaunsa choose karoge, aur interview mein "kyun" kaise defend karoge. Ye woh topic hai jiske liye baaki do the.
+
+### Ye kya hai — sync vs async ka production decision
+
+Do axes pe socho:
+
+1. **Ye code kahan chal raha hai?**
+   - **Cold path** — startup, bootstrap, CLI command, migration, build script, test setup. Ye ek baar chalta hai, koi concurrent user wait nahi kar raha.
+   - **Hot path** — HTTP request handler, message-queue consumer, cron job jo bade dataset pe loop karta hai, koi bhi code jo per-request ya high-frequency chalta hai.
+
+2. **Data ka size aur kya karna hai?**
+   - **Chhota, bounded** (config under 1 MB, ek template, ek key file) — pura memory mein load karna theek.
+   - **Bada ya unbounded** (user upload, ek 500 MB export, ek log file) — pura memory mein load karna galat, chahe async ho — memory blow up.
+   - **Kisi response mein bhejna hai** — client ko file-download / proxy — streaming ideal.
+
+In do axes se decision aata hai. **Cold path pe sync bilkul theek hai** aur code simple rakhta hai. **Hot path pe kabhi sync nahi.** Bade data pe **stream**, chahe hot ho ya cold.
+
+### `fs.readFileSync` vs `fs.readFile` vs `fs.createReadStream` — teeno kya karte hain
+
+- **`fs.readFileSync(path)`** — synchronous, blocking. Poori file ek Buffer/string mein, event loop ruka rehta hai jab tak read complete na ho. Return value seedhe milti hai.
+- **`fs.readFile(path, cb)` / `fs.promises.readFile(path)`** — asynchronous, non-blocking. Poori file phir bhi **ek baar mein memory mein** aati hai (`await` ke baad tumhare paas puri file hai), lekin read libuv thread pool pe hota hai, event loop free rehta hai.
+- **`fs.createReadStream(path)`** — asynchronous, non-blocking, **aur chunked**. File 64 KB (default `highWaterMark`) ke chunks mein aati hai. Poori file kabhi ek saath memory mein nahi hoti. Ideal jab file badi ho ya jab tum use kahin **pipe** kar rahe ho (`stream.pipe(res)`).
+
+Key insight: `readFile` (async) event loop ka masla solve karta hai, lekin **memory ka masla nahi** — 500 MB file `await fs.promises.readFile` pe bhi 500 MB RAM leti hai (aur ek `Buffer` ki max size limit bhi hai). `createReadStream` dono solve karta hai.
+
+### `require()` synchronous hai — aur ye theek hai
+
+`require("./foo")` **blocking** hai — wo file padhta hai, compile karta hai, execute karta hai, sab sync. Phir bhi ye by design hai:
+
+- `require` module load ke waqt chalta hai, jo **app startup** ka hissa hai — cold path.
+- Sync hone se module graph ka evaluation order **predictable** rehta hai.
+- Ek baar load hone ke baad module cache ho jata hai — dubara `require` sirf cache lookup hai.
+
+Isliye "require sync hai, ye bura hai" galat framing hai. Bura tab hoga jab tum `require` ko **request handler ke andar** likho conditionally ek bade module ke liye — pehli request us sync load ka cost uthayegi. Modules top pe `require` karo.
+
+### Internally kaise kaam karta hai
+
+- **`readFileSync`**: `read(2)` syscall(s) main thread pe, loop mein jab tak EOF na aaye. Us poore time JS thread `readFileSync` call frame mein atka hai. Event loop ka next tick tab tak nahi.
+- **`fs.promises.readFile`**: request libuv ko jaati hai, jo ek **thread pool worker** (default pool size 4) pe `read` karta hai. Main thread turant free. Worker file poori padh ke ek Buffer banata hai, phir main thread pe Promise resolve hota hai. Agar 5 aisi reads ek saath chalao aur pool 4 hai, toh 5vi read ek worker free hone ka wait karti hai (queued, par event loop tab bhi free).
+- **`createReadStream`**: har `read()` ek chunk (~64 KB) laata hai thread pool se, `'data'` event emit hota hai, backpressure ke through consumer ki speed match hoti hai. Memory footprint ~ `highWaterMark`, file size se independent.
+
+### Simple real-life analogy
+
+Ek godown se saamaan office laana hai:
+
+- **`readFileSync`** — tum khud truck le ke jate ho, poora load bharte ho, wapas aate ho. Jab tak wapas na aao, office ka koi aur kaam nahi hota (event loop blocked).
+- **`fs.promises.readFile`** — tum ek delivery guy ko bhejte ho poora load laane. Tum office mein kaam karte raho. Wo poora truck bhar ke laata hai — agar saamaan 10 ton hai toh office ke floor pe 10 ton aa jayega (memory).
+- **`createReadStream`** — delivery guy chhote-chhote thaile mein laata hai, ek thaila process karo, wapas bhejo, agla thaila. Office mein kabhi ek thaile se zyada nahi. 10 ton bhi is tarah handle ho jaata hai.
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+const http = require("http");
+
+// COLD PATH — startup config. Sync bilkul theek.
+const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+
+const server = http.createServer((req, res) => {
+  // HOT PATH — per request.
+
+  if (req.url === "/small-report") {
+    // chhoti bounded file, hot path -> async full read
+    fs.promises
+      .readFile("./daily-summary.json", "utf8")
+      .then((txt) => res.end(txt))
+      .catch(() => { res.statusCode = 500; res.end("err"); });
+
+  } else if (req.url === "/download-export") {
+    // badi file, response me bhejni hai -> stream
+    const stream = fs.createReadStream("./big-export.csv");
+    stream.on("error", () => { res.statusCode = 500; res.end("err"); });
+    res.setHeader("Content-Type", "text/csv");
+    stream.pipe(res);
+  }
+});
+
+server.listen(config.port);
+```
+
+- `JSON.parse(fs.readFileSync(...))` at module top — startup, ek baar, no concurrency. Sync = simplest, aur hum chahte hain config load hone se pehle server `listen` na kare.
+- `/small-report` — `fs.promises.readFile` — file chhoti aur bounded hai, toh poori memory mein lena theek; par hot path hai toh **sync nahi**, async.
+- `.catch(...)` — async errors callback/Promise se aati hain; handle karna zaroori warna unhandled rejection.
+- `/download-export` — badi CSV, seedhe `res` mein jaani hai. `createReadStream(...).pipe(res)` — constant memory, backpressure automatic (agar client slow hai toh read slow ho jayega), event loop free.
+- `stream.on("error", ...)` — stream errors `pipe` ke through propagate nahi hote by default; explicit handler chahiye warna process crash.
+
+### Decision table
+
+| Scenario | Small / bounded input | Large / unbounded input | Blocking impact agar sync | Production choice | Interview answer |
+| --- | --- | --- | --- | --- | --- |
+| App startup: load config / cert / key | `fs.readFileSync` | (rare) `createReadStream` + parse | None — no concurrent requests yet | **Sync** — simpler, and you *want* to finish before `listen` | "Startup cold path hai, sync fine, code simple" |
+| CLI tool / migration / build script | `fs.readFileSync` | `createReadStream` | None — single-shot process | **Sync** for small; stream for huge | "No concurrency, sync is more readable" |
+| HTTP handler: read a small JSON/template | `fs.promises.readFile` | n/a | Freezes all concurrent users for the read duration | **Async full read** | "Hot path, so never sync; file bounded so full read is fine" |
+| HTTP handler: send a file to the client (download/proxy) | `createReadStream().pipe(res)` | `createReadStream().pipe(res)` | Freezes event loop + huge memory spike | **Stream** | "Stream: constant memory, backpressure, event loop free" |
+| HTTP handler: process a large uploaded/stored file | streaming parser (`stream-json`, `csv-parse` stream) | same | Freezes + OOM risk | **Stream** | "Never load unbounded input fully — stream and parse incrementally" |
+| Queue worker: transform a 2 GB file | n/a | `createReadStream` -> transform -> `createWriteStream` | Blocks the worker; OOM | **Stream pipeline** (`pipeline()`) | "Bounded memory regardless of file size" |
+| `require()` a module | sync (built-in) | sync | Only at load time (startup) | **Leave it** — `require` at top of file | "require is sync by design for predictable load order; keep it out of handlers" |
+
+### Kab sync use karna chahiye
+
+- **Startup / bootstrap** — config, env, TLS cert/key, feature-flag seed file. Server abhi `listen` nahi hua.
+- **CLI scripts, migrations, codegen, tests** — ek process, ek kaam, koi concurrency nahi. Sync padhna aasaan.
+- **Chhota bounded data jise turant chahiye startup pe** — e.g. ek `package.json` version padhna.
+- Jab async version add karne se code meaningfully complex ho aur koi latency benefit na ho (cold path).
+
+### Kab sync use nahi karna chahiye
+
+- **Kisi bhi request handler mein** — ek user ka sync read sabki tail latency badha deta hai.
+- **High-frequency loop mein** (per-message queue consumer, cron jo 1 lakh rows pe chalta hai).
+- **Jab input size user-controlled ho** — chhoti test file, badi prod file.
+- **Jab file ek response mein pipe ho sakti thi** — sync toh doubly galat (blocking + memory).
+- **CPU-bound "sync" (bada JSON.parse, sync hashing) request path mein** — async version nahi hai, toh worker thread pe daalo.
+
+### Pros and cons
+
+**Sync (cold path) pros**
+
+- Code linear, `try/catch` seedha, kam moving parts.
+- Guaranteed ordering — "config load ho gaya, tabhi listen".
+
+**Sync (cold path) cons**
+
+- Agar galti se hot path pe chala gaya toh silent production killer.
+- Bade input pe memory + block dono.
+
+**Async full read (`fs.promises.readFile`) pros**
+
+- Event loop free — safe on hot path.
+- API `readFileSync` jaisa hi simple, bas `await`.
+
+**Async full read cons**
+
+- Memory = file size. Unbounded input pe OOM.
+- Poori file aane tak processing shuru nahi hoti (latency to first byte).
+
+**Stream (`createReadStream`) pros**
+
+- Constant memory, file size se independent.
+- Backpressure — slow consumer read ko slow karta hai automatically.
+- Time-to-first-byte kam — chunk aate hi bhej sakte ho.
+
+**Stream cons**
+
+- Code zyada — `error`, `end` events, `pipeline()`.
+- Random access / "poori file ek object" chahiye toh awkward.
+
+### Alternatives / related
+
+- **`stream/promises` ka `pipeline()`** — multiple streams ko safely jodta hai, errors + cleanup handle karta hai (`.pipe()` se behtar).
+- **`fs.promises.readFile` with a size check** — pehle `fs.stat` se size dekho, chhota hai toh full read, bada hai toh stream.
+- **Streaming parsers** — `stream-json`, `csv-parse`, `busboy` (multipart) — bade structured input ko incrementally parse.
+- **`worker_threads`** — agar bottleneck read nahi CPU hai (heavy transform), read stream + worker pe compute.
+- **Caching** — jo file har request pe chahiye aur badalti nahi, use startup pe ek baar load karke memory mein rakho (sync bhi chalega).
+
+### Interview mein "fs.readFileSync vs fs.readFile vs Streams — kya choose karoge aur kyun?"
+
+> "Depends on do cheezein: code kahan chal raha hai, aur data kitna bada hai. Agar startup ya CLI hai — cold path, koi concurrent user nahi — toh `fs.readFileSync` theek hai aur code simple rakhta hai; actually main chahta hoon config load ho jaye tabhi `listen` ho. Agar ek request handler hai aur file chhoti bounded hai — jaise ek template ya chhota JSON — toh `fs.promises.readFile`, kyunki hot path pe sync har concurrent user ko block karta hai, par file bounded hai toh poori memory mein lena theek hai. Agar file badi hai, ya user-controlled size hai, ya main use client response mein bhej raha hoon — toh `fs.createReadStream` aur `pipeline`/`pipe`: constant memory chahe file 10 MB ho ya 10 GB, backpressure automatic, aur event loop free. Ek line mein: sync sirf cold path chhote data ke liye; hot path pe async; bada/unbounded/streaming-to-response pe stream."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`fs.promises.readFile` "async" hai lekin memory ki guarantee nahi deta — 800 MB file `await` pe bhi 800 MB RAM. Agar input size user-controlled hai toh pehle `fs.stat` se size check karo, ya seedha stream karo. "Async laga diya, safe ho gaya" sirf event loop ke liye sach hai, memory ke liye nahi.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="File download endpoint at a fintech">
+
+Ek fintech ka `/statements/:id/pdf` endpoint pehle `fs.readFile` (async) se poora PDF memory mein leta tha aur `res.send(buffer)` karta tha. Statements chhote the (~200 KB), sab theek. Phir "full year transaction export" feature aaya — kuch exports 400 MB+. Peak pe 20 concurrent exports ne process ko ~8 GB pe pahuncha diya, `JavaScript heap out of memory`, restart loop. Fix: `fs.createReadStream(path).pipe(res)` (later `pipeline(readStream, res)` for proper error handling). Memory per request ~64 KB constant, chahe export kitna bhi bada ho. Event loop lag bhi normal ho gaya kyunki ab koi bada sync `res.send` serialization nahi tha.
+
+</RealWorld>
+
+<RealWorld company="Startup bootstrap in a typical Express app">
+
+Zyadatar production Express apps ka `server.js` top pe yehi karta hai: `const config = JSON.parse(fs.readFileSync('./config/prod.json', 'utf8'))`, `const tlsKey = fs.readFileSync('./certs/key.pem')`, `require('./routes')`. Sab synchronous — aur ye best practice hai. Reason: ye `app.listen(config.port)` se pehle chalta hai, koi request abhi serve nahi ho rahi, aur tum explicitly chahte ho ki agar config missing hai toh process **crash ho jaye startup pe** (fail fast), na ki pehli request pe. Sync `readFileSync` ka thrown error seedhe process ko exit code ke saath gira deta hai — exactly desired behaviour.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `createReadStream` default `highWaterMark` = **64 KB** (files) — memory footprint isi ke aas-paas, file size se independent.
+- `fs.promises.readFile` par memory = **poora file size**; Node ka single `Buffer` max ~**2 GB** (`buffer.constants.MAX_LENGTH`), usse bade file full-read pe throw.
+- libuv thread pool default = **4** — 5+ concurrent `fs.promises.readFile` calls pe 5vi queue hoti hai (event loop phir bhi free).
+- `require()` synchronous — ek bada dependency tree ka cold load **100-500 ms** le sakta hai; isliye startup pe, request path mein nahi.
+- Streaming a file to `res` par time-to-first-byte **~milliseconds**; full `readFile` + `res.send` par TTFB = poori file read hone ka time.
+- Sync `res.send(bigBuffer)` bhi `JSON.stringify` / serialization ke through CPU block kar sakta hai bade objects pe — stream avoid karta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye ek **decision question** hai, aur BFSI / service-company interviews mein ye exact phrasing common hai: "fs.readFileSync vs fs.readFile vs Streams — kya choose karoge aur kyun?" Ya "kya readFileSync production mein use kar sakte hain?"
+
+Interviewer dekhta hai: (1) tum "context-dependent" answer dete ho ya ek blanket rule; (2) tum cold path (startup/CLI) aur hot path (request) ko alag karte ho; (3) tum jaante ho async full-read memory solve nahi karta, sirf stream karta hai; (4) tum `require` ke sync hone ko sahi context mein rakhte ho.
+
+Achhe jawaab ka shape:
+
+1. **Do factors** — "kahan chal raha hai (cold/hot), aur data kitna bada."
+2. **Cold path** — "startup/CLI pe sync fine, simpler, aur fail-fast."
+3. **Hot path + bounded** — "`fs.promises.readFile`, sync nahi."
+4. **Bada / unbounded / response me** — "`createReadStream` + `pipeline`: constant memory, backpressure, free event loop."
+5. **One-liner** — "sync sirf cold path chhote data ke liye."
+
+Red flags: "readFileSync production mein kabhi nahi" (startup pe theek hai), ya "readFile async hai toh badi files bhi safe" (memory OOM), ya "streams hamesha better" (chhoti bounded file ke liye over-engineering).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**"readFileSync production mein banned hai" maan lena.** Startup pe config/cert `fs.readFileSync` se load karna best practice hai — cold path, no concurrency, aur fail-fast behaviour milta hai. Rule ye hai: **request path mein** kabhi sync nahi. Blanket ban galat hai aur code ko bewajah complex banata hai.
+
+</Mistake>
+
+<Mistake>
+
+**Bade file ke liye `fs.promises.readFile` ko "safe" maan lena kyunki wo async hai.** Async event loop bachata hai, memory nahi. 500 MB file `await fs.promises.readFile` pe 500 MB RAM leti hai; kuch concurrent requests OOM. User-controlled size ho toh pehle `fs.stat`, ya seedha `createReadStream`.
+
+</Mistake>
+
+<Mistake>
+
+**`createReadStream(...).pipe(res)` par error handler na lagana.** `pipe` source errors ko destination tak propagate nahi karta. File missing ya read fail hone par ek unhandled `'error'` event process ko crash kar deta hai. `stream.on('error', ...)` lagao, ya behtar `pipeline(src, res)` use karo jo errors + cleanup handle karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`require()` ko request handler ke andar conditionally likhna bade module ke liye.** `if (needPdf) { const pdf = require('heavy-pdf-lib'); }` — pehli aisi request us sync load ka 100+ ms cost uthati hai, event loop block. Modules file ke top pe `require` karo; lazy-load sirf tab jab measured startup problem ho aur module truly optional ho.
+
+</Mistake>
+
+<Mistake>
+
+**Chhoti bounded file ke liye stream likhna (over-engineering).** Ek 3 KB config template ke liye `createReadStream` + `data`/`end` event handling likhna — zyada code, zyada bug surface, zero benefit. Bounded chhoti file: cold path pe `readFileSync`, hot path pe `fs.promises.readFile`. Stream ka reason bada/unbounded data ya piping hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q1{"Code kahan chal raha hai?"}
+    Q1 -->|"Startup / CLI / migration (cold path)"| C1{"Data bounded aur chhota?"}
+    C1 -->|"Haan"| R1["fs.readFileSync — simple, fail-fast"]
+    C1 -->|"Nahi (bada)"| R2["createReadStream + parse"]
+    Q1 -->|"Request handler / queue worker (hot path)"| H1{"Data ka size / use?"}
+    H1 -->|"Chhota, bounded, poora object chahiye"| R3["fs.promises.readFile"]
+    H1 -->|"Bada / unbounded / user-controlled"| R4["createReadStream + pipeline"]
+    H1 -->|"Client response me bhejni hai"| R5["createReadStream().pipe(res) / pipeline(src, res)"]
+`}
+  caption="Pehle poochho code cold path pe hai ya hot; phir data ka size aur use decide karta hai readFileSync vs promises.readFile vs stream."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Decision do factors: **kahan** (cold path = startup/CLI/migration, hot path = request/worker/high-freq loop) aur **data ka size/use**.
+- **Cold path + chhota bounded data** -> `fs.readFileSync`. Simple, readable, fail-fast. Ye production mein **theek hai**.
+- **Hot path + chhota bounded data** -> `fs.promises.readFile`. Kabhi sync nahi.
+- **Bada / unbounded / user-controlled size / response me pipe** -> `fs.createReadStream` + `pipeline()`.
+- `fs.promises.readFile` async hai lekin memory = **poora file size** — OOM risk on big/unbounded input. Stream constant memory deta hai.
+- `require()` **synchronous** hai by design (predictable load order); startup pe theek, request handler ke andar mat likho.
+- `createReadStream` default chunk = **64 KB**; `.pipe()` errors propagate nahi karta — `pipeline()` ya explicit `on('error')` use karo.
+- Ek-line answer: "sync sirf cold path chhote data ke liye; hot path pe async; bada/streaming pe stream."
+- Anti-patterns: per-request `readFileSync`, bade file pe full async read, `require` inside handler, chhoti file ke liye stream over-engineering.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Apne ek chhote Express/`http` app mein ek `/health` route ke saath ek `/config` route banao jo har request pe `fs.readFileSync('config.json')` karta hai. `autocannon -c 50` `/health` pe chalao jabki background mein `/config` bhi hit ho raha ho. Phir `/config` ko `fs.promises.readFile` mein badlo aur `/health` ki p99 latency ka farak note karo.
+
+**Medium:** `fs.stat` se file size check karne wala ek helper `smartRead(path)` likho: agar size `< 1 MB` toh `fs.promises.readFile` se poora content return karo; warna ek readable stream return karo. Do test files (500 KB aur 200 MB) pe chalao aur process memory (`process.memoryUsage().rss`) compare karo.
+
+**Bada:** Ek `/export` endpoint banao jo ek 300 MB CSV ko client ko bhejta hai. Pehle `fs.promises.readFile` + `res.end(buf)` se likho, 10 concurrent requests maaro, `rss` aur event loop lag record karo (OOM ho sakta hai). Phir `pipeline(fs.createReadStream(path), res)` se likho aur wahi test dubara. Dono ka memory + latency table banao aur likho kaunsa production-ready hai aur exactly kyun.
+
+</Callout>

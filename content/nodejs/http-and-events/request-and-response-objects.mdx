@@ -1,0 +1,287 @@
+---
+slug: "request-and-response-objects"
+title: "Request & Response Objects"
+section: "nodejs"
+module: "http-and-events"
+order: 2
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["http-server-basics"]
+tags: ["nodejs", "http", "streams", "request", "response", "body-parsing"]
+englishDefinition: "In a Node HTTP handler, req is an http.IncomingMessage — a readable stream carrying req.method, req.url, and req.headers (keys lowercased). The request body is not a property; you collect it from the stream's 'data' and 'end' events or by awaiting the stream. res is an http.ServerResponse — a writable stream with res.statusCode, res.writeHead(status, headers), res.setHeader, res.write, and res.end. Setting Content-Type correctly and capping body size are both essential."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+In a Node HTTP handler, `req` is an `http.IncomingMessage` — a **readable stream**. It carries `req.method`, `req.url`, and `req.headers` (all header keys lowercased). The **body is not a property**: you must collect it from the stream's `"data"` and `"end"` events (or `await` the stream). `res` is an `http.ServerResponse` — a **writable stream** with `res.statusCode`, `res.writeHead(status, headers)`, `res.setHeader`, `res.write`, and `res.end`. Getting `Content-Type` right and capping how many bytes you'll accept are both non-negotiable.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`http-server-basics` mein humne dekha ki handler ko `(req, res)` milte hain. Ab in dono objects ko theek se samajhna zaroori hai, kyunki 90% HTTP bugs — missing body, wrong `Content-Type`, hanging response, memory blowup — inhi dono ke misunderstanding se aate hain.
+
+### Ye kya hai — req aur res
+
+- **`req`** = `http.IncomingMessage`. Ye ek **readable stream** hai. Isme request ke metadata already parsed hain: `req.method`, `req.url`, `req.headers`, `req.httpVersion`. Lekin body — POST/PUT ka JSON, form data, file — abhi socket par aa raha hai, isliye wo ek property nahi, ek stream hai.
+- **`res`** = `http.ServerResponse`. Ye ek **writable stream** hai. Tum isme status, headers, aur body bytes likhte ho. `res.end()` isko close karta hai.
+
+### Ye kyun exist karta hai (body stream kyun hai)
+
+Body kitni badi hogi — Node ko pehle se nahi pata. Ek JSON 200 bytes ka ho sakta hai ya ek file upload 2 GB ka. Agar Node poora body memory mein buffer karke tab handler call karta, toh ek bada upload server ki RAM kha jata. Isliye Node body ko **stream** ki tarah deta hai — tum chunk-by-chunk process karo, ya poora collect karo **apni** size limit ke saath.
+
+### Internally kaise kaam karta hai
+
+Node ka C++ HTTP parser socket bytes padhta hai. Jaise hi request line + saare headers aa jate hain, Node `req` object banata hai aur `request` event emit karta hai — **body ke aane se pehle**. Iske baad jaise-jaise body ke bytes aate hain, `req` `"data"` events emit karta hai (har event ek `Buffer` chunk). Jab body poora aa jata hai, `"end"` event. Agar tum `req` ko kabhi read nahi karte (na `.on("data")`, na `.pipe()`, na `.resume()`), toh stream "paused" rehta hai aur connection eventually stall/timeout ho sakta hai.
+
+`res` side par: `res.setHeader()` sirf ek internal map mein header rakhta hai. Pehla `res.write()` ya `res.end()` ya `res.writeHead()` "headers flush" karta hai — tabhi status line + headers socket par jate hain. Uske baad headers immutable.
+
+### Simple real-life analogy
+
+`req` ek **courier parcel** hai. Upar ka label (`method`, `url`, `headers`) turant padh sakte ho. Andar ka saamaan (body) box khol ke thoda-thoda nikalna padta hai — aur agar box bahut bada hai (2 GB upload), toh tum decide karte ho: "main itna bada parcel accept hi nahi karunga" (size limit).
+
+`res` ek **reply envelope** hai. Pehle tum stamp aur address (status + headers) lagate ho, phir andar letter (body) daalte ho, phir seal (`res.end()`) kar dete ho. Seal ke baad address badal nahi sakte.
+
+### Code — line by line
+
+```javascript
+const http = require("http");
+
+const MAX_BODY = 1_000_000; // 1 MB limit
+
+const server = http.createServer((req, res) => {
+  if (req.method !== "POST" || req.url !== "/users") {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "not found" }));
+  }
+
+  let size = 0;
+  const chunks = [];
+
+  req.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > MAX_BODY) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "payload too large" }));
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  req.on("end", () => {
+    if (res.writableEnded) return;
+    let data;
+    try {
+      data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: "invalid JSON" }));
+    }
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ created: true, name: data.name }));
+  });
+
+  req.on("error", () => {
+    if (!res.writableEnded) {
+      res.writeHead(400);
+      res.end();
+    }
+  });
+});
+
+server.listen(3000);
+```
+
+- `MAX_BODY` — hard byte cap; iske bina ek malicious client unbounded data bhej ke RAM khatam kar sakta hai.
+- `req.method !== "POST"` — routing manually, `req.method` aur `req.url` se.
+- `chunks = []` — har `"data"` chunk ek `Buffer` hai; collect karke baad mein `Buffer.concat`.
+- `size += chunk.length` — running total; limit cross hote hi `413 Payload Too Large` bhejo aur `req.destroy()` se connection kaato.
+- `req.on("end")` — poora body aa gaya; ab `Buffer.concat(chunks).toString("utf8")` se string, phir `JSON.parse`.
+- `try/catch` around `JSON.parse` — invalid JSON par `400`, crash nahi.
+- `res.writableEnded` check — agar limit branch pehle hi response bhej chuka, dobara mat bhejo.
+- `req.on("error")` — client mid-upload disconnect kar de toh handle.
+- `res.writeHead(201, {...})` phir `res.end(...)` — created resource ka standard response.
+
+### Content-Type kyun matter karta hai
+
+`Content-Type` client ko batata hai bytes ka matlab kya hai. `application/json` bheja par actual HTML string diya — browser JSON parse karne ki koshish karega aur fail. `text/html` bheja plain text ke saath — browser tags render karne lagega (XSS risk). Rule: jo bhejte ho, uska sahi `Content-Type` do, aur JSON ke liye `charset=utf-8` implicit hai par text ke liye explicit likho.
+
+### Day-to-day use
+
+- `req.headers.authorization` se token nikalna, `req.headers["content-type"]` check karna.
+- `req.method` + `req.url` se routing (ya framework ko karne dena).
+- Body collect karke `JSON.parse` — ya Express mein `express.json()` middleware isi ko wrap karta hai.
+- `res.setHeader("Cache-Control", ...)`, `res.setHeader("Set-Cookie", ...)`.
+- `res.statusCode = 204; res.end()` — no-content responses.
+
+### Kab body ko stream ki tarah treat karna chahiye
+
+- File uploads, large payloads — `req.pipe(createWriteStream(dest))`, poora memory mein mat lo.
+- Line-by-line processing (NDJSON, CSV) — chunk aate hi process karo.
+
+### Kab poora body buffer karna theek hai
+
+- Chhota JSON API payload (few KB) — collect karke `JSON.parse` simplest hai, bas size limit lagao.
+- Jab tumhe parse se pehle poora document chahiye (JSON is all-or-nothing).
+
+### Pros and cons (manual body parsing)
+
+**Pros**
+
+- Poora control — apni size limit, apni content-type policy, apna error format.
+- Koi dependency nahi.
+
+**Cons**
+
+- Har endpoint par boilerplate; galti se limit bhoolna = DoS hole.
+- Multipart/form-data, URL-encoded forms — ye khud parse karna painful hai.
+- `try/catch`, `error` event, double-response guards — sab yaad rakhna padta hai.
+
+### Alternatives
+
+- **`express.json({ limit: "1mb" })`** — JSON body parse + size limit, ek line.
+- **Fastify** — body parsing + schema validation built-in, `req.body` ready milta hai.
+- **`busboy` / `multer`** — multipart/form-data aur file uploads ke liye.
+- **`raw-body` package** — manual parsing but limit + encoding + error handling handled.
+
+### Interview mein "How do you read a POST body in Node?"
+
+> "Raw Node mein `req` ek readable stream hai — body property nahi. Main `req.on('data')` par chunks (Buffers) collect karta hoon, ek running byte counter rakhta hoon aur ek `MAX_BODY` cap — cross hone par `413` aur `req.destroy()`. `req.on('end')` par `Buffer.concat` karke `JSON.parse` ek `try/catch` ke andar, taaki invalid JSON `400` de crash nahi. Production mein main ye khud nahi likhta — `express.json({ limit })` ya Fastify ka schema-based parsing use karta hoon, kyunki wahan limit, encoding aur multipart edge cases already handled hain."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`req.headers` ke keys **hamesha lowercased** hote hain — `req.headers["Content-Type"]` `undefined` dega, `req.headers["content-type"]` sahi. Multi-value headers (jaise `set-cookie`) array ho sakte hain; baaki comma-joined string.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="express.json() middleware">
+
+Express ka `express.json()` andar se `raw-body` use karta hai jo exactly wahi karta hai: `Content-Type` check karta hai, ek `limit` (`default 100kb`) enforce karta hai, `req` stream se chunks collect karta hai, encoding handle karta hai, aur `end` par `JSON.parse` karke `req.body` set karta hai — parse fail par `next(err)` call karke ek `400` deta hai. Jab tum `app.use(express.json())` likhte ho, tum yahi 40 lines ka manual code ek middleware se replace kar rahe ho.
+
+</RealWorld>
+
+<RealWorld company="API gateways / rate limiters">
+
+Nginx, Kong, aur cloud API gateways `client_max_body_size` jaisa setting rakhte hain jo body size cap karta hai gateway par hi — request Node tak pahunchti hi nahi agar wo bahut badi hai. Ye "defence in depth" hai: gateway par ek limit, phir application (`express.json({ limit })`) par doosri. Ek layer bhool bhi jaye toh doosri bacha leti hai, taaki ek 5 GB upload memory na khaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Express `express.json()` ki default body limit **100 KB** hai — bade payloads ke liye explicitly `limit: "1mb"` set karna padta hai.
+- Har `"data"` chunk typically **16 KB** (64 KB tak) ka `Buffer` hota hai — highWaterMark par depend karta hai.
+- Node ka default `server.requestTimeout` **v18 se 300000 ms (5 min)** hai — itne mein poora request (headers + body) aa jana chahiye.
+- `req.headers` ki total size ka default cap **~16 KB** hai (`--max-http-header-size`, default 16384 bytes).
+- Bina size limit ke, ek single unbounded upload ek 512 MB container ko **seconds** mein OOM-kill kara sakta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Sabse common form: "Node mein POST request ka body kaise padhoge?" Interviewer dekhta hai ki tum jaante ho body ek stream hai, aur tum size limit + JSON parse error handle karte ho ya nahi.
+
+Achhe jawaab ka shape:
+
+1. **req ek readable stream hai** — "body property nahi; `data` + `end` events, ya `pipe`, ya `await`."
+2. **Collect** — "`data` par `Buffer` chunks push, `end` par `Buffer.concat().toString()`."
+3. **Size limit** — "running byte counter + `MAX_BODY`; cross hone par `413` aur `req.destroy()`. Iske bina DoS."
+4. **Parse safely** — "`JSON.parse` `try/catch` mein — invalid JSON `400`, crash nahi."
+5. **Production** — "khud nahi likhta; `express.json({ limit })` / Fastify schema — edge cases (encoding, multipart) handled."
+
+Red flag: `req.body` ko raw Node mein directly access karne ki koshish, ya body size limit ka zikr hi na karna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`req.body` ko raw Node mein use karna.** `http.IncomingMessage` par `body` property hoti hi nahi. `req.body` `undefined` hoga jab tak koi middleware (Express `express.json()`) usse populate na kare. Raw server mein body hamesha stream se collect karni padti hai.
+
+</Mistake>
+
+<Mistake>
+
+**Body size limit na lagana.** `req.on("data")` par bina byte-counter ke sab chunks push karte rehna. Ek malicious ya buggy client gigabytes bhej sakta hai aur `Buffer.concat` OOM kara dega. Hamesha ek `MAX_BODY` cap aur cross hone par `413` + `req.destroy()`.
+
+</Mistake>
+
+<Mistake>
+
+**`JSON.parse` ko `try/catch` ke bina call karna.** Client `{bad json` bhej de toh `JSON.parse` throw karta hai. Agar ye `end` callback ke andar unguarded hai, error `uncaughtException` ban sakta hai. Hamesha `try/catch` mein wrap karke `400` do.
+
+</Mistake>
+
+<Mistake>
+
+**Galat ya missing `Content-Type`.** `res.end(JSON.stringify(obj))` bina `Content-Type: application/json` ke — kuch clients ise `text/plain` maan ke string ki tarah treat karte hain. Ya HTML bhejna `text/plain` ke saath — render nahi hoga. Jo bhejo, uska sahi type declare karo.
+
+</Mistake>
+
+<Mistake>
+
+**`req` stream ko consume na karna.** Agar tum ek POST request ke body ko na `data` par sunte ho, na `pipe` karte ho, na `req.resume()` karte ho — stream paused rehta hai, socket buffers bharte hain, aur connection eventually timeout hota hai. Agar body chahiye hi nahi, `req.resume()` se use drain kar do.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Bytes socket par aate hain"] --> B["C++ parser: request line + headers parse"]
+    B --> C["req banta hai — method, url, headers ready"]
+    C --> D["server emits 'request' — handler chalta hai (body abhi nahi aaya)"]
+    D --> E["req.on('data') — har chunk ek Buffer"]
+    E --> F{"total bytes > MAX_BODY?"}
+    F -->|haan| G["res 413 + req.destroy()"]
+    F -->|nahi| H["chunks.push(chunk)"]
+    H --> E
+    E --> I["req.on('end') — poora body aaya"]
+    I --> J["Buffer.concat → toString → JSON.parse (try/catch)"]
+    J --> K["res.writeHead(status, headers) + res.end(body)"]
+`}
+  caption="Handler body ke aane se pehle chalta hai; body 'data' chunks mein aati hai aur byte-counter har chunk par limit check karta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `req` = `http.IncomingMessage` = **readable stream**; `res` = `http.ServerResponse` = **writable stream**.
+- Ready properties: `req.method`, `req.url` (path+query only), `req.headers` (keys **lowercased**), `req.httpVersion`.
+- Body ek property **nahi** — `req.on("data")` (Buffer chunks) + `req.on("end")`, ya `pipe`, ya `await`.
+- Hamesha ek `MAX_BODY` byte cap — cross hone par `413` + `req.destroy()`. Iske bina DoS.
+- `Buffer.concat(chunks).toString("utf8")` phir `JSON.parse` **`try/catch` mein** → invalid JSON par `400`.
+- `res.setHeader()` map mein rakhta hai; pehla `write`/`end`/`writeHead` headers **flush** karta hai — uske baad immutable.
+- Sahi `Content-Type` bhejo (`application/json`, `text/html; charset=utf-8`) — warna client galat parse/render karega.
+- `req` ko consume na karo (na data/pipe/resume) → stream paused → connection timeout.
+- Production: `express.json({ limit })` ya Fastify schema — limit, encoding, multipart handled.
+- Multipart/file uploads → `busboy`/`multer`; large bodies → `req.pipe(writeStream)`, memory mein mat lo.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek handler likho jo `req.method`, `req.url`, aur `req.headers["user-agent"]` ko ek JSON response mein wapas bheje. `curl -A "test-agent" localhost:3000/x` se verify karo ki header key lowercase mein aa raha hai.
+
+**Medium:** `POST /echo` banao jo JSON body padhe (1 MB limit ke saath) aur same body ko `201` ke saath wapas bheje. Invalid JSON par `400`, body bade par `413` do. Teeno cases `curl --data` se test karo.
+
+**Bada:** `POST /upload` banao jo `req.pipe(fs.createWriteStream("out.bin"))` se body ko file mein likhe, bina poora memory mein liye. `end`/`finish` par `{ bytes: <size> }` return karo. Phir ise 500 MB dummy file ke saath test karo (`head -c 500M /dev/zero | curl --data-binary @- ...`) aur `process.memoryUsage().rss` monitor karo — RSS flat rehna chahiye.
+
+</Callout>

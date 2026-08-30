@@ -1,0 +1,306 @@
+---
+slug: "streams-in-http"
+title: "Streams in HTTP"
+section: "nodejs"
+module: "http-and-events"
+order: 5
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["request-and-response-objects"]
+tags: ["nodejs", "http", "streams", "pipeline", "backpressure", "compression"]
+englishDefinition: "Because req and res are already streams, you can move large HTTP bodies through them at constant memory. pipeline(fs.createReadStream(file), res) sends a big file without buffering it; pipeline(req, fs.createWriteStream(dest)) accepts an upload the same way. Inserting zlib.createGzip() as a transform in the middle compresses on the fly. pipeline handles backpressure and error propagation for you. Buffering a whole response in memory before res.end(bigBuffer) instead causes a memory spike, slower time-to-first-byte, and a DoS risk."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Because `req` and `res` **are already streams**, you can move large HTTP bodies through them at roughly **constant memory**. `pipeline(fs.createReadStream(file), res)` sends a big file without ever holding it all in RAM; `pipeline(req, fs.createWriteStream(dest))` accepts an upload the same way. Dropping `zlib.createGzip()` in the middle compresses on the fly. `pipeline` handles **backpressure** (matching fast producer to slow consumer) and **error propagation** for you. The alternative — building the whole response in a buffer and calling `res.end(bigBuffer)` — causes a memory spike, a slower first byte, and a DoS risk.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`request-and-response-objects` mein humne dekha ki `req` readable aur `res` writable stream hain. Ye sirf trivia nahi — iska matlab hai ki tum files, uploads, aur compression ko **streaming** style mein handle kar sakte ho, jahan server ki memory payload size se independent rehti hai. Ye difference production mein ek 500 MB file par server crash hone aur na hone ke beech ka farak hota hai.
+
+### Ye kya hai — HTTP par streams
+
+- **File bhejna**: `fs.createReadStream("big.zip")` se file kholo, use `res` mein `pipe`/`pipeline` karo. Node file ko `~64 KB` chunks mein padhta hai, socket par likhta hai, phir agla chunk — poori file kabhi ek saath RAM mein nahi aati.
+- **Upload lena**: `req` se chunks aate hain, unhe `fs.createWriteStream("upload.bin")` mein `pipeline` karo. Same — constant memory.
+- **Compression**: beech mein ek **transform stream** (`zlib.createGzip()`) daal do — `readable → gzip → res`. Har chunk compress hoke aage jata hai.
+
+```javascript
+const { pipeline } = require("stream/promises");
+const fs = require("fs");
+const zlib = require("zlib");
+const http = require("http");
+
+http.createServer(async (req, res) => {
+  if (req.method === "GET" && req.url === "/download") {
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Encoding": "gzip",
+    });
+    try {
+      await pipeline(fs.createReadStream("big.zip"), zlib.createGzip(), res);
+    } catch (err) {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/upload") {
+    try {
+      await pipeline(req, fs.createWriteStream("upload.bin"));
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(400);
+      res.end();
+    }
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
+}).listen(3000);
+```
+
+### Ye kyun exist karta hai — backpressure
+
+Problem: disk se padhne ki speed (`~500 MB/s`) aur ek client ke network ki speed (`~2 MB/s` mobile par) alag hain. Agar tum bina control ke padhte jao aur `res.write()` karte jao, to Node ke andar unwritten data ka buffer badhta jayega jab tak client use nahi le leta — ek fast disk + slow client ek hi request ke liye gigabytes RAM mein jamaa kar sakta hai.
+
+**Backpressure** iska solution hai: `res.write()` `false` return karta hai jab uska internal buffer bhar jaye — matlab "ruk jao". Source ko `pause()` karo, `res` ke `"drain"` event par `resume()` karo. `pipe` aur `pipeline` ye poora dance tumhare liye karte hain — isliye manual `write`/`drain` handling ki zaroorat kabhi nahi padni chahiye.
+
+### Internally kaise kaam karta hai
+
+- Har stream ek **buffer** (`highWaterMark`, default `16 KB` object mode ke bahar `64 KB` for fs) aur ek state rakhta hai.
+- `pipeline(a, b, c)` `a` ko `b` se, `b` ko `c` se connect karta hai. Har stage: source `"data"` deta hai → destination `.write()` → agar `.write()` `false` de to source `.pause()` → destination `"drain"` par source `.resume()`.
+- **Error propagation**: kisi bhi stage mein error → `pipeline` sab streams ko `destroy()` karta hai (file descriptors leak nahi hote) aur callback/promise ko reject karta hai. Purana `.pipe()` ye **nahi** karta — isliye modern code `pipeline` use karta hai.
+- `zlib.createGzip()` ek **Transform** stream hai — andar readable+writable dono; chunk andto hai, compressed chunk bahar.
+
+### Simple real-life analogy
+
+Buffering-in-memory approach: ek tanker se poora paani pehle ek bade drum mein bharo, phir drum se glass mein daalo. Bada drum (RAM) chahiye, aur pehla ghoont tab tak nahi milta jab tak drum na bhar jaye (slow first byte).
+
+Streaming approach: tanker ki tap ko seedha glass se pipe se jodo. Glass bhar gaya → tap band (backpressure). Glass khali → tap khula. Koi bada drum nahi chahiye, aur paani turant behna shuru (fast first byte). Beech mein ek filter (gzip) laga sakte ho bina drum ke.
+
+### Code — line by line
+
+```javascript
+const { pipeline } = require("stream/promises");
+
+// pipeline(source, ...transforms, destination)
+await pipeline(
+  fs.createReadStream("big.zip"),   // readable: file se chunks
+  zlib.createGzip(),                // transform: har chunk compress
+  res                              // writable: socket par likho
+);
+```
+
+- `stream/promises` ka `pipeline` — promise return karta hai, `await` ke sa_th clean error handling.
+- `fs.createReadStream("big.zip")` — file ko readable stream ki tarah kholta hai, `~64 KB` chunks.
+- `zlib.createGzip()` — transform; input plain bytes, output gzip bytes. `Content-Encoding: gzip` header client ko batata hai.
+- `res` — writable; `pipeline` isme likhta hai, backpressure respect karta hai, par **`res` ko destroy nahi karta** end par (Node `pipeline` ka special-case for `http` response).
+- `await` throw karega agar koi bhi stage fail ho — file missing, client disconnect, disk full. `catch` mein tum `res` clean kar sakte ho.
+
+### Contrast: buffer poora response phir res.end(bigBuffer)
+
+```javascript
+// ANTI-PATTERN for large data
+const data = fs.readFileSync("big.zip");   // poori file RAM mein — 500 MB spike
+res.setHeader("Content-Type", "application/zip");
+res.end(data);                             // ab bhejna shuru
+```
+
+- **Memory spike**: poori file (ya DB result, ya generated report) ek saath RAM mein. 10 concurrent requests × 500 MB = OOM.
+- **Slow time-to-first-byte (TTFB)**: client ko pehla byte tab milta hai jab poori file read ho chuki — streaming mein pehla chunk milliseconds mein chala jata hai.
+- **DoS risk**: attacker 50 parallel large-file requests bhej ke server ki RAM khatam kar sakta hai. Streaming mein har request `~64 KB` leti hai.
+- **`readFileSync` to aur bura** — event loop bhi block, saare doosre requests freeze.
+
+### Range requests (ek paragraph)
+
+Video seeking aur resumable downloads ke liye client `Range: bytes=1000-2000` header bhejta hai. Server `206 Partial Content` + `Content-Range: bytes 1000-2000/50000` ke saath sirf wo slice bheje — `fs.createReadStream(path, { start: 1000, end: 2000 })`. Ye streaming ke saath natural fit hai; `express.static` aur `serve-static` ise automatically handle karte hain. Bina range support ke, har video seek poori file dobara download karti hai.
+
+### Day-to-day use
+
+- File downloads/uploads bina memory blowup.
+- Proxying: `pipeline(upstreamRes, res)` — ek response ko doosre server se pass karna.
+- On-the-fly gzip/brotli compression (ya `compression` middleware).
+- Large CSV/JSON export: DB cursor → transform (row → CSV line) → `res`, report kabhi RAM mein poora nahi.
+- Image resize pipelines: `req → sharp transform → res`.
+
+### Kab streaming use karna chahiye
+
+- Payload bada ya unbounded (files, exports, media, proxied responses).
+- TTFB matter karta hai — user pehla byte jaldi chahiye.
+- Memory constrained environment (containers with `256-512 MB` limits).
+- Transform chahiye beech mein (compress, encrypt, resize, parse).
+
+### Kab streaming zaroori nahi
+
+- Chhota response (`< ~1 MB`) — JSON API payload; `res.end(JSON.stringify(obj))` simple aur theek.
+- Poora data chahiye process karne se pehle (jaise poora JSON parse) — wahan buffer karna hi padega (par size limit ke saath).
+- Ek chhoti template-rendered HTML page.
+
+### Pros and cons (streaming vs buffering)
+
+**Pros (streaming)**
+
+- Constant memory — request size se independent.
+- Fast TTFB — pehla chunk turant.
+- Backpressure automatic (`pipe`/`pipeline`).
+- Composable — transforms beech mein plug karo.
+
+**Cons (streaming)**
+
+- Error handling zyada nuanced — headers bhej diye to `500` clean nahi bhej sakte.
+- `Content-Length` pehle se nahi pata (chunked transfer use hota hai).
+- Retry/idempotency mushkil — half-streamed response resume karna trivial nahi.
+- Debugging: partial output, jahan fail hua wo pin karna thoda mushkil.
+
+### Alternatives
+
+- **`res.end(buffer)`** — chhote responses ke liye simplest.
+- **`compression` middleware (Express)** — response gzip/brotli automatically, size threshold ke saath.
+- **Reverse proxy / CDN** — nginx/CloudFront static files, range, caching, compression sab handle kar de — Node ko stream karne ki zaroorat hi nahi.
+- **`stream.pipeline` (callback)** vs **`stream/promises` pipeline** — same cheez, promise version `async/await` ke saath cleaner.
+- **`Readable.toWeb` / WhatWG streams** — jab tumhe web-standard stream API chahiye (edge runtimes).
+
+### Interview mein "Bada file kaise serve karoge?"
+
+> "Main use RAM mein load nahi karunga. `res` khud ek writable stream hai, to main `pipeline(fs.createReadStream(path), res)` karta hoon — file `~64 KB` chunks mein padhi jaati hai, socket par likhi jaati hai, aur `pipeline` backpressure handle karta hai taaki slow client ke liye buffer na phoole. Agar compression chahiye to beech mein `zlib.createGzip()` transform daal deta hoon aur `Content-Encoding: gzip` set karta hoon. Error handling ke liye `pipeline` ke promise ko `try/catch` karta hoon — wo sab streams ko destroy kar deta hai, to file descriptor leak nahi hota. `readFileSync` + `res.end` main isliye avoid karta hoon: 500 MB ka memory spike, slow TTFB, aur ek DoS surface. Production mein ye kaam aksar nginx ya CDN karta hai — `sendfile`, range requests, caching sab native."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`pipe` aur `pipeline` mein farak: `a.pipe(b)` source error par `b` ko destroy **nahi** karta — leak. `pipeline(a, b, cb)` har error par saari streams destroy karta hai aur `cb`/promise ko reject karta hai. Naye code mein hamesha `pipeline`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express compression middleware">
+
+Express ka `compression()` middleware `res.write` aur `res.end` ko wrap karta hai: wo outgoing chunks ko ek `zlib` gzip/brotli transform se guzarta hai on the fly, `Content-Encoding` set karta hai, aur `Content-Length` hata ke chunked transfer use karta hai (kyunki compressed size pehle se pata nahi). Ek `threshold` (default `1 KB`) ke neeche wo skip karta hai — chhoti responses par gzip ka CPU cost benefit se zyada hai. Ye exactly wahi streaming-transform pattern hai jo tum `pipeline(source, zlib.createGzip(), res)` mein manually likhte ho.
+
+</RealWorld>
+
+<RealWorld company="S3 / object storage proxying">
+
+Ek common backend task: private S3 object ko authenticated user tak pahunchana bina uska pura content server par l, aur bina signed URL expose kiye. Code hai `pipeline(s3.getObject(params).createReadStream(), res)` — S3 se chunks aate hain, seedhe client ke socket par jaate hain, server memory `~64 KB` par flat rehti hai chahe object 4 GB ka ho. Range header ko bhi pass-through kiya jata hai taaki video players seek kar sakein. Buffering approach (`getObject().then(data => res.end(data.Body))`) ek 4 GB object par turant OOM.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `fs.createReadStream` default chunk (`highWaterMark`) **64 KB** — ek 2 GB file constant `~64 KB` memory footprint mein serve hoti hai.
+- Buffering approach: **N concurrent requests × full payload size** = peak RAM. 10 × 500 MB = **5 GB** spike — chhote container ke liye instant OOM.
+- Streaming TTFB: pehla chunk aksar **milliseconds** mein; buffering mein TTFB = poora read/generate time (bade file par **seconds**).
+- `stream.pipeline` **v10.0.0 (2018)** se hai; `stream/promises` version **v15+**. Usse pehle `.pipe()` + manual error listeners.
+- gzip typically text/JSON ko **70-90%** chhota kar deta hai; already-compressed data (zip, jpeg, mp4) par gzip **~0%** benefit + CPU waste — isliye `Content-Type` ya extension par skip karo.
+- `compression` middleware ka default threshold **1 KB** — usse chhoti responses uncompressed jaati hain.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Poochha jata hai: "Bada file/response kaise bhejoge?", "Streaming ke fayde kya hain?", "`pipe` vs `pipeline`?", "Backpressure kya hai?".
+
+Achhe jawaab ka shape:
+
+1. **req/res streams hain** — "isliye `pipeline(createReadStream(file), res)` — file kabhi poori RAM mein nahi."
+2. **Backpressure** — "`res.write` `false` de to source pause; `pipe`/`pipeline` ye khud karte hain — fast disk, slow client par buffer nahi phoolta."
+3. **Transform** — "compress/encrypt/parse ke liye beech mein transform stream (`zlib.createGzip()`) + `Content-Encoding`."
+4. **pipe vs pipeline** — "`pipeline` error par sab destroy karta hai + reject; `pipe` leak kar sakta hai. Naye code mein `pipeline`."
+5. **Buffering ka cost** — "memory spike (N × payload), slow TTFB, DoS surface; `readFileSync` to event loop bhi block."
+6. **Range** — "`Range` header → `206` + `Content-Range` + `createReadStream(path, { start, end })` — video seek ke liye."
+
+Red flag: bade file ke liye `fs.readFileSync` + `res.end`, ya backpressure ka concept hi na pata hona.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Bade response ke liye `fs.readFileSync` + `res.end(buf)`.** Poori file event loop ko block karke RAM mein aati hai — ek 500 MB file par server freeze + memory spike, aur 10 concurrent par OOM. `pipeline(fs.createReadStream(path), res)` use karo — constant memory, non-blocking.
+
+</Mistake>
+
+<Mistake>
+
+**`.pipe()` par error listener na lagana.** `a.pipe(res)` — agar `a` (file stream) `ENOENT` par error de, `res` cleanly close nahi hoti, socket hang, aur `a` ka file descriptor leak. `pipeline(a, res)` use karo — wo har error par sab destroy karta hai — ya har stream par manually `.on("error")`.
+
+</Mistake>
+
+<Mistake>
+
+**Headers bhejne ke baad error par `res.writeHead(500)` try karna.** Streaming mein `200` + headers pehle chunk ke saath ja chuke hote hain. Agar beech mein source fail ho, tum `500` nahi bhej sakte — connection bas abruptly cut hoti hai. `if (!res.headersSent)` check karo; nahi to `res.destroy()` hi option hai.
+
+</Mistake>
+
+<Mistake>
+
+**Already-compressed content ko dobara gzip karna.** `.zip`, `.jpg`, `.mp4`, `.pdf` par `zlib.createGzip()` lagana — size lagbhag same rehta hai, CPU waste hota hai, aur latency badhti hai. `Content-Type`/extension check karke compressible types (`text/*`, `application/json`, `application/javascript`) par hi compress karo.
+
+</Mistake>
+
+<Mistake>
+
+**`Content-Length` manually set karna jab stream/compress kar rahe ho.** Compressed ya dynamically generated stream ka final size pehle se pata nahi. Galat `Content-Length` client ko truncate ya hang karwata hai. Aise case mein `Content-Length` mat do — Node chunked transfer encoding use karega.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart LR
+    A["fs.createReadStream(file)\n~64 KB chunks"] --> B["zlib.createGzip()\ntransform: compress"]
+    B --> C["res (writable)\nsocket par likho"]
+    C -->|"buffer full: write() returns false"| D["pipeline source ko pause karta hai"]
+    D -->|"res 'drain' event"| E["pipeline source ko resume karta hai"]
+    E --> A
+    F["koi bhi stage error"] --> G["pipeline: sab streams destroy + promise reject"]
+`}
+  caption="pipeline chunks ko source se transform se res tak behata hai, backpressure par pause/resume karta hai, aur kisi bhi error par saari streams saaf kar deta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `req` readable, `res` writable — isliye HTTP bodies ko **streaming** se constant memory mein move kar sakte ho.
+- Download: `pipeline(fs.createReadStream(file), res)`. Upload: `pipeline(req, fs.createWriteStream(dest))`.
+- Compression: beech mein `zlib.createGzip()` transform + `Content-Encoding: gzip` header.
+- **Backpressure** = fast producer ko slow consumer se match karna; `res.write()` `false` → source pause, `"drain"` → resume. `pipe`/`pipeline` ye khud karte hain.
+- **`pipeline` > `pipe`**: error par saari streams destroy + reject; `pipe` FD/socket leak kar sakta hai.
+- Buffering (`readFileSync` + `res.end(buf)`) ke costs: memory spike (N × payload), slow TTFB, DoS surface; `Sync` variant event loop bhi block.
+- Error after headers-sent: `500` nahi bhej sakte — `if (!res.headersSent)` check, warna `res.destroy()`.
+- Already-compressed types (`.zip/.jpg/.mp4`) ko gzip **mat** karo — CPU waste, ~0 benefit.
+- Streaming/compressed response par `Content-Length` mat set karo — Node chunked transfer use karega.
+- **Range** requests: `Range` header → `206 Partial Content` + `Content-Range` + `createReadStream(path, { start, end })`.
+- Chhota response (`< ~1 MB` JSON) → `res.end(JSON.stringify(...))` theek; streaming sirf bade/unbounded/transform cases ke liye.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `GET /file` endpoint likho jo ek local file `pipeline(fs.createReadStream("some.pdf"), res)` se bheje, sahi `Content-Type` ke saath. `curl -o out.pdf localhost:3000/file` se download karo aur `process.memoryUsage().rss` log karke confirm karo ki file size badhne par bhi RSS flat rehta hai.
+
+**Medium:** Same endpoint mein `zlib.createGzip()` transform add karo aur `Content-Encoding: gzip` set karo. `curl --compressed` se verify karo ki content sahi decompress hota hai. Phir ek `.jpg` par same pipeline chalao aur compressed vs original size compare karke dekho ki already-compressed data par gzip bekaar hai.
+
+**Bada:** `POST /upload` banao jo `pipeline(req, fs.createWriteStream("upload.bin"))` se body ko file mein likhe. Ek 1 GB dummy file upload karo (`head -c 1G /dev/zero | curl --data-binary @- ...`) aur RSS monitor karo. Phir upload ke beech `curl` ko `Ctrl-C` se maar do aur observe karo ki `pipeline` ka promise reject hota hai aur `fs.createWriteStream` cleanly destroy ho jaata hai (partial file rehti hai, FD leak nahi hota).
+
+</Callout>

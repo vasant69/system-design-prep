@@ -1,0 +1,337 @@
+---
+slug: "error-handling-in-javascript"
+title: "Error Handling in JavaScript"
+section: "nodejs"
+module: "js-for-node"
+order: 5
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["promises-from-scratch", "async-await-deep"]
+tags: ["javascript", "error-handling", "try-catch", "custom-errors", "process-events", "fundamentals"]
+englishDefinition: "JavaScript signals failure by throwing an Error object, which carries a name, a message, and a stack trace. You catch synchronous throws with try/catch/finally. Asynchronous code reports failure in one of three ways depending on its style: a synchronous throw, a rejected Promise, or an error-first callback. Node also emits process-level events for errors that escape all handlers."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+In JavaScript, failure is signalled by **throwing** an `Error` object — it carries a `name`, a `message`, and a `stack` trace. Synchronous `throw`s are caught with `try/catch/finally`. Asynchronous code reports failure in one of **three** ways depending on its style: a synchronous `throw` (bad arguments), a **rejected Promise** (`async`/`await`, `.then`), or an **error-first callback** (`(err, data) => {}`). Errors that escape every handler surface as Node's process-level `uncaughtException` and `unhandledRejection` events.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Error handling wahi jagah hai jahan junior aur senior code ka farak turant dikh jata hai. Interview mein poocha jata hai: "async error kaise pakdoge?", "custom error class kyun?", "`uncaughtException` pe kya karna chahiye?". Iska core: JavaScript mein failure report karne ke **teen alag duniya** hain, aur tumhe pata hona chahiye kaunsa code kis duniya mein hai.
+
+### Ye kya hai — Error object
+
+`throw` kisi bhi value ko phenk sakta hai, lekin **hamesha ek `Error` object** phenko (`throw new Error("...")`), string ya number nahi. Kyun? `Error` object ke saath aata hai:
+
+- `name` — `"Error"`, `"TypeError"`, `"RangeError"`, ya tumhari custom class ka naam.
+- `message` — human-readable text.
+- `stack` — string jo batati hai error kahan bani (file, line, call chain). String phenkoge toh stack nahi milega — debugging andhera.
+
+Built-in subclasses: `TypeError` (galat type — `null.foo`), `RangeError` (`new Array(-1)`), `SyntaxError` (`JSON.parse("{")`), `ReferenceError` (undefined variable). Node ke system errors (`fs`, `net`) `Error` hote hain with extra `code` (`"ENOENT"`, `"ECONNREFUSED"`) — string comparison ke liye `err.code` use karo, `err.message` nahi (message wording badal sakta hai).
+
+### Ye kyun exist karta hai — teen duniya
+
+Ek hi function do jagah fail ho sakta hai alag tareeqe se:
+
+1. **Synchronous throw** — `JSON.parse(bad)`, `null.x`, ya tumhara khud ka `throw`. Turant, isi call stack pe. `try/catch` pakadta hai.
+2. **Rejected Promise** — `async` function `throw` kare ya koi awaited Promise reject ho. `await` ke saath `try/catch` pakadta hai; `.then` chain mein `.catch()` pakadta hai.
+3. **Error-first callback** — purane Node APIs: `fs.readFile(path, (err, data) => {})`. Error `err` argument mein aata hai, `throw` nahi hota. `try/catch` yahan **bekaar** hai.
+
+Ek codebase mein teeno mil jate hain. Bug tab hota hai jab tum ek duniya ka tool doosri pe lagate ho — jaise error-first callback ke around `try/catch`, ya `async` function ko bina `await`/`.catch` ke call karna.
+
+### Internally kaise kaam karta hai
+
+Jab `throw` chalta hai, engine current call stack ko **unwind** karta hai — har function frame ko pop karta jata hai — jab tak koi `try` block na mile jiska `catch` hai. Mil gaya toh `catch (e)` chalta hai. Nahi mila toh error "uncaught" ho jata hai: browser mein console error, Node mein `process` ka `uncaughtException` event, aur agar wo bhi handle na ho toh process **exit code 1** ke saath mar jata hai.
+
+Promise rejection alag path leta hai: reject hone par engine us Promise ke `onRejected` handlers dhoondta hai (registered via `.then(_, onRej)` ya `.catch`). Agli microtask tak koi handler attach nahi hua toh `unhandledRejection` event fire hota hai. Node **v15+** mein iska default: process crash (pehle sirf warning tha).
+
+`finally` block hamesha chalta hai — `try` normally khatam ho, `catch` chale, ya `return`/`throw` ho — cleanup (file close, lock release) ke liye.
+
+### Simple real-life analogy
+
+Socho ek courier package deliver kar raha hai:
+
+- **Sync throw** — courier tumhare saamne khada hai aur bolta hai "address galat hai" — tum turant, wahin, jawaab de sakte ho (`try/catch`).
+- **Rejected Promise** — courier chala gaya, baad mein SMS aata hai "delivery fail". Tumne pehle se "fail ho toh ye karna" register kiya tha (`.catch` / `await` + `try/catch`).
+- **Error-first callback** — courier wapas aata hai aur ek form deta hai jiska pehla khaana "problem" hai. Tum form ka pehla khaana check karte ho (`if (err)`).
+
+Teeno mein "problem" wahi hai, lekin tum tak pahunchne ka rasta alag — aur tumhara response mechanism bhi alag.
+
+### Code — line by line
+
+```javascript
+class PaymentError extends Error {
+  constructor(message, { code, retryable = false } = {}) {
+    super(message);
+    this.name = "PaymentError";
+    this.code = code;
+    this.retryable = retryable;
+    Error.captureStackTrace?.(this, PaymentError);
+  }
+}
+
+async function charge(order) {
+  if (!order.amount || order.amount <= 0) {
+    throw new PaymentError("amount must be positive", { code: "BAD_AMOUNT" });
+  }
+  try {
+    const res = await gateway.charge(order); // reject kar sakta hai
+    return res.id;
+  } catch (err) {
+    if (err.code === "ETIMEDOUT") {
+      throw new PaymentError("gateway timeout", { code: "TIMEOUT", retryable: true });
+    }
+    throw new PaymentError("gateway rejected", { code: "GATEWAY", retryable: false });
+  } finally {
+    metrics.increment("charge.attempt");
+  }
+}
+```
+
+- `class PaymentError extends Error` — custom error. Isse caller `catch` mein `err instanceof PaymentError` check kar sakta hai aur `err.retryable` dekh ke decide kar sakta hai.
+- `super(message)` — parent `Error` constructor ko call karo taaki `message` aur `stack` set ho.
+- `this.name = "PaymentError"` — default `"Error"` hota; set na karo toh logs mein galat naam dikhega.
+- `this.code`, `this.retryable` — structured data. `err.message` parse karne se hamesha behtar — machine-readable.
+- `Error.captureStackTrace?.(this, PaymentError)` — V8-specific; stack trace se constructor frame hata deta hai taaki trace saaf rahe. `?.` isliye non-V8 pe crash na ho.
+- `if (!order.amount ...) throw` — **synchronous throw** for bad input. `charge` `async` hai isliye ye `throw` bhi returned Promise ko reject karega.
+- `await gateway.charge(order)` — reject ho sakta hai; `try` ke andar hai isliye `catch` pakdega.
+- `catch (err)` — gateway ke raw error ko apni domain error (`PaymentError`) mein **translate** kiya, `code` set kiya. Caller ko gateway ki internal error dikhani nahi.
+- `finally` — success ho ya fail, metric badhao. `finally` guaranteed chalta hai.
+
+Caller side:
+
+```javascript
+try {
+  const id = await charge(order);
+  res.json({ chargeId: id });
+} catch (err) {
+  if (err instanceof PaymentError && err.retryable) {
+    return res.status(503).json({ error: "temporary, retry karein" });
+  }
+  if (err instanceof PaymentError) {
+    return res.status(402).json({ error: err.code });
+  }
+  throw err; // anjaana error — upar jaane do, generic 500 handler ke paas
+}
+```
+
+- `err instanceof PaymentError` — apni known errors ko structured response mein badla.
+- `err.retryable` — decision data error ke andar hi tha, alag lookup nahi.
+- **`throw err`** anjaani errors ke liye — inhe swallow **mat** karo; central error handler / crash hone do (fail-fast). Chhupi hui bug se galat data likhne se behtar hai crash.
+
+### Sync throw vs async reject vs error-first callback — the decision table
+
+| Style | Failure kaise aata hai | Kaise pakdo | Kab use |
+| --- | --- | --- | --- |
+| Sync function | `throw` | `try/catch` around call | Pure computation, validation, parsing |
+| `async` / Promise | rejected Promise | `await` + `try/catch`, ya `.catch()` | Har naya async code — default |
+| Error-first callback | `err` first argument | `if (err) return handle(err)` | Legacy API, ya `util.promisify` se wrap karo |
+
+Galtiyan jo isi table se aati hain: error-first callback ko `try/catch` mein wrap karke sochna error pak jayega; `async` function ko bina `await` call karke (floating promise) uska reject miss karna.
+
+### process-level: uncaughtException aur unhandledRejection
+
+```javascript
+process.on("uncaughtException", (err) => {
+  logger.fatal(err); // ek baar log karo
+  process.exit(1);   // aur mar jao — recover mat karo
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandled rejection", reason);
+  process.exit(1);
+});
+```
+
+- Ye **safety net** hain, normal error handling **nahi**. Inpe pahunchna matlab tumne kahin `try/catch` ya `.catch()` chhoda.
+- `uncaughtException` ke baad process ki state **corrupt** maani jati hai — half-open connections, adhoore transactions. Recover karke chalte rehna galat: agla request corrupt state pe chalega. Log karo, `process.exit(1)`, aur process manager (PM2, Kubernetes) ko restart karne do — **fail-fast**.
+- `unhandledRejection` Node **v15+** mein by default process ko crash karta hai. Handler lagao sirf **clean logging** ke liye, phir bhi exit.
+
+### Day-to-day use
+
+- Har external call (`fetch`, DB, `fs`) ke around `try/catch` with `await`.
+- Custom error classes per domain: `ValidationError`, `NotFoundError`, `PaymentError`.
+- Ek **central** Express error middleware: `app.use((err, req, res, next) => {...})` — sab route errors ek jagah response mein.
+- `finally` for cleanup — file handles, DB transactions (`ROLLBACK` on catch, `release` in finally).
+- `err.code` pe branch karo, `err.message` pe nahi.
+
+### Kab kya catch karna chahiye
+
+- **Catch karo jab tum kuch kar sakte ho** — retry, fallback value, error ko translate karke behtar message dena, transaction rollback.
+- **Catch mat karo (upar jaane do) jab tum kuch nahi kar sakte** — bas `throw` dobDara, ya `catch` likho hi mat. Har function pe `try/catch` laga ke `console.log` karna aur aage badhna = errors chhupana.
+- **Boundary pe catch karo** — request handler, job worker, CLI entry point. Wahan generic error → user-safe response + log.
+
+### Kab error ko swallow karna theek hai
+
+- Genuinely optional kaam: analytics ping, cache warm, non-critical notification. `try { await sendMetric(x); } catch {}` — lekin phir bhi **log** karo, silently mat niglo.
+- Cleanup ke andar ki secondary error: `finally { try { await conn.release(); } catch (e) { logger.warn(e); } }` — primary error ko maskana nahi chahiye.
+
+### Pros and cons of "throw Error object" approach
+
+**Pros**
+
+- `stack` trace milta hai — root cause turant.
+- `instanceof` se typed handling.
+- Structured fields (`code`, `retryable`) — machine-readable branching.
+- `try/catch/finally` language-native, sync code ke liye clean.
+
+**Cons**
+
+- `try/catch` async callback pe kaam nahi karta — teen-duniya wali complexity.
+- Har layer pe `catch` + rethrow verbose ho jata hai.
+- `throw` non-`Error` (string) legacy code mein stack tod deta hai.
+- Overuse: har line ke around `try/catch` — control flow padhna mushkil.
+
+### Alternatives
+
+- **Result / Either type** (`{ ok: true, value }` | `{ ok: false, error }`) — errors ko return value banao, `throw` nahi. Rust/Go style; TypeScript mein type-safe error handling deta hai, lekin ecosystem `throw` expect karta hai.
+- **Error-first callback** — Node ka purana model; naye code mein Promise reject use karo.
+- **`process.on('uncaughtException')`** — sirf last-resort net, primary strategy nahi.
+- **Domain module** — deprecated, use mat karo.
+- **`AbortController` + `AbortSignal`** — cancellation ko error (`AbortError`) ki tarah propagate karta hai; timeout/cancel ke liye idiomatic.
+
+### Interview mein "Async errors kaise handle karte ho? uncaughtException pe kya?"
+
+> "Naya async code main hamesha Promise-based rakhta hoon aur `await` ke around `try/catch` lagata hoon; legacy error-first callbacks ko `util.promisify` se wrap kar deta hoon taaki ek hi model rahe. Errors ko main domain error classes (`ValidationError`, `PaymentError`) mein translate karta hoon with a `code` field, aur boundary — Express error middleware ya job worker — pe unhe user-safe response mein convert karta hoon. Jo error main handle nahi kar sakta use main rethrow karta hoon, swallow nahi. `uncaughtException` aur `unhandledRejection` pe main sirf fatal-log karke `process.exit(1)` karta hoon — process state ko corrupt maan ke process manager ko restart karne deta hoon; unpe recover karke chalte rehna agli request ko corrupt state pe chala deta hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`throw` hamesha `new Error(...)` (ya subclass) ho — kabhi `throw "kuch galat"`. String throw karne pe `err.stack` `undefined` hota hai, `err.message` `undefined` hota hai, aur `err instanceof Error` `false` — har downstream handler toot jata hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express / Fastify error middleware">
+
+Production Express apps ek single error-handling middleware rakhti hain jo **char** argument leta hai: `app.use((err, req, res, next) => { ... })`. Har route apni error `next(err)` se ya (Express 5 / async wrapper mein) `throw` karke isi ek jagah bhejta hai. Yahan `err instanceof ValidationError` → `400`, `NotFoundError` → `404`, baaki → `500` with a generic message aur ek logged `requestId`. Isse har route handler mein `res.status(500)` repeat nahi karna padta aur error format consistent rehta hai.
+
+</RealWorld>
+
+<RealWorld company="Node process managers (PM2, Kubernetes, systemd)">
+
+Modern Node deployments `uncaughtException` pe recover karne ki koshish **nahi** karte. Convention: fatal-log karo, in-flight requests ko thoda time do drain hone ka (graceful shutdown), phir `process.exit(1)`. PM2 / Kubernetes liveness probe process ko turant restart kar deta hai ek saaf state ke saath. Ye "let it crash" philosophy Erlang se aayi aur Node community ne apnayi kyunki ek corrupt-state process se aane wale silent-wrong responses ek short restart se kahin zyada mehnge hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Ek uncaught error process ko **exit code 1** deta hai — `0` = success, non-zero = failure; process managers isi se restart trigger karte hain.
+- `unhandledRejection` Node **v15 (2020)** se by default process ko **crash** karta hai; pehle sirf `UnhandledPromiseRejectionWarning` tha.
+- `Error.stackTraceLimit` default **10** frames — deep async chains mein badhana pade toh `Error.stackTraceLimit = 50`.
+- `Error.captureStackTrace` **V8-only** — Chrome aur Node mein hai, Safari/Firefox mein nahi.
+- Ek `try/catch` block ki cost aaj **near-zero** hai jab koi error nahi phenka jata — modern V8 ne "try/catch slow hai" wali purani baat khatam kar di.
+- `process.exit()` pending async work (pending writes, logs) ko **beech mein kaat** deta hai — pehle streams flush hone do, phir exit.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Interviewer test karta hai: (1) hamesha `Error` object throw karo, string nahi; (2) teen duniya — sync throw / promise reject / error-first callback — aur har ek ka catch mechanism; (3) custom error class kyun (`instanceof`, `code`, structured branching); (4) `uncaughtException` / `unhandledRejection` pe fail-fast, recover nahi; (5) errors ko boundary pe handle karo, har function pe nahi.
+
+Achhe jawaab ka shape:
+
+1. **Signal** — "failure = `throw new Error()`; `Error` ke saath `name`, `message`, `stack`."
+2. **Teen styles** — "sync throw → `try/catch`; Promise reject → `await` + `try/catch` ya `.catch()`; error-first callback → `if (err)`. `try/catch` async callback pe kaam nahi karta."
+3. **Custom errors** — "domain classes with `code`/`retryable` taaki caller `instanceof` se branch kare, message parse na kare."
+4. **Boundary** — "central error middleware / worker wrapper pe user-safe response; jo handle na kar sako, rethrow."
+5. **Process events** — "safety net; log + `process.exit(1)`; state corrupt, recover mat karo."
+
+Red flag: "har function ko `try/catch` mein wrap kar deta hoon aur `console.log` karke aage badhta hoon" — ye errors chhupana hai; aur "`uncaughtException` pakad ke server chalte rehne deta hoon" — corrupt state.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Error-first callback ke around `try/catch` lagana.** `try { fs.readFile(p, cb) } catch (e) {}` — `catch` sirf `readFile` ko call karne ki sync error pakdega; file-not-found error `cb` ke `err` argument mein aati hai. Async callback ka error hamesha pehle argument se handle karo, ya `fs.promises` version + `await` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`throw` string ya plain object.** `throw "user not found"` — ab `err.stack` nahi, `err.message` nahi, `err instanceof Error` `false`. Har logger aur error middleware jo `err.stack` expect karta hai toot jayega. Hamesha `throw new Error(...)` ya `throw new NotFoundError(...)`.
+
+</Mistake>
+
+<Mistake>
+
+**Errors swallow karna — `catch (e) { console.log(e); }` phir aage badhna.** Function fail hua lekin caller ko `undefined` mila jaise sab theek. Ab `undefined` par aage crash hoga asli wajah se door. Ya toh recover karo (retry/fallback), ya rethrow karo — beech ka "log aur ignore" sabse bura.
+
+</Mistake>
+
+<Mistake>
+
+**`async` function ko bina `await` / `.catch()` call karna (floating promise).** `processJob(job); next();` — `processJob` reject ho toh `unhandledRejection`, aur Node v15+ pe process crash. Jaanbujh ke fire-and-forget ho toh `.catch(logErr)` explicitly lagao.
+
+</Mistake>
+
+<Mistake>
+
+**`uncaughtException` pakad ke process ko zinda rakhna.** `process.on("uncaughtException", (e) => logger.error(e))` — bina `exit`. Process ab unknown/corrupt state mein chal raha hai; agla request half-open DB connection ya adhoore transaction pe chalega aur silently galat data de sakta hai. Log karo, drain karo, `process.exit(1)`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Kuch fail hua"] --> B{"Code kis style ka hai?"}
+    B -->|"Sync function"| C["throw Error"]
+    B -->|"async / Promise"| D["Promise reject"]
+    B -->|"error-first callback"| E["err = pehla argument"]
+    C --> F["try/catch pakadta hai"]
+    D --> G["await + try/catch, ya .catch()"]
+    E --> H["if (err) return handle(err)"]
+    F --> I{"Handle kar sakte ho?"}
+    G --> I
+    H --> I
+    I -->|"Haan"| J["retry / fallback / translate + user-safe response"]
+    I -->|"Nahi"| K["rethrow — boundary tak jaane do"]
+    K --> L["uncaughtException / unhandledRejection: log + process.exit(1)"]
+`}
+  caption="Teen failure styles, teen catch mechanisms; jo handle na ho sake use boundary tak rethrow karo, aur process-level events sirf fail-fast ke liye hain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Failure = **`throw new Error(...)`** — string kabhi nahi. `Error` deta hai `name`, `message`, `stack`.
+- Built-in subclasses: `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`. Node system errors mein `err.code` (`ENOENT`) — usi pe branch karo.
+- **Teen duniya**: sync `throw` → `try/catch`; Promise reject → `await`+`try/catch` ya `.catch()`; error-first callback → `if (err)`.
+- `try/catch` **async callback ka error nahi** pakadta — sirf sync `throw`.
+- **Custom error class**: `extends Error`, `super(message)`, `this.name` set, `code`/`retryable` fields → caller `instanceof` se branch kare.
+- `finally` hamesha chalta hai — cleanup (file close, `ROLLBACK`, lock release).
+- **Boundary pe handle karo** (Express error middleware, worker wrapper); jo handle na ho, **rethrow** — swallow nahi.
+- `unhandledRejection` Node **v15+** pe process crash — har Promise chain ka `.catch()` ya `await` guard ho.
+- `uncaughtException` / `unhandledRejection` = **safety net**: fatal-log + `process.exit(1)`. State corrupt, recover mat karo (**fail-fast / let it crash**).
+- Floating promise (`await` bhoolna) = missed rejection.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `class ValidationError extends Error` likho jo constructor mein `field` name le. `throw new ValidationError("email invalid", "email")`. Ek `catch` mein confirm karo `err instanceof ValidationError`, `err.name === "ValidationError"`, `err.field === "email"`, aur `err.stack` defined hai.
+
+**Medium:** Ek function `parseConfig(text)` likho jo `JSON.parse` karta hai. `SyntaxError` ko pakad ke ek `ConfigError` mein translate karo jismen original error `err.cause` mein rakha ho (`new ConfigError("bad config", { cause: e })`). Test valid aur invalid JSON dono se.
+
+**Bada:** Ek chhoti Express app banao ek route ke saath jo kabhi `ValidationError`, kabhi `NotFoundError`, kabhi ek plain `Error` phenke (random). Ek central error middleware likho jo `ValidationError` → `400`, `NotFoundError` → `404`, baaki → `500` (generic message + console pe full error) map kare. Fir `process.on("unhandledRejection")` add karke ek route mein jaanbujh ke floating promise banao aur dekho process ka kya hota hai.
+
+</Callout>

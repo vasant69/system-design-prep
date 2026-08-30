@@ -1,0 +1,308 @@
+---
+slug: "fs-module"
+title: "The fs Module — Reading & Writing Files"
+section: "nodejs"
+module: "builtin-modules"
+order: 1
+difficulty: "beginner"
+readingTime: 15
+prerequisites: ["first-class-functions-and-callbacks"]
+tags: ["nodejs", "fs", "filesystem", "io", "async", "builtin-modules"]
+englishDefinition: "The fs (file system) module is Node's built-in API for working with files and directories. It comes in three flavours: synchronous methods that block the event loop (fs.readFileSync), classic asynchronous methods that take an error-first callback (fs.readFile), and promise-based methods on fs.promises that work with async/await. Choosing the right flavour, and handling errors instead of pre-checking, is the core skill."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+The `fs` (file system) module is Node's built-in API for working with files and directories. It ships in three flavours: **synchronous** methods that block the event loop (`fs.readFileSync`), classic **asynchronous** methods that take an error-first callback (`fs.readFile`), and **promise-based** methods on `fs.promises` that work with `async/await`. Picking the right flavour for the situation, and handling errors instead of pre-checking for a file's existence, is the core skill.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har backend developer ko file padhni-likhni padti hai — config load karna, logs likhna, uploads save karna, templates read karna. Node ka `fs` module isi ke liye hai. Trap ye hai ki har operation ke **teen versions** hote hain, aur galat version choose karna production server ko freeze kar sakta hai.
+
+### Ye kya hai — fs module
+
+`fs` ek core module hai (`const fs = require("fs")` ya `import fs from "node:fs"`). Ye OS ke file system calls ke upar ek wrapper hai. Isme file read/write, directory banana, file rename/delete, metadata (size, modified time) — sab kuch milta hai.
+
+Teen API flavours:
+
+- **`fs.readFileSync(path)`** — synchronous. Result seedha return hota hai, lekin jab tak disk se data nahi aata, **poora Node process ruka rehta hai** — koi doosri request handle nahi hoti.
+- **`fs.readFile(path, cb)`** — asynchronous, error-first callback. Turant return hota hai; jab file ready ho tab `cb(err, data)` chalta hai. Beech mein event loop free rehta hai.
+- **`fs.promises.readFile(path)`** — Promise return karta hai, `await` ke saath use hota hai. Yahi modern default hai.
+
+### Ye kyun exist karta hai
+
+Sync isliye exist karta hai kyunki startup ke waqt (server listen karne se pehle) blocking theek hai — code simple rehta hai aur koi request abhi aa hi nahi rahi. Callback version Node ke shuru se hai, jab Promises language mein the hi nahi. `fs.promises` (Node 10+) baad mein aaya jab `async/await` standard ban gaya — ab yahi pehli pasand hai naye code ke liye.
+
+### Internally kaise kaam karta hai
+
+Async `fs` calls libuv ke **thread pool** ko kaam dete hain (default size **4**, `UV_THREADPOOL_SIZE` se badalta hai). Main thread callback register karke aage badh jata hai. Disk operation ek background thread pe hota hai; complete hone par callback event loop ki queue mein aata hai aur stack khali hone par chalta hai.
+
+`readFileSync` isse skip karta hai — wo seedha blocking system call karta hai main thread pe. 50 MB file sync padhi toh main thread utni der (maan lo 200 ms) **kuch aur nahi** kar sakta.
+
+### Simple real-life analogy
+
+Sync read = tum bank counter pe khade ho, clerk locker se file laane gaya, aur poori line ruki hai jab tak wo wapas na aaye. Async read = clerk tumhe token deta hai, tum baith jaate ho, baaki log serve hote rehte hain, aur file aane par tumhara number bulaya jata hai. Server pe hamesha token wala model chahiye.
+
+### Code — line by line
+
+```javascript
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+
+// 1. Sync — sirf startup pe
+const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+
+// 2. Callback — legacy style
+fs.readFile("./note.txt", "utf8", (err, data) => {
+  if (err) return console.error("read failed:", err.code);
+  console.log(data);
+});
+
+// 3. Promises — modern default
+async function loadUsers() {
+  try {
+    const raw = await fsp.readFile("./users.json", "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
+  }
+}
+```
+
+- `require("node:fs")` — sync + callback API. `node:fs/promises` — promise API alag entry point pe.
+- `readFileSync("./config.json", "utf8")` — `"utf8"` doosra arg hai; iske bina tumhe raw **Buffer** milta hai, string nahi.
+- `if (err) return ...` — error-first callback ki pehli line hamesha yahi.
+- `err.code === "ENOENT"` — "Error NO ENTry" = file nahi mili. `EACCES` = permission nahi. Code pe branch karo, message pe nahi.
+- promise version mein `try/catch` wapas kaam karta hai kyunki `await` async ko sync jaisa bana deta hai.
+
+### Core operations — cheat sheet
+
+```javascript
+await fsp.readFile(path, "utf8");        // padho
+await fsp.writeFile(path, data);         // overwrite (flag "w")
+await fsp.appendFile(path, line + "\n"); // end mein add (flag "a")
+await fsp.stat(path);                    // size, mtime, isDirectory()
+await fsp.readdir(dir, { withFileTypes: true }); // Dirent[] — d.isFile()
+await fsp.mkdir(dir, { recursive: true });       // "mkdir -p"
+await fsp.rm(target, { recursive: true, force: true }); // "rm -rf"
+await fsp.rename(oldPath, newPath);      // move / rename
+await fsp.copyFile(src, dest);           // copy
+```
+
+Write **flags**: `"w"` = create ya truncate (default for `writeFile`), `"a"` = append, `"wx"` = create but **fail agar file already hai** (`EEXIST`) — atomic "sirf tabhi likho jab nahi hai" ke liye useful.
+
+### existsSync vs access — aur TOCTOU race
+
+`fs.existsSync(path)` boolean deta hai. Tempting hai: "pehle check karo file hai, phir padho." Ye **galat pattern** hai:
+
+```javascript
+// BAD — race condition
+if (fs.existsSync(path)) {
+  const data = fs.readFileSync(path); // file yahan tak delete ho sakti hai
+}
+```
+
+Check aur use ke beech mein file delete/rename ho sakti hai — ise **TOCTOU** (time-of-check to time-of-use) race bolte hain. Sahi tareeka: seedha operation karo aur error handle karo.
+
+```javascript
+// GOOD
+try {
+  const data = await fsp.readFile(path, "utf8");
+} catch (err) {
+  if (err.code === "ENOENT") { /* file nahi hai */ }
+  else throw err;
+}
+```
+
+`existsSync` ka ek legit use: startup pe ek config file optional hai ya nahi, ye decide karna — tab race matter nahi karta.
+
+### Bade files ke liye — streams
+
+`readFile` poori file ko **memory mein** load karta hai. 2 GB log file ko `readFile` karoge toh process out-of-memory ho jayega. Uske liye `fs.createReadStream(path)` / `fs.createWriteStream(path)` hain — jo chunk-by-chunk chalte hain aur constant memory use karte hain. Streams ka poora deep-dive alag module mein hai; abhi bas yaad rakho: **known-small file → readFile; bada ya unknown → stream.**
+
+### Encoding — utf8 vs Buffer
+
+Bina encoding diye `fs.readFile(path, cb)` tumhe **Buffer** deta hai (raw bytes). Text ke liye `"utf8"` do taaki string mile. Binary files (images, PDFs, zip) ke liye Buffer hi chahiye — encoding mat do.
+
+### Day-to-day use
+
+- App startup pe config / `.env` / feature flags load karna
+- Request handler mein template ya static asset padhna (better: cache it)
+- Audit / debug log lines append karna
+- File uploads ko disk pe save karna
+- Temp files banana aur baad mein `rm` karna
+- Ek folder ke andar saari `.json` files iterate karna (`readdir` + filter)
+
+### Kab kaunsa flavour use karna chahiye
+
+- **Sync** — sirf startup / CLI scripts / build tools. Request handling ke andar kabhi nahi.
+- **Callback** — jab koi purani library ya API sirf callback deti ho, ya jab `util.promisify` avoid karna ho.
+- **Promises (`fs/promises`)** — baaki sab. Naya code hamesha yahi.
+
+### Kab use nahi karna chahiye
+
+- Live HTTP server mein `readFileSync` — ek slow disk poore server ko block kar dega.
+- Bade / unknown-size files ke liye `readFile` — memory blow up. Stream use karo.
+- `existsSync` + read/write ka combo — race. Seedha karo, error pakdo.
+- Har request pe same template file dubara padhna — ek baar padho, memory mein rakho.
+
+### Pros and cons
+
+**Pros**
+
+- Zero install — core module.
+- Teeno paradigms (sync, callback, promise) available — legacy aur modern dono fit.
+- `err.code` se precise error handling (`ENOENT`, `EACCES`, `EEXIST`, `EISDIR`).
+
+**Cons**
+
+- Sync methods ka misuse production ko freeze kar deta hai — sabse common Node blunder.
+- `readFile` ki memory footpoint = poori file size.
+- Cross-platform path quirks — hamesha `path` module ke saath use karo.
+
+### Alternatives
+
+- **`fs.createReadStream` / `pipeline`** — bade files, copy, HTTP responses.
+- **`fs-extra`** (npm) — `ensureDir`, `emptyDir`, recursive copy with progress; `fs` ka superset.
+- **`node:fs`'s `glob`** (newer Node) ya `fast-glob` — pattern se files dhoondhna.
+- **Database / object storage (S3)** — jab files ka volume bada ho ya multiple servers share karein.
+
+### Interview mein "Why did you use fs.promises here?"
+
+> "Request path ke andar tha, isliye sync bilkul nahi — wo event loop block karta. `fs.promises.readFile` ke saath `await` use kiya taaki code flat rahe aur `try/catch` se `ENOENT` ko gracefully handle kar saku (missing file pe empty list return). File chhoti aur known-size thi (ek config JSON), isliye stream ki zaroorat nahi thi. Existence pehle check nahi kiya kyunki wo TOCTOU race hai — seedha padha aur error code pe branch kiya."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`err.code` pe branch karo, `err.message` pe nahi. Messages Node version ke saath badal sakte hain aur locale pe depend karte hain; `"ENOENT"`, `"EACCES"`, `"EEXIST"`, `"EISDIR"` stable contract hain.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Config loading at startup">
+
+Bahut si Node apps startup pe ek `config.json` ya `.env`-jaisi file sync padhti hain, `server.listen()` se pehle. Yahan `readFileSync` bilkul theek hai: abhi koi request nahi aa rahi, aur agar config missing/corrupt hai toh tum chahte ho ki process **turant crash kare** ek clear error ke saath, half-configured start na ho. Isi file ko agar tum request handler ke andar har baar padhoge toh har request pe ek blocking disk hit lagega — isliye padh ke ek module-level variable mein rakh lo.
+
+</RealWorld>
+
+<RealWorld company="Upload service on a service-desk portal">
+
+Ek internal portal jahan employees documents upload karte hain: handler `fs.promises.writeFile` se file `./uploads/<id>.pdf` pe likhta hai, pehle `fs.promises.mkdir("./uploads", { recursive: true })` se folder ensure karta hai. Overwrite se bachne ke liye flag `"wx"` — agar same id dobara aayi toh `EEXIST` throw hoga aur handler 409 return karta hai. Purani files ek nightly job `readdir` + `stat` (mtime check) + `rm` se clean karti hai. Bade files (video) yahan `createWriteStream` + `pipeline` se save hote hain taaki memory spike na ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- libuv thread pool default size = **4**. Async `fs` calls isi pool mein queue hote hain; `process.env.UV_THREADPOOL_SIZE` (max **1024**) se badalta hai.
+- `fs.promises` Node **v10 (2018)** se stable; `fs/promises` import path **v14** se.
+- `readFile` ki memory cost ≈ file size. Ek 500 MB file `readFile` = ~500 MB RSS spike; wahi file stream se ~64 KB at a time.
+- Default read stream chunk size = **64 KB** (`highWaterMark`).
+- `writeFile` default flag = `"w"` (truncate + write); `appendFile` = `"a"`.
+- File not found ka error code hamesha `"ENOENT"`; permission denied `"EACCES"`; file already exists (with `"wx"`) `"EEXIST"`.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic "Node blocking ko kaise samajhte ho" test karne ka ek practical bahaana hai. Interviewer aksar poochta hai: "`readFileSync` server pe kyun bura hai?" ya "existence check karke padhna theek hai kya?"
+
+Achhe jawaab ka shape:
+
+1. **Teen flavours** — sync (blocks event loop, sirf startup), callback (error-first, legacy), promises (modern default).
+2. **Blocking cost** — sync call ke dauraan Node koi doosri request, timer, ya I/O handle nahi kar sakta; single slow disk = poora server down.
+3. **TOCTOU** — `existsSync` phir `readFile` ek race hai; seedha operation karo aur `err.code === "ENOENT"` handle karo.
+4. **Memory** — `readFile` poori file load karta hai; bade/unknown size ke liye stream.
+5. **Encoding** — bina `"utf8"` diye Buffer milta hai.
+
+Red flag: "sync aur async mein bas syntax ka farak hai" — nahi, farak ye hai ki sync poore process ko rok deta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Request handler ke andar `fs.readFileSync` use karna.** Har request pe main thread disk ke liye block hota hai; ek slow ya busy disk pe throughput girta hai aur latency spike karti hai. Sync `fs` sirf startup, CLI tools, aur build scripts ke liye hai — jahan concurrency matter nahi karti.
+
+</Mistake>
+
+<Mistake>
+
+**`fs.existsSync(path)` karke phir `readFile` / `writeFile` karna.** Check aur use ke beech file delete, rename, ya permission-change ho sakti hai (TOCTOU race). Seedha operation try karo aur `err.code` (`ENOENT`, `EACCES`, `EEXIST`) pe handle karo. `existsSync` sirf non-racy decisions ke liye (e.g. "optional config file hai kya").
+
+</Mistake>
+
+<Mistake>
+
+**Encoding bhoolna aur phir string methods call karna.** `fs.readFile(path, cb)` bina `"utf8"` ke Buffer deta hai; us pe `.split("\n")` galat behave karega ya `.trim()` unexpected. Text ke liye hamesha `"utf8"` do; binary (image/pdf/zip) ke liye Buffer hi rakho, encoding mat do.
+
+</Mistake>
+
+<Mistake>
+
+**Bade ya unknown-size file ko `readFile` karna.** Poori file RAM mein aati hai — ek multi-GB log ya user-uploaded video process ko OOM kar sakta hai. Known-small (config, small JSON) → `readFile`. Bada / streaming source / unknown → `fs.createReadStream` + `pipeline`.
+
+</Mistake>
+
+<Mistake>
+
+**`fs.promises` ke error ko `.catch` ya `try/catch` ke bina chhodna.** `await fsp.readFile(missing)` ek rejected promise deta hai; handle na karo toh `unhandledRejection` — naye Node mein process crash. Har `await fsp.*` ya toh `try/catch` mein ho ya caller tak `throw` ho jahan handle ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Aapka code: fs call"] --> B{"Kaunsa flavour?"}
+    B -->|"readFileSync"| C["Main thread block — seedha OS syscall"]
+    C --> D["Data return; tab tak kuch aur nahi chalta"]
+    B -->|"readFile(cb) / fs.promises"| E["Callback register; main thread aage"]
+    E --> F["libuv thread pool (size 4) disk read karta hai"]
+    F -->|"done"| G["Callback / promise resolution queue me"]
+    G --> H["Event loop: stack khali hote hi cb chalta hai"]
+`}
+  caption="Sync path main thread ko rok deta hai; async path kaam thread pool ko deta hai aur event loop free rehta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Teen flavours: `fs.*Sync` (blocks — startup only), `fs.*` (error-first callback — legacy), `fs.promises.*` / `node:fs/promises` (async/await — modern default).
+- Sync call ke dauraan Node **kuch aur nahi** karta — koi request, timer, I/O nahi. Server pe kabhi nahi.
+- Async `fs` libuv **thread pool (default 4)** use karta hai.
+- Core ops: `readFile`, `writeFile`, `appendFile`, `stat`, `readdir({ withFileTypes: true })`, `mkdir({ recursive: true })`, `rm({ recursive: true, force: true })`, `rename`, `copyFile`.
+- Write flags: `"w"` truncate, `"a"` append, `"wx"` create-or-fail (`EEXIST`).
+- `existsSync` phir read/write = **TOCTOU race**. Seedha karo, `err.code` handle karo (`ENOENT`, `EACCES`, `EISDIR`).
+- Bina encoding → **Buffer**. Text ke liye `"utf8"`; binary ke liye Buffer rakho.
+- `readFile` = poori file RAM mein. Bade/unknown → `createReadStream` / `createWriteStream` + `pipeline`.
+- `err.code` pe branch karo, `err.message` pe nahi.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script likho jo `./data` folder banaye (`recursive: true`), usme `log.txt` pe 3 lines `appendFile` se add kare, phir `readFile` se padh ke print kare. Dobara chalao — lines badhni chahiye, folder error nahi dena chahiye.
+
+**Medium:** `async function safeReadJson(path, fallback)` likho jo file padhe aur parse kare; `ENOENT` pe `fallback` return kare, baaki errors `throw` kare, aur invalid JSON pe ek clear error message ke saath throw kare. `existsSync` use mat karna.
+
+**Bada:** `./tmp` mein ek 200 MB dummy file banao (loop mein `appendFile` ya `dd`). Use pehle `fs.promises.readFile` se padho aur `process.memoryUsage().rss` note karo; phir `createReadStream` se chunk-by-chunk padho aur RSS compare karo. Farak likho aur samjhao.
+
+</Callout>

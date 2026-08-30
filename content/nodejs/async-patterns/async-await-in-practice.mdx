@@ -1,0 +1,319 @@
+---
+slug: "async-await-in-practice"
+title: "async / await In Practice"
+section: "nodejs"
+module: "async-patterns"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["promises-in-depth"]
+tags: ["nodejs", "async-await", "promises", "promise-all", "parallelism", "async"]
+englishDefinition: "async/await is syntax sugar over Promises: an async function always returns a Promise, and await pauses the function until a Promise settles, giving back its value or throwing its rejection. In practice the key decisions are sequential awaits versus Promise.all for independent work, await inside a for-of loop (sequential) versus .map plus Promise.all (parallel) versus for-await-of for async iterables, where to place the try/catch error boundary, and never forgetting await (the floating-promise bug)."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`async/await` is **syntax sugar over Promises**. Marking a function `async` makes it **always return a Promise**. Inside it, `await somePromise` **pauses** that function until the Promise settles, then either hands back its fulfilled value or **throws** its rejection — so a normal `try/catch` works again. The real-world skill is choosing between running awaits **sequentially** (each waits for the last) and running independent work **in parallel** with `Promise.all`, and never forgetting the `await` keyword itself.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Promises ne pyramid flat kar diya, lekin raw `.then` chains conditionals aur loops ke saath abhi bhi awkward hain. `async/await` wahi Promises hain, bas linear top-to-bottom code ki tarah likhe. Ye topic syntax se zyada **patterns** pe hai — sequential vs parallel, loops ke andar await, aur error boundary kahan lagao.
+
+### Ye kya hai — async/await
+
+- `async function f() { ... }` — ye function **hamesha ek Promise return karta hai**. `return 5` ka matlab hai wo Promise `5` se fulfil hota hai. Andar `throw` ka matlab wo Promise reject hota hai.
+- `await expr` — agar `expr` ek Promise hai, function yahan **ruk jata hai** (bina thread block kiye), Promise settle hone par resume hota hai. Fulfilled value expression ki value ban jati hai; rejected reason ek exception ki tarah **throw** hoti hai.
+
+### Ye kyun exist karta hai
+
+`.then` chains mein `if/else`, `for`, `try/finally` daalna ugly ho jata hai kyunki har branch ko ek naya callback banana padta hai. async/await mein normal control flow wapas mil jata hai: `if`, `for`, `while`, `try/catch/finally` sab natural. Aur intermediate values (`user`, `orders`, `items`) sab ek hi function scope mein rehti hain — Promise chain mein inhe manually forward karna padta tha.
+
+### Internally kaise kaam karta hai
+
+`await` ke peeche koi magic thread nahi. Jab engine `await p` pe pahunchta hai:
+
+1. `p` ko `Promise.resolve(p)` se ek Promise banata hai (agar already nahi).
+2. Us Promise pe internally `.then` register karta hai jo function ka **baaki hissa** ek continuation ki tarah rakhta hai.
+3. `async` function turant `return` ho jata hai — caller ko ek pending Promise milta hai.
+4. Jab `p` settle hota hai, continuation **microtask** queue mein schedule hoti hai aur function wahin se resume hota hai.
+
+Matlab `await` = "yeh Promise `.then` karo, aur neeche ka code us `.then` ka callback bana do" — compiler ye tumhare liye karta hai.
+
+### Simple real-life analogy
+
+Tum ek form fill kar rahe ho jisme har field ke liye kisi aur department se number lena hai. `.then` style: har field ke liye ek alag chit likho "jab number aaye toh agli chit ko trigger karna". `await` style: tum ek hi kursi pe baithe ho, ek request bhejte ho, jawaab aane tak **doosra kaam karte ho** (thread block nahi), jawaab aaya toh usi form pe agli line bhar dete ho. Code ek seedhi list ki tarah padta hai, par beech ke gaps mein event loop free hai.
+
+### Code — sequential vs parallel
+
+```javascript
+// SEQUENTIAL — har await pichle ke khatam hone ka wait karta hai
+async function report(userId) {
+  const t0 = Date.now();
+  const profile = await getProfile(userId);   // ~100ms
+  const settings = await getSettings(userId); // ~100ms — profile ka wait kyun?
+  const usage = await getUsage(userId);       // ~100ms
+  console.log("took", Date.now() - t0, "ms"); // ~300ms
+  return { profile, settings, usage };
+}
+
+// PARALLEL — teen independent calls ek saath
+async function reportFast(userId) {
+  const t0 = Date.now();
+  const [profile, settings, usage] = await Promise.all([
+    getProfile(userId),
+    getSettings(userId),
+    getUsage(userId),
+  ]);
+  console.log("took", Date.now() - t0, "ms"); // ~100ms
+  return { profile, settings, usage };
+}
+```
+
+- `report` mein teen `await` line-by-line — total time ~sum (300ms). Ye tabhi sahi jab `getSettings` ko sach mein `profile` chahiye.
+- `reportFast` mein teenon Promises pehle **start** ho jate hain (call karte hi), phir `Promise.all` sab ka ek saath wait karta hai — total ~max (100ms).
+- `Promise.all` **fail-fast** hai: koi ek reject hua toh poora `await` throw karta hai (baaki cancel nahi hote, par unka result discard).
+
+### Loops ke andar await — teen alag cases
+
+```javascript
+// 1. for-of + await = SEQUENTIAL (ek ke baad ek)
+async function processSequential(ids) {
+  const results = [];
+  for (const id of ids) {
+    results.push(await fetchItem(id)); // har iteration pichle ka wait karti hai
+  }
+  return results;
+}
+
+// 2. .map(async) + Promise.all = PARALLEL (sab ek saath)
+async function processParallel(ids) {
+  return Promise.all(ids.map((id) => fetchItem(id)));
+}
+
+// 3. for-await-of = async iterable / stream ko ek-ek karke consume
+async function processStream(asyncSource) {
+  for await (const chunk of asyncSource) {
+    handle(chunk); // source jitni speed se deta hai, utni
+  }
+}
+```
+
+- **Case 1** — jab order matter karta ho, ya jab tum downstream ko rate-limit karna chahte ho (1000 items ek saath mat maro).
+- **Case 2** — jab items independent hon aur count manageable ho (10-50). 1000 items ke liye ye 1000 concurrent connections khol dega — bura. (Concurrency limiting agla topic.)
+- **Case 3** — jab source khud ek async iterable ho: DB cursor, paginated API, `readline`, HTTP response stream.
+
+### Error boundary — kahan `try/catch`
+
+```javascript
+async function handler(req, res) {
+  try {
+    const user = await getUser(req.params.id);
+    const orders = await getOrders(user.id);
+    res.json({ user, orders });
+  } catch (err) {
+    // dono awaits ka error yahan — ek boundary
+    req.log.error({ err }, "handler failed");
+    res.status(500).json({ error: "internal" });
+  }
+}
+```
+
+- Ek `try` block dono `await` cover karta hai — callback hell mein ye 2 alag `if (err)` hote.
+- Agar tumhe **step-specific** recovery chahiye (e.g. `getUser` fail toh 404, aur kuch bhi fail toh 500), toh chhota targeted `try/catch` uss ek `await` ke around lagao, baaki bahar wale boundary pe chhodo.
+- Rule: `try/catch` wahan lagao jahan tum **actually kuch kar sakte ho** — log + respond, retry, fallback. Sirf "log aur dobara throw" ke liye har jagah try/catch mat bikhero.
+
+### Floating promise — `await` bhoolna
+
+```javascript
+async function save(order) {
+  db.insert(order);        // BUG: await nahi — ye Promise "float" kar raha hai
+  return { ok: true };     // insert complete hone se pehle return
+}
+```
+
+- `db.insert(order)` ek Promise return karta hai jise kisi ne `await` nahi kiya. Function `insert` complete hone se **pehle** return kar deta hai.
+- Agar `insert` reject hua, wo ek **unhandled rejection** hai — Node v15+ mein process crash.
+- Fix: `await db.insert(order);`. Agar tum jaanbujh ke fire-and-forget kar rahe ho, explicit `.catch` lagao aur comment likho: `void db.insert(order).catch(logErr);`.
+
+### Day-to-day use
+
+- Har Express/Fastify route handler (`async (req, res) => { ... }`)
+- DB queries, HTTP calls, file I/O — `await` sab pe
+- Startup sequences: `await connectDB(); await runMigrations(); await startServer();`
+- Test setup/teardown (`beforeEach(async () => { ... })`)
+
+### Kab use karna chahiye
+
+- Sequential dependent async steps — default choice
+- Jab conditional/loop logic async ke saath mix ho
+- Jab intermediate values ek scope mein chahiye
+
+### Kab use nahi karna chahiye
+
+- **Independent parallel work** ko galti se sequential await karna — `Promise.all` use karo
+- Repeated events — `for await...of` sirf async iterables ke liye, arbitrary EventEmitter ke liye nahi (usko wrap karna padega)
+- Top-level fire-and-forget jahan tum result kabhi nahi dekhoge — explicit `.catch` lagao
+
+### Pros and cons
+
+**Pros**
+
+- Sabse readable async syntax — linear, top-to-bottom
+- `try/catch/finally` wapas kaam karte hain
+- Intermediate values ek scope mein
+- Debugger step-through natural, stack traces behtar
+- Loops aur conditionals natural
+
+**Cons**
+
+- `await` bhoolna = silent floating-promise bug
+- Har chhoti cheez sequential await karke accidentally slow (parallel opportunity miss)
+- `async` function ka return hamesha Promise — sync consumer confuse ho sakta hai
+- `forEach(async ...)` kaam nahi karta jaise log expect karte hain
+
+### Alternatives
+
+- **Raw `.then` chains** — jab flow simple linear ho aur tum ek expression style pasand karte ho
+- **`Promise.all` / `allSettled`** — parallel independent work (async/await ke saath hi use hote hain)
+- **Streams / `for await...of`** — jab data ek source se over time aata hai
+- **Worker threads** — CPU-bound kaam ke liye; `await` sirf I/O wait ke liye hai, CPU offload nahi karta
+
+### Interview mein "Sequential await kyun, Promise.all kyun nahi?"
+
+> "In teen calls mein doosri call ko pehli ka `id` chahiye tha, isliye wo genuinely sequential hain — `Promise.all` yahan galat hota. Jahan teen calls independent thin (profile, settings, usage — sab userId se), wahan maine `Promise.all` use kiya aur response time 300ms se 100ms ho gaya. Loop mein maine deliberately `for-of` + await rakha kyunki main upstream ko flood nahi karna chahta tha — 5000 rows the aur unlimited concurrency se DB gir jaata; jab count chhota tha (batch of 20) tab maine `map` + `Promise.all` use kiya."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`array.forEach(async (x) => { await work(x); })` **wait nahi karta**. `forEach` async callback ke Promise ko ignore kar deta hai — loop turant khatam ho jata hai aur saara `work` background mein float karta hai. Sequential chahiye toh `for...of` + `await`; parallel chahiye toh `Promise.all(array.map(work))`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Dashboard API — accidental sequential">
+
+Ek internal dashboard endpoint 4 microservices se data laata tha, sab independent. Original code: `const a = await getA(); const b = await getB(); const c = await getC(); const d = await getD();` — p95 latency 850ms. Ek engineer ne dekha ki chaaron calls sirf `orgId` pe depend karti hain, ek doosre pe nahi. `Promise.all([getA(), getB(), getC(), getD()])` mein badla — p95 gir ke 240ms. Sirf ek `Promise.all` wrapper, zero logic change.
+
+</RealWorld>
+
+<RealWorld company="Batch job — floating promise crash">
+
+Ek nightly job records ka array process karta tha: `records.forEach(async (r) => { await persist(r); });` phir turant `console.log("all done")`. Log "all done" print hota tha jabki 30% records abhi persist ho rahe the. Ek raat `persist` ne DB timeout pe reject kiya — kisi ne `await`/`catch` nahi kiya tha, `unhandledRejection` se pura job crash. Fix: `for (const r of records) { await persist(r); }` (order + backpressure), aur job ke top pe ek `process.on("unhandledRejection")` safety net (strategy nahi, sirf last resort).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- 3 independent 100ms calls: sequential `await` = **~300ms**, `Promise.all` = **~100ms** — 3x faster for free.
+- `await` thread ko **0** time block karta hai — event loop us dauran doosre kaam karta hai.
+- `.map(async)` + `Promise.all` 1000 items pe = **1000 concurrent** operations — DB connection pool (aksar 10) turant exhaust.
+- async/await ES2017 (**2017**); Node full support **v7.6+** bina flag ke.
+- Top-level `await` (module scope, bina `async` wrapper) Node **v14.8+** mein ESM ke saath.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye lgabhaga har Node interview mein aata hai, aksar ek code snippet ke saath: "iska output/timing kya hoga?" ya "isko faster kaise karoge?"
+
+Achhe jawaab ka shape:
+
+1. **Sugar** — "async/await Promises ke upar syntax hai; `async` function hamesha Promise return karta hai, `await` us Promise ka wait karta hai aur rejection ko throw karta hai."
+2. **Sequential vs parallel** — "dependent steps ke liye sequential await; independent ke liye `Promise.all` — timing sum vs max."
+3. **Loops** — "`for-of` + await = sequential; `.map` + `Promise.all` = parallel (but concurrency ka dhyan); `for await...of` = async iterables."
+4. **Floating promise** — "`await` bhoolne se function jaldi return karta hai aur rejection unhandled — production crash."
+
+Red flag: "`await` sab kuch parallel bana deta hai" — nahi, `await` sequential hai by nature; parallelism `Promise.all` se aati hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Independent calls ko sequential `await` karna.** `const a = await getA(); const b = await getB();` jab `getB` ko `a` ki zaroorat nahi. Total time do latencies ka sum ban jata hai. Jab calls independent hon: `const [a, b] = await Promise.all([getA(), getB()]);` — time max ban jata hai.
+
+</Mistake>
+
+<Mistake>
+
+**`array.forEach(async ...)` se sequential/awaited behaviour expect karna.** `forEach` callback ka returned Promise discard kar deta hai — loop turant khatam, saare async tasks float. Sequential ke liye `for...of` + `await`; parallel ke liye `Promise.all(array.map(...))`.
+
+</Mistake>
+
+<Mistake>
+
+**`await` bhool jaana (floating promise).** `saveToDb(x);` bina `await` — function `saveToDb` complete hone se pehle return karta hai, aur agar wo reject kare toh unhandled rejection (Node v15+ crash). Har Promise-returning call ko `await` karo, ya jaanbujh ke fire-and-forget ho toh explicit `.catch` + `void`.
+
+</Mistake>
+
+<Mistake>
+
+**`.map(async)` + `Promise.all` 1000+ items pe.** Ye ek saath 1000 concurrent operations launch karta hai — DB pool exhaust, upstream rate-limit, memory spike. Bade batches ke liye concurrency limit lagao (`p-limit`, ya chunk karke process) — agla topic ise cover karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Har `await` ke around alag `try/catch`.** Agar sab errors ka same treatment hai (log + 500), ek boundary `try/catch` kaafi hai. Targeted `try/catch` sirf tab jab ek step ki failure ka alag handling ho (e.g. `getUser` fail = 404). Warna 5 nested `try/catch` code ko callback hell jitna hi ugly bana dete hain.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    S["async function start"] --> Q{"work items independent?"}
+    Q -->|"yes, small count"| PA["Promise.all(items.map(fn)) — parallel, time = max"]
+    Q -->|"yes, large count"| PL["chunk / p-limit — bounded parallel"]
+    Q -->|"no, each needs previous"| SEQ["for...of + await — sequential, time = sum"]
+    Q -->|"source is async iterable"| FA["for await...of — consume as it arrives"]
+    PA --> T["one try/catch boundary around the block"]
+    PL --> T
+    SEQ --> T
+    FA --> T
+`}
+  caption="Pehla sawaal hamesha: kya ye kaam ek doosre pe depend karta hai? Uska jawaab sequential vs parallel decide karta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `async` function **hamesha Promise return** karta hai; `return v` → fulfilled, `throw` → rejected.
+- `await p` — function pause (thread block nahi), `p` settle par resume; rejection **throw** hoti hai → `try/catch` wapas kaam karta hai.
+- async/await = **Promises ke upar syntax sugar**, koi naya concurrency model nahi.
+- **Sequential** (`await` line-by-line) time = **sum**; **parallel** (`Promise.all`) time = **max**. Independent kaam ke liye `Promise.all`.
+- `for...of + await` = sequential; `.map(async) + Promise.all` = parallel; `for await...of` = async iterables/streams.
+- `.map(async) + Promise.all` bade N pe = N concurrent ops → pool exhaust. Concurrency limit lagao.
+- `forEach(async ...)` **await nahi karta** — Promise discard hota hai.
+- `await` bhoolna = **floating promise** → early return + unhandled rejection (v15+ crash).
+- `try/catch` wahan jahan tum **kuch kar sakte ho**; ek boundary aksar kaafi; targeted catch sirf step-specific recovery ke liye.
+- Top-level `await` ESM modules mein Node v14.8+ se.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `slow(label, ms)` banao jo `ms` baad `label` return kare (Promise). Ek `async` function likho jo `slow("a", 200)`, `slow("b", 200)`, `slow("c", 200)` ko pehle sequential `await` kare, total time log kare (~600ms). Phir usko `Promise.all` se parallel karo aur time log karo (~200ms).
+
+**Medium:** 10 IDs ka array lo. Do versions likho: (1) `for...of` + `await` sequential, (2) `.map` + `Promise.all` parallel. Dono ka total time compare karo. Phir ID count 500 kar do aur `.map` version pe observe karo ki kya hota hai jab `fetchItem` ek shared counter se max-concurrent track kare.
+
+**Bada:** Ek `async function save(order)` likho jismein tum jaanbujh ke `db.insert(order)` ke aage se `await` hata do. Function ke baad `console.log("saved")` lagao aur `db.insert` ko 300ms delay do. Observe karo ki "saved" pehle print hota hai. Phir `db.insert` ko reject karwao aur dekho unhandled rejection warning/crash. `await` wapas lagao aur confirm karo dono theek ho gaye.
+
+</Callout>

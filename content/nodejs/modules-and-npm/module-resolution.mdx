@@ -1,0 +1,313 @@
+---
+slug: "module-resolution"
+title: "Module Resolution (how Node finds a module)"
+section: "nodejs"
+module: "modules-and-npm"
+order: 4
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["commonjs-modules", "es-modules-in-node"]
+tags: ["nodejs", "modules", "resolution", "node-modules", "package-json", "exports"]
+englishDefinition: "Module resolution is the algorithm Node uses to turn a specifier like \"lodash\" or \"./util\" into an actual file on disk. Node first checks for a core module, then treats a specifier starting with ./ ../ or / as a file path (trying exact, then extensions, then an index file), and otherwise treats it as a bare package name, walking up node_modules directories. Inside a package, package.json fields main, exports and imports control which files are the entry points and which internal paths stay private."
+interviewFrequency: "medium"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Module resolution is the algorithm Node uses to turn a **specifier** — the string in `require("...")` or `import ... from "..."` — into an actual file on disk. Node first checks whether it's a **core module** (`fs`, `path`). If the specifier starts with `./`, `../` or `/`, it's a **file path**: Node tries the exact path, then adds extensions, then looks for an `index` file. Otherwise it's a **bare specifier** (a package name): Node walks **up** the folder tree looking inside each `node_modules`. Inside a package, `package.json`'s `main`, `exports` and `imports` fields decide the entry points and which internal paths stay private.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Jab tum `require("lodash")` ya `import x from "./util"` likhte ho, Node ko us string ko ek **real file** mein badalna padta hai. Ye algorithm samajhna debugging ke liye zaroori hai — "module not found", "wrong version loaded", "package ka subpath access nahi ho raha" jaise 90% errors isi ke rules se aate hain.
+
+### Specifier ke 3 types
+
+- **Core / builtin** — `"fs"`, `"path"`, `"node:crypto"`. Node ke andar built, disk pe nahi. `node:` prefix explicit karta hai.
+- **Relative / absolute** — `"./util"`, `"../lib/db"`, `"/abs/path"`. File system path.
+- **Bare specifier** — `"lodash"`, `"@scope/pkg"`, `"lodash/fp"`. Ek package name (optionally ek subpath ke saath).
+
+Resolution algorithm in teeno ko alag tarah handle karta hai.
+
+### Step 1 — core module check
+
+Node pehle dekhta hai specifier koi builtin toh nahi (`fs`, `http`, `stream`, ...). Agar haan, wahi load hota hai — `node_modules` mein `fs` naam ka package ho tab bhi builtin jeetta hai. `node:` prefix (`node:fs`) is check ko explicit aur unambiguous banata hai, aur wo hamesha builtin hi resolve karega.
+
+### Step 2 — relative / absolute path (`./`, `../`, `/`)
+
+Node use ek **file path** ki tarah treat karta hai aur ye order try karta hai:
+
+1. **Exact path** — `./util` naam ki file (bina extension) hai kya?
+2. **Extensions add karo** — `./util.js`, phir `./util.json`, phir `./util.node` (CJS). ESM native mein ye step **nahi** hota — extension likhna mandatory.
+3. **Directory as module** — `./util` ek folder hai? Toh us folder ki `package.json` ka `main` dekho; nahi toh `./util/index.js` (phir `index.json`, `index.node`).
+
+Isliye CJS mein `require("./util")` chal jaata hai chahe file `util.js` ho ya folder `util/index.js` — Node try karta rehta hai.
+
+### Step 3 — bare specifier: `node_modules` walk
+
+`require("lodash")` — na core, na `./`. Node current file ke folder se shuru karke **upar** chadhta hai:
+
+```text
+/app/src/services/node_modules/lodash   <- yahan hai?
+/app/src/node_modules/lodash            <- nahi -> yahan?
+/app/node_modules/lodash                <- nahi -> yahan?  (mil gaya)
+/node_modules/lodash                    <- warna yahan
+```
+
+Jo pehla milta hai wahi load hota hai. Yahi wajah hai ki ek hi package ke **do versions** alag `node_modules` levels pe reh sakte hain (nested), aur ek dependency ko koi aur version mil sakta hai than tum expect karte ho — `npm ls lodash` se dekha jaata hai.
+
+### Step 4 — package ke andar: `main` aur `exports`
+
+Package mil gaya (`node_modules/lodash/`). Ab uske andar **kaunsi file** entry hai?
+
+- **`"main"`** — purana field. `"main": "./lib/index.js"` → `require("lodash")` wahi file deta hai. `main` na ho toh `index.js` fallback.
+- **`"exports"`** — naya, zyada powerful, aur **sealing**. Agar `exports` present hai toh:
+  - `require("pkg")` sirf wahi deta hai jo `exports["."]` kehta hai.
+  - `require("pkg/internal/thing.js")` **block** ho jaata hai jab tak `exports` mein us subpath ki entry na ho — `ERR_PACKAGE_PATH_NOT_EXPORTED`. Pehle tum kisi bhi internal file ko reach kar sakte the; `exports` package ki public surface ko **seal** kar deta hai.
+
+```json
+{
+  "name": "mypkg",
+  "exports": {
+    ".": "./dist/index.js",
+    "./utils": "./dist/utils.js",
+    "./package.json": "./package.json"
+  }
+}
+```
+
+Ab `import "mypkg"` aur `import "mypkg/utils"` chalega; `import "mypkg/dist/secret.js"` nahi.
+
+### Step 5 — conditional exports
+
+`exports` ki value ek object ho sakti hai jo **condition** pe alag file deta hai:
+
+```json
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  }
+}
+```
+
+- `"import"` — jab ESM `import` se load ho.
+- `"require"` — jab CJS `require` se load ho.
+- `"node"` — Node mein (browser bundler ke against).
+- `"default"` — fallback, hamesha last.
+
+Order **matters** — Node upar se neeche pehla matching condition leta hai. Isi mechanism se ek package **dual** (CJS + ESM) ship karti hai.
+
+### Step 6 — `imports` (`#internal` specifiers)
+
+`package.json` ka `"imports"` field sirf **us package ke apne code** ke liye private aliases deta hai. Keys `#` se shuru hoti hain:
+
+```json
+{
+  "imports": {
+    "#db": "./src/db/postgres.js",
+    "#config": {
+      "development": "./src/config.dev.js",
+      "default": "./src/config.prod.js"
+    }
+  }
+}
+```
+
+Ab package ke andar `import db from "#db"` likh sakte ho — relative `../../db/postgres.js` ki jagah. Bahar wale consumers `#db` use nahi kar sakte. Ye deep relative paths aur conditional internal wiring ke liye hai.
+
+### Simple real-life analogy
+
+`node_modules` walk = ek building mein "kaisi bhi Sharma family" dhoondhna. Tum apne floor pe poochte ho, nahi mili toh neeche wale floor pe, phir ground floor pe. Jo **pehli** Sharma family milti hai, wahi tumhare liye "the Sharmas" hai — bhale hi doosre floor pe bhi ek Sharma family ho.
+
+`exports` sealing = ek office jiska ek hi **reception** (`"."`) aur kuch marked meeting rooms (`"./utils"`) hote hain. Pehle log kisi bhi cabin mein ghus jaate the; ab sirf reception aur marked rooms tak pahunch hai, baaki internal.
+
+Conditional exports = ek shop jiska alag **entrance** hai delivery vans ke liye (`require`) aur customers ke liye (`import`) — same shop, alag door.
+
+### Code — resolution trace
+
+```javascript
+// file: /app/src/api/users.js
+const _ = require("lodash");          // bare
+const db = require("../db");          // relative
+const crypto = require("node:crypto");// core
+```
+
+- `"node:crypto"` — Step 1: builtin, done. Disk touch nahi.
+- `"../db"` — Step 2: `/app/src/db`? exact file nahi → `/app/src/db.js`? nahi → `/app/src/db/` folder → uski `package.json` `main` ya `/app/src/db/index.js`. Mil gaya.
+- `"lodash"` — Step 3: `/app/src/api/node_modules/lodash` → nahi → `/app/src/node_modules/lodash` → nahi → `/app/node_modules/lodash` → mila. Step 4: uski `package.json` — `exports` hai? `"."` entry se file; warna `main`; warna `index.js`.
+
+### Day-to-day use
+
+- `require.resolve("pkg")` — Node kaunsi file load karega, exactly? Debugging ka pehla tool.
+- `npm ls <pkg>` — kaunsa version, kis level pe. "Wrong version" bugs ke liye.
+- `ERR_PACKAGE_PATH_NOT_EXPORTED` — package ne `exports` se subpath seal kiya; maintainer se public subpath maango ya alag approach.
+- Apne monorepo mein `imports` (`#alias`) se `../../../shared` jaise paths hataao.
+
+### Kab `exports` use karna chahiye (as a package author)
+
+- Jab tum apni package ki public API ko **control** karna chahte ho — users ko internal files pe depend karne se roko taaki refactor freedom rahe.
+- Jab dual (CJS + ESM) ship karna ho — conditional `import`/`require`.
+- Jab alag environments (node / browser / dev) ke liye alag file chahiye.
+
+### Kab `exports` avoid / dhyaan se
+
+- Chhoti internal utility jise sirf tum use karte ho — overhead worth nahi.
+- Jab tumhe pata hai consumers ko deep imports chahiye aur tum unhe support karne ko taiyaar ho — `exports` sealing unhe todegi.
+- `exports` add karna ek **breaking change** hai existing package ke liye (pehle jo deep imports karte the wo toot jaayenge) — major version bump.
+
+### Pros and cons of `exports`
+
+**Pros** — public API seal, refactor freedom, dual-package + conditional loading, `package.json` khud ko bhi export kar sakte ho explicitly.
+
+**Cons** — misconfigure karo toh consumers ko `ERR_PACKAGE_PATH_NOT_EXPORTED`; conditions ka order galat toh galat file load; existing package mein add karna breaking; mental model beginner ke liye bhaari.
+
+### Alternatives
+
+- **`main` only** — simple packages ke liye kaafi; koi sealing nahi.
+- **`typesVersions` / separate `types`** — sirf TS type resolution ke liye.
+- **Bundler aliases** (webpack `resolve.alias`, tsconfig `paths`) — app-level path shortcuts, but wo Node runtime resolution nahi badalte (runtime pe still fail ho sakta hai).
+
+### Interview mein "package ka subpath import kyun fail ho raha tha?"
+
+> "`ERR_PACKAGE_PATH_NOT_EXPORTED` aaya jab humne `some-lib/dist/helpers.js` import kiya. Wajah: us lib ne `package.json` mein `exports` map add kiya tha jo sirf `"."` aur `"./client"` expose karta hai — deep path ab sealed hai. Humne `require.resolve` se confirm kiya, phir library ke documented public entry (`some-lib/client`) pe switch kiya. Long-term humne ek issue file kiya taaki wo helper ko officially export karein, kyunki internal path pe depend karna waise bhi galat tha."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`exports` field ka existence hi package ko **seal** kar deta hai. Ek package jiske paas sirf `main` hai — uske kisi bhi internal file ko `require("pkg/lib/x.js")` se reach kar sakte ho. `exports` add karte hi sirf listed subpaths chalte hain, baaki `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Dual-package libraries (exports conditions)">
+
+`node-fetch`, `date-fns`, `uuid` jaisi widely-used libraries `package.json` `exports` mein `"import"` aur `"require"` conditions rakhti hain taaki ESM consumers ko `.mjs` build mile aur CJS consumers ko `.cjs`. Isi se ek `npm install uuid` dono tarah ke projects mein bina friction kaam karta hai. Jab ye migration hua (2020-2022), bahut se apps ne `ERR_PACKAGE_PATH_NOT_EXPORTED` hit kiya kyunki wo `uuid/lib/something` jaise internal paths pe depend karte the — libraries ne public API seal kar di thi.
+
+</RealWorld>
+
+<RealWorld company="Monorepo internal imports (#aliases)">
+
+Bade Node monorepos (Nx, Turborepo setups) mein ek package ke andar `../../../shared/logger` jaise paths maintain karna painful hai — file move karo toh sab toot jaata hai. Teams `package.json` `imports` mein `"#logger": "./src/logger/index.js"` daal deti hain aur package ke andar `import log from "#logger"` likhti hain. Ye Node ka native feature hai (bundler ke bina bhi chalta hai), consumers ko leak nahi hota, aur conditional bhi ho sakta hai (`#config` dev vs prod).
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Bare specifier resolution **upar** ki taraf har `node_modules` folder try karta hai jab tak root (`/`) na aa jaaye — deeply nested project mein ye kai stat calls hain per unique package.
+- CJS extension try order: exact → **`.js`** → **`.json`** → **`.node`**, phir directory → `main` → **`index.js`** → `index.json` → `index.node`.
+- Native ESM relative imports mein **zero** extension guessing — path exact hona chahiye.
+- `exports` Node mein **v12.7** se experimental, **v12.17 / v14** se stable — is se pehle koi package sealing nahi thi.
+- `imports` (`#` specifiers) Node **v14.6+** mein; keys hamesha `#` se shuru, aur `#` akela ya `#/` invalid hai.
+- Conditions Node upar-se-neeche match karta hai; `"default"` hamesha **last** honi chahiye warna baad wali conditions dead ho jaati hain.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic senior-leaning hai — aksar ek real bug story se aata hai: "ek package ka subpath import kyun fail hua?" ya "same dependency ke do versions kaise install ho gaye?". Interviewer dekhta hai ki tum resolution algorithm ko mechanically samjha sakte ho aur `require.resolve` / `npm ls` se debug kar sakte ho.
+
+Achhe jawaab ka shape:
+
+1. **3 specifier types** — core, relative/absolute, bare — alag handle hote hain.
+2. **Relative** — exact → extensions (CJS only) → directory `main`/`index`.
+3. **Bare** — `node_modules` ko current folder se root tak walk; pehla match jeetta hai (isliye version duplication).
+4. **`main` vs `exports`** — `exports` entry points define karta hai **aur** baaki subpaths **seal** kar deta hai.
+5. **Conditions** — `import`/`require`/`node`/`default`, order-sensitive, dual-package ka mechanism.
+6. **Debug tools** — `require.resolve`, `npm ls`, `ERR_PACKAGE_PATH_NOT_EXPORTED` ka matlab.
+
+Red flag: "Node bas current folder ke `node_modules` mein dekhta hai" — nahi, wo poore tree ko upar tak walk karta hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Native ESM mein relative import ka extension chhodna.** `import x from "./util"` CJS mein chal jaata tha (Node `.js` guess kar leta), lekin native ESM mein `ERR_MODULE_NOT_FOUND` deta hai — `"./util.js"` likhna padta hai. ESM by design extensions guess nahi karta taaki resolution fast aur deterministic rahe.
+
+</Mistake>
+
+<Mistake>
+
+**Package ke internal file ko deep-import karna.** `import helper from "some-lib/src/internal/helper.js"` — agar lib ne `exports` map add kiya toh `ERR_PACKAGE_PATH_NOT_EXPORTED`, aur agar abhi nahi kiya toh next major mein toot jaayega. Sirf documented public entries (`some-lib`, `some-lib/client`) use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`exports` conditions mein `"default"` ko pehle rakhna.** `{ "default": "./x.js", "import": "./x.mjs" }` — Node upar-se-neeche pehla match leta hai, toh `"default"` hamesha jeet jaayega aur `"import"` kabhi hit nahi hoga. `"default"` hamesha **last** likho; specific conditions (`types`, `import`, `require`, `node`) pehle.
+
+</Mistake>
+
+<Mistake>
+
+**Same dependency ke do versions dekh ke confuse hona.** `npm ls left-pad` do entries dikhata hai alag levels pe — ye normal hai jab do packages alag versions maangte hain. Resolution har requiring file ke liye nearest `node_modules` se serve karta hai. "Wrong version loaded" debug karne ke liye `require.resolve` us specific file mein chalao.
+
+</Mistake>
+
+<Mistake>
+
+**Bundler alias (`tsconfig paths`, webpack `resolve.alias`) ko Node runtime resolution samajhna.** `"@/utils"` jaisa alias compile/bundle time pe resolve hota hai; plain `node dist/app.js` runtime pe wo specifier fail karega jab tak build ne use rewrite na kiya ho ya `imports` (`#`) / a loader use na ho. App aliases ke liye Node ka native `imports` field zyada portable hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Specifier: require/import ki string"] --> B{"Core module? (fs, node:crypto)"}
+    B -->|haan| C["Builtin load — disk touch nahi"]
+    B -->|nahi| D{"'./' '../' ya '/' se shuru?"}
+    D -->|haan| E["File path: exact -> +.js/.json/.node (CJS) -> directory main/index.js"]
+    D -->|nahi| F["Bare specifier: node_modules ko current folder se root tak walk, pehla match"]
+    F --> G{"package.json me 'exports' hai?"}
+    G -->|haan| H["Sirf listed subpaths; baaki ERR_PACKAGE_PATH_NOT_EXPORTED. Condition match: import/require/node/default"]
+    G -->|nahi| I["'main' field -> warna index.js"]
+`}
+  caption="Teen branches — core, relative, bare — aur bare branch ke andar exports field package ki public surface ko seal karta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **3 specifier types**: core (`fs`, `node:crypto`), relative/absolute (`./`, `../`, `/`), bare (`lodash`, `@scope/pkg`).
+- **Core** pehle check hota hai aur hamesha jeetta hai; `node:` prefix explicit + unambiguous.
+- **Relative (CJS)**: exact → `.js` → `.json` → `.node` → directory `main` → `index.js`. **Native ESM**: extension mandatory, no guessing.
+- **Bare**: `node_modules` ko current folder se `/` tak **walk up**; pehla match jeetta hai → isliye version duplication normal.
+- **`main`**: legacy single entry, fallback `index.js`. **`exports`**: entry points + **seals** baaki subpaths.
+- `exports` hone se hi `require("pkg/internal.js")` block → `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- **Conditional exports**: `types` / `import` / `require` / `node` / `default`; Node upar-se-neeche pehla match; `default` hamesha last.
+- **`imports`** (`#alias`): package ke **apne** code ke liye private specifiers; consumers ko leak nahi hote.
+- Debug tools: `require.resolve("pkg")` (exact file), `npm ls pkg` (version + level).
+- `exports` add karna existing package mein **breaking change** — major bump.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek folder mein `util.js` aur ek folder `util/` (`util/index.js` ke saath) — dono nahi, ek try karo — banao. `main.js` mein `require("./util")` karke print karo. Phir file ko folder mein badlo aur dekho `require("./util")` ab `util/index.js` kaise dhoondh leta hai. `require.resolve("./util")` se exact path confirm karo.
+
+**Medium:** Ek mini package `mypkg/` banao with `package.json` `exports: { ".": "./index.js", "./safe": "./safe.js" }` aur ek `secret.js` bhi. Doosre folder se `require("./mypkg")` aur `require("./mypkg/safe")` chalao — kaam karein. Phir `require("./mypkg/secret.js")` chalao aur exact error message note karo.
+
+**Bada:** `mypkg` ke `exports["."]` ko conditional banao: `{ "import": "./index.mjs", "require": "./index.cjs", "default": "./index.js" }`. Ek CJS consumer aur ek ESM consumer banao, dono `mypkg` load karein, aur har ek mein ek `console.log("loaded", "cjs"/"esm")` daal ke confirm karo ki sahi file load hui. Phir `"default"` ko object mein sabse upar move karke dekho `"import"`/`"require"` dead kyun ho jaate hain.
+
+</Callout>

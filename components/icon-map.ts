@@ -60,6 +60,11 @@ import {
   FormInput,
   LayoutDashboard,
   Gauge,
+  Hexagon,
+  RefreshCw,
+  Package,
+  Wrench,
+  Waves,
   type LucideIcon,
 } from "lucide-react";
 
@@ -75,6 +80,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   GraduationCap,
   Workflow,
   Component,
+  Hexagon,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -140,4 +146,14 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "forms-and-crud": FormInput,
   "ng-real-world-features": LayoutDashboard,
   "quality-performance-deploy": Gauge,
+  "js-for-node": Braces,
+  "node-internals": Server,
+  "event-loop": RefreshCw,
+  "sync-async": ArrowRightLeft,
+  "async-patterns": Waypoints,
+  "modules-and-npm": Package,
+  "builtin-modules": Wrench,
+  "buffers-streams-files": Waves,
+  "http-and-events": Globe,
+  "concurrency-and-performance": Gauge,
 };

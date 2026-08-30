@@ -1,0 +1,287 @@
+---
+slug: "require-vs-import"
+title: "require vs import — Which To Use When"
+section: "nodejs"
+module: "modules-and-npm"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["commonjs-modules", "es-modules-in-node"]
+tags: ["nodejs", "modules", "commonjs", "esm", "decision", "interop"]
+englishDefinition: "require and import are the two ways to load modules in Node. require is CommonJS: a synchronous function call, dynamic, no tree-shaking, gives you __dirname. import is ESM: static and hoisted, part of an asynchronous graph, tree-shakeable, with await import() for dynamic cases. Choosing between them is mostly decided by your project type: a new project uses ESM, a published library often ships both, and a large existing CommonJS codebase stays on require."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`require` and `import` are the two ways to load modules in Node. `require` is **CommonJS**: a synchronous function call, dynamic (you can call it anywhere), no tree-shaking, and it gives you `__dirname` for free. `import` is **ESM**: static and hoisted, part of an asynchronous module graph, tree-shakeable, with `await import()` when you need a dynamic load. Which one you pick is mostly settled by project type: **new project → ESM**, **published library → consider shipping both**, **large existing CommonJS codebase → stay on `require`**.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye ek **decision topic** hai. `require` aur `import` dono se module load hota hai, lekin unke rules, timing, aur tooling behaviour alag hain. Interview mein aksar poocha jaata hai "kaunsa kab", isliye is topic ka dil ek **comparison table** hai aur uske baad "kis situation mein kya chuno".
+
+### Do systems, ek kaam
+
+- **`require(...)`** — CommonJS. Ek normal function jo synchronously file load karke `module.exports` return karta hai.
+- **`import ... from ...`** — ESM. Ek static statement jo hoist hota hai; module ek async graph ka part hai.
+
+Ye do alag module systems hain, sirf syntax nahi. Ek hi `.js` file dono nahi use kar sakti (extensions `.cjs`/`.mjs` ya `"type"` field decide karta hai).
+
+### Side-by-side comparison
+
+| Cheez | `require` (CJS) | `import` (ESM) |
+| --- | --- | --- |
+| **Load timing** | Synchronous — line pe wahi block karke load | Async graph — resolve/link pehle, evaluate baad mein |
+| **Static ya dynamic** | Dynamic — variable path, `if` ke andar, function ke andar | Static — sirf top-level, fixed string specifier |
+| **Hoisting** | Nahi — jaha likha wahi chala | Haan — file ke top pe hoist, kisi bhi code se pehle |
+| **Tree-shaking** | Nahi — bundler unused exports nahi hata paata reliably | Haan — static structure se dead exports drop |
+| **Conditional / lazy load** | `if (x) require("./a")` — seedha, sync | `if (x) await import("./a")` — Promise return karta hai |
+| **`__dirname` / `__filename`** | Available | Nahi — `fileURLToPath(import.meta.url)` se banao |
+| **Top-level await** | Nahi | Haan |
+| **Bindings** | Value snapshot (`const { x } = require(...)`) | Live binding — exporter ka update dikhta hai |
+| **Circular deps** | Partial `module.exports` milta hai | Live bindings se zyada predictable |
+| **Load CJS from here** | Native | `import cjs from "pkg"` → `module.exports` `.default` par |
+| **Load ESM from here** | `require("esm-pkg")` → `ERR_REQUIRE_ESM` (purane Node) ya sync-load (naye Node), warna `await import()` | Native |
+
+### Ye kyun matter karta hai
+
+- **Startup performance** — bahut saari sync `require` calls process boot ko slow karti hain (har file wrapper mein chalti hai). ESM graph parallel resolve ho sakta hai.
+- **Bundle size** (frontend / libraries) — sirf ESM tree-shake hota hai; CJS lib ka poora code bundle mein aa jaata hai.
+- **Lazy loading** — dono kar sakte hain, par `require` sync hai (hot path mein theek), `import()` async (ek microtask add karta hai).
+- **Interop bugs** — CJS ↔ ESM boundary pe named exports aur default export ka behaviour surprise deta hai.
+
+### Interop pitfalls — dhyan se
+
+**1. CJS module ka default export ESM mein.** Ek CJS package `module.exports = function () {}` karta hai. ESM se:
+
+```javascript
+import pkg from "cjs-pkg";        // pkg === wo function — theek
+import { helper } from "cjs-pkg"; // helper undefined ho sakta hai
+```
+
+Node CJS ke named exports ko "cjs-module-lexer" se **best-effort** detect karta hai. Simple cases (`exports.foo = ...`) aksar chalte hain; computed ya conditional exports miss ho jaate hain. Safe pattern: `import pkg from "cjs-pkg"; const { helper } = pkg;`.
+
+**2. `require` se ESM load karna.** Purane Node mein `require("esm-only-pkg")` → `ERR_REQUIRE_ESM`. Naye Node (22+) mein synchronous ESM ko `require` kar sakte ho agar us module mein top-level await na ho. Portable code ke liye ESM ko `await import("esm-only-pkg")` se load karo apni CJS file mein.
+
+**3. Dual package hazard.** Agar ek library CJS aur ESM dono builds deti hai aur consumer dono raaston se load kar leta hai, toh ek hi package ke **do alag instances** ban sakte hain — `instanceof` checks aur module-level singletons toot jaate hain.
+
+### Simple real-life analogy
+
+`require` = **cash payment** — turant, haath se haath, jahan chaho. Fast, universal, par tracking/accounting (tree-shaking, static analysis) kamzor.
+
+`import` = **UPI/bank transfer** — pehle account link hota hai (resolve/link phase), phir transaction. Thoda structured, par har transaction traceable — statements banti hain (bundler ko pata hota hai kya-kya use hua).
+
+Tum ek hi dukaan par ek transaction cash aur doosra UPI kar sakte ho (`await import()` from CJS), par ek hi note ko aadha cash aadha UPI nahi bana sakte (ek file ek hi system).
+
+### Code — dono side by side
+
+```javascript
+// ---- CJS (app.cjs ya "type": "commonjs") ----
+const fs = require("node:fs");
+const path = require("node:path");
+const config = require("./config.json");        // sync, cached
+
+function loadPlugin(name) {
+  return require(`./plugins/${name}`);          // dynamic, sync, kahin bhi
+}
+
+console.log(__dirname);                          // free
+
+// ---- ESM (app.mjs ya "type": "module") ----
+import fs from "node:fs";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+const config = JSON.parse(
+  await readFile(new URL("./config.json", import.meta.url))
+);                                              // top-level await
+
+async function loadPlugin(name) {
+  return import(`./plugins/${name}.mjs`);        // dynamic, async
+}
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+```
+
+- CJS side: `require` sab jagah, `__dirname` bina kuch kiye, JSON `require` se seedha object.
+- ESM side: `import` top pe hoist, JSON ke liye `readFile` + `JSON.parse` (ya import attributes), `__dirname` manually, dynamic load `import()` se async.
+
+### Day-to-day use
+
+- **Naya microservice** → `"type": "module"`, sab `import`.
+- **CLI tool jise `node script.js` se chalana hai bina build** → CJS aksar simpler, ya ESM with care.
+- **Ek CJS codebase mein ek ESM-only dep chahiye** → us jagah `const { x } = await import("esm-pkg")`.
+- **Library publish** → `package.json` `exports` mein `import` aur `require` dono conditions.
+- **Config / secrets load-on-boot** → ESM top-level await.
+
+### Kab `import` (ESM) chuno
+
+- Har naya project (2024+).
+- Frontend / library jahan tree-shaking se bundle chhota hota hai.
+- Top-level await chahiye (boot-time config, DB connect).
+- Isomorphic code — browser aur Node ek source.
+
+### Kab `require` (CJS) chuno
+
+- Bada existing CJS codebase — migrate karne ka reward kam, risk zyada.
+- Synchronous conditional/dynamic load ek hot path mein (plugin registry jise sync hona hai).
+- Quick scripts / glue code bina build step, purane tooling ke saath.
+- Jab koi critical dependency sirf CJS hai aur uske interop quirks se bachna hai.
+
+### Pros and cons
+
+**`require` Pros** — synchronous (value turant), dynamic anywhere, `__dirname` free, universal old-package support, simple mental model.
+
+**`require` Cons** — no tree-shaking, sync load slow startup, no top-level await, `exports =` footgun, circular deps silently partial.
+
+**`import` Pros** — language standard, tree-shakeable, top-level await, live bindings, `import()` first-class async lazy load, better tooling.
+
+**`import` Cons** — no `__dirname`, extension zaroori in relative paths, CJS interop rough edges, async nature kuch sync patterns todta hai, kuch legacy tools extra config.
+
+### Alternatives
+
+- **Bundler (esbuild / webpack / Vite / tsup)** — dono syntax ko normalize karke ek output; app-level pe interop dard hata deta hai.
+- **TypeScript with `module: nodenext`** — compiler ESM/CJS ko sahi emit karta hai extension/`type` ke hisaab se.
+- **`createRequire(import.meta.url)`** — ESM file mein ek `require` bana lo jab sach mein CJS-only cheez sync chahiye.
+
+### Interview mein "require ya import — tumne kya use kiya aur kyun?"
+
+> "Naye services mein ESM — top-level await se boot-time config aur tree-shaking se chhota bundle mila. Ek 4-saal purana internal CJS monolith hai jise humne migrate **nahi** kiya, kyunki koi ESM-only blocker nahi tha aur risk zyada tha; wahan ek ESM-only logging lib chahiye thi toh sirf us module mein `await import()` kar liya. Humari shared utils library dual-published hai `package.json` `exports` conditions se, aur humne dhyaan rakha ki consumers ek hi entry se load karein taaki dual-instance hazard na ho."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`require` hoist **nahi** hota, `import` hota hai. `import`, chahe file mein neeche likho, hamesha sabse pehle chalta hai (poora graph evaluate hone ke baad hi tumhara top-level code shuru hota hai). Isliye `import` ke just pehle likha `console.log` uske side effects se pehle nahi chal sakta.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="TypeScript backend teams (module: nodenext)">
+
+Bahut si Indian product teams TypeScript backend mein `"module": "nodenext"` set karti hain. Tum source mein hamesha `import` likhte ho, aur compiler `package.json` ke `"type"` aur file extension ke hisaab se sahi output emit karta hai — `.js` (ESM) ya `.cjs`. Isse team ko ek consistent syntax milta hai aur runtime decision config mein rehta hai. Gotcha jo har team hit karti hai: `nodenext` mein relative imports mein bhi `.js` extension likhna padta hai source `.ts` file mein — `import x from "./util.js"` jabki file `util.ts` hai.
+
+</RealWorld>
+
+<RealWorld company="Legacy monolith + ESM-only dependency">
+
+Ek common 2023-2024 scenario: ek bada CommonJS Express monolith, aur team ko `p-limit` ya `nanoid` ka naya major version chahiye jo ESM-only ho gaya. Poora monolith migrate karna weeks ka kaam aur regression risk. Practical fix: sirf us ek module mein jahan wo dependency chahiye, `const { default: pLimit } = await import("p-limit")` likh do (function ab async ho jaata hai). Ya version pin karke aakhri CJS release pe ruk jao jab tak migration budget na mile.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `require` **synchronous** hai — 100 modules ka tree boot pe 100 blocking file loads; ESM graph resolve zyada parallel ho sakta hai.
+- ESM Node mein **v13.2 (2019)** se unflagged; `require(esm)` for top-level-await-free ESM **v22 (2024)** se aaya.
+- Tree-shaking sirf ESM pe kaam karta hai — ek CJS utility library import karne se aksar uska **poora** bundle (kai KB se MB) ship hota hai.
+- ESM relative import mein file extension **mandatory** hai; `require` **4** cheezein try karta hai (exact, `.js`, `.json`, `.node`) phir `/index.js`.
+- CJS ko `import` karo toh `module.exports` **`.default`** par aata hai; named exports Node best-effort static analysis se deta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic har mid-level Node interview mein aata hai, aksar khule form mein: "`require` aur `import` mein farak?" — aur follow-up "tum naye project mein kya use karoge?". Interviewer decision-making dekhna chahta hai, ratta nahi.
+
+Achhe jawaab ka shape:
+
+1. **Do systems** — `require` = CJS (sync, dynamic function), `import` = ESM (static, hoisted, async graph).
+2. **Key technical diffs** — tree-shaking (sirf ESM), top-level await (sirf ESM), `__dirname` (sirf CJS), bindings (snapshot vs live).
+3. **Dynamic** — dono kar sakte hain: `require()` sync, `await import()` async.
+4. **Decision rule** — naya project → ESM; bada CJS codebase → raho; library → dual.
+5. **Interop trap** — CJS default `.default` par; named exports best-effort; dual-instance hazard.
+
+Red flag: "`import` sirf `require` ka modern alias hai, kuch aur farak nahi" — ya "ESM hamesha faster hai" (startup depends; sync `require` ka apna simplicity fayda hai).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Ek hi `.js` file mein `require` aur `import` dono use karna.** File ya toh CJS hai ya ESM (`"type"` field / extension decide karta hai) — dono syntax mix karne se `SyntaxError: Cannot use import statement outside a module` ya `require is not defined`. Agar dono chahiye toh ESM file mein `createRequire(import.meta.url)` se `require` banao.
+
+</Mistake>
+
+<Mistake>
+
+**ESM se CJS package ke named exports assume karna.** `import { Router } from "express"` kabhi `undefined` de sakta hai kyunki Node CJS named exports best-effort detect karta hai. Reliable pattern: `import express from "express"; const { Router } = express;` — poora `module.exports` hamesha default par aata hai.
+
+</Mistake>
+
+<Mistake>
+
+**`import` ko lazy load ke liye function ke andar `import "./x"` likhna.** Static `import` sirf top-level pe — function ke andar likhna syntax error. Lazy/conditional ke liye `const m = await import("./x.js")` (dynamic import, Promise). Ya CJS mein ho toh seedha `require("./x")` `if` ke andar.
+
+</Mistake>
+
+<Mistake>
+
+**Bade CJS codebase ko "modern banane" ke liye poora ESM migrate karna bina blocker ke.** Extension changes, `__dirname` fixes, mock/test setup, interop bugs — weeks ka kaam aur regression surface. Migrate tab karo jab koi concrete ESM-only dependency ya feature (top-level await, tree-shaking budget) actually blocker ho.
+
+</Mistake>
+
+<Mistake>
+
+**Dual-published library ko do alag raaston se load karna.** Ek jagah `require("lib")` aur doosri jagah `import "lib"` — CJS aur ESM dono builds load ho jaate hain, ek hi lib ke **do instances**, alag module-level state. `instanceof` aur singleton checks silently fail. Ek project mein ek hi resolution path rakho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Naya module load karna hai"] --> B{"Project type?"}
+    B -->|Naya project 2024+| C["ESM — import"]
+    B -->|Bada existing CJS codebase| D["CJS — require, jab tak blocker na ho"]
+    B -->|Publish hone wali library| E["Dual: package.json exports me import + require"]
+    C --> F{"Conditional / lazy?"}
+    D --> G{"Conditional / lazy?"}
+    F -->|haan| H["await import(specifier) — Promise"]
+    F -->|nahi| I["top-level import statement"]
+    G -->|haan| J["require(...) if-block me — sync"]
+    G -->|nahi| K["top-level require(...)"]
+`}
+  caption="Choice zyada tar project type se decide hoti hai; static vs dynamic uske andar ka choice hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `require` = **CommonJS**: sync function, dynamic (kahin bhi), `__dirname` free, **no** tree-shaking, value snapshot bindings.
+- `import` = **ESM**: static + hoisted, async graph, tree-shakeable, top-level await, **live** bindings.
+- Ek file ek hi system — `"type"` field ya `.mjs`/`.cjs` extension decide karta hai.
+- Dynamic load: `require()` **sync**; `await import()` **async, Promise** return.
+- **Decision rule**: naya project → ESM; bada CJS codebase → raho; library → dual (`exports` conditions).
+- CJS ko ESM se import: `module.exports` **`.default`** par; named exports **best-effort**, isliye `import pkg from ...; const { x } = pkg`.
+- `require(esm)` purane Node mein `ERR_REQUIRE_ESM`; naye Node (22+) mein sync ESM (bina top-level await) chal jaata hai.
+- **Dual-instance hazard**: ek lib do raaston se load → do copies, singleton/`instanceof` toot.
+- Tree-shaking **sirf** ESM pe; CJS utility import aksar poora bundle laata hai.
+- `import` ka just-pehle likha code uske side effects se pehle nahi chalta (hoisting).
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek folder do files se banao: `lib.cjs` jo `module.exports = { greet: () => "hi" }` kare, aur `main.mjs` jo `import lib from "./lib.cjs"` karke `lib.greet()` print kare. Phir `import { greet } from "./lib.cjs"` try karo aur result note karo — samjhao kyun.
+
+**Medium:** Ek comparison table apne notes mein banao 6 rows ke saath — load timing, static/dynamic, hoisting, tree-shaking, `__dirname`, top-level await — aur har row ke aage "chhota input / bada input / production choice" likho.
+
+**Bada:** Ek CJS `app.js` likho jo `if (process.env.EXTRA) require("./extra.js")` karta hai. Wahi behaviour ESM `app.mjs` mein `await import()` se likho. Dono ke output order ko compare karo (`console.log` before/after) aur explain karo ki ESM version mein `extra` load "async" kyun feel hota hai.
+
+</Callout>

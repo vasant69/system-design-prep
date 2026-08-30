@@ -1,0 +1,270 @@
+---
+slug: "buffers"
+title: "Buffers"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 1
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: []
+tags: ["nodejs", "buffer", "binary", "bytes", "encoding", "typed-arrays"]
+englishDefinition: "A Buffer is a fixed-length chunk of raw bytes that Node allocates outside the V8 JavaScript heap. It exists because JavaScript strings cannot safely represent arbitrary binary data such as image bytes, compressed data, or encrypted payloads. Buffer is a subclass of Uint8Array, so it behaves like a typed array of integers from 0 to 255, with extra helpers for encoding, slicing, and concatenation."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A **Buffer** is a fixed-length chunk of raw bytes that Node allocates **outside** the V8 JavaScript heap. It exists because JavaScript strings cannot safely represent arbitrary binary data — image bytes, gzip output, encrypted payloads, TCP packets. `Buffer` is a subclass of `Uint8Array`, so it behaves like a typed array of integers from `0` to `255`, plus helpers for encoding conversion, slicing, and concatenation. Any time you touch files, sockets, or crypto without asking for a string, you get a Buffer.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Node mein jaise hi tum file, network socket, ya crypto ko chhoote ho, tumhe **Buffer** milta hai — string nahi. Bahut log ise ignore karte hain aur phir "why is my file content showing `<Buffer 89 50 4e 47>`" pe atak jaate hain. Ye topic wahi gap bharta hai.
+
+### Ye kya hai — Buffer
+
+Buffer ek **fixed-length raw memory ka block** hai jisme bytes rehte hain — har byte `0` se `255` tak ka number. Ye ek array jaisa hai: `buf[0]`, `buf.length`, loop — sab chalta hai. Lekin do khaas baatein:
+
+- Memory **V8 heap ke bahar** allocate hoti hai (off-heap). Isliye badi binary data garbage collector pe pressure nahi daalti aur C++ layer (libuv, OpenSSL) ke saath bina copy ke share ho sakti hai.
+- Size **fix** hai. Buffer bana liya toh use bada-chhota nahi kar sakte — naya banana padta hai.
+
+`Buffer` actually `Uint8Array` ka subclass hai, jo khud `TypedArray` family ka hissa hai. Matlab jo kuch `Uint8Array` pe chalta hai (`.subarray`, `.set`, spread, `for...of`) wo Buffer pe bhi chalta hai, plus Node ke extra methods (`.toString("base64")`, `.readInt32BE`, `Buffer.concat`).
+
+### Ye kyun exist karta hai
+
+JavaScript string **UTF-16 text** ke liye bani hai. Agar tum arbitrary bytes ko string mein daalo, toh kuch byte sequences valid Unicode nahi hote — engine unhe replacement character (`U+FFFD`) se badal deta hai, aur data **silently corrupt** ho jaata hai. Ek PNG file ko `"utf8"` string mein padh ke wapas likho toh file toot jayegi.
+
+2009 mein jab Node aaya, JS mein binary ke liye kuch tha hi nahi (`ArrayBuffer` / `TypedArray` ES2015 mein aaye). Node ko HTTP aur TCP ke liye bytes chahiye the, isliye usne `Buffer` banaya. Aaj `Uint8Array` standard hai, isliye Node ne Buffer ko uske upar re-base kar diya — backward compatible rehte hue.
+
+### Internally kaise kaam karta hai
+
+- **Allocation pool**: chhote buffers (`Buffer.poolSize >>> 1`, yaani `4 KB` se chhote) ek shared internal `8 KB` slab se slice hote hain — performance ke liye. Isi wajah se `allocUnsafe` se mila chhota buffer kisi purane buffer ka data dikha sakta hai.
+- **`Buffer.alloc(n)`** — naya `n`-byte block, **zero-filled**. Safe, thoda slow (fill ka cost).
+- **`Buffer.allocUnsafe(n)`** — `n`-byte block, **fill nahi** hota. Fast, lekin usme jo bhi memory mili wahi bytes hain — purana data ho sakta hai. Turant poora overwrite karo.
+- **`Buffer.from(...)`** — string / array / ArrayBuffer / dusre buffer se banata hai. String ke case mein encoding ke hisaab se bytes bante hain.
+- **`.slice()` / `.subarray()`** — **naya memory allocate nahi** karta. Wahi underlying memory ka window deta hai. Ek ko badloge toh dusra bhi badlega. (Node 17+ mein `.slice` deprecated hai `Uint8Array` semantics clash ki wajah se — `.subarray` use karo.)
+
+### Simple real-life analogy
+
+Buffer ek **egg carton** hai — 12 fixed khaane, har khaane mein ek anda (byte, `0-255`). Carton ka size fix hai. `alloc` = naya carton jisme har khaana pehle se khaali (zero) kar diya gaya. `allocUnsafe` = warehouse se uthaya hua carton jisme shayad pehle se kuch ande pade hon — jaldi milta hai, par check kiye bina use mat karo. `slice` = ek hi carton ke 3 khaane pe sticky note laga dena — alag carton nahi bana, wahi khaane hain.
+
+### Code — line by line
+
+```javascript
+// 1. String se buffer — UTF-8 bytes
+const b1 = Buffer.from("Rup₹", "utf8");
+console.log(b1);            // <Buffer 52 75 70 e2 82 b9>
+console.log(b1.length);     // 6  -> BYTES, characters nahi
+console.log("Rup₹".length); // 4  -> UTF-16 code units
+
+// 2. Safe allocation
+const b2 = Buffer.alloc(4);
+console.log(b2);            // <Buffer 00 00 00 00>
+
+// 3. Fast allocation — content garbage ho sakta hai
+const b3 = Buffer.allocUnsafe(4);
+b3.fill(0);                 // turant overwrite
+
+// 4. Encoding conversion
+const token = Buffer.from("hello world", "utf8");
+console.log(token.toString("base64")); // aGVsbG8gd29ybGQ=
+console.log(token.toString("hex"));    // 68656c6c6f20776f726c64
+
+// 5. Concatenation
+const merged = Buffer.concat([b1, token]);
+console.log(merged.length); // 6 + 11 = 17
+
+// 6. Slice memory SHARE karta hai
+const view = merged.subarray(0, 3);
+view[0] = 0x00;
+console.log(merged[0]);     // 0 -> original bhi badla
+```
+
+- `Buffer.from("Rup₹", "utf8")` — `₹` 3 bytes leta hai UTF-8 mein, isliye 4 characters = 6 bytes.
+- `b1.length` — hamesha **byte count**. Multibyte text ke liye ye string `.length` se alag hota hai.
+- `Buffer.alloc(4)` — guaranteed `00 00 00 00`. API responses, headers, jahan predictable content chahiye.
+- `Buffer.allocUnsafe(4)` + `.fill(0)` — speed chahiye aur tum khud poora bharne wale ho.
+- `.toString("base64")` — bytes ko ASCII-safe text mein — JSON, data URIs, email attachments ke liye.
+- `Buffer.concat([...])` — array of buffers ko ek mein jodta hai; optional doosra arg total length (pre-known ho toh faster).
+- `.subarray(0, 3)` — **same memory**. `view` ko badalna `merged` ko badalta hai. Copy chahiye toh `Buffer.from(merged.subarray(0,3))`.
+
+### Day-to-day use
+
+- `fs.readFile("pic.png")` bina encoding ke → Buffer milta hai.
+- `req.on("data", chunk => ...)` — HTTP body ke chunks Buffer hote hain; jodne ke liye array mein rakho phir `Buffer.concat`.
+- `crypto.randomBytes(32)` → 32-byte Buffer, tokens/salts ke liye.
+- `Buffer.from(base64Str, "base64")` — client se aaya base64 image decode karna.
+- Binary protocols (MQTT, Redis RESP, custom TCP) — `buf.readUInt16BE(offset)` se fields nikaalna.
+
+### Kab use karna chahiye
+
+- Jab data **inherently binary** ho: images, PDFs, audio, gzip/deflate output, encrypted blobs.
+- Jab tumhe **exact byte layout** chahiye ho — network protocol frames, file format headers.
+- Jab tumhe multibyte-safe **length in bytes** chahiye — `Content-Length` header, DB `BYTEA` column size.
+- Jab **large data** ho aur tum GC pressure se bachna chahte ho (off-heap).
+
+### Kab use nahi karna chahiye
+
+- Plain text handling ke liye — agar tumhe pata hai content UTF-8 text hai, `fs.readFile(path, "utf8")` maang lo, Buffer ko manually decode mat karo.
+- Chhoti string concatenation ke liye Buffer banana — overkill, normal string faster aur readable.
+- Buffer ko long-term store karna jab tumhe sirf ek chhota field chahiye — poora 5 MB buffer memory mein pakde rehna sirf 10 bytes ke liye `.subarray` ki wajah se (memory retention trap) — `Buffer.from(slice)` se copy le lo.
+
+### Pros and cons
+
+**Pros**
+
+- Arbitrary binary ko bina corruption safely handle karta hai.
+- Off-heap — badi data GC ko slow nahi karti, C++ ke saath zero-copy.
+- `Uint8Array` subclass — standard typed-array ecosystem ke saath compatible.
+- Rich API: encodings, `readInt*`/`writeInt*`, `concat`, `compare`, `indexOf`.
+
+**Cons**
+
+- Fixed size — grow karne ke liye realloc + copy.
+- `allocUnsafe` se accidental data leak agar overwrite bhool gaye.
+- `.subarray` memory share karta hai — surprise bugs aur memory retention.
+- Manual offset arithmetic error-prone hota hai binary parsing mein.
+
+### Alternatives
+
+- **`Uint8Array` / `DataView`** — pure standard, browser + Node dono mein. `DataView` mixed-endian structured reads ke liye acha. Buffer ke convenience methods nahi milte.
+- **`fs.readFile(path, "utf8")`** — jab content text hai, seedha string maang lo, Buffer skip.
+- **Streams** — jab data bada ho ya incrementally aata ho, poora Buffer memory mein rakhne ke bajaye chunk-by-chunk process karo (agla topic).
+- **`blob` / `File` (Node 18+)** — web-compatible immutable binary container, jab tum web APIs mirror kar rahe ho.
+
+### Interview mein "Why did you use a Buffer here?"
+
+> "Client se base64-encoded image aa rahi thi jo mujhe S3 pe upload karni thi. String rakhne se decode/re-encode overhead aur corruption risk tha, isliye maine `Buffer.from(body, 'base64')` se ek baar decode kiya aur wahi Buffer stream kar diya. `Content-Length` ke liye maine `buf.length` use kiya — `str.length` galat hota kyunki image bytes multibyte the. Jahan mujhe sirf pehle 8 bytes ka magic number check karna tha, wahan maine `.subarray(0, 8)` liya lekin `Buffer.from` se copy bhi kiya taaki poora 4 MB buffer memory mein na atke."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`str.length` UTF-16 code units ginta hai, `Buffer.byteLength(str, "utf8")` actual bytes. `"₹".length` is `1` par `Buffer.byteLength("₹")` is `3`. HTTP `Content-Length`, size limits, aur DB column checks ke liye **hamesha** `Buffer.byteLength` — warna multibyte input pe truncation ya `400` errors.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Payment gateway webhook verification">
+
+Ek Indian payments company (Razorpay-style) ke webhooks ka HMAC signature verify karna padta hai. Raw request body ke bytes chahiye — agar tum body ko string mein parse karke wapas stringify karoge toh whitespace/key-order badal jaata hai aur signature match nahi hota. Team `req.on("data", c => chunks.push(c))` se Buffer chunks collect karti hai, `Buffer.concat(chunks)` se exact raw bytes banati hai, phir `crypto.createHmac("sha256", secret).update(rawBuf).digest("hex")` se signature compute karke `crypto.timingSafeEqual` (jo do Buffers leta hai) se compare karti hai. Poora flow Buffer pe chalta hai, kahin string decode nahi hota.
+
+</RealWorld>
+
+<RealWorld company="Image thumbnail service">
+
+Ek e-commerce catalog service uploaded product photos ke thumbnails banati hai. `multer` se aaya file ek Buffer hota hai. Service pehle `buf.subarray(0, 4)` se magic bytes check karti hai (`FF D8 FF` = JPEG, `89 50 4E 47` = PNG) — extension pe bharosa nahi. Phir poora Buffer `sharp(buf).resize(200).toBuffer()` ko deti hai. Result Buffer ko `.toString("base64")` karke ek CDN cache-warm API ko bhejti hai. `alloc` vs `allocUnsafe` yahan matter karta hai — high throughput pe `sharp` internally `allocUnsafe` + full-write karta hai speed ke liye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Har byte ki range: `0` se `255` (`2^8`). Buffer index se milta hai ek integer, character nahi.
+- `Buffer.poolSize` default = **`8192` bytes (8 KB)**. Isse aadhe se chhote `allocUnsafe`/`from` calls internal pool se slice hote hain.
+- `buffer.constants.MAX_LENGTH` — 64-bit platforms pe lagbhag **`4 GB`** (`2^32 - 1` historically, ab bada). Isse bada Buffer banane pe `RangeError`.
+- UTF-8 mein ek character `1` se `4` bytes: ASCII `1`, `₹` = `3`, zyadatar emoji = `4`.
+- `Buffer.alloc(1e6)` vs `Buffer.allocUnsafe(1e6)` — unsafe roughly `2x-5x` faster kyunki zero-fill skip hota hai.
+- Base64 encoding size ~`33%` badha deta hai (`3` bytes → `4` chars).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic backend/Node rounds mein "binary data kaise handle karte ho" ke context mein aata hai. Interviewer 3 cheezein test karta hai: (1) kya tum jaante ho string binary ke liye unsafe hai aur kyun, (2) `alloc` vs `allocUnsafe` ka security angle, (3) `.length` vs byte length ka multibyte issue.
+
+Model answer ka shape:
+
+1. **Kya** — "Buffer = off-heap fixed-length byte array, `Uint8Array` subclass."
+2. **Kyun** — "JS string UTF-16 text ke liye hai; arbitrary bytes daaloge toh invalid sequences replacement char se replace ho ke data corrupt."
+3. **alloc vs allocUnsafe** — "`alloc` zero-filled aur safe; `allocUnsafe` fast par recycled memory de sakta hai — sirf tab jab tum turant poora overwrite karo."
+4. **Trade-off** — "chhoti binary ya sockets ke liye Buffer; badi data ke liye stream taaki poora memory mein na aaye."
+
+Red flag: "Buffer aur string basically same hain, bas Buffer thoda binary version hai" — ya `allocUnsafe` ko default bata dena bina security caveat ke.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Binary file ko `"utf8"` encoding ke saath padhna.** `fs.readFile("logo.png", "utf8", cb)` — `data` ek string hogi jisme invalid byte sequences `U+FFFD` se replace ho chuke hain. Us string ko wapas file mein likho toh image toot jayegi. Binary ke liye encoding **mat do** — Buffer lo.
+
+</Mistake>
+
+<Mistake>
+
+**`allocUnsafe` use karke buffer poora fill na karna.** `const b = Buffer.allocUnsafe(100)` aur sirf pehle 40 bytes likhna — baaki 60 bytes mein purane process ka data (passwords, tokens) ho sakta hai jo tum accidentally network pe bhej doge. Ya toh `Buffer.alloc` use karo, ya `b.fill(0)` turant, ya guarantee karo ki poora likhoge.
+
+</Mistake>
+
+<Mistake>
+
+**`str.length` ko byte count maan lena.** `Content-Length` header mein `body.length` daal diya jahan `body` multibyte string hai — actual bytes zyada honge, client response ko truncated samajhktha hai ya hang hota hai. `Buffer.byteLength(body, "utf8")` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`.subarray()` / `.slice()` ko independent copy samajhna.** `const header = packet.subarray(0, 20); header[0] = 0;` — `packet` bhi change ho gaya kyunki memory shared hai. Aur agar tum chhota `header` bahut der rakhte ho, poora bada `packet` GC nahi hota. Real copy: `Buffer.from(packet.subarray(0, 20))`.
+
+</Mistake>
+
+<Mistake>
+
+**HTTP body chunks ko `+` se string mein jodna.** `let body = ""; req.on("data", c => body += c)` — har `c` Buffer hai, `+=` use implicitly `"utf8"` decode karta hai, aur agar ek multibyte character do chunks ke beech split ho gaya toh wo corrupt ho jaata hai. Sahi: `const chunks = []; req.on("data", c => chunks.push(c)); req.on("end", () => { const body = Buffer.concat(chunks); })`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["JS code: Buffer.alloc(n) / Buffer.from(...)"] --> B{"Size < 4 KB?"}
+    B -->|"yes, and allocUnsafe/from"| C["Slice from shared 8 KB pool — fast, may reuse memory"]
+    B -->|"no, or alloc"| D["Dedicated off-heap allocation"]
+    C --> E["Buffer object on V8 heap points to off-heap bytes"]
+    D --> E
+    E --> F["Passed zero-copy to libuv (fs, net) / OpenSSL (crypto)"]
+    E --> G[".subarray() -> new Buffer object, SAME bytes"]
+`}
+  caption="Buffer object chhota hai aur V8 heap pe rehta hai; asli bytes off-heap hain aur C++ layer ke saath bina copy ke share hote hain. subarray naya object deta hai par memory wahi."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Buffer** = fixed-length off-heap byte array; har byte `0-255`; `Uint8Array` ka subclass.
+- Exist karta hai kyunki JS string UTF-16 text ke liye hai — arbitrary bytes corrupt ho jaate hain.
+- **`Buffer.alloc(n)`** — zero-filled, safe, thoda slow. Default choice.
+- **`Buffer.allocUnsafe(n)`** — fill nahi, fast, recycled memory de sakta hai — turant poora overwrite karo.
+- **`Buffer.from(x)`** — string/array/arraybuffer/buffer se banata hai; string ke liye encoding matter karti hai.
+- Encodings: `utf8` (default), `base64`, `hex`, `ascii`, `latin1`, `utf16le`.
+- **`.subarray()` memory SHARE karta hai** — mutate karoge toh original badlega; `.slice` deprecated, `.subarray` use karo.
+- `Buffer.concat([a, b])` — chunks jodne ka sahi tareeka (HTTP body, streams).
+- **`buf.length` = bytes**; multibyte text ke liye `str.length` se alag. Size ke liye `Buffer.byteLength(str)`.
+- File/socket/crypto bina encoding ke → Buffer. Text pata ho to`"utf8"` maang lo.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script likho jo `"Namaste ₹100"` string ke liye teen cheezein print kare: `str.length`, `Buffer.byteLength(str)`, aur `Buffer.from(str).toString("hex")`. Explain karo `str.length` aur byteLength alag kyun hain.
+
+**Medium:** `function safeConcat(chunks)` likho jo array of Buffers le aur ek single Buffer return kare, **bina** `Buffer.concat` use kiye — khud `Buffer.alloc(totalLen)` banao aur `.set()` / manual copy se bharo. Phir apne output ko `Buffer.concat` ke output se `Buffer.compare` karke verify karo (should be `0`).
+
+**Bada:** Ek chhota "PNG detector" banao: `fs.readFile` se koi file Buffer mein padho (encoding mat do), pehle 8 bytes check karo — PNG signature `89 50 4E 47 0D 0A 1A 0A` hai. `subarray` se magic bytes lo, `Buffer.from([...])` se expected signature banao, `Buffer.compare` se match karo. Test ek asli `.png` aur ek `.txt` file pe. Bonus: JPEG (`FF D8 FF`) aur PDF (`25 50 44 46`) bhi detect karo.
+
+</Callout>

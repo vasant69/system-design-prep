@@ -508,6 +508,86 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "nodejs",
+    title: "Node.js",
+    description:
+      "Node.js from absolute zero to a strong practical level — the V8/libuv internals, the event loop, async patterns, modules, streams, and concurrency. Taught in Hinglish, why before what, with a decision framework for every choice.",
+    icon: "Hexagon",
+    enabled: true,
+    modules: [
+      {
+        id: "js-for-node",
+        title: "JavaScript You Need for Node.js",
+        description:
+          "The specific JavaScript that Node's whole model rests on: functions as values and callbacks, closures, promises built from scratch, async/await, error handling, and the modern syntax (this/arrow, destructuring) you'll read everywhere.",
+        order: 1,
+      },
+      {
+        id: "node-internals",
+        title: "What Node.js Is & How It Works Internally",
+        description:
+          "What Node actually is, how it differs from browser JavaScript, the V8 engine, what a 'runtime environment' means, how your code gets executed, and the event-driven architecture that ties it together.",
+        order: 2,
+      },
+      {
+        id: "event-loop",
+        title: "The Event Loop, Call Stack & Queues",
+        description:
+          "The single most-asked Node topic, done properly: the call stack, libuv and the thread pool, the callback queue vs the microtask queue, the event loop's phases, and worked examples from easy to tricky.",
+        order: 3,
+      },
+      {
+        id: "sync-async",
+        title: "Blocking vs Non-Blocking, Sync vs Async",
+        description:
+          "What 'blocking' really does to a single-threaded server, the difference between synchronous and asynchronous APIs, and a production decision framework for when each is the right call.",
+        order: 4,
+      },
+      {
+        id: "async-patterns",
+        title: "Callbacks, Promises & Async/Await",
+        description:
+          "Callbacks and callback hell, promises in depth, async/await in practice, error handling across async boundaries, and util.promisify plus the Promise combinators (all/allSettled/race/any).",
+        order: 5,
+      },
+      {
+        id: "modules-and-npm",
+        title: "Modules, CommonJS / ESM & npm",
+        description:
+          "CommonJS and ES Modules, require vs import and how resolution works, npm and the registry, package.json field by field, package-lock and semver, dependencies vs devDependencies, and npm scripts / npx.",
+        order: 6,
+      },
+      {
+        id: "builtin-modules",
+        title: "Core Built-in Modules & process",
+        description:
+          "The standard library you reach for daily: fs, path, os, crypto, util, and the process object — plus environment variables and how to handle config safely.",
+        order: 7,
+      },
+      {
+        id: "buffers-streams-files",
+        title: "Buffers, Streams & File Handling",
+        description:
+          "Buffers and binary data, the streams mental model, readable/writable/transform streams, pipe and pipeline, real file-handling patterns, and working with JSON at scale.",
+        order: 8,
+      },
+      {
+        id: "http-and-events",
+        title: "HTTP Servers & EventEmitter",
+        description:
+          "Building an HTTP server with the core http module, the request and response objects, basic routing, EventEmitter and custom events, and why HTTP request/response are themselves streams.",
+        order: 9,
+      },
+      {
+        id: "concurrency-and-performance",
+        title: "Concurrency & Performance",
+        description:
+          "What single-threaded really means, worker threads for CPU work, child processes, the cluster module, Node performance concepts, and a walkthrough of finding and fixing a real bottleneck.",
+        order: 10,
+      },
+    ],
+  },
+  {
     slug: "angular-practical",
     title: "Angular Practical",
     description:

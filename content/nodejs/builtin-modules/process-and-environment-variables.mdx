@@ -1,0 +1,339 @@
+---
+slug: "process-and-environment-variables"
+title: "The process Global & Environment Variables"
+section: "nodejs"
+module: "builtin-modules"
+order: 4
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: []
+tags: ["nodejs", "process", "env-vars", "config", "12-factor", "graceful-shutdown", "builtin-modules"]
+englishDefinition: "process is a global object (no require needed) that represents the running Node process: its command-line arguments, environment variables, working directory, process id, standard streams, and lifecycle. Environment variables, read via process.env, are the standard way to pass configuration and secrets into a process without hardcoding them. Validating required variables at startup and shutting down gracefully on signals are the two patterns interviewers look for."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`process` is a **global** object (no `require` needed) that represents the running Node process: its command-line arguments, environment variables, working directory, process id, standard streams, and lifecycle events. **Environment variables**, read through `process.env`, are the standard way to feed configuration and secrets into a process without hardcoding them. Two patterns interviewers expect you to know: **validating required config at startup** (fail fast) and **graceful shutdown** on `SIGINT` / `SIGTERM`.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`process` har Node program mein already available hai — ye tumhare process ka control panel hai. Isse tum arguments padhte ho, config lete ho, exit code set karte ho, aur shutdown handle karte ho. Environment variables config ka standard tareeka hain — same code build ek baar, deploy har environment mein alag env ke saath.
+
+### Ye kya hai — process global
+
+`process` ek `EventEmitter` bhi hai aur ek info object bhi. Ye Node ne globally inject kiya hai, `require` nahi chahiye (`require("node:process")` bhi kaam karta hai, mostly redundant). Iske do kaam: (1) running process ke baare mein data dena (`argv`, `env`, `pid`, `platform`), (2) lifecycle control karna (`exit()`, signals, `beforeExit`, `uncaughtException`).
+
+### Ye kyun exist karta hai
+
+Program ko bahar ki duniya se connect karna padta hai: kis flags ke saath chalaya gaya (`argv`), kaunsa environment hai (`env`), stdin se data aa raha hai kya, kaunse OS pe hai, kab band karna hai (signals). Ye sab OS-level cheezein hain jinhe ek jagah expose karna padta tha — wahi `process` hai.
+
+### process ke important pieces
+
+```javascript
+process.argv;      // ["node", "/path/script.js", ...user args]
+process.env;       // { PATH: "...", NODE_ENV: "production", ... } — strings only
+process.cwd();     // jahan se `node` run hua (badalta hai)
+process.pid;       // is process ka id
+process.ppid;      // parent process ka id
+process.platform;  // "linux" | "darwin" | "win32"
+process.version;   // "v20.11.0"
+process.uptime();  // is process ke seconds
+process.memoryUsage(); // { rss, heapTotal, heapUsed, external, arrayBuffers }
+process.exitCode = 1;  // exit code set karo bina abhi exit kiye
+process.exit(1);   // ABHI exit — pending I/O drop, avoid mid-flight
+process.nextTick(fn);  // current operation ke turant baad, event loop ke agle phase se pehle
+process.stdout / process.stderr / process.stdin; // standard streams
+```
+
+### process.argv — command line arguments
+
+`process.argv` ek array hai. Index 0 = `node` ka path, index 1 = script ka path, index 2 se aage user args.
+
+```javascript
+// node app.js --port 4000 report.csv
+process.argv;
+// ["/usr/bin/node", "/app/app.js", "--port", "4000", "report.csv"]
+const userArgs = process.argv.slice(2); // ["--port", "4000", "report.csv"]
+```
+
+Manual parsing chhota kaam ho toh theek, warna `node:util`'s `parseArgs` ya `commander` / `yargs` use karo.
+
+### process.exit() — aur ise kyun avoid karna
+
+`process.exit(code)` process ko **turant** band kar deta hai. Problem: pending writes (stdout buffer, open file, in-flight DB query) beech mein kat jaate hain — data loss. Better: `process.exitCode = 1` set karo aur code ko naturally khatam hone do (event loop khali → Node apne aap exit karta hai us code se).
+
+`process.exit()` sirf tab jab tum sach mein turant marna chahte ho — jaise startup config validation fail (kuch pending hai hi nahi).
+
+**Exit codes**: `0` = success, non-zero = failure. `1` general error, `2` misuse, `130` = SIGINT se mara gaya (128 + signal number). Scripts aur CI inhi codes pe branch karte hain.
+
+### Signals aur graceful shutdown
+
+Jab orchestrator (Kubernetes, systemd, `Ctrl+C`) process ko band karna chahta hai, wo pehle ek **signal** bhejta hai:
+
+- `SIGTERM` — "please band ho jao" (polite). Kubernetes yahi bhejta hai, phir ~30s baad `SIGKILL`.
+- `SIGINT` — `Ctrl+C` terminal se.
+- `SIGKILL` / `SIGSTOP` — **catch nahi hote**, instant.
+
+Graceful shutdown pattern:
+
+```javascript
+const server = app.listen(3000);
+
+function shutdown(signal) {
+  console.log(`${signal} mila — graceful shutdown`);
+  server.close(() => {          // naye connections band, existing complete hone do
+    pool.end(() => {             // DB pool drain
+      process.exit(0);
+    });
+  });
+  // safety net: agar 10s mein clean na ho toh force
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+```
+
+Iske bina: SIGTERM pe process instantly marta hai, in-flight requests 502 dete hain, DB connections leak hote hain.
+
+### process.nextTick vs setImmediate
+
+`process.nextTick(fn)` — `fn` ko **current operation ke turant baad**, event loop ke agle phase se **pehle** chalata hai. Bahut zaroori kaam ke liye. Isko recursion mein daloge toh I/O ko starve kar doge (event loop aage badh hi nahi payega). `setImmediate(fn)` event loop ke check phase mein chalta hai — I/O ko breathing room deta hai.
+
+### Ab ENV VARS — config ka sahi tareeka
+
+**12-factor** principle: config code se bahar, environment mein. Reasons:
+
+1. **Ek build, sab environments** — same Docker image dev/staging/prod mein, sirf env alag.
+2. **Secrets code mein nahi** — DB password, API keys git mein kabhi nahi.
+3. **Ops control** — infra team config badal sakti hai bina code deploy ke.
+
+### Reading env with defaults + coercion
+
+`process.env` values **hamesha strings** hain (ya `undefined`). Numbers/booleans khud coerce karo:
+
+```javascript
+const config = {
+  port: Number(process.env.PORT) || 3000,
+  logLevel: process.env.LOG_LEVEL ?? "info",
+  enableCache: process.env.ENABLE_CACHE === "true", // "false" bhi truthy string hai!
+  maxRetries: Number.parseInt(process.env.MAX_RETRIES ?? "3", 10),
+};
+```
+
+Gotcha: `process.env.ENABLE_CACHE` = `"false"` ek **non-empty string** hai → truthy. Isliye `=== "true"` explicit compare karo.
+
+### Validate required env at startup — fail fast
+
+Missing DB URL pe app ko boot **nahi** hona chahiye, phir pehli request pe cryptic error dena chahiye. Startup pe check karo:
+
+```javascript
+const required = ["DATABASE_URL", "JWT_SECRET", "REDIS_URL"];
+const missing = required.filter((k) => !process.env[k]);
+if (missing.length) {
+  console.error(`Missing env vars: ${missing.join(", ")}`);
+  process.exit(1); // yahan exit() theek hai — kuch pending nahi
+}
+```
+
+Production apps `zod` / `envalid` se schema-validate karte hain (type + shape + allowed values), taaki `PORT=abc` bhi startup pe pakda jaye.
+
+### .env files aur dotenv — dev only
+
+`.env` file (`KEY=value` lines) dev convenience hai. `dotenv` package ise `process.env` mein load karta hai:
+
+```javascript
+require("dotenv").config(); // app ke sabse pehle
+```
+
+Rules:
+
+- `.env` ko **`.gitignore`** mein daalo — kabhi commit nahi.
+- `.env.example` (dummy values) commit karo taaki naye devs ko pata rahe kaunse vars chahiye.
+- **Production mein dotenv mat use karo** — wahan real env vars orchestrator/secret-manager (Kubernetes secrets, AWS Parameter Store, Vault) se aate hain. Node **v20.6+** mein built-in `--env-file=.env` flag bhi hai.
+
+### NODE_ENV
+
+Convention: `"production"` | `"development"` | `"test"`. Bahut si libraries (Express, React) ispe behaviour badalti hain — Express `"production"` mein error stack traces hide karta hai aur view caching on karta hai. `npm install` bhi `NODE_ENV=production` pe devDependencies skip karta hai. Ise hamesha explicitly set karo deployment mein.
+
+### Day-to-day use
+
+- `process.env` se DB URL, ports, feature flags, API keys
+- `process.argv` / `parseArgs` se CLI flags
+- `SIGTERM` handler se graceful shutdown (server.close + pool.end)
+- `process.exitCode` set karke script ka pass/fail signal
+- `process.memoryUsage()` / `process.uptime()` health endpoint mein
+- `process.on("unhandledRejection")` / `"uncaughtException")` — last-resort logging, phir controlled exit
+
+### Kab process.exit() use karna / kab nahi
+
+- **Use** — startup validation fail, CLI tool ne apna kaam khatam kiya aur explicit code chahiye.
+- **Avoid** — request handler ke andar, ya jab pending I/O/logs ho. `process.exitCode` set karo, cleanup karo, event loop ko naturally drain hone do.
+
+### Pros and cons — env vars for config
+
+**Pros**
+
+- Ek immutable build, N environments.
+- Secrets source code se bahar.
+- Ops/infra config badal sakti hai bina redeploy.
+- Har language / platform / container runtime support karta hai.
+
+**Cons**
+
+- Sab strings — coercion aur validation khud karni padti hai.
+- Flat namespace — nested config awkward (`DB__POOL__MAX` jaise hacks).
+- Galti se `env | grep` ya crash logs mein secret leak ho sakta hai.
+- Typo silently `undefined` — isliye startup validation zaroori.
+
+### Alternatives
+
+- **Config files** (`config.json` per env) — structured, par secrets ke liye still bura.
+- **Secret managers** (Vault, AWS Secrets Manager, Doppler) — env vars ke upar, rotation + audit ke saath.
+- **`node --env-file=.env`** (v20.6+) — dotenv ke bina .env load.
+- **`convict` / `envalid` / `zod`** — env ko typed, validated, documented config object mein badalna.
+
+### Interview mein "Config aur secrets kaise manage karte ho?"
+
+> "12-factor follow karta hoon — config `process.env` se, code mein hardcode kuch nahi. App boot ke pehle required vars ki list `zod` schema se validate karta hoon; koi missing ya galat type ho toh `process.exit(1)` ek clear message ke saath — fail fast, taaki half-configured app kabhi live na jaye. Dev mein `.env` + `--env-file` use karta hoon aur `.env` gitignored hai; `.env.example` committed hai. Production mein vars Kubernetes secrets se inject hote hain. Shutdown pe `SIGTERM` sunta hoon, `server.close()` + DB pool drain karta hoon, aur ek 10-second timeout safety net rakhta hoon."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`process.env.FLAG === "true"` likho, sirf `process.env.FLAG` nahi. String `"false"` non-empty hai isliye truthy — `if (process.env.FLAG)` `"false"` pe bhi chalega. Ye ek classic feature-flag bug hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Kubernetes rolling deploy">
+
+Ek payments service Kubernetes pe rolling update se deploy hoti hai. Har pod terminate hone se pehle `SIGTERM` paata hai. Handler `server.close()` call karta hai (naye requests refuse, in-flight complete), `pg` pool `.end()` karta hai, aur Kafka consumer commit karke disconnect hota hai — sab hone ke baad `process.exit(0)`. Ek `setTimeout(() => process.exit(1), 15000).unref()` safety net hai. Pehle ye handler nahi tha: har deploy pe ~20 requests 502 dete the aur DB pe stale connections chhod jaate the jinhe manual kill karna padta tha.
+
+</RealWorld>
+
+<RealWorld company="Twelve-factor config on a service portal">
+
+Ek internal portal ka config layer: `process.env` ko `zod` schema se parse kiya jaata hai app ke first line pe. Schema `PORT` ko `.coerce.number().default(3000)`, `NODE_ENV` ko `z.enum(["development","test","production"])`, `DATABASE_URL` ko `.url()` require karta hai. Agar `DATABASE_URL` missing hai ya `PORT=abc`, app boot hi nahi hoti — CI pipeline mein hi pakda jaata hai. Dev machines `node --env-file=.env.local server.js` chalate hain; `.env.local` gitignored, `.env.example` repo mein. Production mein vars AWS Parameter Store se ECS task definition mein inject hote hain — dotenv production image mein hai hi nahi.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `process.argv[0]` = node binary path, `[1]` = script path, `[2+]` = user args. `.slice(2)` se real args.
+- Exit codes: `0` success, `1` general error, `2` misuse; `128 + N` = signal N ne mara (`130` = SIGINT, `143` = SIGTERM).
+- Kubernetes SIGTERM ke baad default grace period = **30 seconds**, phir SIGKILL.
+- `SIGKILL` (9) aur `SIGSTOP` (19) — **catch/handle nahi hote**, kabhi.
+- `process.env` values: **100% strings** ya `undefined` — koi number/boolean nahi.
+- Built-in `--env-file` flag Node **v20.6.0** se; `dotenv` npm package usse pehle se standard tha.
+- `NODE_ENV=production` pe `npm install` devDependencies **skip** karta hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic backend interviews mein reliably aata hai, do angles se: "config/secrets kaise handle karte ho?" aur "app ko gracefully shut down kaise karoge?"
+
+Achhe jawaab ka shape:
+
+1. **12-factor** — config `process.env` se, code mein hardcode nahi; ek build, N environments.
+2. **Validate at boot** — required vars ki schema check; missing/wrong → `process.exit(1)` clear message ke saath (fail fast).
+3. **Types** — env sab strings; `Number(...)`, `=== "true"` se coerce.
+4. **dotenv scope** — dev only + gitignored `.env`; prod mein orchestrator/secret-manager.
+5. **Graceful shutdown** — `SIGTERM`/`SIGINT` handler → `server.close()` + pool drain + timeout safety net; `process.exit()` mid-flight avoid.
+
+Red flags: "`.env` file production mein bhi use karta hoon aur commit kar deta hoon", "`process.exit()` jahan chahe call kar deta hoon", "env var missing ho toh default se chalta rahega" (secrets ke liye khatarnak).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Secrets ya `.env` file ko git mein commit karna.** DB passwords, JWT secrets, API keys repo history mein aa gaye toh rotate karne padte hain aur audit trail kharab. `.env` `.gitignore` mein, `.env.example` (dummy values) committed. Repo scan tools (`gitleaks`, GitHub secret scanning) CI mein lagao.
+
+</Mistake>
+
+<Mistake>
+
+**`process.env.FEATURE` ko boolean ki tarah use karna.** `process.env.FEATURE` string `"false"` bhi truthy hai (non-empty). `if (process.env.FEATURE)` `"false"` pe chal jayega. Hamesha `process.env.FEATURE === "true"` explicit compare karo, aur numbers ke liye `Number(...)`.
+
+</Mistake>
+
+<Mistake>
+
+**Request handler ke andar `process.exit()` call karna.** Ye pending stdout writes, in-flight DB queries, aur baaki concurrent requests ko instantly kaat deta hai — data loss aur 502s. Error case mein: response bhejo, log karo, `process.exitCode = 1` set karo agar zaroori ho, aur event loop ko naturally drain hone do. Sirf startup validation mein `exit()` OK hai.
+
+</Mistake>
+
+<Mistake>
+
+**SIGTERM handle na karna.** Bina handler ke, orchestrator ka SIGTERM process ko turant maar deta hai — in-flight requests fail, DB connections leak. `process.on("SIGTERM", ...)` mein `server.close()` + resource cleanup + ek timeout-based force-exit safety net rakho.
+
+</Mistake>
+
+<Mistake>
+
+**Required env var missing hone par bhi app ko boot hone dena.** Typo (`DATABSE_URL`) se `process.env.DATABASE_URL` `undefined`, aur app chal padti hai — crash pehli DB call pe, cryptic error ke saath, aadhi raat ko. Startup pe explicit list ya schema validate karo aur missing pe exit karo. "Fail fast, fail loud."
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Process start"] --> B["dotenv / --env-file: .env -> process.env (dev)"]
+    B --> C["Validate required env (schema)"]
+    C -->|"missing / wrong type"| D["console.error + process.exit(1)"]
+    C -->|"ok"| E["Build typed config object"]
+    E --> F["server.listen() + connect DB/Redis"]
+    F --> G["Running..."]
+    G -->|"SIGTERM / SIGINT"| H["server.close() — stop new conns"]
+    H --> I["Drain DB pool, flush queues"]
+    I --> J["process.exit(0)"]
+    G -.->|"10s timeout .unref()"| K["Force process.exit(1)"]
+`}
+  caption="Boot pe fail-fast validation, run pe signal-driven graceful shutdown with a timeout safety net."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `process` global hai — no require. Info (`argv`, `env`, `pid`, `platform`) + lifecycle (`exit`, signals, `nextTick`).
+- `process.argv` — `[0]` node, `[1]` script, `.slice(2)` user args.
+- `process.env` values **sab strings / undefined** — `Number(...)`, `=== "true"` se coerce.
+- `process.exit(code)` **turant** marta hai — pending I/O drop. Prefer `process.exitCode = n` + natural drain. Startup validation mein `exit()` OK.
+- Exit codes: `0` ok, non-zero fail; `128 + signal` (130 SIGINT, 143 SIGTERM).
+- Graceful shutdown: `SIGTERM`/`SIGINT` → `server.close()` + pool drain + `setTimeout(force, 10s).unref()`.
+- `SIGKILL` / `SIGSTOP` catch nahi hote.
+- Config = 12-factor: env se, hardcode nahi; ek build, N environments; secrets code se bahar.
+- Startup pe required vars validate karo (`zod`/`envalid`), missing → exit(1). Fail fast.
+- `.env` + `dotenv` / `--env-file` **dev only**, `.env` gitignored, `.env.example` committed. Prod = orchestrator/secret-manager.
+- `NODE_ENV` = `development`/`test`/`production` — libraries aur `npm install` ispe behave karte hain.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `cli.js` likho jo `process.argv` se `--name <x>` aur `--times <n>` padhe (manually ya `util.parseArgs`) aur greeting `n` baar print kare. `--times` missing ho toh default `1`. `--name` missing ho toh `process.exit(1)` ek usage message ke saath.
+
+**Medium:** Ek `config.js` module banao jo `process.env` se `PORT` (number, default 3000), `NODE_ENV` (enum: development/test/production, default development), aur `DATABASE_URL` (required, must start with `postgres://`) padhe. Kuch bhi missing/invalid ho toh saare errors ikatthe print karke `process.exit(1)`. Warna ek frozen config object export karo.
+
+**Bada:** Ek Express server likho jismein ek `/slow` route hai jo 5 second baad respond karta hai. `SIGTERM`/`SIGINT` handler add karo jo `server.close()` kare, "draining" log kare, aur 10s force-exit safety net rakhe. Server start karo, `/slow` hit karo, phir turant `Ctrl+C` dabao — verify karo ki in-flight request complete hoti hai aur phir process cleanly exit karta hai. Handler hata ke dobara try karo aur farak note karo.
+
+</Callout>

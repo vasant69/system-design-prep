@@ -1,0 +1,257 @@
+---
+slug: "nodejs-is-single-threaded-what-that-means"
+title: "Node.js Is Single-Threaded — What That Actually Means"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 1
+difficulty: "beginner"
+readingTime: 15
+prerequisites: []
+tags: ["nodejs", "event-loop", "single-threaded", "libuv", "performance", "concurrency"]
+englishDefinition: "Node.js runs your JavaScript on a single thread — there is one call stack and one place where your code executes at a time. Concurrency for I/O (network, disk, timers) comes from libuv, which uses a small OS-level thread pool and non-blocking system calls, not from your JavaScript running in parallel. This is why Node handles thousands of idle connections easily but stalls completely when one function does heavy CPU work."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Node.js runs **your JavaScript on a single thread**. There is one call stack, and only one line of your code executes at any instant. The concurrency you see — thousands of simultaneous HTTP connections, many file reads "at once" — does not come from your JS running in parallel. It comes from **libuv**, the C library under Node, which uses non-blocking OS calls plus a small background thread pool to do the actual I/O. So idle waiting scales beautifully; **CPU-bound work does not** — one heavy function freezes every other request.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Ye topic har Node interview ka warm-up hai, aur log yahan aksar aadha-adhoora jawaab dete hain — "Node single-threaded hai" bol dete hain lekin ye nahi samjha pate ki phir hazaaron requests ek saath kaise handle hoti hain. Dono baatein sach hain, aur inhe ek saath samajhna hi is topic ka point hai.
+
+### Ye kya hai — single-threaded execution
+
+Jab Node process start hota hai, tumhara JavaScript **ek hi thread** par chalta hai — usko "main thread" ya "event loop thread" bolte hain. Uspe ek **call stack** hoti hai. Kisi bhi ek moment par sirf ek function execute ho raha hota hai. Do JS functions kabhi literally same time par nahi chalte (worker threads chhod ke — wo alag topic hai).
+
+Toh phir "concurrency" kahan se aati hai? Jab tum `fs.readFile` ya ek DB query ya `http` request maarte ho, Node wo kaam **khud apni JS thread par nahi karta**. Wo kaam OS ko ya libuv ke thread pool ko de deta hai, ek callback register karta hai, aur turant aage badh jata hai. File ya network jab ready hota hai, tab callback event loop ke through wapas tumhari single thread par chalta hai.
+
+### Ye kyun exist karta hai
+
+Purane servers (jaise classic Apache) har connection ke liye ek OS thread ya process banate the. 10,000 connections = 10,000 threads = bahut saari RAM aur context-switching overhead. Zyada tar web workload mein threads bas **wait** kar rahe hote hain — DB se jawaab, disk se data, client se next byte.
+
+Node ne ulta socha: agar kaam sirf "wait karna" hai, toh ek thread kaafi hai. Ek loop banao jo poochta rahe "kaun ready hua?" aur uska callback chala do. Isse ek Node process bahut kam memory mein hazaaron idle connections rakh sakta hai. Trade-off: jis pal tumhe **real CPU work** karna pade, wahi ek thread block ho jati hai.
+
+### Internally kaise kaam karta hai
+
+- Tumhara JS **V8** engine par chalta hai — ek call stack, ek heap.
+- Node ke neeche **libuv** hai (C). Wo do cheezein deta hai: (1) non-blocking OS interfaces — Linux par `epoll`, macOS par `kqueue`, Windows par IOCP — network sockets ke liye; (2) ek **thread pool** (default **4 threads**, `UV_THREADPOOL_SIZE` se badha sakte ho) un kaamon ke liye jinke liye OS non-blocking API nahi deta — file system operations, DNS `lookup`, aur `crypto.pbkdf2` / `zlib` jaise CPU-heavy built-ins.
+- **Event loop** libuv ke andar ek loop hai jo phases mein chalta hai (timers, pending callbacks, poll, check, close). Har phase apni queue ke callbacks ko tumhari JS thread par ek-ek karke chalata hai.
+- Jab tumhara koi callback **lamba chalta hai**, event loop us callback ke return hone tak **agla kuch nahi** kar sakta. Naye connections accept nahi honge, timers late fire honge, ready ho chuke DB responses queue mein pade rahenge.
+
+### Simple real-life analogy
+
+Ek akela receptionist socho jo bahut fast hai. Wo 200 logon se deal kar sakta hai jo forms bhar rahe hain, kyunki har insaan se sirf 2 second lagte hain: "form le lo, bhar ke wapas lana." Log apni jagah baith ke form bharte hain (background I/O), receptionist beech mein doosron ko attend karta hai.
+
+Ab ek aadmi aata hai jo receptionist se bolta hai: "meri poori 40-page tax file abhi ke abhi calculate karke do." Receptionist agar ye khud karne baith gaya, toh baaki 199 log **line mein atak gaye** jab tak wo khatam nahi karta. Ye CPU-bound task hai — isko kisi aur desk (worker thread / alag service) par bhejna chahiye tha.
+
+### Code — line by line
+
+```javascript
+const http = require("http");
+const crypto = require("crypto");
+
+const server = http.createServer((req, res) => {
+  if (req.url === "/fast") {
+    res.end("fast ok");
+    return;
+  }
+  if (req.url === "/slow") {
+    // CPU-bound: 200k rounds of hashing, synchronous
+    let hash = "seed";
+    for (let i = 0; i < 200_000; i++) {
+      hash = crypto.createHash("sha256").update(hash).digest("hex");
+    }
+    res.end("slow done");
+    return;
+  }
+  res.end("hi");
+});
+
+server.listen(3000);
+```
+
+- `http.createServer(cb)` — `cb` har incoming request par chalta hai, **tumhari single JS thread par**.
+- `/fast` route — `res.end` turant, thread milliseconds mein free.
+- `/slow` route — `for` loop **synchronous** hai. Jab tak ye 200,000 iterations khatam nahi karta, callback return nahi hota.
+- Jab tak `/slow` chal raha hai, event loop **rukka** hai. Is dauraan aayi har `/fast` request bhi wait karegi — kyunki unka callback chalane ke liye thread free hi nahi hai.
+- Ek client `/slow` maar de, aur 500 dusre clients `/fast` maarein — sabki latency `/slow` ke time jitni spike kar jayegi. Yahi "blocking the event loop" hai.
+
+### Day-to-day use
+
+- Har HTTP request handler, har `.on("data")` callback, har `setTimeout` callback — sab ek hi thread share karte hain. Unme se koi bhi "bhaari" nahi hona chahiye.
+- CPU-heavy cheezein jo chupke se block karti hain: bada `JSON.parse` / `JSON.stringify`, `crypto` ka synchronous use, image/PDF processing pure JS mein, regex jo catastrophically backtrack kare, bade array par nested loops.
+- Diagnostic: **event loop lag** measure karo. `perf_hooks` ka `monitorEventLoopDelay`, ya `clinic doctor`. Lag consistently `10ms` se upar = kuch block kar raha hai.
+
+### Kab use karna chahiye
+
+Single-threaded model **already** tumhare paas hai — sawaal ye hai ki iske saath rehna kab theek hai:
+
+- I/O-heavy workloads: API gateways, BFF (backend-for-frontend), CRUD APIs, proxies, real-time (WebSocket) servers. Yahan thread zyadatar wait hi karti hai, toh ek thread perfect hai.
+- Chhote, fast transformations ke saath I/O — normal web app.
+
+### Kab use nahi karna chahiye (bina extra steps ke)
+
+- Video transcoding, image resizing at scale, ML inference in JS, bade CSV/Excel crunching, PDF generation, `bcrypt`/`argon2` at high throughput, cryptographic key derivation loops.
+- In cases mein tumhe kaam ko main thread se **hataana** padega: `worker_threads` (CPU-bound JS), `child_process` (koi alag program jaise `ffmpeg`), ya cluster/replicas (poore CPU use karne ke liye).
+
+### Pros and cons
+
+**Pros**
+
+- Bahut kam memory mein hazaaron concurrent connections
+- Koi thread-locking, race condition, deadlock — shared-memory bugs nahi (main thread ke andar)
+- Mental model simple: ek stack, ek order
+
+**Cons**
+
+- Ek CPU-bound function poore process ko freeze kar deta hai
+- Ek unhandled sync exception poore server ko gira sakta hai
+- Multi-core CPU by default use nahi hota — 8 cores hain toh bhi 1 hi chal raha hai
+- "Chhupa hua" blocking (bada `JSON.parse`) dhoondhna mushkil hota hai
+
+### Alternatives
+
+- **`worker_threads`** — CPU-bound **JS** ko alag thread par bhejo, same process, `postMessage` se baat.
+- **`child_process` / `spawn`** — koi alag binary/script chalao (jaise `ffmpeg`, Python), ya crash-prone kaam isolate karo.
+- **`cluster` / multiple replicas** — same HTTP server ke N copies, har core par ek, load balancer ya master distribute kare.
+- **Queue + separate worker service** — bhaari kaam ko Redis/SQS queue mein daal do, alag machine par consumer process kare.
+
+### Interview mein "Node single-threaded hai toh concurrency kaise?"
+
+> "Meri JavaScript ek hi thread par chalti hai — ek call stack. Lekin I/O main thread par nahi hota: `fs`, network, DNS jaise kaam libuv ko jaate hain, jo OS ke non-blocking APIs (`epoll`/IOCP) aur ek chhote thread pool (default 4) ka use karta hai. Node ek callback register karke aage badh jata hai, aur jab I/O ready hota hai to event loop us callback ko wapas meri thread par chala deta hai. Isliye 10,000 idle connections easily chalte hain — wo bas wait kar rahe hain. Problem sirf tab hoti hai jab main thread par koi CPU-bound function chal jaye — jaise bada `JSON.parse` ya sync crypto — tab event loop block ho jata hai aur har dusri request ruk jati hai. Isliye rule hai: never block the event loop; bhaari CPU kaam worker thread ya alag service mein bhejo."
+
+</Hinglish>
+
+<Callout type="tip">
+
+"Node multi-threaded hai" aur "Node single-threaded hai" — dono statements ke context alag hain. **Tumhara JS** single-threaded hai. **Node process** ke andar libuv ke thread pool ki wajah se kuch threads hote hain (default 4 + kuch internal). Interview mein hamesha clarify karo: "JS execution single-threaded, I/O libuv ke through concurrent."
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Netflix / API layer">
+
+Netflix ne apni device API layer Java se Node par is wajah se shift ki thi: wo layer mostly **I/O aggregation** karti hai — kai backend microservices ko call karo, unke JSON responses ko merge karo, client ko bhejo. Yahan har request ka 95% time bas "downstream se jawaab ka wait" hota hai. Single-threaded Node ek chhoti memory footprint mein hazaaron aise concurrent requests rakh leta hai. Jahan CPU-heavy transform chahiye tha, wo alag services mein rakha gaya — Node layer ko "patla aur fast" rakha gaya taaki event loop kabhi block na ho.
+
+</RealWorld>
+
+<RealWorld company="Ek BFSI reporting API (typical bug)">
+
+Ek loan-servicing team ne `POST /statements` endpoint banaya jo request body mein 5-10 MB ka JSON leta tha, `JSON.parse` karta tha, phir har record ka SHA-256 checksum synchronously compute karta tha. Load test mein p99 latency 40ms se 3.5s ho gayi — kyunki `JSON.parse` aur hashing loop dono main thread par sync chal rahe the, aur us dauraan har dusri request (login, balance check) bhi atak rahi thi. Fix: body streaming + size limit, aur hashing ko `piscina` worker pool mein. p99 wapas 60ms par aa gayi. Classic "ek CPU-bound function ne poora server slow kar diya" case.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- libuv thread pool default size = **4**. `UV_THREADPOOL_SIZE` env var se max **1024** tak. Ye `fs`, `dns.lookup`, `crypto.pbkdf2`, `zlib` ko affect karta hai — network I/O ko nahi (wo OS async hai).
+- Ek healthy event loop lag: consistently under **1-5 ms**. Sustained **50-100 ms+** lag = production incident, requests visibly slow.
+- Ek idle TCP connection ka cost Node mein roughly **tens of KB** — isliye ek process lakhon connections tak rakh sakta hai (file descriptor limits allow karein toh).
+- Ek CPU core par sync `JSON.parse` roughly **1 MB per 1-3 ms** parse karta hai — 10 MB body = **10-30 ms** jisme event loop 100% blocked.
+- `new Promise` / callback register karne ka cost practically **zero** — pointer-level kaam.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye "explain how Node handles concurrency" ke roop mein poocha jata hai, ya ulta: "agar single-threaded hai to 10k requests kaise?" Interviewer 3 cheezein test karta hai: (1) tum JS-execution aur I/O ko alag kar sakte ho ya sabko ek jhaad mein mila dete ho; (2) tumhe pata hai libuv aur thread pool exist karte hain; (3) tum ek concrete blocking example de sakte ho aur uska fix.
+
+Model answer ka shape:
+
+1. **Claim** — "Meri JS single-threaded: ek call stack."
+2. **Concurrency source** — "I/O libuv karta hai: OS non-blocking APIs + 4-thread pool; Node callback register karke aage badhta hai."
+3. **Scale intuition** — "Idle connections bas wait karte hain — ek thread unke liye kaafi."
+4. **The catch** — "CPU-bound function main thread block karta hai — bada JSON.parse, sync crypto, image resize — tab sab ruk jata hai."
+5. **Fix** — "Worker threads for CPU-bound JS, child_process for external programs, cluster/replicas for multi-core, queue for heavy async jobs. Aur event loop lag monitor karo."
+
+Red flag: "Node har request ke liye naya thread banata hai" — nahi, wahi galatfehmi jo interviewer sunna nahi chahta.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Sochna ki `async` keyword lagane se kaam alag thread par chala jayega.** `async function` sirf ye batata hai ki function ek Promise return karta hai. Uske andar agar tum ek 2-second ka `for` loop chalaoge, wo loop **abhi bhi main thread par** sync chalega aur event loop block karega. `async` blocking hataata nahi — sirf tab help karta hai jab andar `await` par koi real async I/O ho.
+
+</Mistake>
+
+<Mistake>
+
+**`JSON.parse` / `JSON.stringify` ko "free" maan lena.** Chhote objects ke liye theek, lekin ek multi-MB payload par ye seedha CPU-bound sync operation hai jo poore event loop ko utne ms ke liye rok deta hai. Bade payloads ke liye streaming parser (`stream-json`) use karo ya payload chhota karo / paginate karo.
+
+</Mistake>
+
+<Mistake>
+
+**Yeh maanna ki `fs.readFile` (callback wala) "background thread" hone ki wajah se free hai.** File I/O libuv thread pool (default sirf **4** threads) par chalta hai. Agar tum ek saath 100 badi files padho, to sirf 4 parallel chalengi, baaki queue mein — aur wahi 4 threads `crypto.pbkdf2` aur `dns.lookup` bhi share karte hain. Thread pool ek shared, limited resource hai.
+
+</Mistake>
+
+<Mistake>
+
+**CPU-bound kaam ko `setImmediate` / `setTimeout(fn, 0)` mein daal ke "non-blocking" samajhna.** Isse kaam sirf **thodi der baad** chalega — chalega phir bhi main thread par, aur tab bhi utni hi der block karega. Chunking (kaam ko chhote pieces mein todna, beech mein `setImmediate`) latency thodi behtar karti hai lekin total CPU wahi rehta hai. Real fix: kaam ko thread se hata do.
+
+</Mistake>
+
+<Mistake>
+
+**Multi-core server par ek hi Node process chalana aur sochna 8 cores use ho rahe hain.** Default Node ek process = ek JS thread = ek core. Baaki 7 cores idle. Poora CPU use karne ke liye `cluster` (N worker processes) ya N container replicas behind a load balancer chahiye.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Incoming requests (thousands)"] --> B["Event Loop thread — runs your JS, one at a time"]
+    B --> C{"Handler ka kaam kya hai?"}
+    C -->|"Network / DNS I/O"| D["OS non-blocking API (epoll / IOCP)"]
+    C -->|"fs / crypto.pbkdf2 / zlib"| E["libuv thread pool (default 4)"]
+    C -->|"CPU-bound JS loop"| F["Runs ON the event loop thread — BLOCKS everything"]
+    D -->|ready| G["Callback queued"]
+    E -->|done| G
+    G --> B
+    F -.->|"jab tak khatam na ho"| B
+`}
+  caption="Network/disk I/O event loop thread se hat jaata hai; ek CPU-bound JS loop usi thread par rehta hai aur baaki sab ko rok deta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Your JavaScript = one thread, one call stack.** Do JS functions kabhi ek saath nahi chalte (worker threads exception).
+- **Concurrency ka source = libuv**, tumhara code nahi: OS non-blocking APIs (network) + thread pool (default **4**) for `fs`/`dns`/`crypto`/`zlib`.
+- Idle connections scale karte hain kyunki wo bas wait karte hain — ek thread unke liye enough.
+- **Ek CPU-bound function = poora event loop blocked.** Har dusri request, timer, ready callback ruk jaata hai.
+- Chhupe blockers: bada `JSON.parse`/`stringify`, sync `crypto`, image/PDF work, catastrophic regex, bade nested loops.
+- **`async` blocking nahi hataata** — sirf tab help karta hai jab andar real `await`-able I/O ho.
+- Fix ka menu: `worker_threads` (CPU-bound JS), `child_process` (external program), `cluster`/replicas (multi-core), queue + worker service (heavy jobs).
+- Health metric: **event loop lag** (`perf_hooks.monitorEventLoopDelay`, `clinic doctor`). Under ~5 ms good; sustained 50 ms+ = incident.
+- Default: ek process = ek core. 8 cores use karne ke liye 8 processes chahiye.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `block.js` banao: ek `http` server with `/ping` (turant `res.end("pong")`) aur `/heavy` (ek `while` loop jo 3 second CPU jalaye, phir `res.end`). Server chalao, do terminals kholo, ek mein `/heavy` maaro aur turant dusre mein baar-baar `/ping`. Note karo `/ping` bhi ~3s ke liye kaise atak jaata hai.
+
+**Medium:** `perf_hooks` se `monitorEventLoopDelay` add karo, har 1s par `histogram.mean` (ns ko ms mein convert karke) log karo. `/heavy` maar ke dekho lag kaise spike karta hai. Phir loop ko `setImmediate`-chunked version se replace karo aur farak observe karo.
+
+**Bada:** Wahi hashing loop `worker_threads` par move karo (ek `Worker` per request, ya bonus: ek 4-worker pool). Load test dono versions (`autocannon -c 50 -d 20 http://localhost:3000/ping` jabki background mein `/heavy` requests chal rahi hon) aur `/ping` ka p99 before/after likho.
+
+</Callout>

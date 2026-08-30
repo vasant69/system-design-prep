@@ -1,0 +1,329 @@
+---
+slug: "routing-and-serving-responses"
+title: "Routing & Serving Responses"
+section: "nodejs"
+module: "http-and-events"
+order: 3
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["request-and-response-objects"]
+tags: ["nodejs", "http", "routing", "url", "static-files", "express"]
+englishDefinition: "Manual routing in a raw Node server means dispatching on req.method and req.url yourself: parse the URL with the WHATWG URL class and URLSearchParams, look the path up in a small route table or switch, and handle 404 (no route) and 405 (wrong method) explicitly. A sendJSON(res, status, data) helper keeps responses consistent. Static files are served by piping fs.createReadStream to res with the right Content-Type and error handling. Once you have many routes, params, middleware, and body parsing, adopt Express or Fastify."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Manual routing in a raw Node server means you dispatch on `req.method` and `req.url` yourself: parse the URL with the WHATWG `URL` class and `URLSearchParams`, look the path up in a small **route table** or `switch`, and handle **404** (no matching route) and **405** (right path, wrong method) explicitly. A `sendJSON(res, status, data)` helper keeps every response consistent. Static files are served by piping `fs.createReadStream(path)` into `res` with the correct `Content-Type` and error handling. When you have many routes, path params, middleware, and body parsing, stop hand-rolling and adopt Express or Fastify.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichle do topics mein humne server banaya aur `req`/`res` samjhe. Ab asli application logic: incoming request ko sahi handler tak pahunchana (routing), consistent responses bhejna, aur files serve karna. Ye wahi kaam hai jo Express tumhare liye karti hai — ek baar haath se karke dekhoge toh Express ke `app.get`, `res.json`, `express.static` sab clear ho jayenge.
+
+### Ye kya hai — manual routing
+
+Routing = "is method + is path ke liye kaunsa function chale" decide karna. Raw Node mein iske liye koi built-in nahi — tum `req.method` aur `req.url` khud check karte ho.
+
+```javascript
+const http = require("http");
+
+function sendJSON(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+const routes = {
+  "GET /health": (req, res) => sendJSON(res, 200, { status: "ok" }),
+  "GET /users": (req, res, url) => {
+    const page = Number(url.searchParams.get("page") || "1");
+    sendJSON(res, 200, { page, users: [] });
+  },
+  "POST /users": (req, res) => sendJSON(res, 201, { created: true }),
+};
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const key = `${req.method} ${url.pathname}`;
+  const handler = routes[key];
+
+  if (handler) return handler(req, res, url);
+
+  // path exist karta hai kisi aur method ke saath? → 405
+  const pathExists = Object.keys(routes).some(
+    (k) => k.split(" ")[1] === url.pathname
+  );
+  if (pathExists) {
+    return sendJSON(res, 405, { error: "method not allowed" });
+  }
+  sendJSON(res, 404, { error: "not found" });
+});
+
+server.listen(3000);
+```
+
+### Ye kyun exist karta hai — WHATWG URL
+
+`req.url` ek raw string hai — `"/users?page=2&sort=name"`. Ise haath se split karna (`.split("?")`, `.split("&")`) bug-prone hai: encoding (`%20`), repeated keys, missing values. `new URL(req.url, base)` ye sab sahi se karta hai aur `url.pathname`, `url.searchParams` (a `URLSearchParams`) deta hai. `base` isliye chahiye kyunki `req.url` relative hai — `URL` constructor ko absolute chahiye.
+
+### Internally kaise kaam karta hai
+
+- **`new URL(input, base)`** — Node ka C++ URL parser (Ada library, WHATWG spec) input ko parse karta hai: protocol, host, pathname, search, hash. Percent-decoding pathname ke liye automatic nahi hota (`url.pathname` still encoded), par `searchParams.get()` decoded value deta hai.
+- **`URLSearchParams`** — query string ko key/value pairs mein. `.get("k")` pehli value, `.getAll("k")` saari, `.has("k")` check.
+- **Route table lookup** — humne `"METHOD /path"` ko object key banaya, `O(1)` lookup. Express regex/trie use karta hai kyunki usme `/users/:id` jaise params hote hain — string key se wo possible nahi.
+
+### Simple real-life analogy
+
+Server ek **office reception** hai. `req.method + url.pathname` visitor ka "kis department, kaunsa kaam" hai. Route table reception ka **directory board** hai — naam dekho, room number milta hai (handler). Naam board par nahi (`404`). Naam hai par wo department us kaam ke liye nahi (`405` — "yahan sirf documents jama hote hain, collect nahi"). `sendJSON` ek **standard reply form** hai jo har department same format mein bharta hai.
+
+### Code — line by line (static file serving)
+
+```javascript
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".png": "image/png",
+  ".json": "application/json; charset=utf-8",
+};
+
+const PUBLIC_DIR = path.join(__dirname, "public");
+
+const server = http.createServer((req, res) => {
+  if (req.method !== "GET") {
+    res.writeHead(405);
+    return res.end("Method Not Allowed");
+  }
+
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const safePath = path
+    .normalize(decodeURIComponent(url.pathname))
+    .replace(/^(\.\.[/\\])+/, "");
+  const filePath = path.join(PUBLIC_DIR, safePath === "/" ? "index.html" : safePath);
+
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    return res.end("Forbidden");
+  }
+
+  const stream = fs.createReadStream(filePath);
+  stream.on("open", () => {
+    res.writeHead(200, {
+      "Content-Type": MIME[path.extname(filePath)] || "application/octet-stream",
+    });
+    stream.pipe(res);
+  });
+  stream.on("error", (err) => {
+    if (err.code === "ENOENT") {
+      res.writeHead(404);
+      res.end("Not Found");
+    } else {
+      res.writeHead(500);
+      res.end("Server Error");
+    }
+  });
+});
+
+server.listen(3000);
+```
+
+- `MIME` map — extension se `Content-Type`. Galat type = browser file ko render nahi karega.
+- `decodeURIComponent(url.pathname)` — `%20` waqai space ban jaye.
+- `path.normalize(...).replace(/^(\.\.[/\\])+/, "")` + `filePath.startsWith(PUBLIC_DIR)` — **path traversal guard**. Iske bina `GET /../../etc/passwd` server ki koi bhi file de sakta hai. Ye critical security check hai.
+- `fs.createReadStream(filePath)` — file ko stream ki tarah kholta hai, poora memory mein nahi.
+- `stream.on("open")` — file successfully khul gayi; ab headers likho aur `stream.pipe(res)` — Node backpressure handle karta hai.
+- `stream.on("error")` — `ENOENT` → `404`, baaki → `500`. Headers `open` par likhe isliye error branch mein wo abhi tak nahi bheje gaye.
+
+### Day-to-day use
+
+- Chhote services, internal tools jahan 3-5 endpoints hain.
+- Ek health-check + metrics server jise main app se alag rakhna hai.
+- Ek static-file server local dev ke liye (`npx serve` isi ka polished version hai).
+- Webhook receivers jinme ek-do POST paths hain.
+
+### Kab manual routing theek hai
+
+- Route count kam (`< 10`), koi path params (`/users/:id`) nahi ya sirf 1-2.
+- Middleware chain ki zaroorat nahi (ya bahut simple).
+- Dependency footprint minimum rakhna priority ho.
+
+### Kab manual routing chhod dena chahiye
+
+- Path params (`/orders/:orderId/items/:itemId`) — manual regex jaldi ganda ho jata hai.
+- Middleware (auth, logging, CORS, rate limit) har route par chahiye — Express/Fastify ka pipeline iske liye bana hai.
+- Body parsing, cookie parsing, content negotiation — har jagah repeat karna hoga.
+- Team large — sab ke liye ek known framework convention better hai.
+
+### Pros and cons (manual routing)
+
+**Pros**
+
+- Zero dependency, poora control, exact behaviour tumhare haath mein.
+- `O(1)` object-key lookup — bahut fast.
+- Koi hidden middleware magic nahi — debugging seedhi.
+
+**Cons**
+
+- Path params, wildcards, nested routers — sab khud likho.
+- 404/405/OPTIONS/HEAD handling manually, har jagah.
+- Middleware pattern khud invent karna padega.
+- Galti se traversal guard ya method check bhoolna = security bug.
+
+### Alternatives
+
+- **Express** — `app.get("/users/:id", handler)`, middleware, `res.json`, `express.static`. Standard REST APIs.
+- **Fastify** — Express jaisa + schema validation/serialization, ~2x throughput. High-traffic JSON.
+- **Koa** — minimal core, async middleware. Jab tum apna stack compose karna chahte ho.
+- **`find-my-way`** — sirf ek fast router (Fastify isi ko use karta hai) — jab tum framework nahi chahte par accha routing chahiye.
+- **`serve-static` / `sirv`** — sirf static files, caching + range support ke saath.
+
+### Interview mein "Aapne routing khud kyun likha, Express kyun nahi?"
+
+> "Ye ek internal metrics sidecar tha — teen GET endpoints (`/health`, `/ready`, `/metrics`), koi params nahi, koi auth nahi. Ek `switch` par `req.method + url.pathname` aur ek `sendJSON` helper 40 lines ka tha; Express ek dependency tree aur startup cost laata bina kisi benefit ke. Jahan humari public API thi — 50+ routes, `:id` params, JWT middleware, request validation — wahan humne Fastify liya, kyunki wahan router, schema validation aur serialization ka real, measurable value tha. Rule simple hai: params ya middleware chahiye toh framework, warna raw `http` kaafi hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Path traversal guard optional nahi hai. Static serving mein hamesha `path.join` ke baad `resolvedPath.startsWith(rootDir)` check karo. `GET /..%2f..%2fetc%2fpasswd` jaisa encoded traversal iske bina kaam kar jata hai — ye ek classic CVE pattern hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express router internals">
+
+Express ka router ek layer stack hai — har `app.get(path, fn)` ek layer banata hai jisme path ek regex mein compile hota hai (`/users/:id` → `/^\/users\/([^\/]+)\/?$/`). Request aane par router layers ko order mein try karta hai, pehla match jeetta hai, aur capture groups `req.params` ban jate hain. `405` Express khud nahi deta by default — wo `404` deta hai jab tak tum `app.all` ya method-specific fallback na likho. Ye samajhna helpful hai: framework tumhare liye wahi lookup + param extraction kar raha hai jo tum manually likhte.
+
+</RealWorld>
+
+<RealWorld company="nginx / CDN static serving">
+
+Production mein static assets aksar Node serve karta hi nahi — nginx ya ek CDN (CloudFront, Cloudflare) karta hai, kyunki wo `sendfile()` syscall, byte-range requests, `ETag`/`Last-Modified` caching, aur gzip/brotli pre-compression natively handle karte hain. Node ka `createReadStream().pipe(res)` local dev aur chhote deployments ke liye theek hai, lekin high-traffic par tum `Cache-Control` headers set karke reverse proxy/CDN ko kaam de dete ho.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Object-key route lookup (`routes["GET /users"]`) `O(1)` hai — 10 routes ho ya 1000, lookup time practically constant.
+- Express ka regex-based router har unmatched route par saari layers try karta hai — 100+ routes par thoda `O(n)` cost, isliye Fastify (radix tree, `O(k)` where k = path length) tez hota hai.
+- `fs.createReadStream` default chunk size **64 KB** hai — ek 1 GB file constant `~64 KB` memory mein serve hoti hai.
+- Path traversal (`../`) bugs OWASP ke hisaab se web apps mein sabse common file-access vulnerabilities mein se hain — guard ek `startsWith` check jitna sasta hai.
+- `HEAD` request par response body **nahi** bhejni chahiye — sirf headers; bhool jao toh spec violation aur kuch clients confuse.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Poochha jata hai: "Express ke bina routing kaise karoge?" ya "Static file serve karke dikhao." Interviewer dekhta hai: URL parsing (manual split vs `URL` class), 404 vs 405 ka farak, aur — static ke case mein — path traversal awareness.
+
+Achhe jawaab ka shape:
+
+1. **URL parse** — "`new URL(req.url, base)` — `url.pathname` + `url.searchParams`; manual `split` nahi kyunki encoding/repeat keys."
+2. **Dispatch** — "`req.method + ' ' + url.pathname` ko route table object mein lookup — `O(1)`."
+3. **404 vs 405** — "koi route match nahi → `404`; path match par method galat → `405`."
+4. **sendJSON helper** — "ek jagah `Content-Type` + `Content-Length` + `JSON.stringify` — consistency."
+5. **Static** — "`createReadStream(path).pipe(res)` + MIME map + `ENOENT`→404 + **traversal guard** (`resolved.startsWith(root)`)."
+6. **Framework kab** — "params/middleware/validation chahiye → Express/Fastify."
+
+Red flag: static serving mein path traversal guard ka zikr na karna, ya `404` aur `405` ko same treat karna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`req.url` ko manually `split("?")` / `split("&")` se parse karna.** Ye percent-encoding (`%20`, `%2F`), repeated keys (`?tag=a&tag=b`), aur missing values (`?flag`) sab galat handle karta hai. `new URL(req.url, base)` + `url.searchParams` use karo — ye WHATWG spec ke hisaab se sahi karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**Static serving mein path traversal guard bhoolna.** `path.join(PUBLIC_DIR, url.pathname)` bina check ke — `GET /../../../../etc/passwd` (ya encoded `%2e%2e%2f`) server ki koi bhi file leak kar sakta hai. Hamesha `resolvedPath.startsWith(PUBLIC_DIR)` verify karo, warna `403`.
+
+</Mistake>
+
+<Mistake>
+
+**404 aur 405 ko same maan lena.** Path exist hi nahi karta → `404`. Path sahi hai par `POST` ki jagah client ne `DELETE` bheja → `405 Method Not Allowed` (aur ideally `Allow` header mein valid methods). Dono ko `404` dena API consumers ke liye confusing aur spec-galat hai.
+
+</Mistake>
+
+<Mistake>
+
+**`createReadStream` par `error` listener na lagana.** File missing (`ENOENT`) par stream `error` emit karta hai — koi listener nahi toh ye `uncaughtException` ban ke process crash kar sakta hai. Hamesha `stream.on("error", ...)` — `ENOENT`→`404`, baaki→`500`.
+
+</Mistake>
+
+<Mistake>
+
+**Static file ka `Content-Type` set na karna ya galat set karna.** `.js` file `text/plain` ke saath bheji — browser use module ki tarah load nahi karega. `.css` galat type ke saath — page unstyled. Extension→MIME map rakho aur unknown ke liye `application/octet-stream` (download) fallback.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["request aayi"] --> B["url = new URL(req.url, base)"]
+    B --> C["key = req.method + ' ' + url.pathname"]
+    C --> D{"routes[key] mila?"}
+    D -->|haan| E["handler(req, res, url) chalao"]
+    D -->|nahi| F{"pathname kisi aur method se match?"}
+    F -->|haan| G["sendJSON(res, 405, ...) + Allow header"]
+    F -->|nahi| H{"static file path?"}
+    H -->|haan| I["traversal guard → createReadStream → pipe(res)"]
+    H -->|nahi| J["sendJSON(res, 404, ...)"]
+    I --> K{"stream error?"}
+    K -->|ENOENT| J
+    K -->|nahi| L["200 + Content-Type, body stream ho gaya"]
+`}
+  caption="Ek route table lookup, phir 405 fallback, phir static file (guard ke saath), phir 404 — har branch ek defined response deta hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- Manual routing = `req.method` + `req.url` par khud dispatch — raw `http` mein koi built-in router nahi.
+- `new URL(req.url, base)` (base = `"http://" + req.headers.host`) → `url.pathname`, `url.searchParams` (`URLSearchParams`). Manual `split` **mat** karo.
+- Route table: `routes["GET /users"]` — `O(1)` object-key lookup.
+- **404** = koi route nahi; **405** = path sahi, method galat (`Allow` header do).
+- `sendJSON(res, status, data)` helper = ek jagah `Content-Type` + `Content-Length` + `JSON.stringify`.
+- Static: `fs.createReadStream(path).pipe(res)` + extension→MIME map + `stream.on("error")` (`ENOENT`→404).
+- **Path traversal guard mandatory**: `resolvedPath.startsWith(rootDir)` warna `403`.
+- `HEAD` par body mat bhejo; `OPTIONS` par `Allow` header do.
+- Params (`/users/:id`), middleware, validation chahiye → Express/Fastify.
+- Express `res.json` = `sendJSON`; `express.static` = tumhara static handler; `app.get` = route table entry — sab wahi kaam.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `sendJSON(res, status, data)` helper likho jo `Content-Type: application/json`, sahi `Content-Length` (`Buffer.byteLength`), aur `JSON.stringify(data)` set kare. Ise ek `GET /ping` route mein use karke `{ pong: true }` bhejo.
+
+**Medium:** Ek route table object banao jisme `GET /health`, `GET /users` (query param `?page` padhe), aur `POST /users` ho. `new URL` se parse karo, `404` aur `405` dono handle karo (405 ke saath `Allow` header). `curl -X DELETE localhost:3000/users` par `405` aana chahiye.
+
+**Bada:** `public/` folder se static files serve karo: MIME map, `index.html` default, `createReadStream().pipe(res)`, `ENOENT`→`404`. Phir **path traversal guard** add karo aur `curl "localhost:3000/..%2f..%2fpackage.json"` se verify karo ki `403` milta hai, file content nahi. Guard hataake dekho ki bina guard ke kya leak hota.
+
+</Callout>

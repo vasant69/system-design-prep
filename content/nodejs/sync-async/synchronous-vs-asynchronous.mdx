@@ -1,0 +1,321 @@
+---
+slug: "synchronous-vs-asynchronous"
+title: "Synchronous vs Asynchronous"
+section: "nodejs"
+module: "sync-async"
+order: 2
+difficulty: "beginner"
+readingTime: 15
+prerequisites: []
+tags: ["nodejs", "synchronous", "asynchronous", "callbacks", "promises", "fundamentals"]
+englishDefinition: "Synchronous and asynchronous describe the shape of an API. A synchronous function computes its result before it returns, handing back a value or throwing an error on the same line you called it. An asynchronous function returns immediately with a placeholder and delivers the real result later through a callback or a Promise. The two are not interchangeable: turning an async result back into a synchronous return value cleanly is not possible in Node, and async-ness spreads up the call chain."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+"Synchronous" and "asynchronous" describe the **shape** of an API, not what it does. A **synchronous** function finishes its work before it returns — it hands you a value on the same line, or it throws. An **asynchronous** function returns immediately with a placeholder and gives you the real result **later**, through a callback or a Promise. The two are not swappable: you cannot cleanly turn an async result back into a plain synchronous return in Node, and once one function in a chain is async, every caller that needs its result becomes async too.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Blocking vs non-blocking" runtime behaviour ke baare mein tha — thread ruka ya nahi. "Synchronous vs asynchronous" **API ke shape** ke baare mein hai — result kaise wapas milta hai. Dono related hain lekin ek nahi. Ye distinction interview mein bahut poocha jata hai aur code likhte waqt daily kaam aata hai.
+
+### Ye kya hai — sync aur async API shape
+
+- **Synchronous API**: function call karte ho, wo apna kaam poora karta hai, aur **usi line pe** ya toh ek value `return` karta hai ya `throw` karta hai. Result ke liye tumhe kahin aur nahi dekhna. Example: `JSON.parse(str)`, `fs.readFileSync(path)`, `arr.map(fn)`, `Math.sqrt(n)`.
+
+```javascript
+const data = fs.readFileSync("config.json", "utf8"); // value seedhe milti hai
+const config = JSON.parse(data);                     // ye bhi sync
+```
+
+- **Asynchronous API**: function call karte ho, wo **turant return** ho jata hai — lekin abhi result nahi hai. Result baad mein milega:
+  - **callback** ke through: `fs.readFile(path, (err, data) => { ... })`
+  - ya **Promise** ke through: `fs.promises.readFile(path).then(data => { ... })` / `await`
+
+```javascript
+fs.readFile("config.json", "utf8", (err, data) => {
+  if (err) return console.error(err);
+  const config = JSON.parse(data); // result yahan, callback ke andar
+});
+console.log("ye line pehle chalti hai");
+```
+
+Async function ka return value ya toh `undefined` hota hai (callback style), ya ek **Promise object** (jo "abhi pending, future mein settle hoga" represent karta hai).
+
+### Sync ≠ blocking, async ≠ non-blocking (poori tarah)
+
+Ye overlap karte hain lekin identical nahi:
+
+- `fs.readFileSync` — **sync API aur blocking** (dono).
+- `arr.map(fn)` — **sync API**, technically thread "busy" karta hai lekin itna chhota ki blocking nahi bolte.
+- `for (let i=0;i<1e9;i++){}` — koi API hi nahi, plain sync code, **blocking** (CPU-bound).
+- `fs.readFile(path, cb)` — **async API aur non-blocking**.
+- `crypto.pbkdf2(..., cb)` — **async API** (callback deta hai) lekin kaam libuv **thread pool** pe hota hai; agar pool bhar jaye toh queue ho sakta hai.
+
+Interview line: "sync/async API ka shape batata hai; blocking/non-blocking event loop pe asar batata hai. `readFileSync` dono hai; ek CPU loop blocking hai par use 'sync API' nahi bolte kyunki wo koi API hi nahi."
+
+### Ye kyun exist karta hai
+
+Async shape isliye hai kyunki I/O **slow aur unpredictable** hai (disk, network, DB). Agar har I/O call sync hoti, toh ek single-threaded runtime har wait pe freeze ho jata. Async shape Node ko allow karta hai: "ye kaam start karo, callback/Promise le lo, aur jab result aaye tab mujhe batao — tab tak main aur kaam karta hoon."
+
+Sync shape isliye hai kyunki bahut sara kaam **fast aur in-memory** hai (`JSON.parse`, arithmetic, string ops). Uske liye callback/Promise ka overhead bekaar hai — seedha `return` simple aur fast hai.
+
+### Internally kaise kaam karta hai
+
+**Sync call**: engine ek execution context banata hai, call stack pe push karta hai, function poora chalta hai, return value stack se wapas milti hai, context pop. Sab ek hi "tick" mein.
+
+**Async call (callback)**: function call hote hi kaam libuv/OS ko register ho jata hai aur function `undefined` return karke stack se pop ho jata hai. Kaam complete hone par libuv callback ko **callback queue / task queue** mein daalta hai. Event loop har iteration mein dekhta hai: call stack khali? toh queue se agla callback utha ke chalao.
+
+**Async call (Promise / await)**: `fs.promises.readFile()` turant ek **Promise object** return karta hai jinski internal state `pending` hai. Jab I/O complete hota hai, Promise `fulfilled` (value ke saath) ya `rejected` (error ke saath) ho jata hai, aur uske `.then`/`.catch` handlers **microtask queue** mein chale jate hain (jo har macrotask ke baad, agla macrotask se pehle drain hoti hai). `await` bas is `.then` ka syntax sugar hai — `await` ke neeche ka code us Promise ka `.then` handler ban jata hai.
+
+### Simple real-life analogy
+
+- **Synchronous** = counter pe chai maangi, cashier ne turant cup haath mein diya. Tum line se hatte tabhi jab cup mil gaya.
+- **Asynchronous (callback)** = restaurant mein order diya, apna number diya, seat pe baith gaye. Ready hone par staff number pukarta hai (callback). Beech mein tum phone chala rahe ho (aur kaam).
+- **Asynchronous (Promise)** = order diya, ek **token/receipt** mila (Promise object). Wo receipt abhi khana nahi hai — wo "khana aayega" ka wada hai. Token screen pe number aane par (`resolved`) ya "out of stock" (`rejected`) — dono cases receipt handle karti hai.
+
+"async ko sync banao" = staff ko bolna "main yahin khada rahunga jab tak khana na aaye, kuch aur mat karo" — poora fayda khatam.
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+
+// SYNC version
+function loadConfigSync() {
+  const raw = fs.readFileSync("config.json", "utf8");
+  return JSON.parse(raw);
+}
+const cfg = loadConfigSync();
+console.log("port:", cfg.port);
+
+// ASYNC version (Promise)
+async function loadConfig() {
+  const raw = await fs.promises.readFile("config.json", "utf8");
+  return JSON.parse(raw);
+}
+loadConfig().then((cfg) => console.log("port:", cfg.port));
+```
+
+- `loadConfigSync` — `readFileSync` ek string return karta hai, `JSON.parse` ek object. Function normal `return` karta hai. Caller `const cfg = loadConfigSync()` seedhe likh sakta hai.
+- `loadConfig` — `async` keyword ka matlab ye function **hamesha ek Promise return karega**. `await fs.promises.readFile(...)` — Promise ke resolve hone tak *is function ke andar* pause, lekin baaki program nahi rukta.
+- `return JSON.parse(raw)` — `async` function mein `return x` ka matlab "Promise ko `x` se resolve karo".
+- `loadConfig().then(cfg => ...)` — caller ko `cfg` seedhe nahi milta, `.then` ya `await` se milta hai. Yahi "async viral hai" ka pehla asar — caller bhi async ho gaya.
+
+### "Async ko sync banana" — kyun nahi hota
+
+Log poochhte hain: "mera function ek callback/Promise se value nikaal ke plain `return` kar de, ho jayega?" Nahi:
+
+- **`deasync` / `sync-request` jaisi libraries** native C++ level pe event loop ko spin karti hain jab tak Promise settle na ho. Isse: (a) event loop reentrant ho jata hai — doosre callbacks unexpected time pe chal sakte hain, (b) unhandled edge cases pe deadlock, (c) native addon jo Node version upgrade pe toot sakta hai. Production mein red flag.
+- **`Atomics.wait` + worker** se ek worker thread ko block karke result la sakte ho, lekin ye sirf `SharedArrayBuffer` wale numeric/serializable data ke liye practical hai, aur main thread ko bhi block karta hai — matlab poora fayda gaya.
+- Bottom line: agar underlying operation async hai (I/O), toh uska result **async hi** milega. Sahi jawaab: apne function ko bhi async bana do (`async`/`await` return kare) — ye "problem" nahi hai, yahi design hai.
+
+### Async viral hota hai (async bubbles up)
+
+Agar `getUser` async hai, aur `getDashboard` `getUser` ka result use karta hai, toh `getDashboard` bhi async hona padega. Aur jo `getDashboard` ko call kare, wo bhi. Ye chain **poore call path** ko async bana deti hai jab tak koi "boundary" na aaye (route handler, event listener, `main()`), jahan tum Promise ko `await` ya `.then` se consume karke chain khatam karte ho.
+
+```javascript
+async function getUser(id) { /* await db... */ }
+async function getDashboard(id) {
+  const user = await getUser(id);       // getDashboard ko async hona pada
+  return buildView(user);
+}
+app.get("/dash/:id", async (req, res) => { // route handler bhi async
+  res.json(await getDashboard(req.params.id));
+});
+```
+
+Isko "problem" mat samjho — ye consistency hai. Naya kaam likhte waqt maan lo I/O async hoga aur function ko async banao.
+
+### Day-to-day use
+
+- **Sync**: `JSON.parse`/`stringify`, `path.join`, `Buffer` ops, array/string transforms, validation, `crypto.randomUUID()`, sync hashing sirf CLI mein.
+- **Async**: har DB call, HTTP call (`fetch`), file I/O request path mein, `fs.promises`, timers, `child_process` (non-sync), queue publish.
+- **Sync at startup**: `require`, config load, `.env` parse, cert load — ek baar, `listen` se pehle.
+
+### Kab sync API use karni chahiye
+
+- Kaam pura in-memory aur fast hai (parsing, math, transforms) — async wrap karna sirf overhead.
+- Startup / CLI / migration script — koi concurrency nahi (blocking topic dekho).
+- Jab tumhe control flow ekdam linear chahiye aur koi I/O involved nahi.
+
+### Kab async API use karni chahiye
+
+- Koi bhi I/O: disk, network, DB, child process — request-serving context mein.
+- Kaam ka duration unpredictable / user-controlled ho.
+- Jab operation kai baar result de sakta ho (stream, event) — tab callback/EventEmitter, Promise nahi.
+
+### Pros and cons
+
+**Sync API pros**
+
+- Padhna aur reason karna aasaan — top se neeche.
+- `try/catch` seedhe kaam karta hai.
+- Zero wrapper overhead.
+
+**Sync API cons**
+
+- I/O ke liye event loop block karta hai (server pe fatal).
+- Cancel / timeout lagana mushkil.
+
+**Async API pros**
+
+- Event loop free — concurrency.
+- Timeout, cancellation (`AbortController`), parallel (`Promise.all`) natural.
+
+**Async API cons**
+
+- Code complexity, "colored functions" (async viral).
+- Error handling careful — unhandled rejection, missing `await`.
+- Ordering surprises (microtask vs macrotask).
+
+### Alternatives / related
+
+- **Callbacks** — purani core API shape; ab mostly `fs.promises` / `util.promisify` se Promise mein.
+- **Promises + async/await** — default modern async shape.
+- **EventEmitter / streams** — jab ek source se multiple values.
+- **Observables (RxJS)** — complex event pipelines; Node core mein nahi.
+- **`worker_threads` + `Atomics`** — sync-style blocking wait, sirf CPU-bound shared-memory cases.
+
+### Interview mein "Sync aur async function mein farak kya hai?"
+
+> "Sync function apna result usi line pe return ya throw karta hai — `JSON.parse`, `readFileSync`. Async function turant return hota hai aur result baad mein deta hai, callback ya Promise se — `fs.readFile`, `fs.promises.readFile`. Ye shape ka farak hai; blocking/non-blocking event loop ka farak hai, jo overlap karta hai par same nahi. Async result ko cleanly sync return mein badalna Node mein possible nahi — `deasync` jaisi hacks event loop ko unsafely spin karti hain. Sahi tarika ye hai ki apna function bhi async bana do; async call chain ke upar tak bubble karta hai, aur ye by design hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`async function` **hamesha** ek Promise return karta hai, chahe tum `return 5` likho. Aur `await` sirf `async` function (ya ES module top level) ke andar chalta hai. Ek non-async function ke andar `await` likhna syntax error hai — yahi "async viral hai" ka concrete reminder hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Config loader in a Node service">
+
+Ek internal service startup pe `config.json` ko `fs.readFileSync` + `JSON.parse` se load karti thi — sync, aur bilkul theek, kyunki ye `app.listen()` se pehle ek baar hota hai. Baad mein ek dev ne feature flags ko ek remote config service se lene ka socha. Ab config load ek HTTP call ban gaya — inherently async. `loadConfig()` ko `async` banana pada, `main()` ko `await loadConfig()` karna pada, aur `main()` ko bhi `async`. Ek chhota change poore bootstrap path ko async bana gaya — classic "async bubbles up" — lekin runtime behaviour sahi raha kyunki boundary `main()` pe clean `await` tha.
+
+</RealWorld>
+
+<RealWorld company="Node core: sync vs async twins">
+
+Node core deliberately dono shapes deta hai: `fs.readFile` / `readFileSync`, `crypto.pbkdf2` / `pbkdf2Sync`, `zlib.gzip` / `gzipSync`, `child_process.exec` / `execSync`, `dns.lookup` / (no true sync, but `dnsPromises`). Docs har sync function ke saath ek note rakhte hain: "blocks the event loop, use only in scripts or startup." `require()` khud synchronous hai — ye deliberate hai, taaki module graph load hone ka order predictable rahe; iska async counterpart `import()` (dynamic) baad mein aaya.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `async function` ka return **hamesha** ek `Promise` — `return 5` bhi `Promise<5>` ban jata hai.
+- Promise `.then` handlers **microtask queue** mein jate hain, jo har macrotask ke turant baad, agla timer/I/O callback se **pehle** drain hoti hai.
+- `await` ek expression ko roughly ek `.then()` mein convert karta hai — overhead per await ~sub-microsecond, negligible for I/O-bound code.
+- `require()` **synchronous** hai — ek bade dependency tree ka pehla load 100+ ms le sakta hai, isliye ye startup pe hota hai, request path mein nahi.
+- `deasync` jaisi libraries native addon hain — Node major version upgrade pe **rebuild / break** hone ka high risk.
+- Sync `JSON.parse` throughput ~**50-100 MB/s** single-threaded — 10 MB payload ~100-200 ms sync block.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye warm-up ke baad ka standard question hai: "sync aur async function mein kya farak hai?" ya "kya tum ek async function ko sync bana sakte ho?"
+
+Interviewer check karta hai: (1) tum "shape" (kaise result milta hai) aur "blocking" (event loop pe asar) ko alag kar pate ho ya nahi; (2) tumhe pata hai `async` function hamesha Promise deta hai; (3) tum jaante ho async chain ke upar bubble karta hai aur ye normal hai; (4) tum `deasync` type hacks ko red flag samajhte ho.
+
+Achhe jawaab ka shape:
+
+1. **Definition** — "sync: result usi line pe return/throw; async: turant return, result baad mein callback/Promise se."
+2. **Example jodi** — `readFileSync` vs `readFile` / `fs.promises.readFile`.
+3. **Sync ≠ blocking exactly** — overlap hai par CPU loop bhi blocking hai bina "sync API" hue.
+4. **Async viral** — "getUser async hai toh getDashboard bhi; boundary pe await se khatam."
+5. **Sync banane ki hack** — "possible nahi cleanly; deasync event loop unsafely spin karti hai; sahi jawaab apne function ko async karna."
+
+Red flag: "await laga do toh async sync ban jata hai" — `await` code ko sync **dikhata** hai padhne mein, function tab bhi async hai aur event loop tab bhi free hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`await` bhool jana aur Promise ko value samajhna.** `const user = getUser(id); console.log(user.name)` — `getUser` async hai toh `user` ek Promise object hai, `user.name` `undefined`. Ya toh `await getUser(id)` likho (async function ke andar) ya `.then`. TypeScript / `no-floating-promises` lint rule ye pakadta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`async` function ka return `await` na karna aur error miss ho jana.** `doWork()` (bina await) call kiya, andar reject hua — wo ek **unhandled promise rejection** ban jata hai jo Node ke naye versions mein process crash kar sakta hai. Har async call ya `await` karo, ya `.catch` do, ya deliberately `void` karke reason document karo.
+
+</Mistake>
+
+<Mistake>
+
+**Sochna ki `async` keyword function ko "parallel" ya "faster" bana deta hai.** `async` sirf return type ko Promise banata hai aur `await` allow karta hai. Agar tum `await a(); await b();` likhte ho toh wo **sequential** hain. Parallel chahiye toh `await Promise.all([a(), b()])`.
+
+</Mistake>
+
+<Mistake>
+
+**Async result ko sync return mein "nikaalne" ki koshish `deasync` / busy-loop se.** `while (!done) {}` loop laga ke callback ka wait karna — event loop us loop mein atka hai, callback kabhi chalega hi nahi, permanent deadlock. Underlying I/O async hai toh result async hi milega; apne function ko async banao.
+
+</Mistake>
+
+<Mistake>
+
+**Fast in-memory kaam ko bewajah async wrap karna.** `JSON.parse` ya ek array `.map` ko `async` function mein daal ke `await` karna — koi fayda nahi, sirf ek microtask aur "colored function" add hoti hai. Async sirf tab jab actual I/O ya deferred work ho.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    C["Caller: result = fn()"] --> K{"fn ka shape?"}
+    K -->|"SYNC (readFileSync, JSON.parse)"| S1["fn poora kaam karta hai"]
+    S1 --> S2["value return / error throw — usi line pe"]
+    S2 --> S3["caller ke paas result ready"]
+    K -->|"ASYNC (readFile, fs.promises)"| A1["fn turant return: undefined ya Promise(pending)"]
+    A1 --> A2["kaam libuv/OS ko offload"]
+    A2 --> A3["caller aage badhta hai — result abhi nahi"]
+    A2 -->|"kaam complete"| A4["callback queue / Promise settle -> microtask"]
+    A4 --> A5["callback / .then / await ke neeche wala code chalta hai"]
+`}
+  caption="Sync me result usi line pe milta hai; async me function pehle return hota hai aur result baad me callback/Promise ke through aata hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Sync API** = result usi line pe `return` ya `throw` (`JSON.parse`, `readFileSync`, `map`).
+- **Async API** = turant return, result **baad mein** callback ya Promise se (`fs.readFile`, `fs.promises.readFile`).
+- **Sync ≠ blocking exactly**: overlap hai; ek CPU loop blocking hai bina "sync API" kehlaye.
+- `async function` **hamesha** Promise return karta hai; `await` sirf `async` function / ESM top-level mein.
+- **Async viral hai**: ek function async hua toh uske result-consumers bhi async; chain boundary pe `await`/`.then` se khatam.
+- **Async ko cleanly sync nahi bana sakte**: `deasync`/busy-loop event loop ko unsafely spin/deadlock karte hain; sahi fix apne function ko async karna.
+- `await a(); await b();` **sequential** hai; parallel ke liye `Promise.all`.
+- **Sync use karo**: fast in-memory kaam, startup, CLI. **Async use karo**: har I/O request path mein, unpredictable-duration kaam.
+- `require()` synchronous hai by design; dynamic `import()` async.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ye likho aur output predict karo: `console.log(1); const p = Promise.resolve(); p.then(() => console.log(2)); console.log(3);`. Phir chalao aur explain karo `2` last kyun aaya (microtask timing).
+
+**Medium:** Ek `loadUser(id)` function banao jo `fs.promises.readFile` se ek `users/<id>.json` padhe aur parsed object return kare. Phir ek `loadUsers(ids)` banao jo teen users ko **parallel** load kare (`Promise.all`). Measure karo sequential (`for...of` with `await`) vs parallel ka time difference.
+
+**Bada:** Ek chhota sa demo likho jo dikhata hai `deasync`-style busy loop kyun fail hota hai: ek `setTimeout(() => { done = true; }, 100)` schedule karo aur uske baad `while (!done) {}` likho. Explain karo (bina chalaye — ye hang karega) ki `done` kabhi `true` kyun nahi hoga, aur sahi version async/await se likho.
+
+</Callout>

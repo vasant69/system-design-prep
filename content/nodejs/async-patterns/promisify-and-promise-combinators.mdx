@@ -1,0 +1,349 @@
+---
+slug: "promisify-and-promise-combinators"
+title: "promisify & Promise Combinators"
+section: "nodejs"
+module: "async-patterns"
+order: 5
+difficulty: "intermediate"
+readingTime: 16
+prerequisites: ["async-await-in-practice"]
+tags: ["nodejs", "promisify", "promise-all", "allsettled", "race", "combinators"]
+englishDefinition: "util.promisify turns an error-first callback function into one that returns a Promise, and a library can override the conversion via the promisify.custom symbol. The four combinators differ sharply: Promise.all is fail-fast on all inputs, Promise.allSettled collects every outcome, Promise.race settles on the first settlement (fulfil or reject), and Promise.any resolves on the first fulfilment. Running Promise.all over hundreds of items launches unbounded concurrency, so real code limits it with a pool or a library like p-limit."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`util.promisify(fn)` takes an **error-first callback** function and returns a version that returns a **Promise** — so you can `await` legacy APIs. A library can control how it is promisified by attaching a function under the `util.promisify.custom` symbol. The four **combinators** behave very differently: `Promise.all` is **fail-fast** (one rejection fails the whole thing), `Promise.allSettled` **collects every outcome**, `Promise.race` settles on the **first settlement** (fulfil *or* reject), and `Promise.any` resolves on the **first fulfilment**. Running `Promise.all` over hundreds of items opens hundreds of concurrent operations, so production code **limits concurrency**.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Do practical cheezein is topic mein: (1) purane callback-based functions ko Promise-world mein kaise laayein bina haath se `new Promise` wrap kiye, aur (2) jab tumhare paas Promises ka array ho toh un par kaunsa combinator lagao — aur crucial: jab wo array bada ho toh concurrency ko kaise bound karo.
+
+### util.promisify — error-first callback ko Promise mein
+
+Node ke core aur bahut se npm packages error-first callback convention follow karte hain: `fn(...args, (err, result) => {})`. `util.promisify` isi shape ko samajhta hai:
+
+```javascript
+const util = require("util");
+const fs = require("fs");
+
+const readFileP = util.promisify(fs.readFile);
+
+async function main() {
+  const text = await readFileP("note.txt", "utf8");
+  console.log(text);
+}
+```
+
+- `util.promisify(fs.readFile)` ek naya function deta hai jo wahi args leta hai **minus** callback, aur ek Promise return karta hai.
+- Callback mein `err` mila toh Promise **reject**, warna `result` se **resolve**.
+- Ye sirf error-first single-result callbacks pe kaam karta hai. Jo callback multiple success values de (`(err, a, b)`) ya jiska pehla arg error na ho, uske liye custom chahiye.
+
+### promisify.custom — jab default conversion galat ho
+
+Kuch functions ka callback error-first nahi hai, ya wo multiple values deta hai. Library author `util.promisify.custom` symbol pe apna Promise version attach kar sakta hai, aur `util.promisify` usko prefer karega:
+
+```javascript
+const kCustom = util.promisify.custom;
+
+function getSizes(path, cb) {
+  // cb(err, widthPx, heightPx) — do success values
+  measure(path, (err, w, h) => cb(err, w, h));
+}
+
+getSizes[kCustom] = (path) =>
+  new Promise((resolve, reject) => {
+    measure(path, (err, w, h) => (err ? reject(err) : resolve({ w, h })));
+  });
+
+const getSizesP = util.promisify(getSizes); // custom version use hoga
+const { w, h } = await getSizesP("img.png");
+```
+
+- Node core khud ye karta hai — `child_process.exec` ka promisified version ek `{ stdout, stderr }` object deta hai, do alag args nahi, `promisify.custom` ki wajah se.
+- Agar tum `setTimeout` ko promisify karo, `util.promisify(setTimeout)` ek special custom version deta hai jo `(ms, value)` leta hai — wahi `require("timers/promises").setTimeout`.
+
+### Manual wrap — jab promisify na ho sake
+
+Non-standard callbacks ke liye seedha `new Promise`:
+
+```javascript
+function queryP(sql, params) {
+  return new Promise((resolve, reject) => {
+    legacyDb.query(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
+}
+```
+
+### Combinators — ek table jo yaad rakhna hai
+
+| Combinator | Settle kab | Reject kab | Return value | Use when |
+| --- | --- | --- | --- | --- |
+| `Promise.all` | jab **sabhi** fulfil | jab **koi ek** reject (fail-fast) | values ka array (input order) | sab chahiye, koi bhi fail = pura invalid |
+| `Promise.allSettled` | jab **sabhi** settle | **kabhi nahi** | `{status, value \| reason}` ka array | partial results OK — dashboards, fan-out, batch |
+| `Promise.race` | jab **pehla** settle (fulfil ya reject) | agar pehla settle **reject** ho | pehle settle ka value / reason | timeout wrapper, "jo pehle jawaab de" |
+| `Promise.any` | jab **pehla fulfil** ho | jab **sabhi** reject (`AggregateError`) | pehle fulfilment ka value | redundant sources — jo pehle **success** de |
+
+Yaad rakhne ka trick:
+- **all** = "sab chahiye" (AND)
+- **allSettled** = "sab ka result chahiye, chahe fail ho"
+- **race** = "pehla **koi bhi** result" (fulfil ya reject dono count)
+- **any** = "pehla **successful** result"
+
+```javascript
+// all — 3 mandatory lookups
+const [user, acct, limits] = await Promise.all([getUser(id), getAcct(id), getLimits(id)]);
+
+// allSettled — best-effort notifications
+const outcomes = await Promise.allSettled(subs.map((s) => notify(s)));
+
+// race — timeout
+const data = await Promise.race([fetchReport(id), rejectAfter(3000)]);
+
+// any — fastest healthy mirror
+const asset = await Promise.any([cdn1.get(key), cdn2.get(key), cdn3.get(key)]);
+```
+
+### Concurrency limiting — `Promise.all(1000 items)` kyun bura hai
+
+```javascript
+// BAD — 1000 concurrent operations ek saath
+const results = await Promise.all(ids.map((id) => fetchItem(id)));
+```
+
+- `ids.map(...)` synchronously **1000 Promises** bana deta hai — matlab 1000 `fetchItem` calls **turant** in-flight.
+- DB connection pool aksar 10-20 — baaki queue mein, kai timeout.
+- Upstream API rate-limit (e.g. 100 req/s) turant `429` dega.
+- 1000 in-flight requests ka memory (buffers, socket objects) spike.
+- Ek fail hua toh `Promise.all` fail-fast — baaki 999 ka result waste (wo cancel bhi nahi hote).
+
+**Fix 1 — `p-limit` library:**
+
+```javascript
+const pLimit = require("p-limit");
+const limit = pLimit(10); // max 10 concurrent
+
+const results = await Promise.all(
+  ids.map((id) => limit(() => fetchItem(id)))
+);
+```
+
+- `limit(fn)` ek Promise return karta hai jo tab tak wait karta hai jab tak slot khali na ho. Max 10 hi kabhi in-flight.
+
+**Fix 2 — manual pool / chunking (no dependency):**
+
+```javascript
+async function mapLimit(items, concurrency, fn) {
+  const results = [];
+  const executing = new Set();
+  for (const [i, item] of items.entries()) {
+    const p = Promise.resolve(fn(item, i)).then((r) => {
+      executing.delete(p);
+      return r;
+    });
+    results.push(p);
+    executing.add(p);
+    if (executing.size >= concurrency) {
+      await Promise.race(executing); // ek slot khali hone ka wait
+    }
+  }
+  return Promise.all(results);
+}
+
+const out = await mapLimit(ids, 10, (id) => fetchItem(id));
+```
+
+- Ek `Set` mein currently-running Promises. Jab count `concurrency` tak pahunche, `Promise.race` se ek ke khatam hone ka wait.
+- Chunking bhi simple option hai: `ids` ko 50-50 ke groups mein todo aur har group `await Promise.all(group)` — thoda kam optimal (slowest item poore chunk ko rok deta hai) par zero-dependency aur samajhne mein aasan.
+
+### Timeout via race — dobara
+
+```javascript
+const rejectAfter = (ms) =>
+  new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms));
+
+const value = await Promise.race([realWork(), rejectAfter(2000)]);
+```
+
+`Promise.race` ka classic use — pehla settle jeetta hai, toh 2s ke andar `realWork` na aaya toh timeout reject.
+
+### Day-to-day use
+
+- `util.promisify(fs.readFile)` — ya seedhe `fs.promises`
+- `util.promisify(child_process.exec)` — `{ stdout, stderr }` milta hai
+- `require("timers/promises").setTimeout(1000)` — clean delay
+- `Promise.all` parallel independent calls
+- `Promise.allSettled` fan-out jobs
+- `p-limit` bulk imports, bulk API calls, migrations
+
+### Kab kaunsa combinator — decision
+
+- **Sab results chahiye, ek fail = abort** → `Promise.all`
+- **Sab ka outcome chahiye, fail OK** → `Promise.allSettled`
+- **Pehla jawaab (timeout / slow-fallback)** → `Promise.race`
+- **Pehla success (redundant mirrors)** → `Promise.any`
+- **Bahut saare items** → `map` + combinator ke saath **concurrency limit**
+
+### Pros and cons of promisify
+
+**Pros**
+
+- Legacy callback API ko ek line mein modern banata hai
+- Standard convention samajhta hai — kam boilerplate
+- `promisify.custom` se library authors sahi shape de sakte hain
+
+**Cons**
+
+- Sirf error-first single-result callbacks pe kaam karta hai out of the box
+- `this` binding lost ho sakti hai — `util.promisify(obj.method)` ke liye `obj.method.bind(obj)`
+- Multi-value ya non-standard callbacks manual wrap ya custom chahiye
+
+### Alternatives
+
+- **`fs.promises` / `timers/promises` / `stream/promises`** — Node ne khud promisified versions de diye hain, promisify ki zaroorat nahi
+- **`new Promise` manual wrap** — full control, non-standard callbacks
+- **`bluebird.promisifyAll`** — pura object promisify (legacy, aajkal kam)
+- **Combinators**: `for await...of` + concurrency limit jab streaming semantics chahiye
+
+### Interview mein "promisify kyun, manual wrap kyun nahi?"
+
+> "`fs.readFile` jaise standard error-first callbacks ke liye `util.promisify` ek line hai aur convention-correct — main manually `new Promise` likhkar bug introduce karne ka risk nahi leta. Jahan callback multi-value tha (`(err, w, h)`), wahan maine `promisify.custom` symbol pe apna wrapper diya taaki `util.promisify` ka call site consistent rahe. Bulk operations ke liye maine kabhi seedha `Promise.all` nahi kiya 5000 items pe — `p-limit(20)` lagaya, warna DB pool exhaust ho jata. Aur `Promise.all` vs `allSettled` main is se decide karta hoon ki kya ek item ka fail hona pure result ko invalid kar deta hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`Promise.race` aur `Promise.any` alag hain: `race` **pehle settle** pe rukta hai — agar wo settle ek **reject** hai toh `race` reject karta hai. `any` rejections ko **ignore** karta hai aur **pehle fulfil** ka intezaar karta hai; sirf jab **sab** reject karein tab wo `AggregateError` ke saath reject hota hai. Fastest-successful chahiye toh `any`, fastest-anything (jaise timeout) chahiye toh `race`.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Bulk import — unbounded Promise.all">
+
+Ek CSV import feature 8000 rows padhkar `Promise.all(rows.map(insertRow))` chalata tha. Chhote test files (50 rows) pe theek tha; production ke 8000-row file pe DB connection pool (max 20) turant exhaust, sekron queries `pool timeout` se fail, aur `Promise.all` fail-fast hone ki wajah se ek fail pe pura import abort — 0 rows imported. Fix: `p-limit(15)` + `Promise.allSettled` taaki (a) sirf 15 concurrent inserts, (b) ek bad row pure batch ko na girae, failed rows ek error report mein. Import time thoda badha par reliability 0% se 100%.
+
+</RealWorld>
+
+<RealWorld company="Multi-CDN asset fetch — Promise.any">
+
+Ek media service ek asset ko teen CDN mirrors se serve kar sakti thi. Pehle code `Promise.race([cdn1, cdn2, cdn3])` use karta tha — lekin agar sabse tez mirror ne `500` diya toh `race` wahi reject return kar deta tha, chahe baaki do theek the. Switch to `Promise.any([cdn1, cdn2, cdn3])`: ab pehla **successful** response jeetta hai, aur sirf jab teeno fail karein tab `AggregateError`. Tail latency aur error rate dono gire.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `util.promisify` Node **v8.0.0 (2017)** se. `Promise.allSettled` Node **v12.9**, `Promise.any` Node **v15**.
+- `Promise.all` fail-fast: **1** rejection poore combinator ko reject kar deta hai; baaki Promises **cancel nahi** hote, unke results discard.
+- `Promise.all(ids.map(fn))` 5000 ids pe = **5000 concurrent** ops; typical DB pool = **10-20**.
+- `p-limit(n)` — sabse common `n` production mein **10-25**, upstream rate-limit ke hisaab se.
+- `Promise.any` sabke reject hone pe `AggregateError` deta hai jiska `.errors` array mein **sabhi** reasons hote hain.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Do hisse: (1) `promisify` mechanics — "error-first callback ko kaise Promise banaoge, aur `promisify.custom` kya hai"; (2) combinator selection — aksar ek scenario deke: "yahan `all` ya `allSettled`? kyun?" aur "10000 items ko parallel process karna hai — kaise?"
+
+Achhe jawaab ka shape:
+
+1. **promisify** — "error-first `(err, res)` callback ko Promise-returning banata hai; multi-value ya non-standard ke liye `promisify.custom` symbol ya manual `new Promise`."
+2. **all vs allSettled** — "ek fail = pura invalid → `all`; partial OK → `allSettled` (kabhi throw nahi)."
+3. **race vs any** — "pehla settle (reject bhi) → `race`; pehla fulfil → `any`."
+4. **concurrency** — "`map` + `Promise.all` bade N pe unbounded — `p-limit` ya manual pool ya chunking se bound karo."
+
+Red flag: "`Promise.all` items ko batches mein chalata hai" — nahi, wo sabko ek saath launch karta hai; batching tumhe khud karni padti hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`util.promisify(obj.method)` bina `bind`.** Method ke andar `this` ab `undefined` — `TypeError: cannot read properties of undefined`. Object methods ke liye `util.promisify(obj.method.bind(obj))`. Ye specially DB clients aur EventEmitter-style objects pe bites.
+
+</Mistake>
+
+<Mistake>
+
+**Non-error-first callback ko `promisify` karna.** `setTimeout(cb, ms)` ka callback `(err, res)` shape mein nahi — plain `util.promisify(setTimeout)` galat resolve karega. Node ne iske liye `promisify.custom` diya hai (`timers/promises`). Non-standard callbacks pehchaano aur manual wrap karo.
+
+</Mistake>
+
+<Mistake>
+
+**`Promise.all` ko 1000+ items pe seedhe chalana.** `ids.map(fn)` sabko turant in-flight kar deta hai — pool exhaust, rate-limit `429`, memory spike. Hamesha `p-limit`, manual `mapLimit`, ya chunking se concurrency bound karo bade N pe.
+
+</Mistake>
+
+<Mistake>
+
+**`Promise.race` use karna jab `Promise.any` chahiye.** Redundant mirrors se "fastest successful" chahiye tha, par `race` fastest **settle** deta hai — agar wo ek reject hai toh poora reject. `race` sirf tab jab reject bhi ek valid "result" ho (timeout). Warna `any`.
+
+</Mistake>
+
+<Mistake>
+
+**`Promise.allSettled` ke baad results ko `all` ki tarah use karna.** `allSettled` `{status, value|reason}` objects ka array deta hai, raw values ka nahi. `results.map(r => r.value)` bina `status` check ke — rejected entries pe `value` `undefined` hoga. Pehle `.filter(r => r.status === "fulfilled")`.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    Q{"array of promises — kya chahiye?"}
+    Q -->|"sab results, ek fail = abort"| ALL["Promise.all — fail-fast"]
+    Q -->|"sab ka outcome, fail OK"| AS["Promise.allSettled — never rejects"]
+    Q -->|"pehla settle (reject bhi count)"| RC["Promise.race — timeout pattern"]
+    Q -->|"pehla success (mirrors)"| ANY["Promise.any — AggregateError if all reject"]
+    ALL --> N{"N large?"}
+    AS --> N
+    N -->|"yes, 100s+"| LIM["p-limit / manual pool / chunking"]
+    N -->|"no, <50"| OK["plain map + combinator"]
+`}
+  caption="Pehle combinator choose karo semantics se, phir agar N bada hai toh concurrency bound karo."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `util.promisify(fn)` — error-first `(err, res)` callback → Promise-returning function. Node v8+.
+- Object method: `util.promisify(obj.m.bind(obj))` — warna `this` lost.
+- `util.promisify.custom` symbol — library apna Promise version de sakti hai (multi-value / non-standard callbacks). `child_process.exec` isse `{stdout, stderr}` deta hai.
+- Non-standard callback → `promisify.custom` ya manual `new Promise((resolve, reject) => ...)`.
+- **`Promise.all`** — sab fulfil pe resolve; **ek** reject pe fail-fast; values array (input order).
+- **`Promise.allSettled`** — sab settle pe resolve; **kabhi reject nahi**; `{status, value|reason}` array.
+- **`Promise.race`** — pehla settle (fulfil **ya** reject) jeetta hai. Timeout wrapper.
+- **`Promise.any`** — pehla **fulfil** jeetta hai; sab reject → `AggregateError`. Redundant mirrors.
+- `Promise.all(bigArray.map(fn))` = unbounded concurrency → pool exhaust / `429` / memory. Combinator batching **nahi** karta.
+- Bound concurrency: `p-limit(n)`, manual `mapLimit` (Set + `Promise.race`), ya chunking. Typical `n` = 10-25.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** `fs.readFile` ko `util.promisify` se wrap karo aur ek file `await` se padho. Phir `require("fs").promises.readFile` se wahi karo — dono same result. Note karo ki dusra tareeka promisify ki zaroorat hi nahi.
+
+**Medium:** Char fake async functions banao: do jo resolve karte hain (alag delays), do jo reject karte hain. Charon combinators (`all`, `allSettled`, `race`, `any`) inpe chalao aur har ek ka output/behaviour observe karke likho. Specially dekho `race` vs `any` jab sabse tez wala ek rejecting function ho.
+
+**Bada:** `mapLimit(items, concurrency, fn)` khud likho (Set + `Promise.race` wala pattern, koi library nahi). 100 IDs ka array do jahan `fn` ek shared `let active` counter increment/decrement kare aur `maxActive` track kare. `concurrency = 10` ke saath chalao aur assert karo ki `maxActive` kabhi 10 se upar nahi gaya. Phir usi ko plain `Promise.all(ids.map(fn))` se chalao aur dekho `maxActive` 100 pahunch jata hai.
+
+</Callout>

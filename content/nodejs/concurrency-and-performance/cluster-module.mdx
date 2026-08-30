@@ -1,0 +1,278 @@
+---
+slug: "cluster-module"
+title: "The cluster Module"
+section: "nodejs"
+module: "concurrency-and-performance"
+order: 4
+difficulty: "advanced"
+readingTime: 16
+prerequisites: ["nodejs-is-single-threaded-what-that-means"]
+tags: ["nodejs", "cluster", "scaling", "multi-core", "pm2", "load-balancing"]
+englishDefinition: "The cluster module forks a number of worker processes (typically one per CPU core) that all share a single listening port. The primary process accepts connections and distributes them to workers (round-robin on non-Windows platforms). Each worker is a full OS process with its own memory, so any shared state must live in an external store like Redis or a database, and sticky sessions or a shared session store are needed. cluster is one way to use all cores; running multiple container replicas behind a load balancer is often preferred in orchestrated environments."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "HCL", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+The `cluster` module lets you `fork()` several **worker processes** — usually one per CPU core — that **all share one listening port**. The **primary** (master) process accepts incoming connections and hands them to workers (round-robin on Linux/macOS; OS-decided on Windows). Each worker is a **full OS process with its own memory**, so any shared state (sessions, counters, cache) must move to Redis or a database, and you need **sticky sessions** or a shared session store. `cluster` is one way to use every core; in Kubernetes-style setups, running **N replicas behind a load balancer** is often the better choice.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Hum jaan chuke hain ki ek Node process ka JS ek core par chalta hai. Agar tumhare paas 8-core box hai aur ek Node process chal raha hai, to 7 cores idle hain. `cluster` module ka ek hi kaam hai: **ek hi HTTP server ke N copies chalao taaki saare cores use hon** — bina alag load balancer setup kiye, same port par.
+
+### Ye kya hai — cluster module
+
+`require("cluster")` ek core module hai. Pattern ye hai: ek script do roles mein chalti hai.
+
+- Jab script pehli baar chalti hai, wo **primary** (pehle "master" bola jaata tha) process hoti hai. Wo `cluster.fork()` ko N baar call karti hai.
+- Har `fork()` **usi script** ko ek naye **worker process** ke roop mein chalata hai (internally `child_process.fork`).
+- Worker mein `cluster.isPrimary` `false` hota hai — wahan tum `http.createServer(...).listen(3000)` karte ho.
+- **Trick:** N workers same port `3000` par `listen` kar sakte hain bina "address in use" error ke. Actually socket primary ke paas hota hai; primary connections accept karke workers ko distribute karta hai.
+
+Result: ek public port, N processes, saare cores busy.
+
+### Ye kyun exist karta hai
+
+Node ka single-threaded model I/O ke liye great hai lekin ek process = ek core. Options the: (1) alag reverse proxy (nginx) + N Node processes alag ports par — zyada config; (2) `cluster` — Node khud ye orchestrate kare, ek port, built-in. `cluster` ne "multi-core Node" ko ek `require` aur ek loop jitna aasan bana diya. Ye Node **2009-era** se hai (`child_process` ke turant baad), tab containers/orchestrators aam nahi the.
+
+### Internally kaise kaam karta hai
+
+- **Primary** process socket banata hai aur `listen` karta hai. Workers `listen` call karte hain to wo call primary ko IPC se forward hoti hai — actual OS-level bind primary karta hai.
+- **Connection distribution — do modes:**
+  - **Round-robin** (default on Linux/macOS, `SCHED_RR`): primary har nayi connection accept karke ek worker ko round-robin deta hai. Load evenly bantata hai.
+  - **Shared-socket** (`SCHED_NONE`, default on Windows): primary socket handle sab workers ko de deta hai aur **OS kernel** decide karta hai kaunsa worker `accept` karega. Ye uneven ho sakta hai ("thundering herd", ek worker zyada le leta hai).
+- **IPC:** primary ↔ worker ke beech ek channel — `worker.send()` / `process.on("message")`. `cluster` isse worker lifecycle events (`online`, `listening`, `disconnect`, `exit`) bhi deta hai.
+- **No shared memory:** har worker ka apna V8 heap, apni memory. Ek worker mein `let counter = 0` doosre worker ko dikhta nahi. In-memory cache, rate-limit counters, WebSocket connection maps — sab per-worker isolated.
+- **Graceful restart:** primary ek-ek worker ko `disconnect()` (naye connections lena band, existing drain) phir `kill`, phir naya `fork` — is tarah zero-downtime deploy ho sakta hai kyunki hamesha kuch workers live rehte hain.
+
+### Simple real-life analogy
+
+Ek bank branch (port) mein ek hi counter (single process) tha, lambi line. Manager 8 aur counters khol deta hai (workers), lekin **entry gate ek hi** rehta hai. Ek receptionist (primary) aane waale customers ko round-robin har khali counter par bhejta hai.
+
+Catch: har counter clerk ka apna register hai (per-worker memory). Agar customer ne pehle counter 3 par apna form aadha bhara chhoda tha aur ab counter 7 par gaya, to counter 7 ke paas wo data nahi. Isliy shared cheezein (customer records) ek **central computer** (Redis/DB) par honi chahiye, kisi ek clerk ke register mein nahi.
+
+### Code — line by line
+
+```javascript
+const cluster = require("cluster");
+const http = require("http");
+const os = require("os");
+
+if (cluster.isPrimary) {
+  const n = os.cpus().length;
+  console.log("primary " + process.pid + " starting " + n + " workers");
+
+  for (let i = 0; i < n; i++) cluster.fork();
+
+  cluster.on("exit", (worker, code, signal) => {
+    console.log("worker " + worker.process.pid + " died (" + (signal || code) + "), restarting");
+    cluster.fork();
+  });
+} else {
+  http
+    .createServer((req, res) => {
+      res.end("handled by worker " + process.pid);
+    })
+    .listen(3000);
+
+  console.log("worker " + process.pid + " listening");
+}
+```
+
+- `cluster.isPrimary` — `true` sirf original process mein. (Older Node: `cluster.isMaster`.)
+- `os.cpus().length` — logical core count; usually itne hi workers.
+- `for ... cluster.fork()` — N workers spawn. Har worker isi file ko dobara chalata hai, is baar `isPrimary` `false`.
+- `cluster.on("exit", ...)` — koi worker crash/exit kare to **naya fork** — self-healing. (Production mein: crash-loop se bachne ke liye backoff/limit lagao.)
+- `else` branch — sirf workers mein chalta hai. `http...listen(3000)` — saare workers "3000" bolte hain, primary port sharing manage karta hai.
+- Har request ka response batata hai kis worker ne handle kiya — round-robin mein PID rotate karta dikhega.
+
+### Day-to-day use
+
+- **Direct `cluster`** — ek VM/bare-metal box par ek Node app jo saare cores use kare, plus in-app graceful reload.
+- **PM2** — production mein sabse common. `pm2 start app.js -i max` — PM2 internally `cluster` use karta hai plus restarts, log aggregation, monitoring, `pm2 reload` (zero-downtime) deta hai. Tumhe `cluster` code khud likhne ki zaroorat nahi.
+- **Not used** jab tum already Kubernetes/ECS par ho — wahan orchestrator N pods chala deta hai, har pod mein single-process Node, aur load balancing platform karta hai.
+
+### Kab use karna chahiye
+
+- Ek **single machine** (VM/bare metal) par deploy kar rahe ho aur us box ke saare cores use karne hain.
+- Tumhe **in-process graceful restart / reload** chahiye without an external orchestrator.
+- Simple setups jahan ek nginx/HAProxy + N ports maintain nahi karna.
+- PM2 ke through — jab tum operational features (auto-restart, logs) bhi chahte ho.
+
+### Kab use nahi karna chahiye
+
+- **Kubernetes / ECS / Nomad par** — orchestrator already replicas, health checks, rolling deploys, autoscaling deta hai. `cluster` add karne se do layers of process management overlap karti hain (pod ke andar workers) — debugging, resource limits, aur graceful shutdown complicate ho jaate hain. Best practice: **1 process per container**, N replicas.
+- **CPU-bound ek function offload karna** — wo `worker_threads` ka kaam hai; `cluster` poore server ko replicate karta hai, ek task nahi.
+- **Jab shared in-memory state par heavily depend karte ho** aur usse Redis/DB par move nahi kar sakte — cluster us assumption ko todta hai.
+- **Very low traffic / tiny instance (1 vCPU)** — ek hi core hai, workers se sirf memory overhead.
+
+### Pros and cons
+
+**Pros**
+
+- Saare cores use, ek listening port, koi alag LB nahi
+- Built-in — koi dependency nahi
+- Round-robin (Linux) se fair distribution
+- Ek worker crash → baaki serve karte rahte hain; primary naya fork kar deta hai
+- Zero-downtime reload possible (workers cycle karke)
+
+**Cons**
+
+- Har worker = full process = **memory N times** (koi shared heap nahi)
+- Shared state (sessions, cache, counters, WS maps) **must** externalize (Redis/DB)
+- Sticky sessions ya shared session store chahiye (warna user ka session har worker par alag)
+- Nested inside a container = double process management, resource-limit confusion
+- Graceful shutdown/restart logic khud sahi likhna padta hai (ya PM2 use karo)
+- Debugging/profiling multi-process — thoda painful
+
+### Alternatives
+
+- **N container replicas + load balancer** (Kubernetes/ECS) — orchestrated environments mein preferred; 1 process/container.
+- **PM2 cluster mode** — `cluster` + restarts + logs + reload, ek CLI se.
+- **nginx/HAProxy + N Node processes** on fixed ports — old-school, explicit.
+- **`worker_threads`** — agar problem "ek CPU-heavy function" hai, poora server nahi.
+- **Serverless (Lambda/Cloud Run)** — platform har request/instance ko scale karta hai; concurrency model hi alag.
+
+### Interview mein "Cluster kyun use kiya (ya kyun nahi)?"
+
+> "Hum ek single 8-core VM par deploy kar rahe the, Kubernetes nahi. Ek Node process 7 cores waste kar raha tha, to maine PM2 cluster mode use kiya — `-i max` — jo internally `cluster` hai plus reload aur auto-restart deta hai. Session state pehle in-memory tha; maine use Redis par move kiya kyunki round-robin ke saath consecutive requests alag workers par jaati hain. Reload ke liye PM2 workers ko ek-ek cycle karta hai, to deploy zero-downtime raha. Jab hum baad mein EKS par shift hue, maine cluster hata diya — ab har pod single-process Node hai aur Kubernetes 6 replicas chalata hai behind a Service; process management ek hi jagah (orchestrator) rehta hai, do jagah nahi."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Container ke andar `cluster` (ya `pm2 -i max`) chalane se pehle ruko. Orchestrated setup mein ye anti-pattern maana jaata hai: pod ko diye gaye CPU limits `os.cpus()` se match nahi karte (worker aap se zyada fork karega), OOM/restart semantics do layers mein banta jaate hain, aur `kubectl rollout` ka graceful shutdown worker-drain logic se takrata hai. **Ek process per container, replicas orchestrator se.**
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="PM2 (de-facto Node process manager)">
+
+Zyadatar teams `cluster` ka code khud nahi likhtin — wo **PM2** use karti hain: `pm2 start server.js -i max` saare cores par workers chala deta hai. PM2 `cluster` module ke upar bana hai lekin production zarooratein add karta hai: crash par auto-restart with backoff, `pm2 reload` (workers ko ek-ek cycle karke zero-downtime deploy), centralized logs (`pm2 logs`), aur basic metrics (`pm2 monit`). Ek ecosystem file mein config version-control ho jaati hai. Ye "single VM par Node" deployments ke liye standard hai — lekin PM2 team bhi kehti hai ki Kubernetes par ho to `-i 1` rakho aur replicas orchestrator se lo.
+
+</RealWorld>
+
+<RealWorld company="Ek session-heavy web app (the sticky-session bug)">
+
+Ek team ne `cluster` on kiya aur turant intermittent "logged out" complaints aane lage. Wajah: login session ek in-memory `Map` mein store ho raha tha ek worker ke andar. Round-robin distribution ke kaaran user ki agli request kisi doosre worker par gayi jiske paas wo session nahi tha. Do fixes possible the: (1) load balancer par **sticky sessions** (same client hamesha same worker) — quick but fragile, worker crash = sessions gone; (2) session store ko **Redis** par move karna — har worker wahi shared store padhta hai, koi stickiness ki zaroorat nahi. Unhone Redis chuna. Lesson: `cluster` on karte hi har "in-memory" assumption audit karo — cache, counters, rate limits, WebSocket rooms.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Typical worker count: **`os.cpus().length`** (logical cores). Isse zyada workers throughput nahi badhaate, sirf context-switching aur memory.
+- Memory: **~N times** base process RSS (koi shared heap nahi). 4 workers, 150 MB base = ~600 MB just to start.
+- Distribution: **round-robin** default on Linux/macOS; **OS-decided** (can be uneven) on Windows. `cluster.schedulingPolicy` se change.
+- Graceful shutdown budget: worker ko `disconnect()` ke baad in-flight requests drain karne ka time — typically **10-30 s**, phir force `kill`.
+- PM2: `pm2 reload` restarts workers **one at a time** → effectively zero dropped connections if drain is handled.
+- Kubernetes guidance: **1 Node process per container**, scale via `replicas` / HPA — `cluster` inside a pod is discouraged.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic scaling discussions mein aata hai: "Node single-threaded hai to production mein 8 cores kaise use karoge?" ya "tumne cluster use kiya — sessions kaise handle kiye?" Interviewer dekhta hai ki tum (1) jaante ho `cluster` = N processes sharing a port, primary distributes; (2) shared-state implications samajhte ho (Redis/DB, sticky sessions); (3) `cluster` vs replicas vs PM2 vs `worker_threads` differentiate kar sakte ho.
+
+Model answer ka shape:
+
+1. **What** — "`cluster.fork()` se N worker processes, ek shared port; primary round-robin se connections bantata hai."
+2. **Worker count** — "Usually `os.cpus().length`."
+3. **Shared state** — "Har worker ki apni memory — sessions/cache/counters Redis ya DB par; warna round-robin ke saath user ka data 'kho' jaata hai. Sticky sessions ek option hai but fragile."
+4. **Resilience** — "`cluster.on('exit')` par re-fork; graceful reload workers ko ek-ek cycle karke."
+5. **When not** — "Kubernetes par: 1 process/container, N replicas — orchestrator hi process management kare. `cluster` sirf single-VM deploys ke liye, ya PM2 ke through."
+6. **vs worker_threads** — "`cluster` poora server replicate karta hai for throughput; `worker_threads` ek CPU-bound function offload karta hai."
+
+Red flag: "cluster workers memory share karte hain" — nahi, alag processes. Ya container ke andar `pm2 -i max` ko best practice batana.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Cluster on karke in-memory state ko as-is chhod dena.** Sessions, in-process LRU cache, rate-limit counters, WebSocket room maps — ye sab per-worker isolated ho jaate hain. Round-robin ke saath user ki consecutive requests alag workers par jaati hain, to "logged out", "cache miss har baar", "rate limit 4x loose" jaise bugs aate hain. Shared state ko Redis/DB par move karo, ya sticky sessions lagao (jaante hue ki wo fragile hai).
+
+</Mistake>
+
+<Mistake>
+
+**Container ke andar `cluster` / `pm2 -i max` chalana Kubernetes/ECS par.** Ab do layers process management kar rahi hain. Pod ke CPU limits `os.cpus()` (jo host ke cores dikhata hai) se match nahi karte — app zaroorat se zyada workers fork karta hai. Crash/restart aur graceful-shutdown semantics overlap karti hain. Best practice: **1 process per container**, scaling `replicas`/HPA se.
+
+</Mistake>
+
+<Mistake>
+
+**`worker_threads` aur `cluster` ko interchangeable samajhna.** `cluster` poore HTTP server ke N copies banata hai — throughput scaling for many concurrent requests. `worker_threads` ek CPU-heavy function ko main event loop se hataata hai. Agar tumhara ek endpoint 300 ms CPU leta hai, `cluster` se har worker mein wahi endpoint apne event loop ko block karega — problem solve nahi hoti.
+
+</Mistake>
+
+<Mistake>
+
+**Graceful shutdown na karna.** Deploy ya scale-down par worker ko seedha `SIGKILL` karna in-flight requests drop karta hai. Sahi: `SIGTERM` par server naye connections lena band kare (`server.close()`), existing requests complete hone do, phir exit — with a timeout fallback. PM2 `reload` ye handle karta hai agar app `SIGTERM` sun raha ho.
+
+</Mistake>
+
+<Mistake>
+
+**Har `os.cpus().length` ko blindly fork karna choti instance par.** 1 vCPU container par 1 worker hi useful hai; 4 fork karne se sirf memory 4x aur context-switching. Worker count ko available CPU (cgroup limit, not host cores) se derive karo — libraries jaise `physical-cpu-count` ya explicit env var (`WEB_CONCURRENCY`).
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Client requests → port 3000"] --> B["Primary process (holds the socket)"]
+    B -->|round-robin, Linux/macOS| W1["Worker 1 — own memory, own event loop"]
+    B --> W2["Worker 2 — own memory"]
+    B --> W3["Worker 3 — own memory"]
+    B --> W4["Worker 4 — own memory"]
+    W1 --> R["Shared state (sessions, cache, counters) → Redis / DB"]
+    W2 --> R
+    W3 --> R
+    W4 --> R
+    W3 -.->|crash| B
+    B -.->|"cluster.on('exit') → fork()"| W3
+`}
+  caption="Ek port, primary connections bantata hai; har worker isolated memory rakhta hai, isliye shared state bahar (Redis/DB) hona chahiye."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `cluster.fork()` → N **worker processes**, ek **shared listening port**. Primary socket rakhta hai aur connections distribute karta hai.
+- Distribution: **round-robin** (Linux/macOS default), **OS-decided/uneven** (Windows). Tune via `cluster.schedulingPolicy`.
+- Worker count ≈ **`os.cpus().length`** — but container mein cgroup CPU limit se derive karo, host cores se nahi.
+- Har worker = **full process, own memory**. Koi shared heap nahi.
+- Shared state (sessions, cache, rate-limit counters, WS rooms) → **Redis/DB**, ya sticky sessions (fragile).
+- Resilience: `cluster.on("exit")` → re-`fork()` (with backoff). Zero-downtime reload = workers ek-ek cycle.
+- **PM2** = `cluster` + auto-restart + logs + `pm2 reload`. Most teams isse use karte hain, khud `cluster` code nahi likhte.
+- **Kubernetes/ECS:** `cluster` mat use karo — **1 process/container**, scale via `replicas`/HPA.
+- **`cluster` vs `worker_threads`:** cluster = poora server replicate (throughput); worker_threads = ek CPU-bound function offload.
+- Memory cost ≈ **N × base RSS** — plan capacity accordingly.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Upar wala cluster example chalao. `autocannon -c 50 -d 10 http://localhost:3000` maaro aur response bodies mein alag-alag worker PIDs dekho. Phir `cluster.fork()` ko 1 baar call karke (single worker) same load test karo aur req/sec compare karo.
+
+**Medium:** Ek `/count` endpoint banao jo ek module-level `let hits = 0; hits++` return kare. Cluster mode mein baar-baar hit karo — dekho count "jump around" karta hai (har worker ka apna counter). Ab `hits` ko Redis `INCR` se replace karo aur verify karo count monotonic ho gaya.
+
+**Bada:** Graceful reload implement karo: primary `SIGHUP` par ek-ek worker ko `disconnect()` kare, uske `exit` ka wait kare, phir naya `fork()` — hamesha `n-1` workers live rakhte hue. Worker side par `server.close()` + in-flight drain + `process.exit()`. `autocannon` background mein chalate hue `kill -HUP <primary_pid>` bhejo aur verify karo **zero** failed requests.
+
+</Callout>

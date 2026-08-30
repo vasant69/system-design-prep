@@ -1,0 +1,308 @@
+---
+slug: "readable-and-writable-streams"
+title: "Readable & Writable Streams"
+section: "nodejs"
+module: "buffers-streams-files"
+order: 3
+difficulty: "intermediate"
+readingTime: 17
+prerequisites: ["streams-introduction"]
+tags: ["nodejs", "streams", "readable", "writable", "backpressure", "highwatermark"]
+englishDefinition: "A Readable stream produces data and has two modes: paused (you call .read()) and flowing (it pushes 'data' events at you). A Writable stream consumes data via .write(chunk), which returns a boolean — false means its internal buffer is full and you should stop until it emits 'drain'. Respecting that signal is called backpressure; ignoring it lets a fast producer overflow a slow consumer's memory."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+A **Readable** stream produces data. It has two modes: **paused** (you pull with `.read()`) and **flowing** (it pushes `'data'` events at you). A **Writable** stream consumes data via `.write(chunk)`, which returns a **boolean** — `false` means its internal buffer is full and you should stop writing until it emits `'drain'`. Respecting that `false`/`'drain'` handshake is called **backpressure**. Ignoring it lets a fast producer overflow a slow consumer's memory.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Pichhle topic ne btaya streams kyun. Ab mechanics: Readable ke do modes, Writable ka `write()` return value, aur **backpressure** — wo ek cheez jiska galat samajhna production memory leak deta hai aur jo interview mein sabse zyada pucha jaata hai.
+
+### Ye kya hai — Readable ke do modes
+
+Ek Readable stream data do tarah se deta hai:
+
+- **Paused mode (pull)** — stream tumhe data **nahi** deta jab tak tum `.read()` call nahi karte. Ye default state hai jab stream banta hai. `stream.on("readable", () => { let chunk; while ((chunk = stream.read()) !== null) {...} })`.
+- **Flowing mode (push)** — stream data ko `'data'` events ke through **tum par push** karta hai, jitni tezi se source deta hai. Stream flowing mein chala jaata hai jab tum: `.on("data", fn)` lagao, ya `.pipe(dest)` karo, ya explicitly `.resume()` call karo.
+
+`.pause()` flowing se paused mein wapas le aata hai; `.resume()` phir flowing. Ek time pe stream ek hi mode mein hota hai.
+
+Modern tareeka: **`for await (const chunk of readable)`** — ye internally paused/pull semantics use karta hai aur backpressure automatically respect karta hai. Naye code mein yahi prefer karo.
+
+Events: `'data'` (chunk aaya, flowing mode), `'end'` (aur data nahi aayega — normal completion), `'error'` (kuch toota), `'close'` (underlying resource, jaise file descriptor, band ho gaya). `'end'` sirf tab aata hai jab tum poora data consume kar lo.
+
+### Ye kya hai — Writable ka contract
+
+Writable pe tum `.write(chunk)` karte ho. Return value **matter karta hai**:
+
+- **`true`** — "aur bhejo, mera buffer theek hai."
+- **`false`** — "ruk jao. Mera internal buffer `highWaterMark` tak bhar gaya. Main jab space bana lunga toh `'drain'` event emit karunga."
+
+`.end(chunk?)` — "bas, aur data nahi aayega." Optional last chunk le sakta hai. Iske baad `'finish'` event aata hai jab saara buffered data underlying resource (disk, socket) pe flush ho jaaye.
+
+Events: `'drain'` (ab phir se `write` kar sakte ho), `'finish'` (`.end()` ke baad sab flush), `'error'`, `'close'`.
+
+### Ye kya hai — Backpressure
+
+Backpressure = **slow consumer ka fast producer ko rokna**. Concrete failure:
+
+```javascript
+// TOOTA HUA — no backpressure
+readable.on("data", (chunk) => {
+  writable.write(chunk); // return value ignore
+});
+```
+
+Agar `readable` disk se `500 MB/s` de raha hai aur `writable` ek slow network socket hai jo `5 MB/s` leta hai, toh har second `~495 MB` `writable` ke internal buffer mein jama hota hai. `highWaterMark` (64 KB) ki limit sirf ek **signal** hai — Node tumhe rokta nahi, sirf `write()` se `false` return karke btata hai. Tumne ignore kiya, toh buffer unbounded badhta hai → RSS aasman → OOM.
+
+Sahi manual handling:
+
+```javascript
+readable.on("data", (chunk) => {
+  const ok = writable.write(chunk);
+  if (!ok) {
+    readable.pause();                 // producer roko
+    writable.once("drain", () => {
+      readable.resume();              // space bana, phir chalao
+    });
+  }
+});
+readable.on("end", () => writable.end());
+```
+
+Ye poora dance `.pipe()` aur `stream.pipeline()` **automatically** karte hain. Isliye 99% waqt tum `pipeline()` likhte ho, ye manual code nahi (agla topic).
+
+### Internally kaise kaam karta hai
+
+- Har Readable ke andar ek buffer hai. Source jitna deta hai wo buffer mein jama hota hai jab tak `highWaterMark` (`64 KB` byte mode) hit nahi hota — phir Readable source se padhна rok deta hai (`_read` call karna band). Consumer jab drain karta hai, phir se padhna shuru.
+- Har Writable ke andar bhi buffer. `write(chunk)` chunk ko buffer mein daalta hai aur `_write(chunk, enc, cb)` ko call karta hai jo actual I/O karta hai. Jab buffered bytes `highWaterMark` cross karte hain, `write()` `false` deta hai. Jab `_write` ka `cb` fire hota hai aur buffer `highWaterMark` se neeche aata hai, `'drain'` emit hota hai.
+- **`highWaterMark`** stream banate waqt set hota hai: `new Readable({ highWaterMark: 1024 * 256 })`. Zyada = kam events, zyada memory, thoda zyada throughput. Kam = zyada events, kam memory.
+- **`objectMode`** mein highWaterMark "kitne objects" — default `16`. `write()` `false` deta hai jab `16` objects queued hain.
+
+### Simple real-life analogy
+
+**Readable = nal (tap).** Paused mode = nal band, tum jab chaho glass bhar lo (`.read()`). Flowing mode = nal khula, paani girta rehta hai chahe tum glass rakho ya na rakho — na rakha toh farsh pe (memory).
+
+**Writable = sink jismein drain (nikaas) hai.** `write()` = paani daalna. `false` return = "sink bhar gaya, drain slow hai, ab mat daalo." `'drain'` event = "sink khali ho gaya, aur daal sakte ho." Ignore karke daalte raho = sink overflow (OOM).
+
+### Code — line by line
+
+```javascript
+const fs = require("fs");
+
+const readable = fs.createReadStream("input.dat", { highWaterMark: 64 * 1024 });
+const writable = fs.createWriteStream("output.dat");
+
+readable.on("data", (chunk) => {
+  const canContinue = writable.write(chunk);
+  if (!canContinue) {
+    readable.pause();
+    writable.once("drain", () => readable.resume());
+  }
+});
+
+readable.on("end", () => {
+  writable.end();
+});
+
+readable.on("error", (err) => {
+  writable.destroy(err);
+});
+
+writable.on("finish", () => {
+  console.log("saara data disk pe flush ho gaya");
+});
+```
+
+- `createReadStream(path, { highWaterMark })` — chunk size control. Bada karo toh kam `data` events, zyada RAM.
+- `readable.on("data", ...)` — stream ab **flowing**. Har chunk pe callback.
+- `writable.write(chunk)` — chunk write buffer mein. Return `true`/`false`.
+- `if (!canContinue) { readable.pause(); ... }` — `false` mila: source roko taaki naye chunks na aayein.
+- `writable.once("drain", () => readable.resume())` — `drain` pe ek baar: source phir chalao. `once` isliye ki har drain pe naya listener na jude.
+- `readable.on("end", () => writable.end())` — source khatam → Writable ko batao, wo flush karke `'finish'` dega.
+- `readable.on("error", err => writable.destroy(err))` — read fail: Writable ko bhi teardown karo warna file descriptor leak.
+- `writable.on("finish", ...)` — **`'finish'`, not `'end'`**. Writable pe `'finish'` = sab flush; `'end'` Writable pe hota hi nahi.
+
+### Day-to-day use
+
+- **`for await...of`** — `for await (const chunk of req) { total += chunk.length }` — HTTP body size check, backpressure free.
+- **`res.write()` in a loop** — SSE (server-sent events), streaming JSON array — `write` ke `false` pe `res.once("drain", ...)`.
+- **`readable.pause()` / `.resume()`** — rate limiting, ya jab downstream (DB, API) temporarily busy ho.
+- **`writable.cork()` / `.uncork()`** — kai chhote writes ko ek bade mein batch karna (perf).
+- **`stream.Readable.from(iterable)`** — array/generator/async iterator ko Readable banana.
+
+### Kab paused vs flowing
+
+- **Flowing (`.on("data")` / `.pipe()`)** — jab tum har chunk turant aage bhej rahe ho aur backpressure `pipe` handle kar raha hai. Simple pass-through.
+- **Paused (`.read()` / `for await`)** — jab tumhe chunk-by-chunk **control** chahiye: conditionally consume, kuch chunks skip, ya har chunk pe async kaam (DB write) jiske complete hone tak agla nahi chahiye. `for await` isme sabse readable.
+
+### Kab manual backpressure vs pipeline
+
+- **Manual (`write` return + `drain`)** — sirf jab tumhe custom logic chahiye har chunk pe jo `pipe` nahi de sakta (e.g. har chunk ko alag destination pe route karna).
+- **`pipeline()`** — baaki har case. Errors, cleanup, backpressure — sab free. Default.
+
+### Pros and cons
+
+**Pros**
+
+- Fine-grained control — kab consume, kitna, kis rate pe.
+- `for await...of` se modern, readable, try/catch-friendly code.
+- Backpressure se memory guaranteed bounded (agar respect karo).
+- Writable `cork`/`uncork`, `highWaterMark` tuning se perf knobs.
+
+**Cons**
+
+- Manual backpressure code verbose aur galti-prone (`once` vs `on`, `end` vs `finish`).
+- Paused/flowing switch karna confusing — `data` listener add karke phir remove karne se mode badal jaata hai.
+- `'end'` (Readable) vs `'finish'` (Writable) vs `'close'` — teeno alag, mix karna common bug.
+- Ek chunk boundary character/record boundary nahi — multibyte/line splitting khud handle karna.
+
+### Alternatives
+
+- **`stream.pipeline()` / `stream/promises`** — manual backpressure ki jagah; production default.
+- **`for await...of`** — event listeners ki jagah Readable consume karne ka clean tareeka.
+- **Web Streams (`ReadableStream`, `WritableStream`)** — standard API, `fetch` ke saath; Node 18+ interop `.fromWeb`/`.toWeb`.
+- **`stream.Readable.from()` / `.toArray()`** — chhoti bounded streams ko iterable/array mein — jab data actually chhota hai.
+
+### Interview mein "Backpressure kaise handle kiya?"
+
+> "Ek proxy service thi jo upstream se bada response padh ke client ko forward karti thi. Pehle `upstream.on('data', c => clientRes.write(c))` tha — slow clients pe memory `2-3 GB` tak jaati thi kyunki `clientRes.write` `false` de raha tha par hum ignore kar rahe the. Maine ise `stream.pipeline(upstream, clientRes, err => ...)` se replace kiya — `pipeline` `write()` ka return dekh ke `upstream.pause()` karta hai aur `drain` pe `resume()`, plus client disconnect pe `upstream` destroy kar deta hai. Memory flat `~50 MB` ho gayi. Jahan mujhe har chunk pe routing decision lena tha, wahan maine `for await...of` + `await dest.write()`-style manual control rakha."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`'end'` Readable pe aata hai (source khatam), `'finish'` Writable pe (`.end()` ke baad sab flush), `'close'` dono pe (resource released). File descriptor cleanup ke liye `'close'` sun, "kaam poora hua" ke liye `'finish'`/`'end'`. Inhe mix karna — jaise `writable.on("end", ...)` — silent no-op hota hai, wo event kabhi fire nahi hota.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Streaming CSV export API">
+
+Ek analytics dashboard ka "Export all" button ek endpoint hit karta hai jo lakhon rows ka CSV deta hai. Handler `res` (Writable) pe header row likhta hai, phir DB cursor (Readable, objectMode) se `for await (const row of cursor)` loop chalata hai. Har row ke liye `const ok = res.write(toCsvLine(row)); if (!ok) await once(res, "drain");` — yaani agar client (slow mobile connection) pichda hai toh loop ruk jaata hai jab tak `res` drain nahi hota. Isse pehle wala version poora CSV string memory mein banata tha aur `50 MB+` exports pe pod restart ho jaata tha; ab peak memory `~15 MB` flat hai.
+
+</RealWorld>
+
+<RealWorld company="IoT ingestion gateway">
+
+Ek gateway hazaaron sensors se TCP pe readings leta hai aur ek downstream Kafka producer ko forward karta hai. Kafka producer temporarily slow ho sakta hai (rebalance, network). Gateway har socket (Duplex) ko consume karte waqt producer ke `write()` return value ko watch karta hai — `false` aane pe `socket.pause()` kar deta hai, jisse TCP-level backpressure sensor tak propagate hota hai (OS receive window shrink) aur sensor apne aap slow ho jaata hai. `drain` pe `socket.resume()`. Bina iske, ek slow Kafka window mein gateway `10 GB+` in-flight readings buffer kar leta aur crash ho jaata.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Byte-mode `highWaterMark` default = **`65536` (64 KB)**; `write()` isse upar buffered bytes pe `false` deta hai.
+- Object-mode `highWaterMark` default = **`16` objects**.
+- `fs.createReadStream` chunk size = `highWaterMark`; badha ke `1 MB` karne se large sequential copy `~10-15%` tez, memory `16x`.
+- Backpressure ignore karne ka cost: producer rate minus consumer rate, per second, memory mein — `500 MB/s` read + `5 MB/s` write = `~495 MB/s` leak.
+- `writable.writableLength` — abhi kitne bytes buffered hain; `writable.writableHighWaterMark` — limit. Monitoring ke liye useful.
+- `for await...of` on streams — Node **v10+** stable; automatically backpressure-safe.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Backpressure is topic ka star hai — "aapke paas fast Readable aur slow Writable hai, memory blow up na ho, kaise likhoge?" Interviewer dekhta hai: (1) `write()` boolean return + `'drain'` ka mechanism, (2) `pipe`/`pipeline` ye automatically karte hain, (3) `'end'` vs `'finish'` ka farak.
+
+Model answer shape:
+
+1. **Signal** — "`writable.write()` `false` deta hai jab uska buffer `highWaterMark` bhar jaaye."
+2. **Response** — "`readable.pause()`, phir `writable.once('drain', () => readable.resume())`."
+3. **Shortcut** — "practically `stream.pipeline(readable, writable, cb)` — ye pura dance khud karta hai + errors + cleanup."
+4. **Events** — "Readable done = `'end'`; Writable flushed = `'finish'`; resource closed = `'close'`."
+
+Red flag: "backpressure Node automatically handle karta hai" (bina `pipe`/`pipeline` ke nahi), ya `'end'` aur `'finish'` ko interchangeable bolna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`writable.write()` ka return value ignore karna.** `readable.on("data", c => writable.write(c))` — agar consumer slow hai, `write()` `false` deta hai par tum likhte raho, aur Writable ka buffer unbounded badhta hai. Ya toh `false` pe `readable.pause()` + `drain` pe `resume()`, ya `.pipe()`/`pipeline()` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`'drain'` ke liye `.on()` use karna `.once()` ke bjaya.** `writable.on("drain", () => readable.resume())` — har drain pe ek naya listener add hota jaata hai, `MaxListenersExceededWarning` aata hai aur `resume` multiple baar call hota hai. `writable.once("drain", ...)` — har pause cycle ke liye exactly ek.
+
+</Mistake>
+
+<Mistake>
+
+**Writable pe `'end'` ka intezaar karna.** `writable.on("end", () => cleanup())` — Writable `'end'` event emit karta hi nahi. Tumhe `'finish'` chahiye (`.end()` ke baad sab flush) ya `'close'` (fd released). Ye listener chup-chaap kabhi nahi chalega.
+
+</Mistake>
+
+<Mistake>
+
+**Stream ko galti se flowing mode mein daal dena aur data kho dena.** Ek Readable pe `.on("data", ...)` laga diya "bas check karne" ke liye, par abhi consume karne ke liye ready nahi — stream flowing ho gaya, chunks emit hue, kisi ne pakde nahi, `'end'` aa gaya. Baad mein `.pipe()` kiya toh kuch nahi mila. `data` listener add matlab consumption shuru.
+
+</Mistake>
+
+<Mistake>
+
+**`readable.pause()` ke baad ye maan lena ki turant sab ruk gaya.** `pause()` ke baad bhi jo chunks pehle se pipeline mein the wo aa sakte hain (ek-do more `'data'` events). Backpressure logic ko idempotent rakho — `resume` sirf tab jab actually paused ho, aur double-pause/double-resume se guard karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+sequenceDiagram
+    participant R as Readable (fast)
+    participant W as Writable (slow)
+    R->>W: write(chunk 1) returns true
+    R->>W: write(chunk 2) returns true
+    R->>W: write(chunk 3) returns FALSE (buffer full)
+    Note over R: readable.pause()
+    W-->>W: slowly flushes to disk/socket
+    W->>R: emit 'drain'
+    Note over R: readable.resume()
+    R->>W: write(chunk 4) returns true
+`}
+  caption="write() ka false return + drain event = backpressure handshake. pause/resume producer ko consumer ki speed pe rakhta hai. pipe/pipeline ye khud karte hain."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Readable — paused mode**: tum `.read()` se pull karo (default state). **Flowing mode**: stream `'data'` events push kare.
+- Flowing trigger: `.on("data")`, `.pipe()`, ya `.resume()`. `.pause()` wapas paused.
+- Modern consume: **`for await (const chunk of readable)`** — backpressure-safe, try/catch-friendly.
+- Readable events: `'data'`, `'end'` (normal done), `'error'`, `'close'` (fd released).
+- **Writable `.write(chunk)` returns boolean**: `true` = keep going, `false` = buffer full, wait for `'drain'`.
+- `.end(chunk?)` → sab flush → `'finish'` event. Writable pe `'end'` hota hi nahi.
+- **Backpressure** = `false` pe `readable.pause()`, `writable.once("drain", () => readable.resume())`.
+- `.pipe()` aur `stream.pipeline()` backpressure + pause/resume **automatically** karte hain — usually yahi use karo.
+- `'end'` (Readable) ≠ `'finish'` (Writable) ≠ `'close'` (both). Mix karna silent no-op.
+- `drain` listener `.once()` lagao, `.on()` nahi — warna leak + repeated resume.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek Readable `stream.Readable.from(["a", "b", "c", "d"])` banao aur use `for await...of` se consume karke har chunk print karo. Phir same stream ko `.on("data")` se consume karo. Dono ka output same hona chahiye — par ek stream ko dono se consume karne ki koshish karo aur dekho kya hota hai.
+
+**Medium:** Ek slow Writable banao (`new stream.Writable({ highWaterMark: 16, write(chunk, enc, cb) { setTimeout(cb, 50); } })`). Ek fast Readable se `1000` chunks bhejo, pehle **bina** backpressure (`readable.on("data", c => w.write(c))`) — `w.writableLength` log karo, dekho kaise badhta hai. Phir `pause`/`drain`/`resume` add karke dekho `writableLength` `highWaterMark` ke aas-paas capped rehta hai.
+
+**Bada:** `for await...of` se `process.stdin` padho aur NDJSON (ek JSON object per line) parse karo, lekin dhyan rakhо ki ek JSON object do chunks ke beech split ho sakta hai — ek leftover buffer maintain karo, `\n` pe split karo, aakhri incomplete piece ko agle chunk ke liye rakho. Har complete object ko ek slow async function (`await saveToDb(obj)`) pe bhejo taaki backpressure natural rahe. Test 100k-line file pe, memory flat honi chahiye.
+
+</Callout>

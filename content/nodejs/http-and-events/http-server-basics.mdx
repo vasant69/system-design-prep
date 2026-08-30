@@ -1,0 +1,279 @@
+---
+slug: "http-server-basics"
+title: "HTTP Server Basics"
+section: "nodejs"
+module: "http-and-events"
+order: 1
+difficulty: "beginner"
+readingTime: 14
+prerequisites: []
+tags: ["nodejs", "http", "server", "eventemitter", "networking"]
+englishDefinition: "Node's built-in http module lets you create an HTTP server with http.createServer(handler), where the handler function runs once per incoming request and receives a request and response object. server.listen(port, cb) binds the server to a TCP port. The server is itself an EventEmitter that emits 'request', 'connection', and 'close' events. Understanding this raw layer makes frameworks like Express feel like ordinary code instead of magic."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro"]
+---
+
+<SimpleDefinition>
+
+Node's built-in `http` module lets you build a web server without any framework. `http.createServer(handler)` returns a server object; the `handler` you pass runs **once per incoming request** and gets two arguments — a request object and a response object. `server.listen(port, cb)` binds it to a TCP port and starts accepting connections. The server is itself an **EventEmitter** — `createServer(handler)` is just shorthand for `server.on("request", handler)`. Learn this raw layer once and Express stops being magic.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har Node backend developer Express se shuru karta hai, aur phir Express hi "sab kuch" lagne lagta hai. Lekin Express khud Node ke `http` module ke upar ek patli si layer hai. Agar tum raw `http` server ek baar apne haath se likh lo, toh Express ka `req`, `res`, routing, middleware — sab samajh aa jata hai, kyunki wo sab isi cheez ke around wrappers hain.
+
+### Ye kya hai — http.createServer
+
+`http.createServer` ek function hai jo ek **server object** return karta hai. Tum use ek **request handler** dete ho — ek function jo `(req, res)` leta hai. Node har incoming HTTP request par us handler ko call karta hai. Server ko zinda rakhne ke liye `server.listen(port)` call karna padta hai — ye ek TCP port par bind hota hai aur connections accept karna shuru karta hai.
+
+```javascript
+const http = require("http");
+
+const server = http.createServer((req, res) => {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "text/plain");
+  res.end("Hello World\n");
+});
+
+server.listen(3000, () => {
+  console.log("Server http://localhost:3000 par chal raha hai");
+});
+```
+
+Bas. Ye ek pura working web server hai — koi npm install nahi.
+
+### Ye kyun exist karta hai
+
+Node ka pitch hi ye tha: "JavaScript se scalable network servers banao." Isliye `http` core module hai, koi add-on nahi. Ye tumhe TCP sockets, HTTP parsing (request line, headers, body framing), keep-alive connection management — sab de deta hai, taaki tum sirf apna application logic likho. Frameworks (Express, Fastify, Koa, Nest) is module ke `request` event ko subscribe karte hain aur upar routing/middleware add karte hain.
+
+### Internally kaise kaam karta hai
+
+`http.Server` class `net.Server` (TCP) se extend karti hai, aur `net.Server` `EventEmitter` se. Jab client connect karta hai:
+
+1. TCP `connection` event fire hota hai — ek socket banta hai.
+2. Node ka C++ HTTP parser us socket par aane wale bytes ko parse karta hai — method, URL, headers.
+3. Headers complete hone par Node ek `IncomingMessage` (`req`) aur ek `ServerResponse` (`res`) object banata hai, aur server par `request` event emit karta hai.
+4. Tumhara handler us `request` event ka listener hai — wahi chalta hai.
+5. Tum `res.end()` call karte ho — Node response bytes socket par likhta hai. Agar keep-alive on hai (HTTP/1.1 default), socket khula rehta hai agli request ke liye.
+
+### Simple real-life analogy
+
+Server ek **reception desk** hai. `listen(3000)` matlab desk khol diya, ek particular counter number (port) par. Har visitor (request) aata hai, receptionist (tumhara handler) uska form (`req`) padhta hai aur ek reply slip (`res`) bharke wapas deta hai. `res.end()` matlab slip visitor ko de di. Keep-alive matlab visitor line mein khada rehta hai agla sawaal poochhne ke liye, bina desk chhode.
+
+### Code — line by line
+
+```javascript
+const http = require("http");
+
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", uptime: process.uptime() }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end("Hello World\n");
+});
+
+server.on("clientError", (err, socket) => {
+  socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+});
+
+server.listen(3000, () => console.log("listening on 3000"));
+```
+
+- `require("http")` — built-in module, koi install nahi.
+- `http.createServer(cb)` — server object banata hai; `cb` `request` event ka listener ban jata hai.
+- `(req, res) =>` — `req` ek readable stream (`http.IncomingMessage`), `res` ek writable stream (`http.ServerResponse`).
+- `req.url` — sirf path aur query string (`"/health?x=1"`), host nahi. `req.method` — `"GET"`, `"POST"` etc.
+- `res.writeHead(status, headers)` — status code aur headers ek saath set karta hai. Iske baad headers change nahi kar sakte.
+- `res.end(body)` — response body likhta hai aur response close karta hai. Bina `end()` ke client hang karega.
+- `return` — zaroori, warna neeche wala `writeHead` dobara chalega aur "headers already sent" error dega.
+- `server.on("clientError", ...)` — malformed request bytes par fire hota hai (handler chalne se pehle).
+- `server.listen(3000, cb)` — port bind; `cb` tab chalta hai jab server ready ho.
+
+### http vs https vs http2
+
+- **`http`** — plain text, TLS nahi. Local dev aur load-balancer ke peeche (jo TLS terminate karta hai) theek.
+- **`https`** — same API, lekin `https.createServer({ key, cert }, handler)` — TLS certificate chahiye. Public internet par isi ke saath jaate ho.
+- **`http2`** — `http2.createSecureServer(...)` — multiplexing (ek connection par parallel streams), header compression, server push. API thoda alag hai (`stream` events). Modern high-traffic services yahan jaate hain, aksar phir bhi LB TLS+HTTP2 terminate karta hai.
+
+### keep-alive ek line mein
+
+HTTP/1.1 mein connection default reusable hai — ek TCP handshake ke baad kai requests. Isse latency aur CPU bachta hai; Node `Connection: keep-alive` khud handle karta hai.
+
+### Day-to-day use
+
+- Direct raw `http` server shaadi ke baad kam likhoge — Express/Fastify le lete ho.
+- Lekin health-check sidecars, tiny internal proxies, webhook receivers, aur load tests ke liye raw `http` fast aur dependency-free hai.
+- Interview mein "Express ke bina server likho" ek common warm-up hai.
+
+### Kab use karna chahiye
+
+- Ekdum chhota service (1-2 endpoints), extra dependency avoid karni ho.
+- Tumhe HTTP ke low-level control chahiye — raw socket, custom framing, upgrade to WebSocket.
+- Learning / interview — samajhne ke liye ki framework kya kar raha hai.
+
+### Kab use nahi karna chahiye
+
+- Real application jisme 10+ routes, params, body parsing, auth middleware chahiye — raw `http` mein ye sab haath se likhna time waste hai aur bug-prone. Express/Fastify use karo.
+- Jahan team consistency chahiye — framework conventions naye developer ke liye asaan hain.
+
+### Pros and cons
+
+**Pros**
+
+- Zero dependencies, zero install, instant start.
+- Poora HTTP surface exposed — kuch bhi customize kar sakte ho.
+- Sabse kam overhead — framework ki koi layer nahi.
+
+**Cons**
+
+- Routing, params, body parsing, error handling — sab khud likho.
+- Boilerplate zyada; galti se `res.end()` bhool jao toh client hang.
+- Koi ecosystem/middleware nahi jab tak tum khud na banao.
+
+### Alternatives
+
+- **Express** — sabse popular; routing + middleware + `req.body`/`req.params`. Jab standard REST API chahiye.
+- **Fastify** — Express jaisa but tez, schema-based validation aur serialization built-in. High-throughput JSON APIs.
+- **Koa** — chhota core, async/await-first middleware. Jab minimal aur modern chahiye.
+- **Nest.js** — opinionated, TypeScript, DI, modules. Bade team/enterprise apps.
+
+### Interview mein "Why did you use raw http here?"
+
+> "Ye ek internal webhook receiver tha — ek single POST endpoint jo payload ko queue mein daalta tha. Express add karna ek pura dependency tree laata bina kisi real benefit ke, kyunki na routing tha na middleware. Raw `http` server 30 lines ka tha, cold start fast tha, aur maintain karna trivial. Jahan humari main API thi — 40+ routes, auth, validation — wahan humne Fastify use kiya kyunki wahan routing aur schema validation ka real value tha."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`http.createServer(handler)` bilkul `const s = http.createServer(); s.on("request", handler)` ke barabar hai. Server ek EventEmitter hai — yaad rahe toh `req`/`res` ka event-driven nature (`req.on("data")`, `res` ka `"finish"` event) natural lagta hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express (framework internals)">
+
+Express app object khud ek function hai jise tum `http.createServer(app)` ko pass kar sakte ho — aur `app.listen(3000)` internally exactly yahi karta hai. Jab request aati hai, Express us ek handler ke andar apna router chalata hai: `req.url` ko routes se match karta hai, middleware chain execute karta hai, aur `req`/`res` par extra helpers (`req.params`, `res.json`) monkey-patch karta hai. Base object wahi Node ka `IncomingMessage`/`ServerResponse` hi rehta hai — Express bas uske prototype mein methods add karta hai.
+
+</RealWorld>
+
+<RealWorld company="Kubernetes liveness/readiness probes">
+
+Containerized Node services mein aksar ek chhota alag `http` server sirf `/healthz` aur `/readyz` ke liye chalta hai, main app port se alag. Ye raw `http` mein likha jata hai — koi framework overhead nahi, kyunki probe har 5-10 second par hit hota hai aur response predictable hona chahiye. Handler bas `process` state check karke `200` ya `503` return karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Ek raw Node `http` "hello world" ek modern laptop par roughly **15,000-40,000 req/s** handle kar leta hai single core par — framework layer isme se kuch percent kaat leti hai.
+- HTTP/1.1 keep-alive default connection reuse timeout Node mein **5 seconds** hai (`server.keepAliveTimeout = 5000`).
+- Default `server.headersTimeout` **60 seconds** hai — itne mein saare request headers aa jane chahiye warna connection cut.
+- Node **v0.1.13 (2011)** se `http` module core mein hai — HTTP server hamesha se Node ka flagship use-case raha hai.
+- Ek `res.end()` bina data ke bhi ek chhoti response line + headers bhejta hai — minimum HTTP response practically **~100-150 bytes** hota hai.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye "Express ke bina ek server likho" ke roop mein poochha jata hai, ya "Express internally kya karta hai?" Interviewer dekhta hai ki tum framework ke neeche dekh sakte ho ya nahi.
+
+Achhe jawaab ka shape:
+
+1. **API** — "`http.createServer((req, res) => {})`, phir `server.listen(port)`. Handler har request par chalta hai."
+2. **req/res kya hain** — "`req` readable stream hai (`IncomingMessage`), `res` writable stream (`ServerResponse`). Body `req` par property nahi — stream se collect karni padti hai."
+3. **EventEmitter** — "server EventEmitter hai; `createServer(fn)` sirf `server.on('request', fn)` ka shortcut hai. `connection`, `close`, `clientError` bhi milte hain."
+4. **http vs https vs http2** — "same API shape, https ko cert chahiye, http2 multiplexing deta hai; production mein aksar TLS load balancer terminate karta hai."
+5. **Framework kab** — "10+ routes, params, body parsing, middleware chahiye toh Express/Fastify; ek-do endpoint ke liye raw `http` theek."
+
+Red flag: ye maan lena ki `req.body` automatically bhara hota hai — raw `http` mein aisa kuch nahi, wo Express + body-parser ka kaam hai.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`res.end()` call na karna.** Handler mein sirf `res.write("hi")` likh diya, `res.end()` bhool gaye. Client response ko incomplete samajhta hai aur connection timeout tak hang karta rehta hai. Har code path par response `res.end()` (ya `res.json`/`res.send` framework mein) se close hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**`req.url` ko full URL samajhna.** `req.url` sirf `"/users?active=1"` deta hai — protocol, host, port nahi. Agar tumhe absolute URL chahiye toh `req.url` ko `req.headers.host` ke saath `new URL(path, base)` mein combine karna padta hai. Log mein `req.url` ko "the URL" likhna aksar confusion paida karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`writeHead` ke baad `setHeader` call karna.** `res.writeHead(200, {...})` ke baad headers socket par ja chuke hote hain. Uske baad `res.setHeader(...)` "Cannot set headers after they are sent" throw karta hai. Saare headers `writeHead` se pehle set karo, ya sab `writeHead` ke object mein do.
+
+</Mistake>
+
+<Mistake>
+
+**Ek request handler mein multiple responses bhejna.** Route check ke baad `return` na lagana — do `res.end()` chalte hain, doosra "write after end" error deta hai. Har branch ke baad `return` karo ya `if/else` structure use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`server.on("error")` ignore karna.** Agar port already in use hai (`EADDRINUSE`), server `error` event emit karta hai — agar koi listener nahi toh process crash. Hamesha `server.on("error", ...)` attach karo aur `EADDRINUSE` par clean message do.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Client: TCP connect to port 3000"] --> B["net.Server: 'connection' event, socket banta hai"]
+    B --> C["Node C++ HTTP parser: bytes parse — method, url, headers"]
+    C --> D["req (IncomingMessage) + res (ServerResponse) bante hain"]
+    D --> E["server emits 'request' — tumhara handler chalta hai"]
+    E --> F["handler: res.writeHead(...) + res.end(body)"]
+    F --> G["response bytes socket par likhe jaate hain"]
+    G --> H{"keep-alive on?"}
+    H -->|haan| C
+    H -->|nahi| I["socket close, 'close' event"]
+`}
+  caption="createServer(handler) sirf server.on('request', handler) hai — poora flow TCP connection se HTTP parse se 'request' event tak jata hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `http.createServer((req, res) => {})` + `server.listen(port, cb)` = pura server, zero dependency.
+- `createServer(fn)` === `server.on("request", fn)` — server ek **EventEmitter** hai.
+- `req` = readable stream (`IncomingMessage`); `res` = writable stream (`ServerResponse`).
+- `req.url` = sirf path + query; `req.method`, `req.headers` (keys lowercased).
+- `res.writeHead(status, headers)` phir `res.end(body)` — headers pehle, body baad mein, `end()` zaroori.
+- Har branch ke baad `return` — warna "headers already sent" / "write after end".
+- `http` vs `https` (TLS cert chahiye) vs `http2` (multiplexing) — API shape similar.
+- keep-alive HTTP/1.1 mein default — ek TCP connection, kai requests.
+- `server.on("error")` attach karo — `EADDRINUSE` warna crash karega.
+- 10+ routes / body parsing / middleware chahiye → Express/Fastify; 1-2 endpoint → raw `http`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek `server.js` banao jo port 3000 par sun-e aur har request par `text/plain` mein `"pong"` bheje. `curl localhost:3000` se test karo. Phir `curl -v` se dekho konse headers Node ne khud add kiye (`Date`, `Connection`, `Transfer-Encoding`).
+
+**Medium:** Same server mein `req.url` check karke `/time` par ek JSON `{ now: <ISO string> }` bhejo (`Content-Type: application/json`), aur baaki har path par `404` with `"Not Found"`. Har branch ke baad `return` lagana mat bhoolo.
+
+**Bada:** `server.on("connection", ...)` aur `server.on("request", ...)` dono log karo ek counter ke saath. `curl` ko `--http1.1` keep-alive ke saath do requests ek command mein bhejo (`curl localhost:3000/a localhost:3000/b`) aur samjhao ki `connection` ek baar kyun fire hua par `request` do baar.
+
+</Callout>

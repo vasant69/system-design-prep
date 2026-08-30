@@ -1,0 +1,282 @@
+---
+slug: "os-module"
+title: "The os Module — Machine & Runtime Info"
+section: "nodejs"
+module: "builtin-modules"
+order: 3
+difficulty: "beginner"
+readingTime: 12
+prerequisites: []
+tags: ["nodejs", "os", "system-info", "cluster", "health-check", "builtin-modules"]
+englishDefinition: "The os module exposes information about the machine and operating system the Node process is running on: the number of CPU cores, total and free memory, platform and architecture, hostname, home and temp directories, load average, network interfaces, and uptime. It is read-only system introspection, most often used to size worker pools, build health-check endpoints, choose temp file locations, and branch on platform."
+interviewFrequency: "low"
+companies: ["TCS", "Infosys", "Wipro", "Cognizant"]
+---
+
+<SimpleDefinition>
+
+The `os` module exposes information about the machine and operating system the Node process runs on: number of CPU cores, total and free memory, platform and architecture, hostname, home and temp directories, load average, network interfaces, and uptime. It is **read-only** system introspection — you don't change anything with it. Typical uses: sizing worker/cluster pools, building health-check endpoints, choosing where to put temp files, and branching on platform.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+`os` module chhota hai lekin do jagah bahut kaam aata hai: (1) jab tum decide kar rahe ho kitne worker processes/threads spawn karne hain, aur (2) jab tum ek `/health` ya `/metrics` endpoint bana rahe ho jo bataye machine kaisi haalat mein hai.
+
+### Ye kya hai — os module
+
+Core module (`const os = require("node:os")`). Ye OS aur hardware ke baare mein constants aur functions deta hai. Kuch cheezein process start pe fix hoti hain (`os.cpus().length`, `os.totalmem()`), kuch live badalti hain (`os.freemem()`, `os.loadavg()`, `os.uptime()`).
+
+### Ye kyun exist karta hai
+
+Node ka ek common deployment pattern hai: har CPU core ke liye ek process chalao (cluster / PM2 / container replicas), kyunki ek Node process ek time pe ek hi core use karta hai JS ke liye. Kitne? `os.cpus().length`. Isi tarah worker-thread pool ya job concurrency ko core count se scale karna common hai. Aur monitoring ke liye tumhe machine ka memory/CPU pressure batana padta hai — `os` se milta hai bina koi native dependency ke.
+
+### Internally kaise kaam karta hai
+
+`os` functions OS ke system calls / virtual files ko wrap karte hain — Linux pe `/proc/cpuinfo`, `/proc/meminfo`, `sysconf`, `getifaddrs`, etc. Ye sasta hai lekin bilkul free nahi — `os.freemem()` har call pe OS se poochta hai, isliye ek tight loop mein spam mat karo; ek interval pe sample karo.
+
+**Container caveat:** `os.cpus().length` aur `os.totalmem()` **host** machine ke values dete hain, container ke cgroup limits ke nahi. Ek 64-core host pe 2-core limit wala container bhi `os.cpus().length === 64` dega. Naye Node (v18.19+ / v20+) mein `os.availableParallelism()` cgroup-aware hai — pool sizing ke liye wahi prefer karo.
+
+### Simple real-life analogy
+
+`os` module ek building ka reception desk hai. Tum poochte ho "kitni lift hain (cores), kitni parking khali hai (freemem), building ka naam (hostname), guest lounge kahan hai (tmpdir)." Reception kuch change nahi karta — sirf batata hai. Tum us info se decide karte ho kitne log bhejne hain ya kahan meeting rakhni hai.
+
+### Code — line by line
+
+```javascript
+const os = require("node:os");
+
+os.cpus().length;        // logical cores — e.g. 8
+os.availableParallelism(); // cgroup-aware core count (Node 18.19+) — pool sizing ke liye
+os.totalmem();           // bytes — total RAM
+os.freemem();            // bytes — abhi free RAM (live)
+os.loadavg();            // [1m, 5m, 15m] load average — Unix only (Windows: [0,0,0])
+os.platform();           // "linux" | "darwin" | "win32"
+os.arch();               // "x64" | "arm64"
+os.type();               // "Linux" | "Darwin" | "Windows_NT"
+os.release();            // kernel version string
+os.hostname();           // machine ka naam
+os.homedir();            // "/home/vasant"
+os.tmpdir();             // "/tmp" — temp files yahan
+os.networkInterfaces();  // { eth0: [{ address, family, internal }], ... }
+os.uptime();             // machine uptime in seconds
+os.constants.signals;    // { SIGINT: 2, SIGTERM: 15, ... }
+```
+
+- `os.cpus()` — ek array, har core ka `{ model, speed, times }`. Aksar sirf `.length` chahiye.
+- `os.loadavg()` — Linux/Mac ka run-queue average. Windows pe hamesha `[0, 0, 0]` — reliable nahi.
+- `os.platform()` vs `process.platform` — same value; `os` version thoda zyada explicit lagta hai.
+- `os.tmpdir()` — OS ka temp folder; hardcoded `"/tmp"` mat likho (Windows pe alag, cleanup policies alag).
+
+### Real use cases — cheat sheet
+
+```javascript
+// 1. Cluster: ek worker per core
+const cluster = require("node:cluster");
+if (cluster.isPrimary) {
+  const n = os.availableParallelism(); // NOT os.cpus().length in containers
+  for (let i = 0; i < n; i++) cluster.fork();
+}
+
+// 2. Health endpoint
+app.get("/health", (req, res) => {
+  const total = os.totalmem();
+  const free = os.freemem();
+  res.json({
+    hostname: os.hostname(),
+    uptimeSec: Math.round(process.uptime()),
+    memUsedPct: Math.round(((total - free) / total) * 100),
+    load1m: os.loadavg()[0],
+  });
+});
+
+// 3. Temp file
+const tmpFile = path.join(os.tmpdir(), `export-${Date.now()}.csv`);
+
+// 4. Platform branch
+const openCmd = os.platform() === "win32" ? "start" : "xdg-open";
+```
+
+### Day-to-day use
+
+- Cluster / worker-pool sizing (`availableParallelism`)
+- `/health` aur `/metrics` endpoints (mem %, load, uptime, hostname)
+- Temp file / scratch directory ka path (`os.tmpdir()`)
+- Platform-specific commands ya paths (`os.platform()`)
+- Logs mein machine identity daalna (`os.hostname()`) — multi-instance debugging
+- User ka home directory (`os.homedir()`) — CLI tools ki config (`~/.myapp`)
+
+### Kab use karna chahiye
+
+- Worker/replica count decide karte waqt — hardcode 4 mat karo, cores se derive karo.
+- Health/metrics endpoint mein machine pressure report karne ke liye.
+- Cross-platform CLI tool mein OS pe branch karne ke liye.
+
+### Kab use nahi karna chahiye
+
+- **Per-request `os.freemem()` spam** — har HTTP request pe call karke ratio compute karna waste; ek `setInterval` pe sample karke cache karo.
+- Container mein `os.cpus().length` / `os.totalmem()` pe bharosa — host ke numbers dete hain. `availableParallelism()` ya cgroup files padho.
+- `os.loadavg()` ko Windows pe use karna — hamesha zero.
+- Precise process-level memory ke liye `os` — wo `process.memoryUsage()` hai (heap, RSS).
+
+### Pros and cons
+
+**Pros**
+
+- Zero dependency — core module.
+- Health checks aur pool sizing ke liye exactly enough info.
+- Cross-platform normalized values (`platform`, `arch`, `tmpdir`, `homedir`).
+
+**Cons**
+
+- Container-unaware for `cpus()` / `totalmem()` (older APIs).
+- `loadavg()` Windows pe meaningless.
+- Machine-level, process-level nahi — memory leak debug ke liye `process.memoryUsage()` chahiye.
+
+### Alternatives
+
+- **`process.memoryUsage()` / `process.cpuUsage()`** — is process ki apni memory/CPU.
+- **`os.availableParallelism()`** — container-aware core count (prefer over `os.cpus().length`).
+- **`systeminformation`** (npm) — bahut detailed hardware/OS info (disks, temps, GPU) jab `os` kaafi na ho.
+- **`/proc` files direct read** — Linux-only, advanced monitoring.
+
+### Interview mein "Cluster mein kitne workers spawn karoge?"
+
+> "Default main `os.availableParallelism()` ke barabar workers spawn karta hoon — ye cgroup-aware hai, toh container mein bhi sahi count deta hai, jabki `os.cpus().length` host ke cores dikha deta hai. Ek Node process JS ke liye ek core use karta hai, isliye N cores = N workers CPU-bound throughput ke liye theek hai. I/O-heavy workload pe main thoda kam rakhta hoon taaki context-switch overhead na badhe, aur memory check karta hoon — N workers ka combined RSS machine RAM ke andar rahe."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Container mein `os.cpus().length` aur `os.totalmem()` **host** machine ke numbers dete hain, tumhare pod ke limits ke nahi. Pool sizing ke liye `os.availableParallelism()` (Node 18.19+) use karo, ya cgroup files (`/sys/fs/cgroup/...`) padho.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Health-check endpoint on a Kubernetes deployment">
+
+Ek service ka `/healthz` endpoint `os.loadavg()[0]`, `(os.totalmem() - os.freemem()) / os.totalmem()`, aur `process.uptime()` return karta hai. Load balancer aur Kubernetes liveness probe isi ko hit karte hain. `os.hostname()` bhi response mein hai taaki jab ek instance misbehave kare, on-call engineer logs se turant match kar sake ki kaunsa pod. Team ne baad mein memory ratio ko `process.memoryUsage().rss` se cross-check karna add kiya kyunki container mein `os.totalmem()` host ka 128 GB dikha raha tha jabki pod limit 512 MB thi — misleading tha.
+
+</RealWorld>
+
+<RealWorld company="CLI export tool writing large CSVs">
+
+Ek internal CLI jo reports ko CSV mein export karta hai, temp file bana ke likhta hai:
+
+```js
+const tmp = path.join(os.tmpdir(), `report-${process.pid}-${Date.now()}.csv`);
+```
+
+phir final destination pe `rename` karta hai (atomic move). `os.tmpdir()` use karne se ye Windows dev machines (`C:\Users\...\AppData\Local\Temp`), Mac, aur Linux CI teeno pe kaam karta hai bina koi config ke, aur OS apne temp cleanup se orphaned files bhi hata deta hai agar tool crash ho jaye.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `os.cpus().length` = logical cores (hyperthreading counted). 4-core / 8-thread machine → `8`.
+- `os.availableParallelism()` Node **v18.19 / v19.4 / v20+** — cgroup/affinity-aware; container mein sahi count.
+- `os.totalmem()` / `os.freemem()` — bytes mein. GB ke liye `/ 1024 ** 3`.
+- `os.loadavg()` → 3 numbers `[1min, 5min, 15min]`; **Windows pe hamesha `[0, 0, 0]`**.
+- `os.platform()` values: `"linux"`, `"darwin"` (macOS), `"win32"` (32 ya 64-bit dono pe).
+- `os.uptime()` = **machine** uptime (seconds); `process.uptime()` = is **process** ki uptime.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye standalone rarely poocha jaata hai — mostly "Node ko multiple cores pe kaise scale karoge?" ke jawaab mein aata hai, ya "health check kaise banaoge?"
+
+Achhe jawaab ka shape:
+
+1. **Why cluster** — ek Node process JS ke liye ek core; N cores use karne ke liye N processes (cluster / PM2 / replicas).
+2. **How many** — `os.availableParallelism()` (container-aware), fallback `os.cpus().length`.
+3. **Health endpoint** — `os.freemem()`/`totalmem()` ratio, `os.loadavg()[0]`, `process.uptime()`, `os.hostname()`.
+4. **Container caveat** — `os.cpus()`/`os.totalmem()` host ke values; cgroup limits alag.
+5. **Machine vs process** — machine pressure `os`; is process ki memory `process.memoryUsage()`.
+
+Red flag: "har request pe `os.freemem()` call karke throttle karta hoon" — sample on interval, cache karo.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**Container mein `os.cpus().length` se worker count decide karna.** Ye host machine ke cores deta hai (e.g. 64), pod ke 2-core limit ke nahi — 64 workers spawn honge, memory blow up, aur CPU throttling. `os.availableParallelism()` (cgroup-aware) use karo ya cgroup quota files padho.
+
+</Mistake>
+
+<Mistake>
+
+**Har HTTP request pe `os.freemem()` / `os.loadavg()` call karna.** Ye OS syscall hai; per-request spam CPU waste karta hai aur numbers request-to-request meaningfully change nahi karte. Ek `setInterval(sample, 5000)` se cache karo aur cached value serve karo.
+
+</Mistake>
+
+<Mistake>
+
+**`os.loadavg()` pe Windows pe bharosa.** Windows load average support nahi karta — `os.loadavg()` wahan hamesha `[0, 0, 0]`. Cross-platform health check mein alerting isi pe mat baandho; Windows ke liye `process.cpuUsage()` ya perf counters use karo.
+
+</Mistake>
+
+<Mistake>
+
+**Temp file ke liye `"/tmp"` hardcode karna.** Windows pe `/tmp` nahi hota; kuch hardened Linux setups mein `/tmp` `noexec` ya per-user hota hai. `os.tmpdir()` OS ka sahi location deta hai aur `TMPDIR`/`TEMP` env vars respect karta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`os.totalmem()`/`os.freemem()` ko process memory samajhna.** Ye poori machine ki RAM hai. Ek memory leak dhoondhna hai toh `process.memoryUsage()` (`.heapUsed`, `.rss`, `.external`) chahiye — wo is Node process ka actual footprint hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Primary process start"] --> B["os.availableParallelism() -> N"]
+    B --> C["Loop i = 0..N-1: cluster.fork()"]
+    C --> D["N worker processes, har ek 1 core use karega"]
+    D --> E["OS load balances TCP connections workers ke beech"]
+    F["/health request"] --> G["os.freemem/totalmem ratio + os.loadavg()[0] + process.uptime()"]
+    G --> H["JSON response — LB / k8s probe padhta hai"]
+`}
+  caption="os.availableParallelism worker count deta hai; os.freemem/loadavg health endpoint feed karta hai. Container mein cpus().length host ke cores dikhata hai — availableParallelism prefer karo."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `os` = read-only machine/OS introspection. Core module, zero dependency.
+- Worker/pool count → `os.availableParallelism()` (cgroup-aware). `os.cpus().length` container mein host ke cores deta hai.
+- Ek Node process JS ke liye ek core — N cores use karne ke liye N processes.
+- Health endpoint: `(totalmem - freemem) / totalmem`, `os.loadavg()[0]`, `process.uptime()`, `os.hostname()`.
+- `os.loadavg()` **Windows pe hamesha `[0,0,0]`** — us pe alert mat baandho.
+- Temp files → `os.tmpdir()`, kabhi `"/tmp"` hardcode nahi.
+- `os.platform()` = `"linux"` / `"darwin"` / `"win32"`; `os.arch()` = `"x64"` / `"arm64"`.
+- `os.freemem()` / `os.loadavg()` OS syscall — interval pe sample karo, per-request nahi.
+- Machine memory = `os.*mem()`; **process** memory = `process.memoryUsage()`.
+- `os.uptime()` = machine; `process.uptime()` = this process.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Ek script likho jo print kare: core count, total aur free RAM in GB (2 decimal places), platform, arch, hostname, aur machine uptime in hours. `os.freemem()` ko bytes se GB mein convert karo.
+
+**Medium:** Ek Express `/health` route banao jo `{ status, hostname, uptimeSec, memUsedPct, load1m }` return kare. `memUsedPct` aur `load1m` ko ek `setInterval` (har 3s) se sample karke module-level variable mein cache karo — route handler sirf cached values padhe, `os.*` directly call na kare.
+
+**Bada:** Ek cluster script likho jo `os.availableParallelism()` workers fork kare, har worker ek HTTP server chalaye jo `process.pid` return kare. `ab` ya `autocannon` se load daalo aur dekho requests different PIDs ke beech distribute ho rahe hain. Phir `os.cpus().length` se compare karo — same machine pe values match honge; ek Docker container `--cpus=2` ke saath run karke difference note karo.
+
+</Callout>
