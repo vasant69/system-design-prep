@@ -508,6 +508,51 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "javascript",
+    title: "JavaScript Fundamentals",
+    description:
+      "The JavaScript the rest of your stack stands on — variables and types, objects and arrays, functions and closures, control flow, and async — taught in Hinglish with a decision framework for every choice (let vs const, map vs forEach, Array vs Map, == vs ===, Promise vs async/await).",
+    icon: "Braces",
+    enabled: true,
+    modules: [
+      {
+        id: "variables-and-types",
+        title: "Variables & Types",
+        description:
+          "let/const/var and scope, primitive vs reference types and copy semantics, numbers/strings/booleans, null vs undefined, type coercion, and == vs === — the ground floor everything else is built on.",
+        order: 1,
+      },
+      {
+        id: "objects-and-arrays",
+        title: "Objects & Arrays",
+        description:
+          "Object literals and iteration, arrays and their mutating vs non-mutating methods, map/filter/find/reduce, destructuring, spread/rest, and the Array vs Object vs Map vs Set decision.",
+        order: 2,
+      },
+      {
+        id: "functions",
+        title: "Functions",
+        description:
+          "Declarations vs expressions vs arrows, parameters and defaults and rest, scope and closures, the four this-binding rules, call/apply/bind, and higher-order functions.",
+        order: 3,
+      },
+      {
+        id: "control-flow",
+        title: "Control Flow & Operators",
+        description:
+          "Conditionals and truthy/falsy, ternary and short-circuit, switch, the loop family (for/of/in/while), optional chaining and nullish coalescing, and template literals.",
+        order: 4,
+      },
+      {
+        id: "async-and-modules",
+        title: "Async & Modules",
+        description:
+          "Sync vs async, callbacks, promises, async/await, the event loop and microtask/macrotask queues, error handling, JSON, and ES modules vs CommonJS — plus an ES6+ features roundup.",
+        order: 5,
+      },
+    ],
+  },
+  {
     slug: "nodejs",
     title: "Node.js",
     description:

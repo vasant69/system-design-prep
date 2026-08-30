@@ -1,0 +1,356 @@
+---
+slug: "typeof-and-type-checking"
+title: "typeof & Type Checking"
+section: "javascript"
+module: "variables-and-types"
+order: 7
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["primitive-vs-reference-types"]
+tags: ["javascript", "typeof", "instanceof", "type-checking", "Array.isArray", "fundamentals"]
+englishDefinition: "typeof is the built-in operator for checking a value's type, but it has gaps: it returns 'object' for null, arrays, and plain objects alike, 'function' for functions, and it is the only safe way to test a name that may not be declared. Array.isArray is the correct array check. instanceof tests the prototype chain but breaks across iframes and realms. Object.prototype.toString.call(x) returns tags like '[object Array]' and distinguishes many built-in types that typeof cannot."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+`typeof` is the built-in operator for checking a value's type, but it has gaps: it returns `"object"` for `null`, arrays, and plain objects alike, `"function"` for functions, and it is the **only safe way** to test a name that might not be declared. `Array.isArray(x)` is the correct array check. `instanceof` tests the prototype chain but breaks across iframes/realms. `Object.prototype.toString.call(x)` returns tags like `"[object Array]"` and distinguishes many built-ins that `typeof` cannot.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+"Ye value array hai ya object? Number hai ya `NaN`? Function hai?" — ye sawaal roz aate hain (API responses validate karna, polymorphic function likhna). `typeof` pehla tool hai par akela kaafi nahi — iske blind spots pata hone chahiye.
+
+### Ye kya hai — `typeof` operator
+
+`typeof x` ek **string** return karta hai. Possible values sirf ye:
+
+```javascript
+typeof 42;             // "number"
+typeof "hi";           // "string"
+typeof true;           // "boolean"
+typeof undefined;      // "undefined"
+typeof 10n;            // "bigint"
+typeof Symbol();       // "symbol"
+typeof function(){};   // "function"
+typeof {};             // "object"
+typeof [];             // "object"   <- array bhi "object"
+typeof null;           // "object"   <- historical bug
+typeof new Date();     // "object"
+typeof /regex/;        // "object"
+```
+
+Bas 8 possible strings: `"number"`, `"string"`, `"boolean"`, `"undefined"`, `"bigint"`, `"symbol"`, `"function"`, `"object"`.
+
+### `typeof` ki 3 khaas baatein (quirks)
+
+**1. `typeof null === "object"`** — galat, par permanent. `null` check karne ke liye `x === null` use karo.
+
+**2. Array, plain object, Date, RegExp — sab `"object"`** — `typeof` inme distinguish nahi karta. Array ke liye `Array.isArray(x)`, baaki ke liye `Object.prototype.toString.call(x)` (neeche).
+
+**3. Undeclared name pe `typeof` safe hai** — ye `typeof` ka ekmatra unique superpower hai:
+
+```javascript
+console.log(someName);         // ReferenceError: someName is not defined  -- crash
+console.log(typeof someName);  // "undefined"  -- no crash
+```
+
+Agar variable declare hi nahi hua, uska naam likhna `ReferenceError` deta hai — **sivaay** `typeof` ke andar. Isliye legacy feature-detection code `if (typeof window !== "undefined")` likhta hai (SSR/Node mein `window` exist nahi karta). Note: `let`/`const` TDZ mein `typeof` bhi throw karta hai — ye exception sirf genuinely undeclared names ke liye hai.
+
+### `Array.isArray(x)` — arrays ka sahi check
+
+```javascript
+Array.isArray([]);       // true
+Array.isArray([1, 2]);   // true
+Array.isArray({});       // false
+Array.isArray("abc");    // false
+Array.isArray(null);     // false
+
+// typeof se: typeof [] === "object" -- useless
+// x.length se: "abc".length bhi hai, {length: 3} bhi -- unreliable
+```
+
+`Array.isArray` cross-realm bhi kaam karta hai (iframe se aaya array bhi detect hota hai), `instanceof Array` nahi.
+
+### `instanceof` — prototype chain check
+
+```javascript
+[] instanceof Array;         // true
+[] instanceof Object;        // true   <- Array ka prototype chain Object tak jaata hai
+new Date() instanceof Date;  // true
+(() => {}) instanceof Function; // true
+"abc" instanceof String;     // false  <- primitive, wrapper object nahi
+```
+
+`x instanceof C` poochta hai: "kya `C.prototype` `x` ki prototype chain mein kahin hai?".
+
+**`instanceof` ka bada problem — realms:** har iframe / worker / Node `vm` context ka apna `Array`, apna `Object` hota hai. Ek iframe se aaya array `mainWindow.Array` ka instance **nahi** hai:
+
+```javascript
+const iframeArray = iframe.contentWindow.eval("[1, 2, 3]");
+iframeArray instanceof Array;      // false  <- alag realm ka Array
+Array.isArray(iframeArray);        // true   <- realm-safe
+```
+
+Isliye library code arrays ke liye `Array.isArray`, aur errors ke liye duck-typing/`toString` use karta hai, `instanceof` nahi.
+
+### `Object.prototype.toString.call(x)` — the precise tag
+
+Har built-in ka ek internal `[[Class]]`-style tag hota hai jo `Object.prototype.toString` expose karta hai:
+
+```javascript
+const tag = x => Object.prototype.toString.call(x).slice(8, -1);
+
+tag([]);            // "Array"
+tag({});            // "Object"
+tag(null);          // "Null"
+tag(undefined);     // "Undefined"
+tag(42);            // "Number"
+tag("s");           // "String"
+tag(new Date());    // "Date"
+tag(/re/);          // "RegExp"
+tag(new Map());     // "Map"
+tag(() => {});      // "Function"
+tag(NaN);           // "Number"   <- NaN bhi Number tag
+```
+
+Ye realm-safe hai aur `typeof` se zyada types distinguish karta hai. Cost: thoda verbose, aur `NaN`/`Infinity` ko "Number" hi kehта hai (unhe alag se check karo).
+
+### Practical checks — ye rakho
+
+```javascript
+// Array?
+Array.isArray(x)
+
+// Plain object? (not array, not null, not Date, not Map...)
+const isPlainObject = x =>
+  Object.prototype.toString.call(x) === "[object Object]";
+
+// null?
+x === null
+
+// Usable number? (number type AND not NaN)
+typeof x === "number" && Number.isFinite(x)   // Infinity bhi reject
+// ya NaN allow-nahi par Infinity allow:
+typeof x === "number" && !Number.isNaN(x)
+
+// Function?
+typeof x === "function"
+
+// Undeclared global (feature detection)?
+typeof SomeGlobal !== "undefined"
+```
+
+### Ek chhota `typeOf(x)` helper
+
+```javascript
+function typeOf(x) {
+  if (x === null) return "null";
+  if (Array.isArray(x)) return "array";
+  const t = typeof x;
+  if (t !== "object") return t;               // number/string/boolean/function/...
+  return Object.prototype.toString
+    .call(x).slice(8, -1).toLowerCase();       // "date", "map", "regexp", "object"
+}
+
+typeOf([]);          // "array"
+typeOf(null);        // "null"
+typeOf(new Date());  // "date"
+typeOf(42);          // "number"
+typeOf(() => {});    // "function"
+```
+
+### Simple real-life analogy
+
+- `typeof` = ek mota-mota category label — "ye ek container hai" (`"object"`) — par ye nahi batata dabba hai, thaili hai ya box.
+- `Array.isArray` = specifically poochna "kya ye thaili (array) hai?".
+- `Object.prototype.toString.call` = container ke andar chhupa hua manufacturer's tag padhна — "Array", "Map", "Date".
+- `instanceof` = poochna "kya ye is particular factory (realm) mein bana?" — doosri factory ka same product "no" bol deta hai.
+
+### Day-to-day use
+
+- API response validate: `Array.isArray(data.items)` before `.map`.
+- Polymorphic args: `if (typeof arg === "string") arg = JSON.parse(arg)`.
+- SSR guards: `if (typeof window !== "undefined")` before DOM access.
+- Config normalize: value string/number/array — teeno ke liye alag branch.
+- Number guard: `typeof n === "number" && Number.isFinite(n)` before math.
+
+### Kab `typeof` use karna chahiye
+
+- Primitives distinguish karne ke liye — `"string"`, `"number"`, `"boolean"`, `"function"`, `"undefined"`, `"bigint"`, `"symbol"`.
+- Undeclared name check (feature detection) — yaha `typeof` **hi** kaam karta hai.
+- Quick "function hai kya" — `typeof x === "function"` reliable hai.
+
+### Kab `typeof` use nahi karna chahiye
+
+- `null` check — `typeof null` `"object"` hai. `x === null` use karo.
+- Array vs object — dono `"object"`. `Array.isArray` use karo.
+- Specific built-in (Date, Map, RegExp) identify karna — `Object.prototype.toString.call`.
+- "Empty hai kya" — `typeof` size nahi batata; `.length` / `Object.keys` use karo.
+
+### Pros and cons
+
+**`typeof`**
+
+- **Pros** — operator (fast, no call), undeclared-safe, primitives ke liye reliable, kabhi throw nahi karta (declared names pe).
+- **Cons** — `null` bug, sab reference types `"object"`, granularity kam.
+
+**`Object.prototype.toString.call`**
+
+- **Pros** — realm-safe, bahut se built-ins distinguish, `null`/`undefined` bhi handle.
+- **Cons** — verbose, `NaN`/`Infinity` ko "Number", custom classes ko "Object" (unless `Symbol.toStringTag` set ho).
+
+**`instanceof`**
+
+- **Pros** — custom classes ke liye natural (`err instanceof AppError`), inheritance-aware.
+- **Cons** — cross-realm fail, primitives pe hamesha `false`, prototype-chain manipulation se fool ho sakta hai.
+
+### Alternatives
+
+- **`Array.isArray`** — arrays ke liye, hamesha isse.
+- **`Number.isFinite` / `Number.isNaN` / `Number.isInteger`** — number ki quality checks.
+- **`Symbol.toStringTag`** — apni class ka `toString` tag customize karne ke liye.
+- **Zod / Yup / io-ts** — runtime schema validation, manual type-checking ki jagah (API boundaries pe).
+- **TypeScript type guards** — `x is Foo` predicates + compile-time narrowing.
+
+### Interview mein "Array kaise check karoge?"
+
+> "`Array.isArray(x)` — ye single reliable tarika hai. `typeof x` `\"object\"` deta hai jo array aur plain object mein farak nahi karta. `x instanceof Array` zyada tar chalta hai par cross-realm fail ho jata hai — iframe ya worker se aaya array `instanceof Array` `false` deta hai jabki `Array.isArray` `true`. `x.length` check karna galat hai kyunki strings aur `{length: 0}` jaise objects bhi `length` rakhte hain. General type-checking ke liye main `typeof` primitives ke liye, `x === null` null ke liye, aur `Object.prototype.toString.call(x)` Date/Map/RegExp jaise built-ins ke liye use karta hoon."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`typeof` kabhi `ReferenceError` nahi deta — declared variables pe hamesha ek valid string deta hai — **par** `let`/`const` ke TDZ mein `typeof x` bhi throw karta hai. "typeof always safe" sirf genuinely undeclared names ke liye sach hai.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Next.js / SSR frameworks">
+
+Har SSR framework (Next.js, Remix, Astro) mein `typeof window !== "undefined"` ek ubiquitous guard hai. Server pe component render hote waqt `window`, `document`, `localStorage` exist nahi karte — inhe seedha reference karna `ReferenceError` deta aur poora page crash ho jata. `typeof` undeclared-safe hone ki wajah se ye check possible hai. Libraries jaise `react-use` aur analytics SDKs isi pattern se browser-only code ko gate karti hain.
+
+</RealWorld>
+
+<RealWorld company="Lodash / utility libraries">
+
+Lodash ke `_.isArray`, `_.isPlainObject`, `_.isDate`, `_.isRegExp` — ye sab internally `Object.prototype.toString.call(x)` (aur `Array.isArray` jaha available) pe based hain, `instanceof` pe nahi. Reason: Lodash ka code kisi bhi realm mein chal sakта hai (iframes, jsdom, Node workers), aur `instanceof Array` un contexts mein cross-realm arrays pe `false` de deta hai. Ye libraries duck-typing + `toString` tag ko realm-safe type detection ka standard bana chuki hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- `typeof` sirf **8** possible strings deta hai: number, string, boolean, undefined, bigint, symbol, function, object.
+- `typeof null` -> `"object"` — **1** permanent historical bug.
+- Reference types (`[]`, `{}`, `Date`, `Map`, `RegExp`) — sab `typeof` pe `"object"`; `typeof` unme se **0** distinguish karta hai.
+- `Array.isArray` **ES5** (2009); realm-safe. `Object.is`/`Number.isNaN`/`Number.isFinite` **ES2015**.
+- `Object.prototype.toString.call(x)` — `"[object Array]"` jaise tags; useful part `.slice(8, -1)`.
+- `instanceof` cross-realm pe fail — har iframe/worker ka apna `Array`/`Object` constructor.
+- `typeof` on TDZ `let`/`const` -> **throws** (the one case it's not safe).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Common: "Array kaise check karoge?", "`typeof null` kya deta hai aur kyun?", "`typeof` kab `instanceof` se better?".
+
+Model answer ka shape:
+
+1. **`typeof` ka scope** — "Primitives ke liye reliable; `null` aur sab objects pe `\"object\"`."
+2. **`null`** — "`typeof null === \"object\"`, historical bug — `x === null` se check."
+3. **Array** — "`Array.isArray(x)`, realm-safe; `instanceof Array` cross-realm fail."
+4. **Built-ins** — "`Object.prototype.toString.call(x)` -> `\"[object Date]\"` etc."
+5. **`typeof`'s superpower** — "Undeclared name check — `typeof x !== \"undefined\"` — ye sirf `typeof` kar sakта hai."
+
+Red flag: `Array.isArray` na jaanna aur `x.constructor === Array` ya `x.length !== undefined` propose karna; ya `typeof` ko `null` detect karne ke liye use karna.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`typeof x === "object"` se object check karna aur `null` bhool jaana.** `typeof null` `"object"` hai, to `null` is check ko pass karta hai aur agli line `null.prop` crash. Pehle `x !== null` guard karo: `if (x !== null && typeof x === "object")`.
+
+</Mistake>
+
+<Mistake>
+
+**`x instanceof Array` se array check karna.** Same-realm mein chalta hai, par iframe/worker/Node-vm se aaya array pe `false`. `Array.isArray(x)` hamesha sahi. `instanceof` sirf apni-hi-code ki custom classes ke liye rakho.
+
+</Mistake>
+
+<Mistake>
+
+**`arr.length` se "array hai kya" infer karna.** `"hello".length` `5` hai, `{ length: 3 }` bhi valid object hai, `function(a,b){}.length` `2` hai. `length` property array-exclusive nahi. `Array.isArray(x)` use karo.
+
+</Mistake>
+
+<Mistake>
+
+**`typeof x === "number"` ke baad `NaN`/`Infinity` handle na karna.** `typeof NaN` `"number"` hai — to check pass ho jata hai aur `NaN` calculations mein leak karta hai. `typeof x === "number" && Number.isFinite(x)` use karo agar real usable number chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**Undeclared variable ko `if (someVar)` se check karna.** Agar `someVar` declare hi nahi hua, `if (someVar)` `ReferenceError` deta hai — check chalne se pehle hi crash. `if (typeof someVar !== "undefined")` — sirf `typeof` undeclared name pe safe hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Value ka type check karna hai"] --> B{"Kya check?"}
+    B -->|"Primitive kaun sa (string/number/boolean/function/symbol/bigint)"| C["typeof x === '...'"]
+    B -->|"null hai?"| D["x === null  (typeof null is 'object' -- trap)"]
+    B -->|"Array hai?"| E["Array.isArray(x)  (realm-safe; instanceof Array nahi)"]
+    B -->|"Plain object hai?"| F["Object.prototype.toString.call(x) === '[object Object]'"]
+    B -->|"Date / Map / RegExp / built-in?"| G["Object.prototype.toString.call(x)"]
+    B -->|"Usable number (not NaN/Infinity)?"| H["typeof x === 'number' && Number.isFinite(x)"]
+    B -->|"Undeclared global (feature detect)?"| I["typeof X !== 'undefined'"]
+    B -->|"Meri apni class ka instance?"| J["x instanceof MyClass"]
+`}
+  caption="typeof primitives ke liye; null/array/built-ins ke apne sahi checks hain; instanceof sirf apni classes ke liye."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `typeof` -> 8 strings: number, string, boolean, undefined, bigint, symbol, function, object.
+- `typeof null` -> `"object"` (bug). Check null with `x === null`.
+- `typeof []` / `typeof {}` / `typeof new Date()` -> all `"object"` — no distinction.
+- **Array check: `Array.isArray(x)`** — realm-safe. Never `instanceof Array` or `.length`.
+- `typeof x === "function"` — reliable.
+- `typeof` on an **undeclared** name is safe (`typeof win !== "undefined"`) — its unique superpower.
+- `typeof` on TDZ `let`/`const` **throws** — the one unsafe case.
+- `Object.prototype.toString.call(x)` -> `"[object Date]"`, `"[object Map]"`, `"[object Null]"` — realm-safe, granular.
+- Usable number: `typeof x === "number" && Number.isFinite(x)` (rejects `NaN` and `Infinity`).
+- `instanceof` — prototype-chain check; great for your own classes, breaks cross-realm.
+- Plain object: `Object.prototype.toString.call(x) === "[object Object]"`.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Bina chalaye batao: `typeof null`, `typeof []`, `typeof NaN`, `typeof function(){}`, `typeof undefinedGlobalName`, `Array.isArray("abc")`, `Object.prototype.toString.call(new Date())`.
+
+**Medium:** Ek `describe(x)` likho jo return kare: `"array"` for arrays, `"null"` for null, `"date"` for Date, `"nan"` for `NaN`, warna `typeof x`. `Array.isArray`, `x === null`, `Number.isNaN`, aur `Object.prototype.toString.call` sabka sahi use dikhao.
+
+**Bada:** Ek `assertShape(obj, shape)` mini-validator likho jaha `shape` ek object hai like `{ id: "number", name: "string", tags: "array", meta: "object" }`. Har key ke liye `obj` ki value ka type check karo (correct array/null/object handling ke saath) aur mismatches ki list return karo. Phir batao tumne `tags` ke liye `typeof` kyun nahi use kiya.
+
+</Callout>

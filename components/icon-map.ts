@@ -65,6 +65,10 @@ import {
   Package,
   Wrench,
   Waves,
+  Variable,
+  Brackets,
+  Parentheses,
+  Split,
   type LucideIcon,
 } from "lucide-react";
 
@@ -81,6 +85,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Workflow,
   Component,
   Hexagon,
+  Braces,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -156,4 +161,9 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "buffers-streams-files": Waves,
   "http-and-events": Globe,
   "concurrency-and-performance": Gauge,
+  "variables-and-types": Variable,
+  "objects-and-arrays": Brackets,
+  functions: Parentheses,
+  "control-flow": Split,
+  "async-and-modules": RefreshCw,
 };

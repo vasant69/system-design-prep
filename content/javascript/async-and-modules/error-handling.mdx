@@ -1,0 +1,318 @@
+---
+slug: "error-handling"
+title: "Error Handling"
+section: "javascript"
+module: "async-and-modules"
+order: 6
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["async-await"]
+tags: ["javascript", "error-handling", "try-catch", "exceptions", "async", "custom-errors"]
+englishDefinition: "Error handling in JavaScript is how a program reacts when something goes wrong instead of crashing blindly. The main tools are the try/catch/finally statement, the throw keyword, and the built-in Error type with subclasses like TypeError and RangeError. Synchronous errors are caught by try/catch directly; asynchronous errors are only caught if you await the failing promise inside the try block. The guiding principle is to catch an error only where you can actually do something useful about it, and otherwise let it propagate up."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+Error handling in JavaScript is how your program reacts when something goes wrong instead of crashing blindly. The main tools are the **`try` / `catch` / `finally`** statement, the **`throw`** keyword, and the built-in **`Error`** type with subclasses like `TypeError` and `RangeError`. Synchronous errors are caught by `try/catch` directly; asynchronous errors are only caught if you **`await`** the failing promise inside the `try` block. The guiding principle: catch an error only where you can actually **do something** about it — retry, fall back, show the user a message — otherwise let it bubble up.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Har real app mein cheezein fail hoti hain — network gir jaata hai, user galat input deta hai, JSON toota hua aata hai. Error handling wo skill hai jo decide karti hai ki failure ke baad app crash karega, chup-chaap galat data dikhayega, ya gracefully sambhal lega. Ye interview mein isliye poocha jaata hai kyunki achha error handling junior aur senior code ka sabse saaf farak hai.
+
+### Ye kya hai — try / catch / finally aur throw
+
+Char building blocks hain:
+
+- **`throw`** — ek error "phenkna". Execution wahi ruk jaata hai aur nearest `catch` dhoondha jaata hai.
+- **`try`** — wo block jismein risky code hai.
+- **`catch (err)`** — jab `try` ke andar kuch throw hota hai, control yahaan aata hai, `err` object ke saath.
+- **`finally`** — chahe error aaye ya na aaye, ye block hamesha chalta hai (cleanup ke liye — file close, spinner hide).
+
+```javascript
+try {
+  const data = riskyParse(input);
+  return data;
+} catch (err) {
+  console.error("parse failed:", err.message);
+  return null;
+} finally {
+  hideSpinner();
+}
+```
+
+### Ye kyun exist karta hai
+
+Bina exceptions ke, har function ko apni failure ek special return value se batani padti (`-1`, `null`, `false`), aur har caller ko manually check karna padta. Ek jagah check bhoolo — bug. `throw` failure ko call stack ke upar automatically propagate kar deta hai jab tak koi use handle na kare, aur `Error` object ke saath ek **stack trace** deta hai jo batata hai exactly kahaan tuta.
+
+### Internally kaise kaam karta hai
+
+Jab `throw` chalta hai, JS engine current function ko turant chhod deta hai aur call stack ko "unwind" karta hai — har frame ko pop karte hue ek aisa `try` dhoondhta hai jiska `catch` abhi active ho. Mil gaya to `catch` chalta hai; nahi mila to error "uncaught" ho jaata hai aur browser console / Node process use report karta hai.
+
+`Error` object jab `new Error("msg")` se banta hai, engine us waqt ka stack snapshot leke `.stack` property mein daal deta hai. Iseliye **string throw mat karo** — `throw "kuch galat"` mein na `.message` hoti hai na `.stack`, debugging andhera ho jaata hai.
+
+```javascript
+throw new Error("User not found");   // sahi -- .message + .stack
+throw "User not found";              // galat -- sirf ek string, koi trace nahi
+```
+
+### try/catch async ke saath — sabse bada trap
+
+`try/catch` sirf us error ko pakadta hai jo synchronously us block ke andar throw ho, **ya** jise tum `await` karte ho.
+
+```javascript
+// Ye PAKDA jaata hai -- await ki hui rejection
+try {
+  const res = await fetch(url);
+} catch (err) {
+  // network fail yahaan aata hai
+}
+
+// Ye NAHI pakda jaata -- bare promise, await nahi kiya
+try {
+  fetch(url); // rejection ke liye .catch() chahiye ya await
+} catch (err) {
+  // yahaan kabhi nahi aayega
+}
+
+// Ye BHI NAHI pakda jaata -- setTimeout callback alag tick pe chalta hai
+try {
+  setTimeout(() => {
+    throw new Error("boom"); // try block tab tak khatam ho chuka
+  }, 100);
+} catch (err) {
+  // yahaan kabhi nahi aayega -> uncaught exception
+}
+```
+
+Callback ke andar ka error ya bina-await promise `try/catch` ke dayre se bahar hai, kyunki jab wo code chalta hai tab tak `try` block ka execution poora ho chuka hota hai.
+
+### Built-in Error subclasses
+
+`Error` base hai. Engine specific galtiyon pe specific subclass throw karta hai:
+
+- **`TypeError`** — value ka type galat (`null.foo`, ek non-function ko call karna).
+- **`RangeError`** — value allowed range se bahar (`new Array(-1)`, recursion stack overflow).
+- **`SyntaxError`** — invalid code / invalid JSON (`JSON.parse("{bad}")`).
+- **`ReferenceError`** — aise variable ko access karna jo exist hi nahi karta.
+
+`catch` mein `err instanceof TypeError` se tum branch kar sakte ho.
+
+### Custom errors — apni typed errors banao
+
+```javascript
+class ValidationError extends Error {
+  constructor(message, field) {
+    super(message);
+    this.name = "ValidationError";
+    this.field = field;
+  }
+}
+
+try {
+  if (!email.includes("@")) {
+    throw new ValidationError("Invalid email", "email");
+  }
+} catch (err) {
+  if (err instanceof ValidationError) {
+    return res.status(400).json({ field: err.field, message: err.message });
+  }
+  throw err; // baaki sab upar bhejo
+}
+```
+
+- `super(message)` — base `Error` ko message deta hai, `.message` aur `.stack` set ho jaate hain.
+- `this.name = "ValidationError"` — warna `err.name` "Error" rehta hai aur logs mein confuse karta hai.
+- Fayda: **typed catch** (`instanceof`), aur error ka type seedha **HTTP status** pe map ho jaata hai (`ValidationError` -> 400, `NotFoundError` -> 404, baaki -> 500).
+
+### Rethrow karke context add karna
+
+Kabhi-kabhi tum error ko handle nahi kar sakte, par usmein useful info add kar sakte ho:
+
+```javascript
+try {
+  await db.saveOrder(order);
+} catch (err) {
+  throw new Error(`Failed to save order ${order.id}`, { cause: err });
+}
+```
+
+`{ cause: err }` — ES2022 ka feature. Naya error apna message deta hai, par `err.cause` mein original error (uska stack sameet) preserve rehta hai. Debugger dono dekh sakta hai.
+
+### Global nets — last resort, strategy nahi
+
+Jo error kahi handle nahi hua, use catch karne ke liye:
+
+- **Browser:** `window.onerror`, `window.addEventListener("unhandledrejection", ...)`
+- **Node:** `process.on("uncaughtException", ...)`, `process.on("unhandledRejection", ...)`
+
+Inka kaam sirf: error ko log/report karna (Sentry) aur Node mein process ko safely restart karna. Yahaan aake app ko "normal chalte rehna" try karna khatarnaak hai — state corrupt ho sakti hai. Ye safety net hai, plan nahi.
+
+### Kab catch karna chahiye
+
+- Jab tum failure pe kuch **useful** kar sakte ho: retry, cached/default value, alternate API, user ko clear message.
+- Boundary points pe: HTTP route handler, ek background job ka top, UI ka error boundary.
+- Jab error type ko translate karna ho (DB error -> domain error).
+
+### Kab catch NAHI karna chahiye
+
+- Sirf `console.log(err)` karke aage badhna aur function ko `undefined` return karne dena — ye error ko **nigal** leta hai, caller ko lagta hai sab theek hai.
+- Har chhote function ke andar defensive `try/catch` — code shor bhara ho jaata hai. Ek jagah, boundary pe, catch karo.
+- `catch (err) {}` — empty catch. Ye sabse bura hai; bug pura chhup jaata hai.
+
+### Pros and cons
+
+**Exceptions + try/catch**
+
+- Failure automatically propagate hoti hai — har caller manually check nahi karta.
+- Stack trace se root cause turant milta hai.
+- `finally` guaranteed cleanup deta hai.
+
+**Cons / dhyan rakhne layak**
+
+- Async ke saath rules subtle hain (await zaroori).
+- Over-catching se errors chhup jaate hain.
+- `try` block ke andar V8 optimizations pehle kam thi (aaj practically non-issue).
+
+### Alternatives
+
+- **Result / Either objects** (`{ ok: true, value }` ya `{ ok: false, error }`) — Rust/Go style; error ko value ki tarah return karo. TypeScript ke sakeh popular, forces caller to handle.
+- **`.catch()` chaining** — promises ke saath `try/catch` ke bajaye `.then(...).catch(...)`.
+- **Error boundaries (React)** — component tree mein render errors ke liye declarative catch.
+
+### Interview mein "Tumhari error handling strategy kya hai?"
+
+> "Main error wahi catch karta hoon jahaan mere paas ek real recovery action hai — retry, fallback value, ya user ko dikhane layak message. Baaki har jagah error ko bubble karne deta hoon taaki wo ek central boundary pe pahunche — HTTP layer pe wahaan error type ko status code pe map karta hoon (`ValidationError` -> 400, unknown -> 500) aur Sentry pe log karta hoon. Custom error classes banata hoon `Error` extend karke taaki `instanceof` se typed catch ho sake. Async code mein hamesha `await` karta hoon try block ke andar, kyunki bina-await promise ya `setTimeout` callback ka error `try/catch` pakadta hi nahi. `throw` hamesha `Error` object ka, kabhi string ka nahi, warna stack trace kho jaata hai. `process.on('uncaughtException')` jaise global handlers sirf logging aur safe restart ke liye — recovery strategy nahi."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`try/catch` `await` ki hui rejection ko pakadta hai, par bare `promise` (bina await) ya `setTimeout(() => { throw ... })` ke andar ka error kabhi nahi. Async callback ke andar error handle karna hai to error ko usi callback ke andar handle karo.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Express / Node API">
+
+Ek typical Express app mein har route handler `try/catch` mein wrapped hota hai, ya ek `asyncHandler` wrapper use hota hai jo rejected promise ko `next(err)` pe forward kar deta hai. Sabse aakhir mein ek single error-handling middleware `(err, req, res, next)` hota hai jo `err instanceof ValidationError` check karke `400`, `err instanceof NotFoundError` pe `404`, aur baaki sab pe `500` bhejta hai — plus error ko Sentry pe log karta hai. Individual handlers apna error khud swallow nahi karte; wo sirf domain-specific errors throw karte hain aur central middleware unhe HTTP responses mein translate karta hai.
+
+</RealWorld>
+
+<RealWorld company="React frontend">
+
+React mein render ke dauran thrown error poora component tree unmount kar deta hai — user ko blank white screen. Iseliye teams **Error Boundary** components use karti hain (`componentDidCatch` / `getDerivedStateFromError`) jo apne neeche ka subtree fail hone pe ek fallback UI dikhate hain ("Kuch galat ho gaya, refresh karein"). Data-fetching errors alag handle hote hain — `try/catch` around `await fetch` ya React Query ka `error` state — kyunki wo render errors nahi, async errors hain aur boundary unhe nahi pakadta.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Native error subclasses jo tumhe pata hone chahiye: **7** — `Error`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`.
+- `error.cause` (constructor ka second arg `{ cause }`) **ES2022** mein standardize hua.
+- Optional catch binding — `catch {` bina `(err)` ke — **ES2019** se allowed.
+- `finally` block **hamesha** chalta hai: normal completion pe, `throw` pe, aur `try`/`catch` ke andar `return` pe bhi.
+- Ek `try` ke saath `catch` ya `finally` mein se **kam se kam ek** hona zaroori hai — akela `try` `SyntaxError` deta hai.
+- Node mein `unhandledRejection` future versions mein process ko **crash** karwa sakta hai (warning se error mode ki taraf shift hua hai).
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye topic "output kya aayega" trick questions aur "tum kaise design karoge" open questions dono mein aata hai. Interviewer check karta hai: (1) sync vs async catching rules, (2) string vs Error object throw, (3) kya tum custom errors banana jaante ho, (4) philosophy — kahaan catch karna chahiye.
+
+Achhe jawaab ka shape:
+
+1. **Mechanism** — "`throw` stack unwind karta hai jab tak matching `catch` na mile; `Error` object stack trace deta hai."
+2. **Async rule** — "`try/catch` sirf `await` ki hui rejection pakadta hai; bare promise aur `setTimeout` callback nahi."
+3. **Custom errors** — "`class X extends Error`, `super(msg)`, `this.name` set karo — typed catch aur HTTP status mapping ke liye."
+4. **cause** — "rethrow karte waqt `{ cause: original }` se context add karta hoon."
+5. **Philosophy** — "catch wahi jahaan recovery possible hai; warna bubble karne do; global handlers sirf log + restart."
+
+Red flag: har function ko `try/catch` mein wrap karna aur `catch` mein sirf `console.log` — ye error swallowing hai, caller ko failure ka pata hi nahi chalta.
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**String throw karna.** `throw "Something failed"` mein na `.message` hoti hai na `.stack`. `catch` mein `err.message` `undefined` aata hai aur debugger ke paas koi trace nahi. Hamesha `throw new Error("...")` ya koi subclass.
+
+</Mistake>
+
+<Mistake>
+
+**Async error ko sync `try/catch` se pakadne ki koshish.** `try { doAsyncThing(); } catch {}` — agar `doAsyncThing` ek promise return karta hai aur tumne `await` nahi kiya, rejection `try/catch` ke bahar chali jaati hai aur "unhandled rejection" ban jaati hai. `await` lagao ya `.catch()` chain karo.
+
+</Mistake>
+
+<Mistake>
+
+**`setTimeout` / event listener callback ke andar throw karke bahar catch expect karna.** Wo callback ek naye tick pe chalta hai jab surrounding `try` khatam ho chuka. Error uncaught ho jaata hai. Callback ke andar hi handle karo.
+
+</Mistake>
+
+<Mistake>
+
+**Empty catch — `catch (err) {}`.** Ye error ko poori tarah chhupa deta hai. Program aage badhta hai galat/aadhoore state ke saath aur asli crash baad mein kisi unrelated jagah aata hai, jise debug karna painful hota hai. Kam se kam log karo aur decide karo: recover ya rethrow.
+
+</Mistake>
+
+<Mistake>
+
+**Har jagah catch karke error ko swallow karna instead of ise boundary tak jaane dena.** Deep helper function mein `catch` karke `null` return karna caller ko force karta hai har jagah `null` check karne pe, aur asli reason kho jaata hai. Error ko upar jaane do jahaan uska matlab samajhne wala code hai.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Error ho sakta hai yahaan"] --> B{"Is jagah pe koi useful action le sakte ho?"}
+    B -->|"Haan -- retry / fallback / user message"| C["try/catch yahaan; recover"]
+    B -->|"Nahi, par context add kar sakte ho"| D["catch -> throw new Error(msg, { cause: err })"]
+    B -->|"Nahi"| E["Catch mat karo -- bubble hone do"]
+    E --> F["Central boundary: HTTP layer / error middleware / error boundary"]
+    F --> G["Error type -> status code map + log to Sentry"]
+    D --> F
+`}
+  caption="Catch sirf wahaan jahaan ek concrete recovery action hai; warna error ko central boundary tak bubble hone do."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- `try` ke saath `catch` ya `finally` mein se ek zaroori; `finally` hamesha chalta hai (return pe bhi).
+- Hamesha `throw new Error(...)` — string throw karne se `.message` aur `.stack` kho jaate hain.
+- Built-in subclasses: `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError` — `instanceof` se branch karo.
+- Custom error: `class X extends Error { constructor(m){ super(m); this.name = "X"; } }` — typed catch + HTTP status mapping.
+- `try/catch` pakadta hai: sync throw + `await` ki hui rejection. Nahi pakadta: bare promise, `setTimeout`/event-callback ke andar ka throw.
+- Rethrow with context: `throw new Error("higher-level msg", { cause: originalErr })` (ES2022).
+- Global handlers (`window.onerror`, `unhandledrejection`, `process.on('uncaughtException')`) sirf log + safe restart — recovery strategy nahi.
+- Philosophy: catch jahaan recovery possible; warna bubble karne do; empty catch kabhi nahi.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Predict karo output: `try { setTimeout(() => { throw new Error("x"); }, 0); } catch (e) { console.log("caught"); }` — "caught" print hoga ya nahi? Kyun?
+
+**Medium:** Ek function `fetchUser(id)` likho jo `await fetch(...)` karta hai. `try/catch` add karo jo: network error pe 3 baar retry kare (exponential backoff), 404 pe `null` return kare, baaki errors ko rethrow kare. Har branch pe comment likho ki tum wahaan catch kyun kar rahe ho.
+
+**Bada:** Do custom error classes banao — `ValidationError` aur `NotFoundError`, dono `Error` extend karte hue with `this.name` set. Ek chhota Express-style handler likho jo inhe throw kare, aur ek central `handleError(err, res)` function jo `instanceof` se `400` / `404` / `500` decide kare aur `err.cause` bhi log kare agar maujood ho.
+
+</Callout>

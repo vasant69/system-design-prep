@@ -1,0 +1,287 @@
+---
+slug: "promises"
+title: "Promises"
+section: "javascript"
+module: "async-and-modules"
+order: 3
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["callbacks-and-callback-hell"]
+tags: ["javascript", "async", "promises", "then-catch", "promise-all", "fundamentals"]
+englishDefinition: "A Promise is an object representing a value that will be available later. It has three states: pending, then either fulfilled or rejected, and it settles exactly once and permanently. You consume it with .then (on fulfilment), .catch (on rejection), and .finally (always). Each .then returns a new promise, so calls chain: returning a value passes it to the next .then, returning a promise waits for it, and throwing skips ahead to the next .catch. Static combinators handle multiple promises: Promise.all fails fast and returns an array of results, Promise.allSettled never rejects and returns status objects, Promise.race settles with the first to settle, and Promise.any resolves with the first to fulfil."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+A **Promise** is an object representing a value that will exist **later**. It has three states: **pending**, then either **fulfilled** or **rejected** — and it **settles once, permanently**. You consume it with `.then(onFulfilled)`, `.catch(onRejected)`, and `.finally()`. Every `.then` returns a **new** promise, so calls **chain**: return a value and the next `.then` receives it; return a promise and the chain waits for it; `throw` and it skips to the next `.catch`. Static combinators handle groups: `Promise.all` (fail-fast, array of results), `Promise.allSettled` (never rejects, status objects), `Promise.race` (first to settle), `Promise.any` (first to fulfil).
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Callback hell ka jawaab Promises hain. Ek Promise ek **future value ka container** hai — abhi khali, baad mein bhar jayega (ya fail ho jayega). Isse async code flat, chainable, aur ek jagah error-handled ho jata hai.
+
+### Ye kya hai — teen states wala object
+
+`Promise` ek object hai jo teen mein se ek state mein hota hai:
+
+- **pending** — abhi kaam chal raha, result nahi aaya.
+- **fulfilled** — kaam successful, ek value ke saath settle hua.
+- **rejected** — kaam fail, ek reason (error) ke saath settle hua.
+
+Ek baar **settle** (fulfilled ya rejected) hone ke baad state **kabhi nahi badalti** — aur settle **sirf ek baar** hota hai. Ye guarantee callback ke "inversion of control" problem ko fix karti hai.
+
+```javascript
+const p = new Promise((resolve, reject) => {
+  setTimeout(() => resolve("data aa gaya"), 1000);
+});
+
+console.log(p); // Promise { <pending> }
+p.then((value) => console.log(value)); // 1s baad: "data aa gaya"
+```
+
+- `new Promise(executor)` — `executor` **synchronously turant** chal jata hai. Usme `resolve`/`reject` do functions milte hain.
+- `resolve(value)` call karo -> promise fulfilled. `reject(err)` -> rejected.
+- Usually tum `new Promise` khud nahi likhte — `fetch()`, `fs.promises.readFile()` already Promise dete hain. `new Promise` mainly callback API ko wrap karne ke liye.
+
+### Ye kyun exist karta hai
+
+Callbacks ki teen problems: (1) nested sequential steps = pyramid, (2) error handling har level pe repeat + `try/catch` kaam nahi karta, (3) inversion of control — library pe trust. Promise teeno solve karta hai:
+
+1. **Chaining** — `.then` ek naya promise return karta hai, to steps side-by-side chain hote hain, nest nahi.
+2. **Ek `.catch`** — chain mein kahin bhi error ho, wo neeche `.catch` tak propagate hota hai.
+3. **Guaranteed single settle** — Promise spec ke mutabik ek hi baar settle hoga, chahe tum `resolve` do baar call karo.
+
+### Internally kaise kaam karta hai — chaining aur error propagation
+
+Har `.then(cb)` ek **naya** promise return karta hai. Us naye promise ki value depend karti hai `cb` kya karta hai:
+
+```javascript
+fetchUser(id)
+  .then((user) => {
+    return user.orgId;           // plain value -> agle .then ko "orgId" milta hai
+  })
+  .then((orgId) => {
+    return fetchOrg(orgId);      // promise return -> chain uska WAIT karta hai, uski value unwrap hoti hai
+  })
+  .then((org) => {
+    console.log(org.name);
+    // kuch return nahi -> agle .then ko `undefined` milta hai
+  })
+  .catch((err) => {
+    // upar kisi bhi step ka reject YA throw yaha aata hai
+    console.error("kahin bhi fail hua:", err.message);
+  })
+  .finally(() => {
+    // settle kaise bhi ho, ye chalta hai (spinner band karo)
+  });
+```
+
+- `.then` mein **plain value return** -> next `.then` ko wahi value.
+- `.then` mein **Promise return** -> chain ruk kar us Promise ka wait karta hai, phir uski resolved value next `.then` ko deta hai. (Ye "flattening" callback hell ko khatam karta hai.)
+- `.then` mein **`throw`** ya returned promise **reject** -> beech ke `.then` skip, seedha next `.catch`.
+- `.then` mein **kuch return nahi** -> next `.then` ko `undefined`.
+- `.catch` khud bhi ek `.then(undefined, onRejected)` hai — aur wo bhi ek naya promise return karta hai, to `.catch` ke baad chain continue ho sakti hai.
+
+### Simple real-life analogy
+
+Promise = restaurant ka **buzzer/token** jo order dene pe milta hai.
+
+- **pending** — buzzer chup, khana ban raha.
+- **fulfilled** — buzzer bajta hai, jaake plate lo (`.then`).
+- **rejected** — staff aake bolta hai "ye dish khatam" (`.catch`).
+
+Token ek hi baar bajega. Aur tum token ke saath "aage ka plan" bata sakte ho — "buzzer baje to plate lena, phir table pe le jana, phir khana" — ye `.then` chain hai. Kuch bhi galat ho (`.catch`), aur "chahe kuch bhi ho, bill to dena hi hai" (`.finally`).
+
+### Combinators — multiple promises ek saath
+
+| Combinator | Kab settle | Result | Kab use |
+|---|---|---|---|
+| `Promise.all([...])` | Sab fulfilled -> resolve; **koi ek** reject -> turant reject | Array of values (order preserved) | Sab kuch chahiye, koi ek fail = poora fail (dashboard ke 3 zaroori API) |
+| `Promise.allSettled([...])` | **Sab** settle hone par (kabhi reject nahi hota) | Array of `{ status, value }` / `{ status, reason }` | Sab try karna hai, partial success OK (10 users ko notification bhejna) |
+| `Promise.race([...])` | **Pehla jo bhi settle** ho (fulfil ya reject) | Us pehle ka value/reason | Timeout pattern (`race([fetchX, timeout(5000)])`) |
+| `Promise.any([...])` | **Pehla jo fulfil** ho; sab reject huye to `AggregateError` | Us pehle fulfilled ka value | Multiple mirrors/CDNs — jo pehle de de |
+
+```javascript
+// fail-fast — ek bhi API 500 de to poora catch
+const [user, orders, cart] = await Promise.all([
+  fetch("/user").then((r) => r.json()),
+  fetch("/orders").then((r) => r.json()),
+  fetch("/cart").then((r) => r.json()),
+]);
+
+// resilient — har result ka status alag dekho
+const results = await Promise.allSettled(userIds.map(sendEmail));
+const failed = results.filter((r) => r.status === "rejected");
+```
+
+### Day-to-day use
+
+- `fetch(url).then(r => r.json()).then(render).catch(showError)` — har API call.
+- `Promise.all` se ek page ke saare zaroori data parallel load.
+- `Promise.race` se fetch pe timeout lagana.
+- `element.animate(...).finished` — animation ke baad kuch karna.
+- Node: `fs/promises`, DB drivers, `fetch` (Node 18+) — sab Promise-based.
+
+### Kab Promise (raw `.then`) use karna chahiye
+
+- Fan-out parallelism — `Promise.all(items.map(fetchOne))` ek one-liner mein.
+- Fire-and-collect jaha locals ki zaroorat nahi — `.then(render).catch(log)`.
+- Combinators (`all`/`race`/`any`/`allSettled`) — inka koi `await`-only equivalent nahi.
+- Library code jo Promise return karti hai.
+
+### Kab raw `.then` use nahi karna chahiye
+
+- Lambi sequential chain jaha har step ke locals agle mein chahiye — `async/await` zyada readable (agla topic).
+- Jab conditionally kuch steps skip karne hon — `.then` chain mein branching bhadda dikhta hai.
+- Jab `try/catch/finally` ke saath complex error recovery chahiye.
+
+### Common mistakes (Promise-specific)
+
+- **`.then` mein `return` bhoolna** — `.then(user => { fetchOrders(user.id); })` — chain us fetch ka wait **nahi** karti, next `.then` ko `undefined` milta hai. `return fetchOrders(...)` likho.
+- **`.catch` na lagana** — reject hone par "UnhandledPromiseRejection" warning (Node mein future mein process crash).
+- **Nesting instead of chaining** — `.then(a => { fetchB().then(b => {...}) })` — wapas pyramid. `return fetchB()` karke flat chain.
+- **Callbacks + Promises mix** — ek `new Promise` ke andar callback API, phir usme `resolve` bhoolna -> promise hamesha pending.
+- **`Promise.all` ko `allSettled` ki jagah use karna** — ek fail = sab lost, jabki tum partial results chahte the.
+
+### Interview mein "Promise ne callbacks ke upar kya better kiya?"
+
+> "Teen cheezen. Ek — chaining: har `.then` naya promise deta hai, to sequential steps flat chain hote hain, pyramid nahi banta. Do — centralized error handling: chain mein kahin bhi `throw` ya reject ho, wo ek `.catch` tak propagate hota hai, har level pe `if (err)` repeat nahi karna padta. Teen — guaranteed single settle: Promise spec ensure karta hai ki wo exactly ek baar settle ho, jo callback ki 'ho sakta hai library 0 ya 2 baar call kare' wali inversion-of-control problem hatata hai. Upar se `Promise.all`/`race`/`allSettled` jaise combinators multiple async operations ko compose karna trivial bana dete hain."
+
+</Hinglish>
+
+<Callout type="tip">
+
+`.then` mein `return` sabse common Promise bug hai. `return` ke bina chain us async step ka wait nahi karti — silently aage badh jati hai, aur error us step se "escape" kar jata hai (unhandled rejection).
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Browser fetch API">
+
+`fetch` deliberately Promise-based hai. Ek gotcha: `fetch` ka promise sirf **network failure** pe reject hota hai — `404` ya `500` HTTP response pe wo **fulfil** hota hai (`response.ok === false`). Isiliye real code `fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })` likhta hai — `throw` chain ke `.catch` tak propagate ho jata hai, exactly Promise error-propagation model ke mutabik.
+
+</RealWorld>
+
+<RealWorld company="Dashboards / React data loading">
+
+Ek dashboard jise 4 alag endpoints se data chahiye, `Promise.all([...])` se sabko parallel fire karta hai — total wait = sabse slow call, na ki sabka sum. Agar koi ek endpoint down ho aur poora dashboard useless ho jaye to `Promise.all` (fail-fast) theek hai. Lekin agar har widget independent hai (ek fail hone par baaki dikhne chahiye), to teams `Promise.allSettled` use karti hain aur har widget apna `rejected` state alag render karta hai.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Promise ke states = **3** (pending, fulfilled, rejected); settle **sirf 1 baar**, permanently.
+- Promises ES6 (**ES2015**) mein standard bane; `Promise.allSettled` **ES2020**; `Promise.any` **ES2021**.
+- `Promise.all` **fail-fast** hai — pehla reject turant poore ko reject karta hai (baaki chalte rehte hain, unke results discard).
+- `Promise.allSettled` **kabhi reject nahi** hota — hamesha fulfil hota hai `{status, value|reason}` objects ke array ke saath.
+- `.then` callbacks **microtask** queue mein jate hain — `setTimeout` (macrotask) se pehle chalte hain (event loop topic).
+- Ek settled promise pe `.then` lagao to callback abhi bhi **async** hi chalta hai (agla microtask), synchronously nahi.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Bahut high-frequency. Common forms: "Promise ke states?", "`.then` chaining kaise kaam karti hai?", "`Promise.all` vs `allSettled` vs `race`?", "output prediction with `.then` + `setTimeout`".
+
+Achhe jawaab ka shape:
+
+1. **States** — "pending -> fulfilled/rejected; settle once, permanent."
+2. **Consume** — "`.then` fulfil pe, `.catch` reject pe, `.finally` hamesha."
+3. **Chaining** — "har `.then` naya promise; value return -> pass; promise return -> wait; throw -> next `.catch`."
+4. **Propagation** — "ek `.catch` chain mein kahin bhi ka error pakadta hai."
+5. **Combinators** — "`all` fail-fast array; `allSettled` never rejects; `race` first settle; `any` first fulfil."
+
+Red flag: "`.then` ke andar `.then` nest karna" (chaining ka point hi miss), ya "`Promise.all` ek fail pe baaki cancel kar deta hai" (wo cancel nahi hota — bas result ignore hota hai).
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`.then` ke andar `return` bhoolna.** `getUser().then(u => { getOrders(u.id); }).then(orders => ...)` — doosra `.then` `orders` nahi, `undefined` pata hai, kyunki pehle `.then` ne kuch return nahi kiya. `return getOrders(u.id)` likho taaki chain uska wait kare aur value aage bahe.
+
+</Mistake>
+
+<Mistake>
+
+**`.catch` bilkul na lagana.** Reject hone par Node "UnhandledPromiseRejection" deta hai (aur naye Node mein process exit kar sakta hai); browser console mein error. Har promise chain ka ek terminal `.catch` (ya `try/catch` around `await`) hona chahiye.
+
+</Mistake>
+
+<Mistake>
+
+**Chaining ki jagah nesting.** `.then(a => { doB().then(b => { doC().then(c => ...) }) })` — Promises use karke bhi callback hell bana liya. Flat karo: `.then(a => doB()).then(b => doC()).then(c => ...)`.
+
+</Mistake>
+
+<Mistake>
+
+**`Promise.all` use karna jab `allSettled` chahiye.** 10 emails bhejne hain aur 1 fail hui — `Promise.all` turant reject, baaki 9 ka result tum kabhi nahi dekhte (bhej to di gayi, par tumhe status nahi mila). Partial success track karna ho to `allSettled`.
+
+</Mistake>
+
+<Mistake>
+
+**`new Promise` ke andar `resolve`/`reject` call karna bhoolna.** Agar koi code path `resolve` ya `reject` kabhi call nahi karta, wo promise **hamesha pending** rehta hai — `await` waha permanently hang, `.then` kabhi nahi chalta, koi error bhi nahi. Har branch mein settle karo.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Promise: pending"] -->|"resolve(v)"| B["fulfilled (v)"]
+    A -->|"reject(e) ya throw"| C["rejected (e)"]
+    B --> D[".then(onFulfilled) chalta hai"]
+    C --> E[".catch(onRejected) chalta hai"]
+    D --> F{"onFulfilled ne kya kiya?"}
+    F -->|"value return"| G["next .then ko value"]
+    F -->|"promise return"| H["chain wait kare, phir unwrap"]
+    F -->|"throw"| E
+    D --> I[".finally() — settle kaise bhi ho, chalta hai"]
+    E --> I
+`}
+  caption="pending se ek hi baar fulfilled/rejected; .then value/promise/throw ke hisaab se chain aage badhti hai; error neeche .catch tak propagate hota hai."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **States**: pending -> fulfilled | rejected. Settle **ek baar**, permanent.
+- **Consume**: `.then(onFulfilled)`, `.catch(onRejected)`, `.finally()` (hamesha).
+- Har `.then` ek **naya** promise return karta hai -> flat chaining.
+- `.then` mein: value return -> pass; promise return -> wait + unwrap; `throw` -> skip to `.catch`.
+- **Ek `.catch`** chain mein kahin bhi ke reject/throw ko pakadta hai (error propagation).
+- `Promise.all` — sab chahiye, **fail-fast**, array of values.
+- `Promise.allSettled` — **kabhi reject nahi**, `{status, value|reason}` array.
+- `Promise.race` — pehla jo settle ho (fulfil ya reject). Timeout pattern.
+- `Promise.any` — pehla jo **fulfil** ho; sab fail -> `AggregateError`.
+- `.then` callbacks **microtask** hote hain -> `setTimeout` se pehle.
+- Top bugs: `return` bhoolna, `.catch` na lagana, nesting, `all` vs `allSettled` galat.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Predict karo: `Promise.resolve(1).then(x => x + 1).then(x => { console.log(x); }).then(x => console.log(x));` — do logs kya honge aur doosra `undefined` kyun?
+
+**Medium:** `fetchUser(id)` aur `fetchPosts(userId)` fake banao (`setTimeout` + `resolve`). Ek `.then` chain likho jo user laaye, phir uske posts, phir pehle post ka title log kare — flat chain mein, ek `.catch` ke saath. Phir jaan-boojh kar ek step mein `return` hatao aur dekho output kaise tootта hai.
+
+**Bada:** 5 fake API calls banao jinme se 2 randomly reject hoti hain. Pehle `Promise.all` se run karo aur dekho ek fail poore ko kaise le doobta hai. Phir `Promise.allSettled` se run karo aur ek summary banao: kitne fulfilled, kitne rejected, aur rejected ke reasons. Do-teen line mein likho ki kis real scenario mein `all` sahi hai aur kis mein `allSettled`.
+
+</Callout>

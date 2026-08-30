@@ -1,0 +1,283 @@
+---
+slug: "the-event-loop"
+title: "The Event Loop"
+section: "javascript"
+module: "async-and-modules"
+order: 5
+difficulty: "intermediate"
+readingTime: 15
+prerequisites: ["promises"]
+tags: ["javascript", "async", "event-loop", "microtask", "macrotask", "fundamentals"]
+englishDefinition: "The event loop is the mechanism that lets single-threaded JavaScript handle asynchronous work. The pieces are: the call stack (runs JS code), Web APIs / Node C++ APIs (timers, network, I/O run here off the main thread), the task queue (macrotasks: setTimeout, I/O, UI events), and the microtask queue (promise callbacks, queueMicrotask, process.nextTick). The loop runs the call stack to empty, then drains the entire microtask queue, then takes exactly one macrotask, then drains microtasks again, and repeats; the browser also renders between iterations. This ordering explains why promise callbacks run before setTimeout(fn, 0), and why setTimeout(fn, 0) is never really zero."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant", "Wipro", "Capgemini"]
+---
+
+<SimpleDefinition>
+
+The **event loop** is the mechanism that lets single-threaded JavaScript handle asynchronous work. The pieces: the **call stack** (runs JS code), **Web APIs / Node C++ APIs** (timers, network, I/O run here, off the main thread), the **task queue** (macrotasks: `setTimeout`, I/O, UI events), and the **microtask queue** (promise callbacks, `queueMicrotask`, `process.nextTick`). The loop: run the stack to empty -> **drain ALL microtasks** -> take **ONE** macrotask -> drain all microtasks -> repeat (the browser also renders between iterations). This is why promise callbacks run before `setTimeout(fn, 0)`, and why `setTimeout(fn, 0)` is never really zero.
+
+</SimpleDefinition>
+
+## Hinglish Deep Explanation
+
+<Hinglish>
+
+Event loop wo "engine ke peeche ka engine" hai jo single-threaded JS ko async feel deta hai. Interview mein iska output-prediction question bahut aata hai — aur wo tabhi solve hota hai jab microtask vs macrotask ka order clear ho.
+
+### Ye kya hai — parts
+
+- **Call stack** — jaha JS code actually chalta hai. Ek hi, LIFO (plates ka dher). Ek waqt mein top wali cheez.
+- **Web APIs / Node APIs** — `setTimeout`, `fetch`, DOM events, `fs` — ye JS engine ke bahar, host (browser/Node) ke paas chalte hain, aksar alag threads pe. Yaha "wait" hota hai, JS thread pe nahi.
+- **Task queue (macrotask queue)** — jab koi macrotask ready ho jaye (timer expire, I/O done, click hua), uska callback yaha aata hai. FIFO. Sources: `setTimeout`, `setInterval`, I/O, UI events, `MessageChannel`.
+- **Microtask queue** — promise `.then`/`.catch`/`.finally` callbacks, `await` continuations, `queueMicrotask()`, aur Node mein `process.nextTick` (iski apni alag, aur bhi priority wali queue). FIFO, par **poori queue drain hoti hai**.
+- **Event loop** — wo coordinator jo decide karta hai stack khali hone pe agla kaam kaha se uthana hai.
+
+### Ye kyun exist karta hai
+
+Single thread pe blocking wait afford nahi kar sakte (pichle topics). To slow kaam host ko delegate hota hai. Par jab wo poora ho, uska callback JS thread pe **kab** chale? Bilkul abhi nahi (thread busy ho sakta hai), aur random bhi nahi. Event loop ek **predictable ordering** deta hai: pehle current synchronous kaam poora, phir saare microtasks, phir ek macrotask. Isse race conditions kam aur behaviour deterministic.
+
+### Internally kaise kaam karta hai — ek iteration ("tick")
+
+```text
+loop {
+  1. Call stack ko empty hone tak chalao (current synchronous code / current task).
+  2. Microtask queue: jab tak KHALI na ho, ek-ek nikaalo aur chalao.
+     (microtask ke andar naya microtask add hua? wo bhi isi baar chalega.)
+  3. (Browser) Zaroorat ho to render/paint karo.
+  4. Macrotask queue se EXACTLY EK task nikaalo aur chalao -> wapas step 1.
+}
+```
+
+Sabse important line: **har ek macrotask ke baad poori microtask queue drain hoti hai**. Do `setTimeout` callbacks ke beech mein saare pending promise callbacks chal jate hain.
+
+### Simple real-life analogy
+
+Tum ek clerk ho (call stack). Do trays hain:
+
+- **Microtask tray (urgent)** — jab bhi tum ek kaam khatam karte ho, is tray ko **poora khali** karte ho, chahe beech mein aur urgent parchi aa jaye.
+- **Macrotask tray (normal)** — urgent tray khali hone ke baad hi is tray se **sirf ek** parchi uthate ho, phir wapas urgent tray poora khali karte ho.
+
+"Ek normal, phir saare urgent, phir ek normal..." — yahi event loop ka rhythm hai.
+
+### Worked example — order predict karo
+
+```javascript
+console.log("1: sync start");
+
+setTimeout(() => console.log("5: setTimeout 0"), 0);
+
+Promise.resolve()
+  .then(() => console.log("3: promise then 1"))
+  .then(() => console.log("4: promise then 2"));
+
+console.log("2: sync end");
+
+// Output:
+// 1: sync start
+// 2: sync end
+// 3: promise then 1
+// 4: promise then 2
+// 5: setTimeout 0
+```
+
+Line by line:
+
+- `console.log("1...")` — call stack, turant. Output `1`.
+- `setTimeout(cb, 0)` — `cb` browser ke timer ko gaya; `0ms` (practically `~4ms`) baad wo **macrotask** queue mein aayega. Abhi kuch nahi.
+- `Promise.resolve().then(A).then(B)` — promise already resolved, to `A` **microtask** queue mein enqueue. (`B` abhi enqueue nahi — wo `A` ke chalne ke baad hoga.)
+- `console.log("2...")` — call stack, turant. Output `2`.
+- Ab synchronous code khatam, call stack khali. **Event loop microtask queue dekhta hai**: `A` hai -> chalao -> output `3`. `A` ke return se `.then(B)` ka `B` ab microtask queue mein aata hai. Queue abhi khali nahi -> `B` chalao -> output `4`. Ab microtask queue khali.
+- Event loop **ek macrotask** uthata hai: `setTimeout` ka `cb` -> output `5`.
+
+Rule: **saare microtasks (promise chain poora) `setTimeout` se pehle**, chahe `setTimeout` `0` ho.
+
+### `setTimeout(fn, 0)` really 0 nahi hai
+
+- HTML spec: 5+ nested timers ke baad minimum **`4ms`** clamp.
+- `0` ka matlab "abhi" nahi — "current task + saare microtasks ke baad, agli macrotask ke roop mein".
+- Background/inactive tab mein timers aur throttle hote hain (`1000ms+`).
+- Isliye `setTimeout(fn, 0)` "thoda baad mein chala do, thread free karke" ke liye theek hai, precise timing ke liye nahi.
+
+### Long synchronous task sab kuch rok deta hai
+
+Event loop ka step 1 "call stack empty hone tak" hai. Agar tumhare paas `10` lakh iteration ka loop hai jo `2s` leta hai:
+
+- Un `2s` mein: koi microtask nahi (promise `.then` wait karega), koi macrotask nahi (`setTimeout` `0` bhi wait), **koi render nahi** (browser step 3 tak pahunch hi nahi raha), clicks queue mein padte rahenge.
+- Isiliye heavy computation ko `setTimeout`/`queueMicrotask` se chunk karte hain ya Web Worker mein bhejte hain — taaki event loop ghumtа rahe.
+
+### Browser vs Node — chhoti nuance
+
+- **Browser**: macrotasks aur microtasks ka model upar jaisa; render bhi loop ka hissa (`requestAnimationFrame` paint se pehle).
+- **Node**: event loop ke **phases** hain (timers -> pending -> poll -> check -> close). `setTimeout` "timers" phase mein, `setImmediate` "check" phase mein. Microtasks har phase ke beech drain hote hain, aur `process.nextTick` **promise microtasks se bhi pehle** chalta hai (apni alag queue). Practical takeaway same: sync -> nextTick -> promise microtasks -> agla phase/macrotask.
+
+### Day-to-day use — kab ye samajh kaam aati hai
+
+- Output-prediction interview questions.
+- `setTimeout(fn, 0)` se ek heavy kaam ko "defer" karke UI ko saans dena.
+- `queueMicrotask` se kuch state update ke turant baad, par current task ke baad, kaam chalana.
+- Samajhna ki ek infinite microtask loop (`.then` ke andar naya resolved promise) **render ko permanently rok** sakta hai (macrotask kabhi turn nahi paata).
+- Debugging: "mera `setTimeout(fn, 0)` late kyun chala" -> lamba sync task ya microtask flood.
+
+### Kab ye detail poori tarah zaroori hai
+
+- Interview output questions.
+- Micro-optimizing render timing (batching updates).
+- Ek async bug jaha ordering unexpected hai.
+- Library banate waqt jahan callback timing consistent rakhni ho.
+
+### Kab ignore kar sakte ho
+
+- Normal app code — `await`/`.then` likho, ordering apne aap sahi.
+- Business logic jaha exact tick timing matter nahi karti.
+- Over-thinking: `setTimeout(fn, 0)` vs `queueMicrotask` ka farak 99% app code mein irrelevant.
+
+### Pros and cons (event-loop concurrency model)
+
+**Pros**
+
+- Ek thread pe hazaaron concurrent I/O — kam memory, no thread pool overhead.
+- Deterministic ordering — race conditions kam vs true multithreading.
+- No locks/mutexes for shared JS state.
+
+**Cons**
+
+- Ek lamba synchronous task poore loop ko block — UI freeze, timers late.
+- Microtask flood macrotasks aur render ko starve kar sakta hai.
+- Ordering rules (micro vs macro) beginners ke liye counterintuitive.
+- CPU-bound parallelism nahi milta (Web Workers alag se chahiye).
+
+### Interview mein "`console.log`, `setTimeout(0)`, `Promise.then` ka order kya aur kyun?"
+
+> "Synchronous `console.log` pehle — wo current call stack pe turant chalte hain. `setTimeout(fn, 0)` ka callback browser ke timer ke paas jata hai aur expire hone par **macrotask** queue mein aata hai. `Promise.resolve().then` ka callback **microtask** queue mein aata hai. Event loop rule: current synchronous code khatam hone ke baad wo **poori microtask queue drain** karta hai, phir **sirf ek macrotask** leta hai. Isliye order hai: saare sync logs -> saare promise `.then` callbacks -> phir `setTimeout` callback. `setTimeout` `0` hone se bhi wo microtasks ke baad hi chalta hai."
+
+</Hinglish>
+
+<Callout type="tip">
+
+Ek `.then` ke andar hamesha ek naya resolved promise `.then` karte raho -> microtask queue kabhi khali nahi hoti -> macrotasks aur browser render **permanently starve**. Page frozen dikhega bina kisi lambe loop ke.
+
+</Callout>
+
+## Real World Example
+
+<RealWorld company="Browser rendering / React">
+
+React 18 ka automatic batching event-loop timing pe tika hai — ek event handler ke andar ke saare `setState` calls ek hi render mein batch hote hain, aur actual DOM update microtask/task boundary pe flush hota hai, har `setState` pe nahi. Isiliye ek handler mein 5 state updates = 1 re-render, 5 nahi. Jab log `setTimeout(fn, 0)` mein `setState` karte the (React 17), wo batching se bahar ho jata tha aur extra render hota tha — event loop ka macrotask boundary hi wajah thi.
+
+</RealWorld>
+
+<RealWorld company="Node.js servers">
+
+Node ka poora throughput model event loop pe depend karta hai: har request handler ko **jaldi return** karna chahiye taaki loop agli request pe badh sake. Ek handler mein synchronous `JSON.parse` of a 5MB payload, ya ek `bcrypt` sync hash, poore server ko us dauran freeze kar deta hai — saare concurrent requests wait. Isiliye CPU-heavy kaam `worker_threads` mein ya async chunks mein hota hai, aur monitoring tools "event loop lag" (loop ka ek iteration kitna slow hai) ko key health metric ki tarah track karte hain.
+
+</RealWorld>
+
+## Numbers That Matter
+
+<Numbers>
+
+- Event loop ek iteration mein macrotask = **exactly 1**; microtasks = **poori queue drain** (jitne bhi hon, including jo beech mein add huye).
+- `setTimeout(fn, 0)` ka real minimum browsers mein **`~4ms`** (5+ nested timers ke baad, HTML spec clamp).
+- 60fps = frame har **`~16.7ms`** — isse lamba synchronous task = dropped frame.
+- Microtask sources: promise `.then`/`.catch`/`.finally`, `await` continuation, `queueMicrotask`, `MutationObserver`; Node mein `process.nextTick` (highest priority, alag queue).
+- Macrotask sources: `setTimeout`, `setInterval`, `setImmediate` (Node), I/O callbacks, UI events, `MessageChannel`.
+- `Promise` + `await` **ES2015/ES2017**; microtask queue concept HTML spec mein standardized.
+
+</Numbers>
+
+## Interview Angle
+
+<InterviewAngle>
+
+Ye async round ka signature question hai — lagbhag hamesha ek output-prediction snippet ke saath.
+
+Achhe jawaab ka shape:
+
+1. **Parts** — "call stack, Web/Node APIs, macrotask queue, microtask queue, event loop coordinator."
+2. **Loop rule** — "stack empty -> saari microtasks drain -> ek macrotask -> phir saari microtasks -> repeat."
+3. **Micro vs macro** — "promise `.then`/`await` = microtask; `setTimeout`/I/O/events = macrotask; microtasks har macrotask ke baad poori drain."
+4. **Apply** — snippet pe: sync logs, phir promise callbacks, phir `setTimeout`.
+5. **`setTimeout(0)`** — "`0` really `0` nahi; min `~4ms`; hamesha microtasks ke baad."
+
+Red flag: "`setTimeout(fn, 0)` turant chalta hai / promise se pehle", ya "microtask aur macrotask same cheez hain".
+
+</InterviewAngle>
+
+## Common Mistakes
+
+<Mistake>
+
+**`setTimeout(fn, 0)` ko promise `.then` se pehle expect karna.** Promise callbacks microtasks hain aur **har** macrotask se pehle poori drain hoti hain. `Promise.resolve().then(() => console.log("a")); setTimeout(() => console.log("b"), 0);` hamesha `a` phir `b` deta hai.
+
+</Mistake>
+
+<Mistake>
+
+**`setTimeout(fn, 0)` ko precise timing ke liye use karna.** Minimum `~4ms` clamp, background tab mein `1000ms+` throttle, aur pending sync/microtask kaam use aur late kar sakta hai. Precise timing ke liye `performance.now()` + `requestAnimationFrame`.
+
+</Mistake>
+
+<Mistake>
+
+**Lamba synchronous loop chalana aur socha ki `setTimeout`/render "beech mein" ghus jayega.** Event loop stack empty hone ka wait karta hai — jab tak loop chal raha, na koi callback, na paint. Kaam chunk karo ya Web Worker mein daalo.
+
+</Mistake>
+
+<Mistake>
+
+**Infinite microtask chain banana.** Ek `.then` jo har baar naya resolved promise `.then` karta hai, microtask queue ko kabhi khali nahi hone deta — macrotasks aur render permanently starve, page hang.
+
+</Mistake>
+
+<Mistake>
+
+**Node aur browser ko bilkul same maan lena.** Node mein `process.nextTick` promise microtasks se bhi pehle chalta hai, aur `setImmediate` vs `setTimeout(0)` ka order I/O context pe depend karta hai. Core micro-before-macro idea same hai, par edge cases alag.
+
+</Mistake>
+
+## Diagram
+
+<Diagram
+  chart={`
+flowchart TD
+    A["Call stack: current synchronous code chalao"] --> B{"Stack khali?"}
+    B -->|Nahi| A
+    B -->|Haan| C["Microtask queue: SAARE nikaalo aur chalao (jo beech mein add ho wo bhi)"]
+    C --> D{"Microtask queue khali?"}
+    D -->|Nahi| C
+    D -->|Haan| E["(Browser) render / paint agar zaroorat ho"]
+    E --> F["Macrotask queue se EXACTLY EK task lo aur chalao"]
+    F --> A
+`}
+  caption="Har iteration: stack empty -> poori microtask queue drain -> ek render -> ek macrotask -> repeat."
+/>
+
+## Quick Revision
+
+<QuickRevision>
+
+- **Parts**: call stack (JS chalta hai), Web/Node APIs (timers/I/O off-thread), macrotask queue, microtask queue, event loop.
+- **Loop**: stack empty -> **saari microtasks** drain -> (browser render) -> **ek macrotask** -> repeat.
+- **Microtask** = promise `.then`/`.catch`/`.finally`, `await` continuation, `queueMicrotask`; Node `process.nextTick` (alag, highest priority).
+- **Macrotask** = `setTimeout`/`setInterval`, I/O, UI events, `setImmediate` (Node), `MessageChannel`.
+- **Rule**: har macrotask ke baad **poori** microtask queue drain hoti hai.
+- Order: sync code -> saare promise/microtask callbacks -> `setTimeout` callback.
+- `setTimeout(fn, 0)` **really 0 nahi** — min `~4ms`, hamesha microtasks ke baad.
+- Lamba synchronous task = no callbacks, no render — sab freeze.
+- Infinite microtask chain = macrotasks + render permanently starve.
+- Node = phases (timers/poll/check); micro-before-macro idea same, edge cases alag.
+
+</QuickRevision>
+
+## Practice
+
+<Callout type="tip">
+
+**Chhota:** Predict karo aur reason likho: `console.log("a"); setTimeout(() => console.log("b"), 0); Promise.resolve().then(() => console.log("c")); console.log("d");` — order kya?
+
+**Medium:** Is snippet ka exact order likho: ek sync log, ek `setTimeout(0)` jiske andar ek `Promise.resolve().then`, aur bahar ek `Promise.resolve().then` jiske andar ek `setTimeout(0)`. Har line ke aage likho microtask hai ya macrotask, aur kyun wo us position pe chalti hai.
+
+**Bada:** Browser mein ek `<button>` aur ek counter `<div>` banao. Button click pe: (a) ek `while` loop se `3s` block karo aur dekho click/paint kaise ruk jaate hain; (b) wahi kaam `100` chunks mein `setTimeout(next, 0)` se karo aur dekho UI responsive rehti hai; (c) ek version mein har chunk ke baad `queueMicrotask` use karo aur explain karo ki paint phir bhi kyun nahi ho raha (microtask render se pehle drain hoti hai). Teeno observations 1-2 line mein likho.
+
+</Callout>
