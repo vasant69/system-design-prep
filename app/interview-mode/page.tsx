@@ -1,15 +1,11 @@
-import { Mic } from "lucide-react";
-import { ComingSoon } from "@/components/layout/ComingSoon";
+import { InterviewQuestionBank } from "@/components/interview/InterviewQuestionBank";
 
-export const metadata = { title: "Interview Mode" };
+export const metadata = {
+  title: "Interview Mode",
+  description:
+    "Full Stack interview prep — the complete question bank (SQL, Angular, Node.js, ASP.NET Core, system design, DSA, and cross-cutting engineering) with interviewer follow-ups.",
+};
 
 export default function InterviewModePage() {
-  return (
-    <ComingSoon
-      icon={Mic}
-      title="Interview Mode"
-      description="Pick topics or modules and get random interview questions, one at a time, with a model-answer reveal and a Confident / Shaky / No idea self-rating."
-      phase="Phase 3"
-    />
-  );
+  return <InterviewQuestionBank />;
 }
