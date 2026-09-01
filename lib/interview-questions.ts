@@ -1201,6 +1201,732 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
         ],
       },
       {
+        id: "node-event-loop-async-internals",
+        number: 6,
+        numLabel: "6a",
+        title: "Node.js — Event Loop, Timers & Async Internals",
+        questions: [
+          {
+            q: "Walk through the event loop phases in order (timers, pending callbacks, poll, check, close) and what runs in each.",
+          },
+          {
+            q: "What is the poll phase actually doing, and when does the loop block there vs move on to `check`?",
+          },
+          {
+            q: "`process.nextTick()` vs `queueMicrotask()` vs `Promise.then()` — which queue does each use, and in what order do they drain relative to each other?",
+          },
+          {
+            q: "`setTimeout(fn, 0)` vs `setImmediate(fn)` — which runs first, and why is the answer \"it depends\" at the top level but deterministic inside an I/O callback?",
+          },
+          {
+            q: "Why can starving the loop with `process.nextTick()` recursion prevent I/O and timers from ever running?",
+          },
+          {
+            q: "What is the libuv thread pool, what uses it (fs, crypto, dns.lookup, zlib), and what is `UV_THREADPOOL_SIZE`?",
+          },
+          {
+            q: "Is network I/O handled by the thread pool? Explain why sockets use the OS async primitives (epoll/kqueue/IOCP) instead.",
+          },
+          {
+            q: "What does \"non-blocking\" actually mean when Node is single-threaded? Where does the real concurrency come from?",
+          },
+          {
+            q: "What is a \"blocking\" operation in Node, and name three ways to accidentally block the loop (sync fs, big JSON.parse, tight CPU loop, regex catastrophic backtracking).",
+          },
+          {
+            q: "How do you measure event-loop lag / delay, and what tools report it (`perf_hooks.monitorEventLoopDelay`, clinic, APM)?",
+          },
+          {
+            q: "Predict the output: a script mixing `setTimeout`, `setImmediate`, `Promise.resolve().then`, `process.nextTick`, and a sync `console.log`. Explain each line.",
+          },
+          {
+            q: "What happens to timer accuracy under load — why is `setTimeout(fn, 100)` not exactly 100ms?",
+          },
+          {
+            q: "What is `setInterval` drift, and how do you build a reliable recurring task instead?",
+          },
+          {
+            q: "How does `async/await` desugar in terms of the microtask queue — how many microtask ticks does one `await` cost?",
+          },
+          {
+            q: "What is `Atomics.wait` / `SharedArrayBuffer`, and why would you basically never use it in typical app code?",
+          },
+          {
+            q: "How does the event loop shut down — what keeps the process alive (open handles, timers, sockets), and what is `ref()` / `unref()`?",
+          },
+          {
+            q: "Why does an unhandled `await` on a never-resolving promise silently hang the process with exit code 0?",
+          },
+          {
+            q: "What runs during the `close` phase, and give an example (`socket.on('close')`).",
+          },
+          {
+            q: "How do worker threads get their own event loop, and how does message passing between them interact with each loop?",
+          },
+          {
+            q: "What is `performance.now()` vs `Date.now()` for measuring elapsed time, and why does monotonicity matter?",
+          },
+          {
+            q: "Explain how a single slow synchronous handler in one request degrades latency for every other concurrent request.",
+          },
+          {
+            q: "What changed about `Promise` microtask ordering and `process.nextTick` across Node versions — why should you not rely on subtle ordering?",
+          },
+        ],
+      },
+      {
+        id: "node-async-patterns",
+        number: 6,
+        numLabel: "6b",
+        title: "Node.js — Async Patterns: Callbacks, Promises, async/await",
+        questions: [
+          {
+            q: "The error-first callback convention — what is the signature, and why does the error come first?",
+          },
+          {
+            q: "What is \"callback hell\" / the pyramid of doom, and what are three ways out (named functions, promises, async/await)?",
+          },
+          {
+            q: "How does error handling differ across callbacks, promises (`.catch`), and `async/await` (`try/catch`)?",
+          },
+          {
+            q: "Why does a `throw` inside a bare callback (not promise-wrapped) crash the process instead of being catchable by the caller?",
+          },
+          {
+            q: "`util.promisify` — what contract must a function follow for it to work, and what is `util.promisify.custom`?",
+          },
+          {
+            q: "`Promise.all` vs `Promise.allSettled` vs `Promise.race` vs `Promise.any` — behaviour on the first rejection and the return shape of each.",
+          },
+          {
+            q: "With `Promise.all`, one of ten calls rejects — what happens to the other nine in-flight promises?",
+          },
+          {
+            q: "How do you run N async tasks with a concurrency limit of K (hand-rolled pool, or `p-limit`)?",
+          },
+          {
+            q: "`for...of` with `await` inside vs `array.map(async ...)` + `Promise.all` — sequential vs parallel, and when do you want each?",
+          },
+          {
+            q: "Why is `array.forEach(async ...)` a bug for sequential async work, and what does it actually do?",
+          },
+          {
+            q: "What is an unhandled promise rejection, what does modern Node do on one (`--unhandled-rejections=throw`), and how do you catch them globally?",
+          },
+          {
+            q: "What is a floating promise, and how does `no-floating-promises` (TS/ESLint) catch it?",
+          },
+          {
+            q: "Why is mixing `await` and `.then()` on the same chain a readability / error-handling hazard?",
+          },
+          {
+            q: "How do you add a timeout to a promise that has no native timeout (`Promise.race` with a timer, or `AbortSignal.timeout`)?",
+          },
+          {
+            q: "What is `AbortController` / `AbortSignal`, and how do you use it to cancel `fetch`, timers, and streams?",
+          },
+          {
+            q: "How do you retry an async operation with exponential backoff and jitter, and how do you cap total attempts / total time?",
+          },
+          {
+            q: "What is the difference between returning a promise from an async function and `await`-ing it before returning (`return p` vs `return await p`) — does it matter for stack traces / try-catch?",
+          },
+          {
+            q: "How do you convert an EventEmitter-based flow (e.g., a stream) into an async iterator you can `for await ... of`?",
+          },
+          {
+            q: "Sequential vs batched processing of a large array of async jobs — how do you avoid opening 10,000 DB connections at once?",
+          },
+          {
+            q: "What are async generators, and give a real use case (paginating an API, streaming DB rows)?",
+          },
+          {
+            q: "Why can a synchronous exception thrown before the first `await` in an async function behave differently from a rejection after an `await`?",
+          },
+          {
+            q: "How do you memoize an in-flight async call so concurrent callers share one promise (cache the promise, not the result)?",
+          },
+        ],
+      },
+      {
+        id: "node-streams-buffers-files",
+        number: 6,
+        numLabel: "6c",
+        title: "Node.js — Streams, Buffers & File I/O",
+        questions: [
+          {
+            q: "The four stream types — Readable, Writable, Duplex, Transform — with one concrete Node example of each.",
+          },
+          {
+            q: "What is backpressure, and how does `pipe()` (or `pipeline()`) handle it for you?",
+          },
+          {
+            q: "Flowing vs paused mode for a Readable — what switches between them (`data` listener, `pause()`, `resume()`, `read()`)?",
+          },
+          {
+            q: "`stream.pipeline()` vs `.pipe()` — why is `pipeline` preferred (error propagation, cleanup)?",
+          },
+          {
+            q: "How do you write a Transform stream (e.g., CSV line parser, gzip, redaction) — the `_transform` and `_flush` methods?",
+          },
+          {
+            q: "How do you process a file larger than RAM line-by-line (`readline`, or a split Transform) without buffering it all?",
+          },
+          {
+            q: "Buffer vs string — when does encoding matter, and what bug appears if a multi-byte UTF-8 character is split across two chunks?",
+          },
+          {
+            q: "`Buffer.alloc` vs `Buffer.allocUnsafe` vs `Buffer.from` — why is `allocUnsafe` unsafe and when is it fine?",
+          },
+          {
+            q: "How do you stream a file upload straight to disk or to S3 without holding it in memory (`req` is a Readable stream)?",
+          },
+          {
+            q: "How do you stream a large response to the client (`res` is a Writable) — e.g., a CSV export of millions of rows?",
+          },
+          {
+            q: "`highWaterMark` — what does it control, and how does tuning it trade memory for throughput?",
+          },
+          {
+            q: "How do errors propagate through a pipe chain, and why can an unhandled error in one stream leak file descriptors?",
+          },
+          {
+            q: "`fs.readFile` vs `fs.createReadStream` — memory profile and when each is correct.",
+          },
+          {
+            q: "`fs.promises` vs callback `fs` vs `fs.*Sync` — when is a sync call acceptable (startup config) and when is it a crime (request path)?",
+          },
+          {
+            q: "How do you safely write a file so a crash mid-write can't corrupt it (write to temp + atomic rename)?",
+          },
+          {
+            q: "What is `for await (const chunk of readable)` and how does it simplify stream consumption?",
+          },
+          {
+            q: "How do you compose gzip + encryption + a network write as one pipeline, and where do you put error handling?",
+          },
+          {
+            q: "How would you implement a rate-limited / throttled stream (bytes per second)?",
+          },
+        ],
+      },
+      {
+        id: "node-modules-npm",
+        number: 6,
+        numLabel: "6d",
+        title: "Node.js — Modules, npm & Packaging",
+        questions: [
+          {
+            q: "CommonJS vs ES Modules — `require`/`module.exports` vs `import`/`export`, sync vs async loading, and `__dirname` availability.",
+          },
+          {
+            q: "How does `require` resolution work — core module, relative path, then `node_modules` walk-up? What does `require.cache` do?",
+          },
+          {
+            q: "Why is a CJS module's `exports` a live-ish object but ESM exports are live bindings — what breaks when you reassign `module.exports` late?",
+          },
+          {
+            q: "How do you use ESM in a package (`\"type\": \"module\"`, `.mjs`), and how do you interop with a CJS-only dependency?",
+          },
+          {
+            q: "What is the `exports` map in `package.json`, and how does it let you define conditional / subpath entry points?",
+          },
+          {
+            q: "`dependencies` vs `devDependencies` vs `peerDependencies` vs `optionalDependencies` — what goes where?",
+          },
+          {
+            q: "Semver ranges: `^1.2.3` vs `~1.2.3` vs `1.2.x` vs pinned — what each allows on `npm install`.",
+          },
+          {
+            q: "What does `package-lock.json` guarantee, and what's the difference between `npm install` and `npm ci`?",
+          },
+          {
+            q: "What is a phantom / undeclared dependency, and why does it work locally then break in CI or Docker?",
+          },
+          {
+            q: "`npx` — what does it actually do, and what's the security consideration with running arbitrary packages?",
+          },
+          {
+            q: "How do npm workspaces (or pnpm / Yarn / Nx / Turborepo) structure a monorepo of multiple services, and what does hoisting do?",
+          },
+          {
+            q: "What are `preinstall` / `postinstall` scripts, and why are they a supply-chain risk (`--ignore-scripts`)?",
+          },
+          {
+            q: "`npm audit` — what does it check, and how do you triage a transitive vulnerability you can't directly upgrade (`overrides`)?",
+          },
+          {
+            q: "How do you publish a package — `files` allowlist, `.npmignore`, `prepublishOnly`, `npm pack` to inspect the tarball?",
+          },
+          {
+            q: "How do you ship a TypeScript library — `types`/`typesVersions`, `.d.ts` output, dual CJS+ESM build?",
+          },
+          {
+            q: "What is `engines` in `package.json`, and how do you enforce a Node version in CI and locally (`.nvmrc`, Volta)?",
+          },
+        ],
+      },
+      {
+        id: "node-express-http-apis",
+        number: 6,
+        numLabel: "6e",
+        title: "Node.js — Express & HTTP API Building",
+        questions: [
+          {
+            q: "The Express middleware chain — signature `(req, res, next)`, calling `next()` vs `next(err)` vs sending a response, and what happens if you forget `next()`.",
+          },
+          {
+            q: "Error-handling middleware — the four-arg signature `(err, req, res, next)` — where must it sit in the chain and how do you forward async errors to it (pre-Express-5 vs Express 5)?",
+          },
+          {
+            q: "`app.use` vs `router` — how do you structure a large API into feature routers, and how does mount-path prefixing work?",
+          },
+          {
+            q: "Route matching order — how does Express pick a handler, and what's the gotcha with `/users/:id` vs `/users/me`?",
+          },
+          {
+            q: "`req.params` vs `req.query` vs `req.body` — what parses each, and why isn't `req.body` populated without `express.json()`?",
+          },
+          {
+            q: "How do you set a body-size limit, and why does it matter for DoS protection?",
+          },
+          {
+            q: "How do you validate and coerce request input — Zod / Joi / class-validator — and where in the chain does validation belong?",
+          },
+          {
+            q: "How do you return consistent error responses (an error shape, a status-code mapping, a base `AppError` class)?",
+          },
+          {
+            q: "What does `res.json()` do that `res.send()` doesn't, and how do you set status + headers correctly?",
+          },
+          {
+            q: "Idempotency keys — how do you implement middleware that short-circuits a replayed POST with the same key?",
+          },
+          {
+            q: "How do you implement request-scoped context (a correlation ID available everywhere) with `AsyncLocalStorage`?",
+          },
+          {
+            q: "How do you handle CORS correctly — preflight, credentials, allowed origins — and what's the risk of `origin: '*'` with cookies?",
+          },
+          {
+            q: "How do you attach and enforce authentication middleware, and how do you make some routes public and others protected cleanly?",
+          },
+          {
+            q: "How do you implement pagination on a list endpoint (offset vs keyset), and what do you return in the response envelope?",
+          },
+          {
+            q: "How do you stream a large response (NDJSON / CSV) instead of building a giant array in memory?",
+          },
+          {
+            q: "How do you implement graceful shutdown — stop accepting connections, drain in-flight requests, close DB pool, hard-exit after a timeout?",
+          },
+          {
+            q: "Express vs Fastify vs Nest vs raw `http` — what does each buy you, and when would you pick Fastify for performance?",
+          },
+          {
+            q: "What is the role of a reverse proxy (Nginx) in front of Node — TLS termination, compression, static files, buffering slow clients — and what is `trust proxy`?",
+          },
+          {
+            q: "How do you handle file uploads (`multer`) — memory vs disk storage, size/type limits, and streaming to object storage?",
+          },
+          {
+            q: "How do you version an HTTP API (URL segment vs header vs `Accept` param), and how do you deprecate a version without breaking clients?",
+          },
+          {
+            q: "How do you set security headers (Helmet) and why does each matter (HSTS, `X-Content-Type-Options`, CSP)?",
+          },
+          {
+            q: "How do you implement per-route and per-user rate limiting, and why is an in-memory limiter wrong behind multiple instances?",
+          },
+          {
+            q: "How do you add request timeouts — server `headersTimeout` / `requestTimeout`, and per-handler deadlines for downstream calls?",
+          },
+          {
+            q: "How do you generate and serve OpenAPI/Swagger docs, and why does the contract matter to frontend teams?",
+          },
+        ],
+      },
+      {
+        id: "node-errors-logging-debugging",
+        number: 6,
+        numLabel: "6f",
+        title: "Node.js — Errors, Logging & Debugging",
+        questions: [
+          {
+            q: "`uncaughtException` vs `unhandledRejection` — what should your handler actually do (log + graceful exit, not \"keep running\")?",
+          },
+          {
+            q: "Why is it dangerous to swallow `uncaughtException` and continue serving requests?",
+          },
+          {
+            q: "How do you design a custom error hierarchy (`AppError`, `NotFoundError`, `ValidationError`) with a status code and an `isOperational` flag?",
+          },
+          {
+            q: "Operational errors vs programmer errors — how do you treat each differently?",
+          },
+          {
+            q: "Why do you lose the stack trace across async boundaries sometimes, and what is `--async-stack-traces` / `Error.captureStackTrace`?",
+          },
+          {
+            q: "Structured logging (pino / winston) vs `console.log` — JSON logs, log levels, and why `console.log` is synchronous-ish and can block.",
+          },
+          {
+            q: "What is a correlation/trace ID, how do you generate one per request, and how do you thread it through every log line (`AsyncLocalStorage`)?",
+          },
+          {
+            q: "How do you redact secrets / PII (tokens, card numbers, passwords) from logs automatically?",
+          },
+          {
+            q: "How do you take and analyze a heap snapshot to find a memory leak — what does \"retained size\" and a growing object count tell you?",
+          },
+          {
+            q: "Common Node memory-leak causes — module-scope arrays/maps that only grow, un-removed event listeners, closures over big objects, timers never cleared.",
+          },
+          {
+            q: "How do you profile CPU — `--prof`, `--cpu-prof`, `clinic flame`, `0x` — and read a flame graph?",
+          },
+          {
+            q: "How do you attach a debugger (`--inspect`, `--inspect-brk`, Chrome DevTools / VS Code) to a running service?",
+          },
+          {
+            q: "`MaxListenersExceededWarning` — what causes it and how do you fix the root cause rather than raising the limit?",
+          },
+          {
+            q: "How do you detect and act on event-loop blocking in production (a watchdog, `blocked-at`, APM alerts)?",
+          },
+          {
+            q: "How do you wire an APM / error tracker (OpenTelemetry, Sentry) into a Node service, and what do traces give you that logs don't?",
+          },
+          {
+            q: "How do you reproduce and debug a bug that only happens under load or only in production?",
+          },
+        ],
+      },
+      {
+        id: "node-performance-concurrency",
+        number: 6,
+        numLabel: "6g",
+        title: "Node.js — Performance, Concurrency & Scaling",
+        questions: [
+          {
+            q: "`cluster` vs `worker_threads` vs `child_process` — memory model, communication, and the right job for each.",
+          },
+          {
+            q: "When does `cluster` (or a process manager running N instances) help, and when does it not (I/O-bound vs CPU-bound)?",
+          },
+          {
+            q: "How do worker threads share memory (`SharedArrayBuffer`, `MessagePort`, `workerData`), and what gets structured-cloned vs transferred?",
+          },
+          {
+            q: "You have a CPU-heavy task (PDF generation, image resize, crypto, big aggregation) — how do you keep it off the main loop?",
+          },
+          {
+            q: "How do you build and reuse a worker-thread pool instead of spawning a worker per task (`piscina`)?",
+          },
+          {
+            q: "`child_process.spawn` vs `exec` vs `execFile` vs `fork` — buffering, shell injection risk, and when to use each.",
+          },
+          {
+            q: "Why is `exec` with interpolated user input a command-injection hole, and what's the safe alternative?",
+          },
+          {
+            q: "How does a load balancer + N stateless Node instances scale horizontally, and what must you NOT keep in process memory (sessions, rate-limit counters, caches)?",
+          },
+          {
+            q: "How do you find a bottleneck — is it CPU, event-loop lag, GC, a slow downstream, or connection-pool exhaustion? What signal points to each?",
+          },
+          {
+            q: "How does the V8 garbage collector work at a high level (young/old generation, scavenge vs mark-sweep), and what causes long GC pauses?",
+          },
+          {
+            q: "`--max-old-space-size` — when do you raise it, and why is raising it usually treating a symptom?",
+          },
+          {
+            q: "How do you keep HTTP keep-alive connections and a connection pool healthy for a service making many downstream calls (`http.Agent`, `keepAlive`)?",
+          },
+          {
+            q: "How do you cap concurrency to a slow downstream so your service degrades gracefully instead of piling up requests?",
+          },
+          {
+            q: "What is a circuit breaker, and how would you add one around a flaky dependency in Node (`opossum`)?",
+          },
+          {
+            q: "How do you benchmark an endpoint (autocannon / k6) and interpret p50/p95/p99 and throughput under increasing concurrency?",
+          },
+          {
+            q: "What common patterns waste CPU in a hot path (JSON.parse/stringify of huge payloads, `JSON` deep-clone, sync crypto, `moment`, regex)?",
+          },
+          {
+            q: "How do you cache computed results in-process safely (LRU with a size cap and TTL) vs pushing the cache to Redis?",
+          },
+          {
+            q: "What is `AsyncLocalStorage`'s performance cost, and is it acceptable for per-request context?",
+          },
+        ],
+      },
+      {
+        id: "node-security",
+        number: 6,
+        numLabel: "6h",
+        title: "Node.js — Security",
+        questions: [
+          {
+            q: "How do you prevent SQL / NoSQL injection in Node — parameterized queries, query builders, and never string-concatenating user input?",
+          },
+          {
+            q: "What is a NoSQL injection via an object body (`{ \"$gt\": \"\" }`), and how do you stop it (sanitize, cast types, `mongo-sanitize`)?",
+          },
+          {
+            q: "Command injection through `child_process` — the vulnerable pattern and the fix (`execFile` with an args array, allowlists).",
+          },
+          {
+            q: "How do you validate and normalize all external input at the edge, and why is \"validate at the boundary\" a security principle, not just a correctness one?",
+          },
+          {
+            q: "Prototype pollution — what is it, how does a malicious `__proto__` in a JSON body cause it, and how do you defend (`Object.create(null)`, schema validation, `--disable-proto`)?",
+          },
+          {
+            q: "How do you store passwords — bcrypt / argon2id, per-user salt, a work factor you can raise over time — and why never a fast hash (MD5/SHA-256)?",
+          },
+          {
+            q: "How do you generate secure random values (`crypto.randomBytes`, `crypto.randomUUID`) and why is `Math.random()` not acceptable for tokens?",
+          },
+          {
+            q: "How do you compare secrets / HMACs in constant time (`crypto.timingSafeEqual`) and why does `===` leak?",
+          },
+          {
+            q: "How do you verify an inbound webhook — HMAC signature over the raw body, timestamp tolerance, replay protection — and why must you use the raw bytes not the parsed JSON?",
+          },
+          {
+            q: "How do you keep secrets out of the repo and out of logs — env vars, a secrets manager / Vault, `.env` only for local, and 12-factor config?",
+          },
+          {
+            q: "SSRF — how could an \"import from URL\" or an image-proxy feature be abused to hit internal metadata endpoints, and how do you restrict it?",
+          },
+          {
+            q: "Path traversal — how does `../../etc/passwd` sneak through a file-download endpoint, and how do you normalize and confine paths?",
+          },
+          {
+            q: "Rate limiting and account lockout as defenses against credential stuffing and brute force — where do you apply them and what are the trade-offs?",
+          },
+          {
+            q: "Supply-chain risk — lockfiles, `npm ci`, `--ignore-scripts`, provenance, Dependabot/Renovate, and minimizing dependency count.",
+          },
+          {
+            q: "What does Helmet set, and which headers matter most for an API vs a server-rendered app (CSP, HSTS, `X-Frame-Options`)?",
+          },
+          {
+            q: "How do you handle regex denial of service (ReDoS) — spotting catastrophic backtracking and using safe patterns or a timeout?",
+          },
+        ],
+      },
+      {
+        id: "node-testing",
+        number: 6,
+        numLabel: "6i",
+        title: "Node.js — Testing",
+        questions: [
+          {
+            q: "Unit vs integration vs end-to-end for a Node API — what does each cover and what's a sane ratio?",
+          },
+          {
+            q: "The built-in `node:test` runner vs Jest vs Vitest vs Mocha — trade-offs (ESM support, speed, mocking, watch).",
+          },
+          {
+            q: "How do you mock a module dependency — `jest.mock`, `sinon`, or dependency injection — and why is DI easier to test than a hard `require`?",
+          },
+          {
+            q: "How do you test an Express route handler in isolation — call it with fake `req`/`res`, or hit it through `supertest`?",
+          },
+          {
+            q: "How do you mock the database layer — an in-memory fake, a repository interface, or `testcontainers` for a real DB?",
+          },
+          {
+            q: "How do you test time-dependent code (`setTimeout`, TTLs, `Date.now()`) — fake timers and injectable clocks?",
+          },
+          {
+            q: "How do you test code that uses randomness or UUIDs deterministically?",
+          },
+          {
+            q: "How do you test retry / backoff logic without actually sleeping for seconds?",
+          },
+          {
+            q: "How do you assert on emitted events, streamed output, or async iteration in a test?",
+          },
+          {
+            q: "What makes a Node test flaky (real network, shared global state, unclosed handles, order dependence, real timers), and how do you find leaked handles (`--detectOpenHandles`)?",
+          },
+          {
+            q: "How do you write an integration test that spins up the app, seeds a DB, runs requests, and tears down cleanly?",
+          },
+          {
+            q: "What does code coverage miss — why can 100% line coverage still let a bug through?",
+          },
+          {
+            q: "How do you structure test data / fixtures / factories so tests stay readable as they grow?",
+          },
+          {
+            q: "How do you run tests in CI — parallelism, a fresh DB per shard, and keeping them under a few minutes?",
+          },
+        ],
+      },
+      {
+        id: "node-data-access-caching",
+        number: 6,
+        numLabel: "6j",
+        title: "Node.js — Databases, Caching & Data Access",
+        questions: [
+          {
+            q: "Why does a connection pool matter, what happens when it's exhausted, and how do you size `min`/`max` for a given instance count?",
+          },
+          {
+            q: "How do you run a multi-statement DB transaction correctly in Node (acquire a client, `BEGIN`/`COMMIT`/`ROLLBACK`, always release in `finally`)?",
+          },
+          {
+            q: "Prisma vs TypeORM vs Sequelize vs Knex vs raw driver — what does each abstraction cost and buy you?",
+          },
+          {
+            q: "What is the ORM N+1 problem in a Node API, how do you detect it (query logging), and how do you fix it (eager load / join / dataloader)?",
+          },
+          {
+            q: "What is `DataLoader`, and how does per-request batching + caching solve N+1 in a GraphQL resolver?",
+          },
+          {
+            q: "How do you paginate a large result set from Node without loading it all — cursor/keyset queries and streaming rows?",
+          },
+          {
+            q: "How do you handle migrations in a Node deploy (a migration tool, run-on-boot vs a separate step, and backward-compatible changes for zero downtime)?",
+          },
+          {
+            q: "Where do you add caching — in front of the DB (Redis read-through), in-process LRU, or HTTP caching — and how do you invalidate on write?",
+          },
+          {
+            q: "Cache-aside vs write-through in a Node service — show the read and write path and the failure modes (stale data, thundering herd).",
+          },
+          {
+            q: "How do you prevent a cache stampede when a hot key expires (lock / single-flight / probabilistic early expiry)?",
+          },
+          {
+            q: "How do you use Redis for more than caching in Node — rate limiting, a distributed lock, a queue, pub/sub — and the caveats of each (Redlock debate)?",
+          },
+          {
+            q: "How do you keep money-related reads correct under concurrency from Node — `SELECT ... FOR UPDATE`, optimistic version columns, or serializable isolation with retry?",
+          },
+          {
+            q: "How do you retry a transient DB error (deadlock, connection reset) safely, and which errors must you NOT retry?",
+          },
+          {
+            q: "How do you avoid leaking DB clients / handles on the error path, and how do you spot it in production (pool wait time climbing)?",
+          },
+          {
+            q: "How would you implement a transactional outbox in a Node service so an event is published if and only if the DB write commits?",
+          },
+          {
+            q: "How do you talk to a message broker from Node (Kafka / RabbitMQ / SQS) — consumer acking, at-least-once, and making the handler idempotent?",
+          },
+        ],
+      },
+      {
+        id: "node-auth-sessions",
+        number: 6,
+        numLabel: "6k",
+        title: "Node.js — Authentication & Sessions",
+        questions: [
+          {
+            q: "Session-cookie auth vs stateless JWT in a Node API — where is state kept, how do you revoke, and how does each scale across instances?",
+          },
+          {
+            q: "How do you implement server-side sessions (`express-session` + a Redis store) — cookie flags (`httpOnly`, `secure`, `sameSite`), TTL, and rolling sessions?",
+          },
+          {
+            q: "How do you issue and verify a JWT in Node (`jsonwebtoken` / `jose`) — signing algorithm, `exp`/`iat`/`aud`/`iss`, and clock tolerance?",
+          },
+          {
+            q: "Why must you pin the `algorithms` list when verifying a JWT, and what is the `alg: none` / algorithm-confusion attack?",
+          },
+          {
+            q: "HS256 vs RS256 in a multi-service setup — who holds the secret vs the public key, and how do you rotate keys (a JWKS endpoint, `kid`)?",
+          },
+          {
+            q: "Access token + refresh token flow in Node — storage on the client, refresh rotation, reuse detection, and \"logout everywhere\".",
+          },
+          {
+            q: "When 5 concurrent requests all get a 401 and try to refresh at once, how do you single-flight the refresh on the client and/or server?",
+          },
+          {
+            q: "How do you build role/permission checks as middleware (RBAC), and how do you avoid scattering `if (user.role === ...)` everywhere?",
+          },
+          {
+            q: "How do you implement API-key auth for machine clients — hashing keys at rest, scoping, rotation, and rate limiting per key?",
+          },
+          {
+            q: "OAuth2 authorization-code + PKCE flow — what does a Node backend-for-frontend actually do in each step (`passport`, or hand-rolled)?",
+          },
+          {
+            q: "OAuth2 client-credentials flow for service-to-service — how do you fetch, cache, and refresh the token before it expires?",
+          },
+          {
+            q: "CSRF — when is a Node API actually vulnerable (cookie auth) vs not (bearer token), and what's the mitigation (SameSite, CSRF token, double-submit)?",
+          },
+          {
+            q: "How do you add step-up auth / MFA for a sensitive action even though the user already has a valid session?",
+          },
+          {
+            q: "How do you store and verify TOTP secrets, and how do you rate-limit OTP verification to stop brute force?",
+          },
+        ],
+      },
+      {
+        id: "node-practical-extended",
+        number: 6,
+        numLabel: "6l",
+        title: "Node.js — Practical Build Tasks (Extended)",
+        questions: [
+          {
+            q: "Build a CSV-to-DB import that streams a multi-GB file, validates each row, batches inserts, skips + reports bad rows, and is resumable.",
+          },
+          {
+            q: "Build a large data export endpoint that streams NDJSON/CSV to the client without buffering, with a DB cursor.",
+          },
+          {
+            q: "Implement an in-memory job queue with concurrency limit, retry with exponential backoff, and a dead-letter list.",
+          },
+          {
+            q: "Implement token-bucket rate-limiting middleware from scratch (no library), then adapt it to be Redis-backed for multiple instances.",
+          },
+          {
+            q: "Implement idempotency-key middleware backed by Redis: first request runs, replays return the stored response, concurrent replays wait.",
+          },
+          {
+            q: "Implement graceful shutdown: stop the listener, finish in-flight requests, close DB + Redis, force-exit after a timeout, handle `SIGTERM`/`SIGINT`.",
+          },
+          {
+            q: "Build request-context propagation with `AsyncLocalStorage` so every log line and downstream call carries the correlation ID.",
+          },
+          {
+            q: "Build a worker-thread pool that offloads a CPU-heavy transform and returns results without blocking the API.",
+          },
+          {
+            q: "Build a webhook receiver: verify HMAC over the raw body, dedupe by event ID, handle out-of-order delivery, ack fast and process async.",
+          },
+          {
+            q: "Build an outgoing webhook sender with retries, exponential backoff, a max-attempts cap, and disabling of permanently-failing endpoints.",
+          },
+          {
+            q: "Build a `fetch` wrapper with timeout (`AbortSignal`), retry on 5xx/network, circuit breaker, and structured error mapping.",
+          },
+          {
+            q: "Build a money-transfer endpoint: DB transaction, row locking or optimistic concurrency, idempotency key, and a compensating action on partial failure.",
+          },
+          {
+            q: "Build a WebSocket server that authenticates the connection, tracks clients, broadcasts, and cleans up on disconnect + heartbeats.",
+          },
+          {
+            q: "Build a caching layer for a read-heavy endpoint with single-flight (no stampede), TTL, and explicit invalidation on write.",
+          },
+        ],
+      },
+      {
         id: "aspnet-theoretical",
         number: 7,
         title: "ASP.NET Core Web API — Theoretical",
