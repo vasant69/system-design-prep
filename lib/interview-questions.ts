@@ -381,6 +381,699 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
         ],
       },
       {
+        id: "angular-forms",
+        number: 4,
+        numLabel: "4a",
+        title: "Angular — Reactive Forms & Validation (Deep Dive)",
+        questions: [
+          {
+            q: "FormControl, FormGroup, FormArray, FormRecord — what does each represent and when do you reach for each?",
+          },
+          {
+            q: "How do you build a reactive form with FormBuilder vs instantiating FormControl/FormGroup by hand? What does FormBuilder actually save you?",
+          },
+          {
+            q: "What is the difference between `setValue()` and `patchValue()` on a FormGroup? When does `setValue()` throw?",
+          },
+          {
+            q: "What do `reset()`, `markAsPristine()`, `markAsTouched()`, and `markAllAsTouched()` do, and when would you call `markAllAsTouched()` on submit?",
+          },
+          {
+            q: "Explain the control states: pristine/dirty, touched/untouched, valid/invalid, pending, disabled. Which combination decides whether you actually show an error message?",
+          },
+          {
+            q: "Why does a disabled control not appear in `form.value`, and how do you get the full value including disabled controls?",
+            followups: ["What does `getRawValue()` return that `.value` doesn't?"],
+          },
+          {
+            q: "How do `valueChanges` and `statusChanges` work? What's the common infinite-loop bug when you subscribe to `valueChanges` and also call `patchValue()` inside that subscription?",
+            followups: [
+              "How does `{ emitEvent: false }` help?",
+            ],
+          },
+          {
+            q: "What is the `updateOn` option (`change` / `blur` / `submit`) and when would you switch a form or control to `blur` or `submit`?",
+          },
+          {
+            q: "How do you build a dynamic FormArray — add row, remove row, reindex — and bind it in the template with `formArrayName` + `formGroupName`?",
+          },
+          {
+            q: "How do you implement cross-field validation (password + confirmPassword) with a validator on the FormGroup, and how do you surface that error in the template since it lives on the group, not a control?",
+          },
+          {
+            q: "Write a custom synchronous validator (e.g., a forbidden-value validator). What exact shape must it return on valid vs invalid?",
+          },
+          {
+            q: "Write a custom async validator that checks username availability against an API. How do you debounce it so it doesn't fire on every keystroke?",
+          },
+          {
+            q: "How does Angular know an async validator is still running? What is the `pending` status and how do you show a spinner for it?",
+          },
+          {
+            q: "How do you pass a parameter into a custom validator (the validator-factory pattern)?",
+          },
+          {
+            q: "`ValidatorFn` vs `AsyncValidatorFn` vs a directive-based validator registered with `NG_VALIDATORS` — when do you actually need the directive form?",
+          },
+          {
+            q: "How do you add or remove validators at runtime with `setValidators()` / `addValidators()` / `removeValidators()`, and why must you call `updateValueAndValidity()` afterwards?",
+          },
+          {
+            q: "Conditional validation: a field is required only when another field has a certain value — how do you wire that up without leaking subscriptions?",
+          },
+          {
+            q: "`control.errors` is an object of all failing keys — how do you cleanly display just the first relevant error message per control?",
+          },
+          {
+            q: "What is `ControlValueAccessor` and what do its four methods (`writeValue`, `registerOnChange`, `registerOnTouched`, `setDisabledState`) each do?",
+          },
+          {
+            q: "Build a custom form control (star-rating or currency input) that works with `formControlName`, `[(ngModel)]`, validation, and the disabled state.",
+          },
+          {
+            q: "Why do you register a custom control with `NG_VALUE_ACCESSOR` using `multi: true` and `forwardRef()`?",
+          },
+          {
+            q: "How do you compose a child component's sub-form into a parent form — passing a `FormGroup` via `@Input` vs sharing a `ControlContainer`?",
+          },
+          {
+            q: "What does providing `ControlContainer` via `viewProviders` with `formGroupName` give a sub-form component, and why is it better than passing the FormGroup as an input?",
+          },
+          {
+            q: "Template-driven forms: how do `ngModel`, `ngForm`, `ngModelGroup`, and the exported `#f=\"ngForm\"` reference work together?",
+          },
+          {
+            q: "Template-driven vs reactive forms — give three concrete reasons to pick reactive for a complex fintech form.",
+          },
+          {
+            q: "How do you strictly type a reactive form (typed forms, Angular 14+)? What broke, and what do `FormControl<string>` and `nonNullable` give you?",
+          },
+          {
+            q: "Why can `form.get('a.b.c')` return `null`, and how do you access deeply nested controls safely?",
+          },
+          {
+            q: "After a successful submit, how do you reset the form to initial values without leaving controls `touched`/`dirty` so old errors keep showing?",
+          },
+          {
+            q: "How do you prevent a double submit — button disabled on `form.invalid || submitting`, and why is `exhaustMap` the right operator on the submit stream?",
+          },
+          {
+            q: "How do you map server-side validation errors (a 422 response) back onto specific form controls using `setErrors()`?",
+          },
+          {
+            q: "What's the performance concern with a very large reactive form where `valueChanges` fires constantly, and how do `updateOn: 'blur'` and `OnPush` help?",
+          },
+          {
+            q: "How do you build a multi-step wizard: one big FormGroup with nested groups per step vs separate FormGroups per step — and how do you validate step-by-step?",
+          },
+          {
+            q: "How do you drive a \"you have unsaved changes\" `CanDeactivate` guard from `form.dirty`?",
+          },
+          {
+            q: "How do you unit-test a component with a reactive form — set control values, mark touched, assert validity, and assert the emitted output on submit?",
+          },
+        ],
+      },
+      {
+        id: "angular-rxjs",
+        number: 4,
+        numLabel: "4b",
+        title: "Angular — RxJS in Angular (Deep Dive)",
+        questions: [
+          {
+            q: "Observable vs Promise — lazy vs eager, one value vs many, cancellable vs not. Why does `HttpClient` return an Observable?",
+          },
+          {
+            q: "Cold vs hot Observable — is an `HttpClient` request cold or hot, and what actually happens if you subscribe to it twice?",
+          },
+          {
+            q: "Subject vs BehaviorSubject vs ReplaySubject vs AsyncSubject — the differences, and one real Angular use case for each.",
+          },
+          {
+            q: "When do you use a `BehaviorSubject` as the backing store of a stateful service, and why expose it via `.asObservable()`?",
+          },
+          {
+            q: "`switchMap` vs `mergeMap` vs `concatMap` vs `exhaustMap` — describe the marble behaviour and give the canonical use case for each (typeahead, parallel, ordered, submit).",
+          },
+          {
+            q: "Which flattening operator prevents duplicate form submissions, and what goes wrong if you use `mergeMap` there instead?",
+          },
+          {
+            q: "`combineLatest` vs `forkJoin` vs `zip` vs `withLatestFrom` — when does each emit, and when does each complete?",
+          },
+          {
+            q: "Why does `forkJoin` emit nothing if one inner Observable never completes, and what's the fix when combining with a stream that doesn't complete?",
+          },
+          {
+            q: "How do you handle partial failure in `forkJoin` — one of three calls fails but you still want the other two results?",
+          },
+          {
+            q: "`debounceTime` vs `throttleTime` vs `auditTime` vs `sampleTime` — which for a search box, which for a scroll/resize handler, and why?",
+          },
+          {
+            q: "`distinctUntilChanged` — how does it help a typeahead, and what's the gotcha when the values are objects?",
+          },
+          {
+            q: "Build search-as-you-type: `valueChanges` → `debounceTime` → `distinctUntilChanged` → `switchMap` → handle errors without killing the stream.",
+          },
+          {
+            q: "Why does an error inside an inner Observable in `switchMap` complete the whole outer stream, and how do you contain it (`catchError` on the inner, returning `EMPTY` or `of(...)`)?",
+          },
+          {
+            q: "`catchError` — where do you place it (inner vs outer), what must it return, and what's the difference between returning `of([])` and rethrowing?",
+          },
+          {
+            q: "How do you retry a failed HTTP call three times with exponential backoff using `retry({ count, delay })`?",
+          },
+          {
+            q: "What is `finalize` good for (hiding a loading spinner), and how is it different from the `complete` callback?",
+          },
+          {
+            q: "How do you cancel an in-flight HTTP request in Angular? What actually triggers the cancellation?",
+          },
+          {
+            q: "List the four common fixes for subscription memory leaks: `async` pipe, `takeUntil(destroy$)`, `takeUntilDestroyed()`, and manual `unsubscribe()`. When is each appropriate?",
+          },
+          {
+            q: "What are `takeUntilDestroyed()` and `DestroyRef` (Angular 16+), and when can you call `takeUntilDestroyed()` without passing a `DestroyRef`?",
+          },
+          {
+            q: "The `async` pipe — what does it do on subscribe, on destroy, and on reference change? Why do two `async` pipes on the same source cause two subscriptions, and how does `*ngIf ... as` fix it?",
+          },
+          {
+            q: "`shareReplay({ bufferSize: 1, refCount: true })` — what problem does it solve for a shared HTTP call, and what's the `refCount` true-vs-false trade-off (leak vs re-request)?",
+          },
+          {
+            q: "How do you turn a value that changes over time (route params) into a data stream — `paramMap` → `switchMap(id => service.get(id))` → `async` pipe?",
+          },
+          {
+            q: "`startWith`, `scan`, and `map` — how would you build a running-total or an accumulating-state stream?",
+          },
+          {
+            q: "`EMPTY` vs `of()` vs `NEVER` — what does each do, and when do you return `EMPTY` from `catchError`?",
+          },
+          {
+            q: "How do you combine a manual \"refresh\" button with an initial auto-load — a `Subject` merged with a startup trigger, piped into `switchMap`?",
+          },
+          {
+            q: "Signals vs RxJS — when do you reach for a signal, when for an Observable? What do `toSignal()` and `toObservable()` bridge?",
+          },
+          {
+            q: "What does `toSignal()` do about the initial value and about unsubscription?",
+          },
+          {
+            q: "Why is a nested `subscribe` inside another `subscribe` an anti-pattern? Rewrite it with a higher-order mapping operator.",
+          },
+          {
+            q: "How do you unit-test RxJS code — marble testing with `TestScheduler`, `fakeAsync` + `tick()`, or subscribing and asserting? When does each fit?",
+          },
+          {
+            q: "How do you test a debounced typeahead in a `fakeAsync` zone with `tick(300)`?",
+          },
+          {
+            q: "`tap` for side effects vs doing side effects in `map` or `subscribe` — when is `tap` the right tool?",
+          },
+          {
+            q: "How do you process 100 items but cap it at five concurrent HTTP requests (`mergeMap` with a concurrency argument)?",
+          },
+          {
+            q: "How do you share one HTTP response across multiple components without re-fetching?",
+          },
+          {
+            q: "What is backpressure, and where might it actually bite in an Angular UI (rapid websocket messages, resize storms)?",
+          },
+          {
+            q: "How do you convert a DOM event, a `setInterval`, or a websocket into an Observable (`fromEvent`, `interval`, `new Observable`)?",
+          },
+          {
+            q: "Why should a service method return an Observable rather than subscribe internally and return `void`? What does the caller lose otherwise?",
+          },
+        ],
+      },
+      {
+        id: "angular-services-di",
+        number: 4,
+        numLabel: "4c",
+        title: "Angular — Services, Dependency Injection & State",
+        questions: [
+          {
+            q: "What is a service, and why move logic out of components? Make the testability and reuse argument.",
+          },
+          {
+            q: "`providedIn: 'root'` vs a component's `providers` array vs `providedIn: 'platform'` / `'any'` — how many instances and what scope does each give you?",
+          },
+          {
+            q: "What are tree-shakable providers, and how does `providedIn` let the build drop an unused service?",
+          },
+          {
+            q: "Explain the hierarchical injector tree — element injector vs environment injector. How does a component-level provider create a fresh instance for that subtree?",
+          },
+          {
+            q: "What is an `InjectionToken`, and why do you need one for non-class dependencies (config objects, strings, primitives)?",
+          },
+          {
+            q: "`useClass`, `useValue`, `useExisting`, `useFactory` — what does each provider recipe do? Give a real use case for `useFactory` with `deps`.",
+          },
+          {
+            q: "What is a multi-provider (`multi: true`)? Name two Angular features built on it (`HTTP_INTERCEPTORS`, `NG_VALIDATORS`, `APP_INITIALIZER`).",
+          },
+          {
+            q: "The `inject()` function vs constructor injection — what can `inject()` do that a constructor can't, and where is it legal to call it?",
+          },
+          {
+            q: "What is an injection context, and why does calling `inject()` outside a constructor / factory / `runInInjectionContext` throw?",
+          },
+          {
+            q: "`@Optional()`, `@Self()`, `@SkipSelf()`, `@Host()` — what does each resolution modifier change?",
+          },
+          {
+            q: "What is the \"captive dependency\" problem (a singleton holding something shorter-lived), and how does it show up in Angular?",
+          },
+          {
+            q: "How do you provide a different service implementation for dev vs prod using a token + factory + environment?",
+          },
+          {
+            q: "`APP_INITIALIZER` — how do you load runtime config from an API before the app bootstraps?",
+          },
+          {
+            q: "How do you share state between two unrelated sibling components with a service — `BehaviorSubject` plus an exposed Observable and setter methods?",
+          },
+          {
+            q: "Build a minimal store service: a private `BehaviorSubject<State>`, selectors via `map` + `distinctUntilChanged`, and immutable updates.",
+          },
+          {
+            q: "Service-with-a-Subject vs NgRx vs `signalStore` — what does each solve, and when is NgRx overkill?",
+          },
+          {
+            q: "NgRx: what problem do actions, reducers, selectors, and effects each solve, and where does the HTTP call live?",
+          },
+          {
+            q: "What is a memoized selector (`createSelector`), and why does it matter for `OnPush` performance?",
+          },
+          {
+            q: "Signal-based state: `signal()`, `computed()`, `effect()`, `set()` / `update()` — build a small cart or counter store with them.",
+          },
+          {
+            q: "When does an `effect()` run, why should you avoid writing signals inside one, and what is `allowSignalWrites`?",
+          },
+          {
+            q: "How do you keep a service a true singleton across a lazy-loaded feature without accidentally creating a second instance?",
+          },
+          {
+            q: "How do you unit-test a service that depends on `HttpClient` using `provideHttpClientTesting` / `HttpClientTestingModule` and `HttpTestingController`?",
+          },
+          {
+            q: "How do you mock a service's dependency in `TestBed` with a provider override (`{ provide: X, useValue: spy }`)?",
+          },
+          {
+            q: "What's the risk of storing a mutable object in a service and handing the same reference to several components, and how do immutability + `OnPush` fix it?",
+          },
+          {
+            q: "How would you cache API responses in a service (in-memory `Map`, `shareReplay`, or a TTL cache) and invalidate on a mutation?",
+          },
+          {
+            q: "Where should cross-cutting concerns live — an interceptor, a service, or a base class — for auth-token attach, logging, and error toasts?",
+          },
+        ],
+      },
+      {
+        id: "angular-components-basics",
+        number: 4,
+        numLabel: "4d",
+        title: "Angular — Components, Templates & Data Binding (Basics)",
+        questions: [
+          {
+            q: "Which parts of the `@Component` decorator do you actually use (`selector`, `template`/`templateUrl`, `styles`, `changeDetection`, `standalone`, `imports`, `providers`, `host`)?",
+          },
+          {
+            q: "Interpolation `{{ }}` vs property binding `[prop]` vs attribute binding `[attr.x]` — when must you use `[attr.]` (e.g., `colspan`, ARIA attributes)?",
+          },
+          {
+            q: "Event binding `(click)` and `$event` — how do you get a typed DOM event, and what is `$event` for a custom `@Output`?",
+          },
+          {
+            q: "Two-way binding `[(ngModel)]` — what two bindings does the \"banana in a box\" desugar to, and how do you make your own two-way-bindable `x` / `xChange` pair?",
+          },
+          {
+            q: "`@Input()` — aliasing, required inputs, input setters vs `ngOnChanges`, and the new signal `input()` API.",
+          },
+          {
+            q: "`@Output()` and `EventEmitter` — why is `EventEmitter` essentially a `Subject`, and should you ever `.subscribe()` to your own output inside the component?",
+          },
+          {
+            q: "`input()`, `output()`, `model()` signal APIs (Angular 17.1+) — how do they differ from the decorators?",
+          },
+          {
+            q: "The new control flow `@if` / `@else`, `@for` (with mandatory `track`), `@switch`, `@defer` — how do they compare to `*ngIf` / `*ngFor` / `*ngSwitch`?",
+          },
+          {
+            q: "Why is `trackBy` (or `@for` `track`) important for a list that re-renders, and what concretely goes wrong without it?",
+          },
+          {
+            q: "`*ngIf` with `; else tpl` and an `as` local variable — how does it help you avoid repeated evaluation / multiple subscriptions?",
+          },
+          {
+            q: "`ng-template`, `ng-container`, `ng-content` — what is each for, and why does `ng-container` need to exist?",
+          },
+          {
+            q: "Content projection — single-slot `<ng-content>`, multi-slot with `select`, and `@ContentChild`. Whose change detection and lifecycle owns projected content?",
+          },
+          {
+            q: "`@ViewChild` vs `@ContentChild` — the difference, when each is available (`static: true` vs `false`), and how the signal `viewChild()` query changes this.",
+          },
+          {
+            q: "Template reference variables (`#ref`) — what do they point to for a plain element vs a component vs a directive with `exportAs`?",
+          },
+          {
+            q: "List the lifecycle hooks in execution order and say which run once vs on every change-detection cycle.",
+          },
+          {
+            q: "Why does reading a `@ViewChild` in `ngOnInit` sometimes give `undefined`, and where should you read it instead?",
+          },
+          {
+            q: "What is `ExpressionChangedAfterItHasBeenCheckedError`, what causes it, and how do you fix it properly (not with `setTimeout`)?",
+          },
+          {
+            q: "`@HostBinding` / `@HostListener` and the `host` object — build a directive that toggles a class on click.",
+          },
+          {
+            q: "`ngClass` vs `[class.x]` vs `ngStyle` vs `[style.x]` — which is most efficient, and which do you use for a single toggle?",
+          },
+          {
+            q: "View encapsulation: `Emulated` vs `ShadowDom` vs `None` — what does `Emulated` actually do with those attribute selectors?",
+          },
+          {
+            q: "`:host`, `:host-context()`, and `::ng-deep` (deprecated) — when do you need each, and what is the modern alternative to `::ng-deep`?",
+          },
+          {
+            q: "Standalone components vs NgModules — what changed, what is `bootstrapApplication`, and how do you lazy-load a standalone component?",
+          },
+          {
+            q: "How do you create a component dynamically and pass it data (`ViewContainerRef.createComponent`, setting inputs, `NgComponentOutlet`)?",
+          },
+          {
+            q: "Smart (container) vs dumb (presentational) components — what belongs in each, and how does the split help `OnPush` and testing?",
+          },
+          {
+            q: "How do you localize template text — the `i18n` attribute + `@angular/localize` vs a runtime translation library — and the trade-offs?",
+          },
+          {
+            q: "Walk through unit-testing a component: `configureTestingModule`, `createComponent`, `detectChanges()`, querying with `By.css`, triggering events, asserting output.",
+          },
+        ],
+      },
+      {
+        id: "angular-directives-pipes",
+        number: 4,
+        numLabel: "4e",
+        title: "Angular — Directives, Pipes & Rendering",
+        questions: [
+          {
+            q: "Attribute directive vs structural directive — what is the `*` sugar actually doing with `<ng-template>`?",
+          },
+          {
+            q: "Build a custom attribute directive (`appHighlight`) with `ElementRef` + `Renderer2` + `@HostListener`. Why prefer `Renderer2` over touching `nativeElement` directly?",
+          },
+          {
+            q: "Build a custom structural directive (`*appDelay=\"500\"`) using `TemplateRef` + `ViewContainerRef`.",
+          },
+          {
+            q: "How do you pass multiple inputs into a structural directive via microsyntax (`*appIf=\"cond as value; else tpl\"`)?",
+          },
+          {
+            q: "Pure vs impure pipes — when does a pure pipe re-run, and why is an impure pipe a performance risk?",
+          },
+          {
+            q: "Build a custom pipe (`timeAgo`, `mask`, or `initials`) and show how you pass arguments to it.",
+          },
+          {
+            q: "Why should you not filter or sort a large array inside a template pipe or a getter? Where should that work go instead?",
+          },
+          {
+            q: "`async`, `date`, `currency`, `number`, `percent`, `keyvalue`, `slice`, `json` pipes — which do you use, and what's the locale gotcha (`registerLocaleData`)?",
+          },
+          {
+            q: "How does `CurrencyPipe` / `DecimalPipe` formatting interact with a fintech need for exact decimals and Indian digit grouping (lakh/crore)?",
+          },
+          {
+            q: "How do you build a directive that also implements `ControlValueAccessor` (e.g., an input-mask directive usable with `formControlName`)?",
+          },
+          {
+            q: "What is `NgTemplateOutlet`, and when do you use it instead of content projection?",
+          },
+          {
+            q: "How do you unit-test a directive — a host component in `TestBed`, or `DebugElement.injector.get(Directive)`?",
+          },
+          {
+            q: "What triggers a directive's `ngOnChanges` vs `ngDoCheck`, and how do you react to input changes efficiently?",
+          },
+          {
+            q: "Which `Renderer2` methods do you actually use (`addClass`, `setStyle`, `listen`, `setAttribute`), and why do they matter for SSR and security?",
+          },
+          {
+            q: "Build an IntersectionObserver-based \"lazy load image\" directive and clean it up in `ngOnDestroy`.",
+          },
+          {
+            q: "Dynamic component rendering with `NgComponentOutlet` vs `ViewContainerRef.createComponent` — trade-offs.",
+          },
+        ],
+      },
+      {
+        id: "angular-routing",
+        number: 4,
+        numLabel: "4f",
+        title: "Angular — Routing",
+        questions: [
+          {
+            q: "How do you configure routes (`provideRouter` / `RouterModule.forRoot`), and why is match order sensitive (`''`, `pathMatch: 'full'`, wildcard `**`)?",
+          },
+          {
+            q: "`routerLink`, `routerLinkActive`, `[queryParams]`, `[state]`, and programmatic `Router.navigate` / `navigateByUrl` — when do you use each?",
+          },
+          {
+            q: "Route params vs query params vs matrix params vs route `data` vs `state` — how do you read each?",
+          },
+          {
+            q: "Why read `paramMap` as an Observable instead of `snapshot.params`? What breaks with `snapshot` when navigating from `/user/1` to `/user/2`?",
+          },
+          {
+            q: "Child routes, nested `<router-outlet>`, and named/secondary outlets — give a real use case for a named outlet.",
+          },
+          {
+            q: "Lazy loading with `loadChildren` vs `loadComponent` (standalone) — how do you verify a chunk actually splits in the build output?",
+          },
+          {
+            q: "Preloading strategies — `PreloadAllModules`, `NoPreloading`, and a custom strategy that preloads only routes flagged in `data`.",
+          },
+          {
+            q: "Guards: `CanActivate`, `CanActivateChild`, `CanDeactivate`, `CanMatch`, `Resolve` — a concrete use case for each, and why `CanMatch` beats `CanActivate` for auth-based route swapping.",
+          },
+          {
+            q: "Rewrite a class-based `CanActivate` guard as a functional `CanActivateFn` using `inject()`.",
+          },
+          {
+            q: "`Resolve` vs fetching in `ngOnInit` — pros (no empty flash, data ready) and cons (navigation blocked). How do you show a loading indicator during resolve (`router.events`)?",
+          },
+          {
+            q: "How do you protect against losing unsaved form changes with a `CanDeactivate` guard bound to `component.form.dirty`?",
+          },
+          {
+            q: "How do you pass data to a route without putting it in the URL (`NavigationExtras.state`) and read it back (`getCurrentNavigation()`)?",
+          },
+          {
+            q: "Using router events (`NavigationStart` / `End` / `Cancel` / `Error`), build a global route-change loading bar.",
+          },
+          {
+            q: "Scroll position restoration and anchor scrolling — `withInMemoryScrolling` / `scrollPositionRestoration`.",
+          },
+          {
+            q: "How do you unit-test a component that uses `ActivatedRoute` — a stub with a `paramMap` Observable, or `RouterTestingModule` / `provideRouter`?",
+          },
+          {
+            q: "How do you handle a 404 / unknown route and a \"redirect old URL to new URL\" requirement?",
+          },
+        ],
+      },
+      {
+        id: "angular-http-interceptors",
+        number: 4,
+        numLabel: "4g",
+        title: "Angular — HttpClient & Interceptors",
+        questions: [
+          {
+            q: "`provideHttpClient()` / `HttpClientModule`, typed responses (`http.get<T>()`), and why the response is an Observable you must subscribe to (or `async`-pipe).",
+          },
+          {
+            q: "How do you send query params (`HttpParams`), headers (`HttpHeaders`), read the full response (`observe: 'response'`), or track progress (`reportProgress`)?",
+          },
+          {
+            q: "Functional interceptors (`HttpInterceptorFn`, Angular 15+) vs class interceptors — how do you register each, and does order matter?",
+          },
+          {
+            q: "Write an auth interceptor that attaches a JWT and, on a 401, refreshes the token once and retries the original request. How do you stop a refresh stampede when five requests 401 at the same time?",
+          },
+          {
+            q: "Write a global error interceptor that shows a toast and rethrows — without swallowing the error for the caller.",
+          },
+          {
+            q: "Build a loading-spinner interceptor — a counter in a service, guarded against going negative, using `finalize`.",
+          },
+          {
+            q: "Build a retry interceptor with exponential backoff for idempotent GETs only — how do you decide it's safe to retry?",
+          },
+          {
+            q: "How do you cancel a request when a component is destroyed mid-flight, and how does `switchMap` in a search feature do this automatically?",
+          },
+          {
+            q: "How do you test an interceptor with `HttpTestingController` — assert the outgoing header, flush a 401, assert the retry?",
+          },
+          {
+            q: "How do you do file upload with progress (`reportProgress: true`, `HttpEventType.UploadProgress`) and blob download (`responseType: 'blob'`)?",
+          },
+          {
+            q: "How do you mock the backend in development (an in-memory interceptor, `provideHttpClient` with a fake, or MSW)?",
+          },
+          {
+            q: "Where does response caching belong — an interceptor keyed by URL, or a service with `shareReplay`? Trade-offs.",
+          },
+        ],
+      },
+      {
+        id: "angular-change-detection-perf",
+        number: 4,
+        numLabel: "4h",
+        title: "Angular — Change Detection, Signals & Performance",
+        questions: [
+          {
+            q: "How does Zone.js-based change detection work — what monkey-patched async API triggers a cycle, and what does \"dirty-check from the root\" mean?",
+          },
+          {
+            q: "`Default` vs `OnPush` — with `OnPush`, what still triggers change detection for that component?",
+          },
+          {
+            q: "Why does `OnPush` require immutable inputs? Show a bug where mutating an array in place doesn't update an `OnPush` child.",
+          },
+          {
+            q: "`ChangeDetectorRef` — `markForCheck()`, `detectChanges()`, `detach()`, `reattach()` — when do you use `markForCheck()` vs `detectChanges()`?",
+          },
+          {
+            q: "`trackBy` / `@for track` — describe the before/after on a 1000-row list re-render.",
+          },
+          {
+            q: "`NgZone.runOutsideAngular()` — when do you use it (rapid mousemove, animation loop, noisy third-party lib), and how do you re-enter the zone?",
+          },
+          {
+            q: "What is zoneless change detection (`provideExperimentalZonelessChangeDetection`), and what must the app rely on instead of Zone.js?",
+          },
+          {
+            q: "How do signals change the change-detection story — fine-grained template dependencies — and where is Angular heading with signal-based components?",
+          },
+          {
+            q: "`computed()` memoization and glitch-free propagation — why is a `computed` better than calling a method in the template?",
+          },
+          {
+            q: "`@defer` blocks — triggers (`on idle`, `on viewport`, `on interaction`, `when`), plus `@placeholder` / `@loading` / `@error` — how do they cut the initial bundle?",
+          },
+          {
+            q: "CDK virtual scrolling (`cdk-virtual-scroll-viewport`) — when is it worth it, and what's the pitfall with variable row heights?",
+          },
+          {
+            q: "How do you profile an Angular app — Angular DevTools profiler, `ng.profiler.timeChangeDetection()`, Chrome performance — and what do you look for?",
+          },
+        ],
+      },
+      {
+        id: "angular-testing-tooling",
+        number: 4,
+        numLabel: "4i",
+        title: "Angular — Testing & Tooling",
+        questions: [
+          {
+            q: "`TestBed` — what does `configureTestingModule` set up, and what's the cost of `compileComponents()` for a `templateUrl`?",
+          },
+          {
+            q: "`fixture.detectChanges()` — why must you call it, and when do you need to call it twice?",
+          },
+          {
+            q: "`fakeAsync` + `tick()` / `flush()` vs `waitForAsync` + `whenStable()` — when do you need each?",
+          },
+          {
+            q: "How do you mock a service in a component test (`useValue: jasmine.createSpyObj(...)`) and assert it was called with the right args?",
+          },
+          {
+            q: "`provideHttpClientTesting` / `HttpClientTestingModule` + `HttpTestingController` — `expectOne`, `flush`, `verify`.",
+          },
+          {
+            q: "How do you test `@Output` emissions and DOM interactions (`triggerEventHandler`, native `click`)?",
+          },
+          {
+            q: "How do you test a component that depends on `Router` and `ActivatedRoute`?",
+          },
+          {
+            q: "Shallow vs deep component tests — `NO_ERRORS_SCHEMA` / `CUSTOM_ELEMENTS_SCHEMA` vs stubbing child components; trade-offs.",
+          },
+          {
+            q: "What makes an Angular test flaky (missing `detectChanges`, real timers, unmocked HTTP, fixture not destroyed)?",
+          },
+          {
+            q: "What does `ng build` do under the hood (AOT, tree-shaking, budgets, esbuild/Vite), and what are schematics (`ng generate`, `ng add`, `ng update`)?",
+          },
+        ],
+      },
+      {
+        id: "angular-practical-extended",
+        number: 4,
+        numLabel: "4j",
+        title: "Angular — Practical Build Tasks (Extended)",
+        questions: [
+          {
+            q: "Build a reusable confirm-dialog service any component can call and `await` a boolean from (component + `Subject` + overlay).",
+          },
+          {
+            q: "Build a generic typed data-table component: `@Input` columns + rows, client-side sort, filter, and pagination, `OnPush`, no library.",
+          },
+          {
+            q: "Build an `<app-currency-input>` custom form control (`ControlValueAccessor`) that stores a number but displays grouped INR formatting.",
+          },
+          {
+            q: "Build a debounced search field that cancels stale requests and shows loading / empty / error states from a single stream.",
+          },
+          {
+            q: "Build a multi-step wizard with one typed `FormGroup`, per-step validation gating the Next button, and a review step.",
+          },
+          {
+            q: "Build an auth flow: login form → store JWT → `CanMatch` route guard → interceptor attaches token → refresh on 401.",
+          },
+          {
+            q: "Build an \"unsaved changes\" `CanDeactivate` guard wired to a form's `dirty` state.",
+          },
+          {
+            q: "Build a dynamic form from a JSON schema (array of field configs → `FormGroup` + rendered controls).",
+          },
+          {
+            q: "Build optimistic UI for a favorite/like toggle — update state immediately, roll back on API error, dedupe rapid clicks with `exhaustMap`.",
+          },
+          {
+            q: "Build a FormArray editor for line items (add / remove / reorder) with a live total via `valueChanges` or a signal.",
+          },
+          {
+            q: "Build a lazy-loaded route with `loadComponent` and verify the chunk split in the build.",
+          },
+          {
+            q: "Build a global `ErrorHandler` plus an HTTP error interceptor that together log to a service and show a toast.",
+          },
+          {
+            q: "Convert an RxJS-based component's state to signals (`toSignal`, `computed`) and note what got simpler.",
+          },
+          {
+            q: "Build a paginated infinite-scroll list that never skips or duplicates rows as new data is prepended (keyset cursor).",
+          },
+          {
+            q: "Write unit tests for the debounced search component using `fakeAsync` + `HttpTestingController`.",
+          },
+        ],
+      },
+      {
         id: "nodejs-theoretical",
         number: 5,
         title: "Node.js — Theoretical",
