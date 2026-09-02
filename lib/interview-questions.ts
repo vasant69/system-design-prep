@@ -6,7 +6,16 @@
 // follow-ups an interviewer would drill into. Rendered as-is by
 // app/interview-mode/page.tsx.
 
-export type IQQuestion = { q: string; followups?: string[] };
+export type IQQuestion = {
+  q: string;
+  followups?: string[];
+  /**
+   * Optional worked answer. Lightweight markdown: blank-line-separated
+   * paragraphs, `- ` bullet lists, ```lang fenced code blocks, `**bold**`,
+   * and inline `code`. Rendered under a collapsed "Answer" toggle.
+   */
+  answer?: string;
+};
 
 export type IQCategory = {
   id: string;
@@ -33,7 +42,7 @@ export const INTERVIEW_PREP_META = {
   scope:
     "Everything a technical interview loop for this profile can realistically touch — core stack (theory + practical), system design, DSA basics, and the cross-cutting engineering topics (auth, security, patterns, DevOps, cloud) that senior-ish full-stack rounds pull from.",
   disclaimer:
-    "No answers included by design — each item has follow-ups nested under it the way a real interviewer drills deeper. Question count is intentionally large; skim first, then go deep only where you're weak.",
+    "Each item has follow-ups nested under it the way a real interviewer drills deeper. The SQL and Angular sections include a collapsible worked \"Answer\" with explanation and examples under each question; the rest are prompts only for now. Question count is intentionally large; skim first, then go deep only where you're weak.",
 };
 
 export const INTERVIEW_PREP_PARTS: IQPart[] = [
@@ -53,6 +62,8 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
               "How does a left join behave if you add a WHERE clause filtering on the right table's column?",
               "Difference between a self join and simply aliasing the same table twice in a query?",
             ],
+            answer:
+              "**Inner join** returns only rows with a match on both sides. **Left (outer) join** returns all left rows plus matched right columns, NULLs where there's no match; **right join** is the mirror. **Full outer join** returns all rows from both sides, NULLs filling the missing side. **Cross join** is the Cartesian product (every left row paired with every right row) — no ON clause. **Self join** joins a table to itself via two aliases, e.g. to pair an employee with their manager.\n\n```sql\nSELECT e.name, m.name AS manager\nFROM employees e\nLEFT JOIN employees m ON e.manager_id = m.id;\n```\n\n**Follow-up — WHERE on the right table:** a right-table predicate in WHERE silently turns a LEFT JOIN back into an INNER JOIN, because unmatched rows have `right.col = NULL`, which is not true. Put the filter in the ON clause (`LEFT JOIN ... ON ... AND right.col = 'x'`) to keep unmatched left rows.\n\n**Follow-up — self join vs two aliases:** they're the same thing. 'Self join' just means both aliases point at one physical table; there is no special syntax.",
           },
           {
             q: "Clustered vs non-clustered index — what's the difference?",
@@ -60,6 +71,8 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
               "Can a table have more than one clustered index?",
               "How does column order in a composite index affect query performance (leftmost prefix rule)?",
             ],
+            answer:
+              "A **clustered index** defines the physical order of the rows — the table *is* the index; its B-tree leaves hold the full rows. A **non-clustered index** is a separate B-tree whose leaves hold the key columns plus a pointer back to the row (the clustered key, or a RID for a heap).\n\nConsequence: a clustered-key lookup is a single seek; a non-clustered lookup that needs columns not in the index does a second 'key lookup' per row — costly at volume, which is why covering indexes matter.\n\n**Follow-up — more than one clustered index:** no. Rows can only be physically ordered one way, so at most one per table. You can have many non-clustered indexes.\n\n**Follow-up — composite column order (leftmost prefix):** an index on `(a, b, c)` can seek on `a`, `a,b`, or `a,b,c`, but not `b` alone or `c` alone. Put equality-filtered, selective columns first and range columns last, and match the ORDER BY so you skip a sort.",
           },
           {
             q: "What is normalization? Explain 1NF, 2NF, 3NF, BCNF.",
@@ -67,18 +80,24 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
               "Give an example of a table that violates 2NF.",
               "When would you intentionally denormalize a schema?",
             ],
+            answer:
+              "Normalization organizes columns and tables to remove redundancy and update anomalies, so every non-key fact depends on 'the key, the whole key, and nothing but the key.'\n\n- **1NF:** atomic values, no repeating groups or arrays in a column; a primary key exists.\n- **2NF:** 1NF and no *partial* dependency — non-key columns depend on the whole composite key, not part of it.\n- **3NF:** 2NF and no *transitive* dependency — non-key columns don't depend on other non-key columns.\n- **BCNF:** stricter 3NF — every determinant (left side of a functional dependency) is a candidate key.\n\n**Follow-up — 2NF violation:** `order_items(order_id, product_id, quantity, product_name)`. Key is `(order_id, product_id)` but `product_name` depends only on `product_id` — a partial dependency. Fix: move `product_name` into a `products` table.\n\n**Follow-up — when to denormalize:** read-heavy reporting, expensive repeated joins, or precomputed aggregates (a cached `account.balance`), always with a defined mechanism to keep the copy consistent (trigger, app logic, outbox, periodic rebuild).",
           },
           {
             q: "Explain ACID properties.",
             followups: [
               "Which ACID property is hardest to guarantee in a distributed database, and why?",
             ],
+            answer:
+              "- **Atomicity:** all-or-nothing; a failure rolls back every change in the transaction.\n- **Consistency:** a transaction moves the DB from one valid state to another, respecting constraints and triggers.\n- **Isolation:** concurrent transactions don't see each other's uncommitted intermediate state (degree set by the isolation level).\n- **Durability:** once committed, changes survive a crash (write-ahead log flushed to stable storage).\n\n**Follow-up — hardest in a distributed DB:** isolation/consistency across nodes. Atomicity across shards needs two-phase commit or sagas; global isolation needs distributed locking or a timestamp/consensus protocol (Spanner's TrueTime, Calvin). Partitions force the CAP trade-off, so many systems relax to eventual consistency or offer per-shard transactions only. Durability is comparatively easy — replicate the log to a quorum.",
           },
           {
             q: "What are SQL isolation levels? What anomalies does each prevent (dirty read, non-repeatable read, phantom read, lost update)?",
             followups: [
               "What isolation level would you pick for a banking balance transfer, and why?",
             ],
+            answer:
+              "- **Read Uncommitted:** allows dirty reads (seeing another txn's uncommitted data).\n- **Read Committed:** no dirty reads; still allows non-repeatable reads and phantoms. Default in most engines.\n- **Repeatable Read:** re-reading the same row gives the same value; phantoms (new rows matching a range) may still appear — except MySQL InnoDB, which blocks them with next-key locks.\n- **Serializable:** transactions behave as if run one at a time; no phantoms, no write skew.\n\n**Lost update** = two txns read-modify-write the same row and one silently overwrites the other; prevented by Serializable, `SELECT ... FOR UPDATE`, or an optimistic version check.\n\n**Follow-up — banking transfer:** Serializable, or Read Committed with `SELECT ... FOR UPDATE` on both account rows taken in a fixed id order. You must not lose an update or act on a stale balance; correctness beats the small concurrency cost, and you add retry-on-serialization-failure.",
           },
           {
             q: "What are window functions? Explain ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, PARTITION BY, NTILE.",
@@ -86,87 +105,153 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
               "Difference between RANK and DENSE_RANK when there are ties?",
               "How would you find the 2nd highest salary per department using a window function?",
             ],
+            answer:
+              "Window functions compute a value across a set of rows 'related to the current row' without collapsing them like GROUP BY does. `OVER (PARTITION BY ... ORDER BY ...)` defines the window.\n\n- **ROW_NUMBER()** — unique 1..N sequence, ties broken arbitrarily.\n- **RANK()** — ties share a rank, then a gap (1, 1, 3).\n- **DENSE_RANK()** — ties share a rank, no gap (1, 1, 2).\n- **LAG/LEAD(col, n)** — value from n rows before/after — ideal for deltas.\n- **NTILE(k)** — splits rows into k roughly equal buckets (quartiles, deciles).\n\n**Follow-up — RANK vs DENSE_RANK:** RANK leaves a gap after a tie; DENSE_RANK doesn't.\n\n**Follow-up — 2nd highest salary per department:**\n```sql\nSELECT * FROM (\n  SELECT e.*,\n         DENSE_RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rnk\n  FROM employees e\n) t\nWHERE rnk = 2;\n```",
           },
           {
             q: "CTE vs subquery vs temp table vs derived table (inline view) — differences and when to use each?",
             followups: ["Can a CTE be recursive? Give a real use case."],
+            answer:
+              "- **Derived table (inline view):** a subquery in FROM. Scoped to that one query; the optimizer folds it in.\n- **CTE (`WITH`):** a named, readable derived table, referenceable multiple times in the same statement, and able to be recursive. Usually not materialized (older Postgres was an exception).\n- **Scalar / correlated subquery:** returns one value / runs per outer row. Fine for small sets; slow if correlated over many rows.\n- **Temp table (`#t` / `CREATE TEMP TABLE`):** physically materialized, can be indexed, has statistics, lives for the session/proc. Use it when the intermediate result is large, reused across statements, or the optimizer misjudges a CTE.\n\nRule of thumb: CTE for readability in one query; temp table when you need to materialize, index, or reuse across statements.\n\n**Follow-up — recursive CTE:** yes. Use cases: walking an org chart or category tree, or a bill-of-materials explosion. Anchor member + recursive member joined with UNION ALL, terminating when the recursive part returns no rows.",
           },
-          { q: "What causes a deadlock in SQL? How do you detect and prevent one?" },
+          {
+            q: "What causes a deadlock in SQL? How do you detect and prevent one?",
+            answer:
+              "A deadlock is a cycle: txn A holds a lock on resource 1 and wants 2; txn B holds 2 and wants 1. Neither can proceed. The engine's deadlock monitor detects the cycle and kills one transaction as the victim (usually the one with the least log to roll back); that session gets an error (SQL Server 1205, Postgres 40P01) and must retry.\n\nCauses: acquiring locks in inconsistent order across code paths, long transactions, lock escalation, missing indexes forcing wide scans/locks, or needlessly high isolation.\n\nPrevent / mitigate:\n- Access tables and rows in a **consistent order** everywhere.\n- Keep transactions **short** — no user interaction or slow I/O inside them.\n- Add indexes so updates touch few rows.\n- Use the lowest safe isolation level, or take the needed lock up front (`UPDLOCK` / `SELECT ... FOR UPDATE`).\n- Wrap the operation in **retry-on-deadlock** logic with small backoff.",
+          },
           {
             q: "View vs stored procedure vs function vs trigger — differences?",
             followups: [
               "Can a view be updatable? When does that break?",
               "What's a materialized/indexed view and when would you use one?",
             ],
+            answer:
+              "- **View:** a named SELECT; a virtual table. No parameters, no side effects. Reuses query logic, can enforce column/row-level security.\n- **Stored procedure:** a routine that runs multiple statements, takes parameters, does DML, manages transactions, returns result sets. Called with `EXEC`.\n- **Function (UDF):** returns a scalar or table, meant for use *inside* a query; should be side-effect-free. Scalar UDFs can be slow (row-by-row) — prefer inline table-valued functions.\n- **Trigger:** code that fires automatically on INSERT/UPDATE/DELETE (or DDL). Good for audit trails and invariants; risky when overused (hidden logic, performance surprises).\n\n**Follow-up — updatable view:** works only if the view maps unambiguously to one base table's rows — no aggregates, DISTINCT, GROUP BY, UNION, most joins, or computed target columns. Otherwise use an `INSTEAD OF` trigger.\n\n**Follow-up — materialized / indexed view:** a view whose result is physically stored and kept in sync (Postgres `MATERIALIZED VIEW`, refreshed manually or on a schedule; SQL Server indexed view, maintained automatically). Use for expensive aggregations read far more often than the base data changes.",
           },
-          { q: "What is the N+1 query problem? How do you fix it?" },
+          {
+            q: "What is the N+1 query problem? How do you fix it?",
+            answer:
+              "N+1 = 1 query to fetch a list of N parents, then 1 query per parent to load its children — N+1 round trips. Classic with lazy-loading ORMs: `foreach (var order in orders) { var lines = order.Lines; }`.\n\nSymptoms: a page that's fine with 10 rows and dies with 500; a profiler showing hundreds of near-identical small queries.\n\nFixes:\n- **Eager load / join:** EF `.Include(o => o.Lines)`, or one JOIN query.\n- **Batch the child query:** `WHERE parent_id IN (@ids)`, then group in memory (the dataloader pattern).\n- **Projection:** select exactly the columns the view needs in a single query.\n- Cache reference data that's read repeatedly.",
+          },
           {
             q: "How do you read a query execution plan? What do you look for?",
             followups: [
               "Difference between a table scan, index scan, and index seek?",
               "What is a \"spool\" or a \"sort\" operator telling you about a bad plan?",
             ],
+            answer:
+              "Read it inner-to-outer / right-to-left — that's the data flow. Look for:\n- **Scans where you expected seeks** on a big table → missing/unusable index, or a non-SARGable predicate (function on the column, leading wildcard, implicit type cast).\n- **Estimated vs actual rows** far apart → stale statistics or parameter sniffing.\n- **Expensive operators:** large Sort, Hash Match spilling to tempdb, Key Lookup (add covering columns), Nested Loops over a big outer input.\n- **Warnings:** tempdb spill, implicit conversion, missing-index suggestion.\n- **Thick arrows** = many rows; find where the row count explodes.\n\n**Follow-up — scan vs index scan vs seek:** table scan = read every row of a heap; index scan = read every leaf of an index (all rows, narrower); index seek = B-tree navigation to an exact range — the only one that scales sublinearly.\n\n**Follow-up — spool / sort:** a Sort means the engine had to order data itself (no index provides the order, or it's needed for a merge join, ranking, or DISTINCT). A Spool means it's caching an intermediate result in tempdb to reuse — often a sign of redundant work or a missing index.",
           },
-          { q: "What is a covering index?" },
-          { q: "When would you denormalize a schema for performance?" },
+          {
+            q: "What is a covering index?",
+            answer:
+              "A covering index contains every column a query needs — in the key or as INCLUDE'd columns — so the engine answers the query entirely from the index, with no key lookups into the base table. The plan shows an index seek/scan and no lookup.\n\n```sql\n-- query: SELECT status, amount FROM txns WHERE user_id = @u AND created_at >= @d;\nCREATE INDEX ix_txns_user_date\n  ON txns (user_id, created_at) INCLUDE (status, amount);\n```\n\nTrade-off: a wider index means more storage and slower writes. Cover the hot queries, not everything.",
+          },
+          {
+            q: "When would you denormalize a schema for performance?",
+            answer:
+              "Denormalize when normalized reads are too slow or too complex for the workload and you can keep the redundancy correct:\n- Precomputed aggregates (`account.balance`, `post.comment_count`) updated by trigger / app / outbox.\n- Duplicated 'label' columns to avoid a join on a hot path — e.g. storing `product_name` on `order_items` as it was at purchase time (also a legitimate historical snapshot, not just a cache).\n- Reporting / OLAP star schemas, CQRS read models, search-index projections.\n\nCosts: write amplification, drift risk, more code paths. Always define how the copy stays in sync and how you'd rebuild it from the source of truth.",
+          },
           {
             q: "Explain transactions — BEGIN/COMMIT/ROLLBACK, savepoints, nested transactions, transaction scope in application code.",
+            answer:
+              "`BEGIN TRANSACTION` starts a unit of work; `COMMIT` makes it durable; `ROLLBACK` undoes everything since BEGIN. **Savepoints** (`SAVE TRANSACTION sp` / `SAVEPOINT sp`) let you roll back part of a transaction (`ROLLBACK TO sp`) without aborting the whole thing.\n\n**Nested transactions** are mostly cosmetic in SQL Server — only the outermost COMMIT actually commits, `@@TRANCOUNT` tracks depth, and any ROLLBACK unwinds everything. Postgres has no true nesting, only savepoints.\n\n**In app code:** keep the scope tight — open late, commit early, never span a network call or user wait. Use the framework's unit-of-work (`TransactionScope`, EF `SaveChanges`, or `BEGIN`/`COMMIT` in `try/finally`). Set the isolation level explicitly for money operations and retry on deadlock/serialization errors.\n\n```sql\nBEGIN TRAN;\n  UPDATE accounts SET balance = balance - 100 WHERE id = 1;\n  SAVE TRAN after_debit;\n  UPDATE accounts SET balance = balance + 100 WHERE id = 2;\n  -- on credit failure: ROLLBACK TRAN after_debit; then handle\nCOMMIT;\n```",
           },
           {
             q: "Primary key vs unique key vs foreign key — constraints and behavior differences.",
             followups: [
               "What happens to child rows on delete with CASCADE vs RESTRICT vs SET NULL?",
             ],
+            answer:
+              "- **Primary key:** uniquely identifies a row; not null; one per table; usually the clustered index. The stable identity.\n- **Unique key/constraint:** enforces uniqueness on a column set; allows one NULL (SQL Server) or multiple NULLs (ANSI/Postgres) depending on engine; you can have several.\n- **Foreign key:** references a PK/UK in another (or the same) table; enforces referential integrity — no child pointing at a missing parent, no deleting a parent that still has children unless a referential action says otherwise.\n\n**Follow-up — delete actions on child rows:**\n- `ON DELETE CASCADE` — deleting the parent deletes its children.\n- `ON DELETE RESTRICT` / `NO ACTION` — blocks the parent delete while children exist (default).\n- `ON DELETE SET NULL` — children's FK column is set to NULL (must be nullable).\n- `SET DEFAULT` — sets the FK to its default value.",
           },
           {
             q: "Deadlock vs lock wait/timeout — how are they different and handled differently?",
+            answer:
+              "**Lock wait** = a session is blocked waiting for a lock another session holds; it *will* proceed once that lock releases. A **lock timeout** just means it waited past `LOCK_TIMEOUT` / `innodb_lock_wait_timeout` and gave up. There's no cycle — it's one-directional contention.\n\n**Deadlock** = a *cycle* of mutual waits that can never resolve itself, so the engine must detect it and kill a victim.\n\nHandling differs: for lock waits you reduce contention (shorter txns, better indexes, lower isolation, read replicas) and set a sensible timeout so a stuck request fails fast. For deadlocks you also enforce consistent lock ordering and add automatic retry, because the victim's error is transient and safe to re-run.",
           },
           {
             q: "Pagination strategies — OFFSET/FETCH vs keyset (seek) pagination. Performance implications at scale?",
+            answer:
+              "**OFFSET/FETCH (`LIMIT n OFFSET m`):** simple, allows jumping to any page, but the engine reads and discards all m skipped rows — page 10,000 gets linearly slower — and results shift if rows are inserted/deleted between page loads.\n\n**Keyset / seek pagination:** remember the last row's sort key and fetch 'the next N after it.' Constant time at any depth, stable under inserts. Downsides: no random page jumps, needs a unique ordered key.\n\n```sql\n-- next page after (created_at, id) = (@lastTs, @lastId), DESC order\nSELECT * FROM txns\nWHERE (created_at, id) < (@lastTs, @lastId)\nORDER BY created_at DESC, id DESC\nFETCH FIRST 20 ROWS ONLY;\n```\n\nFor infinite scroll, APIs, and exports, prefer keyset.",
           },
           {
             q: "How do you handle very large tables? Explain table/index partitioning (range, hash, list).",
+            answer:
+              "Partitioning splits one logical table into physical pieces by a partition key, so queries and maintenance touch only relevant pieces (partition pruning), and you can drop/archive a whole partition instantly instead of a huge DELETE.\n- **Range:** by date (most common for transactions/logs) or id range.\n- **List:** by a discrete value (region, tenant, status).\n- **Hash:** by hash of a key, to spread rows evenly when there's no natural range.\n\nOther large-table tactics: aligned local indexes, rolling-window archival (drop old partitions), compression on cold partitions, and ensuring queries include the partition key so pruning kicks in. Partitioning helps manageability and pruning — it is not a substitute for good indexes.",
           },
-          { q: "UNION vs UNION ALL — difference and performance impact." },
+          {
+            q: "UNION vs UNION ALL — difference and performance impact.",
+            answer:
+              "`UNION` concatenates two result sets **and removes duplicate rows**, which needs a sort or hash-distinct pass over the whole thing. `UNION ALL` just concatenates — no dedup, no sort — so it's much cheaper.\n\nUse `UNION ALL` whenever the inputs are known to be disjoint (or duplicates are acceptable). Only pay for `UNION` when you genuinely need distinct rows.",
+          },
           {
             q: "DELETE vs TRUNCATE vs DROP — differences (logging, rollback, identity reset, permissions, triggers firing).",
+            answer:
+              "- **DELETE:** row-by-row DML, fully logged, supports WHERE, fires triggers, rolls back, keeps the table and identity seed. Slow for whole-table clears.\n- **TRUNCATE:** deallocates data pages, minimally logged, very fast, resets identity to seed, needs higher privilege (ALTER), doesn't fire DELETE triggers, can't be filtered, is blocked if the table is referenced by an enabled FK. Rollback-able inside a transaction in SQL Server/Postgres.\n- **DROP:** removes the table definition, data, indexes, constraints, permissions, and triggers entirely.\n\nRule: `DELETE` when you need a filter / triggers / audit, `TRUNCATE` to reset a whole staging table fast, `DROP` to remove the object.",
           },
           {
             q: "How do you prevent SQL injection? Explain parameterized queries / prepared statements.",
+            answer:
+              "SQL injection = user input concatenated into a SQL string so an attacker can change the query's structure (`'; DROP TABLE users; --`, `OR 1=1`).\n\nFix: **parameterized queries / prepared statements** — the SQL text with placeholders (`@id`, `?`, `$1`) is sent and compiled first; parameter values are then bound as *data*, never parsed as SQL, so structure can't be altered.\n\n```csharp\ncmd.CommandText = \"SELECT * FROM users WHERE email = @e\";\ncmd.Parameters.AddWithValue(\"@e\", input);\n```\n\nAlso: use an ORM/query builder that parameterizes by default; allowlist things that can't be parameters (table/column names, ORDER BY direction); run under least-privilege DB accounts; and inside stored procs use `sp_executesql` with parameters, never `EXEC(@sql)` built from raw input.",
           },
           {
             q: "Explain database replication — master-slave/primary-replica, read replicas, replication lag, synchronous vs asynchronous replication.",
+            answer:
+              "Replication copies data from a **primary** to one or more **replicas**. Reads can be spread across replicas; the primary takes all writes.\n- **Asynchronous:** primary commits without waiting for replicas → best write latency, but replicas lag and a primary crash can lose the last few transactions.\n- **Synchronous / semi-sync:** primary waits for at least one replica to acknowledge the log before committing → no data loss on failover, higher write latency, and a slow replica can stall writes.\n\n**Replication lag** is how far behind a replica is. It breaks 'read your own writes': a user updates their profile, the next request hits a lagging replica, they see stale data. Mitigate by routing freshness-sensitive reads to the primary, 'read from primary for N seconds after a write', or causal-consistency tokens.",
           },
           {
             q: "Optimistic vs pessimistic locking — when would you use each (e.g., updating an account balance)?",
+            answer:
+              "**Pessimistic:** lock the row on read (`SELECT ... FOR UPDATE` / `UPDLOCK`) so nobody else can change it until you commit. Good under high contention on the same rows, or when a lost update is unacceptable and retries are costly. Cost: blocking, reduced concurrency, deadlock risk.\n\n**Optimistic:** don't lock; read a version/timestamp column, and on update do `WHERE id = @id AND version = @oldVersion`. If 0 rows updated, someone else changed it — reload and retry, or surface a conflict. Good when conflicts are rare; no locks held across think-time.\n\n**Account balance:** either works. Pessimistic (`SELECT ... FOR UPDATE` on both accounts in a fixed id order inside the txn) is the usual choice for transfers because a debit/credit must not be lost. Optimistic with retry is fine when collisions on a single account are rare.",
           },
-          { q: "What is a composite index and how does the query optimizer use it?" },
+          {
+            q: "What is a composite index and how does the query optimizer use it?",
+            answer:
+              "A composite (multi-column) index is a B-tree ordered by its columns in declared order. The optimizer can use it to:\n- **Seek** on a leading-column equality prefix (`a = ?`, `a = ? AND b = ?`).\n- **Range scan** when the last used predicate is a range (`a = ? AND b > ?`).\n- **Cover** the query if all needed columns are in the index (key or INCLUDE).\n- Provide **order** for ORDER BY / GROUP BY that matches the index, skipping a sort.\n\nIt can't efficiently serve a predicate on a non-leading column alone (`b = ?` with index `(a, b)`) — the leftmost-prefix rule. Design column order around your common WHERE patterns: equality columns first, then the range column, then covering columns.",
+          },
           {
             q: "How do database statistics affect the query optimizer's choices, and what happens when they're stale?",
+            answer:
+              "The optimizer is cost-based: it estimates how many rows each operator produces using **statistics** — histograms of value distribution and density per column/index. From those estimates it picks join order, join type (loop vs hash vs merge), seek vs scan, and memory grants.\n\nWhen stats are **stale** (many changes since the last update, or an ascending key like a timestamp whose new values fall outside the histogram), estimates diverge from reality: it may choose a nested loop expecting 10 rows when there are 10 million, under-grant memory (tempdb spill), or scan instead of seek. Fixes: keep auto-update stats on, run `UPDATE STATISTICS` / `ANALYZE` after big loads, and for hot ascending columns update more often or use the relevant trace flags.",
           },
           {
             q: "What's the difference between a heap table and a table with a clustered index?",
+            answer:
+              "A **heap** has no clustered index — rows sit in no particular order, wherever there's free space; row identity is a physical RID (file:page:slot), and non-clustered indexes point to rows by RID.\n\nA **clustered table** stores rows in the B-tree of the clustered key, physically ordered by it; non-clustered indexes point to rows by the clustered key.\n\nHeaps can be fine for staging / bulk-load / write-only tables. For general OLTP a clustered index (usually the PK) is better: ordered range scans, no forwarded-record problem (heaps add forwarding pointers when an updated row grows and moves), and stable lookups from non-clustered indexes. Downside of a wide/random clustered key: page splits and fatter non-clustered indexes — hence narrow, ever-increasing keys.",
           },
           {
             q: "ORM (Entity Framework/Dapper/etc.) vs raw SQL/stored procedures — trade-offs for a fintech system?",
             followups: [
               "What is the \"leaky abstraction\" problem with ORMs, and where have you hit it?",
             ],
+            answer:
+              "**ORM (EF Core):** fast development, compile-time safety, change tracking, migrations, no mapping boilerplate, DB-portable. Costs: generated SQL can be suboptimal, easy to trigger N+1 or over-fetch columns, hard to express window functions / hints / bulk ops, and you still must know *what SQL it emits*.\n\n**Raw SQL / stored procs:** full control, tunable, DBA-reviewable, strong for set-based bulk work and reporting. Costs: manual mapping, more code, harder refactors, injection risk if careless, logic split between app and DB.\n\n**Fintech pragmatic mix:** ORM for straightforward CRUD and transactional writes; hand-written SQL or Dapper for hot read paths, reports, reconciliation, and bulk jobs. Always be able to see and profile the SQL.\n\n**Follow-up — leaky abstraction:** the ORM promises you needn't think about SQL, but you do — `IQueryable` composition that won't translate, lazy loading firing N+1, `.ToList()` in the wrong spot pulling a table into memory, transaction/locking semantics, and provider-specific features. You end up needing to know both the ORM and its generated SQL.",
           },
           {
             q: "How do you design a schema so that money amounts don't suffer floating-point rounding errors?",
+            answer:
+              "Never use `float`/`double`/`real` for money — binary floating point can't represent 0.10 exactly, so sums drift (`0.1 + 0.2 != 0.3`).\n\nUse an exact fixed-point representation:\n- **`DECIMAL(19,4)` / `NUMERIC`** in the DB — enough digits for the largest amount, scale for the currency's minor unit (4 leaves room for fractional-cent interest/FX).\n- **`decimal` in C#**, `BigDecimal` in Java, or store integer minor units (paise/cents as `BIGINT`).\n\nAlso: store a **currency code** with every amount, define rounding rules explicitly (half-up vs banker's), do arithmetic in the DB or in `decimal`, and round once at the presentation/settlement boundary — never mid-calculation.",
           },
           {
             q: "What's your approach to schema migrations in a live production database with zero downtime?",
+            answer:
+              "Make changes **backward-compatible** and roll them out in phases (expand / migrate / contract):\n1. **Expand:** add new nullable columns / new tables / new indexes (online, `CREATE INDEX CONCURRENTLY`). Never rename or drop in the same deploy.\n2. **Backfill** in throttled batches with small commits so you don't lock the table or blow the log.\n3. **Dual-write / dual-read:** ship app code that writes both shapes and reads the new one with a fallback.\n4. **Contract:** once every app instance uses the new shape and the backfill is verified, drop the old column/table in a later deploy.\n\nOther rules: additive, reversible steps; avoid long locks (watch metadata locks, FK validation, adding `NOT NULL` — add nullable, backfill, then enforce); rehearse on a prod-sized copy; have a rollback for each step.",
           },
           {
             q: "Backup and recovery basics — full vs differential vs transaction log backup, RPO/RTO in plain terms.",
+            answer:
+              "- **Full backup:** the entire database — the baseline for any restore.\n- **Differential:** everything changed since the last *full*. Faster to take and restore than replaying all logs.\n- **Transaction log backup:** all log records since the last log backup; enables point-in-time restore and truncates the log. Needs the full recovery model.\n\nRestore chain: last full + last diff + all log backups since that diff, up to the target time.\n\n- **RPO (Recovery Point Objective):** how much data you can afford to lose — drives backup/log frequency (log backups every 5 min → ≤5 min loss).\n- **RTO (Recovery Time Objective):** how long you can be down — drives strategy (hot standby / replica failover for minutes; restore-from-backup for hours).\n\nTest restores regularly — an untested backup isn't a backup.",
           },
           {
             q: "What is connection pooling and why does it matter for a high-throughput API?",
+            answer:
+              "Opening a DB connection is expensive — TCP handshake, TLS, auth, session setup, tens of milliseconds. A **connection pool** keeps a set of already-open physical connections; the app 'opens' and 'closes' logical handles that just borrow and return one.\n\nFor a high-throughput API this is essential: without it every request pays full connection cost and you exhaust the DB's max connections under load. With it, a small pool (say 20–100) serves thousands of short queries.\n\nGotchas: too large a pool overwhelms the DB (each connection is memory + a worker); too small causes request queueing (watch 'pool exhausted' / wait-time metrics). Always release promptly (`using`/`finally`), keep transactions short, and don't hold a connection across an external call.",
           },
           {
             q: "Explain database sharding at the SQL level — sharding key selection, cross-shard query problems.",
+            answer:
+              "Sharding = horizontal partitioning across **separate databases/servers**, each holding a subset of rows, to scale writes and data volume past one machine.\n\n**Shard key choice** is everything: it must spread load evenly and keep related rows together so most queries hit one shard. Common keys: `user_id` / `account_id` (co-locates a customer's data), or `tenant_id`. Hash the key for even spread; range sharding risks hotspots (all new rows on the newest shard).\n\n**Cross-shard problems:**\n- Queries spanning shards need scatter-gather + merge; no easy global JOIN / ORDER BY.\n- No cross-shard transactions without 2PC or sagas.\n- Global uniqueness / IDs need a scheme (UUID, snowflake, central sequence).\n- Rebalancing when adding shards (consistent hashing or a directory service helps).\n\nSharding is a last resort — exhaust vertical scaling, read replicas, caching, and archiving first.",
           },
         ],
       },
@@ -175,49 +260,85 @@ export const INTERVIEW_PREP_PARTS: IQPart[] = [
         number: 2,
         title: "SQL — Practical / Technical Round",
         questions: [
-          { q: "Write a query to find duplicate rows in a table." },
+          {
+            q: "Write a query to find duplicate rows in a table.",
+            answer:
+              "Group by the columns that define a duplicate and keep groups with more than one row:\n```sql\nSELECT email, COUNT(*) AS cnt\nFROM users\nGROUP BY email\nHAVING COUNT(*) > 1;\n```\nTo see the actual rows (and choose which to delete), number them within each group:\n```sql\nWITH d AS (\n  SELECT *, ROW_NUMBER() OVER (PARTITION BY email ORDER BY id) AS rn\n  FROM users\n)\nSELECT * FROM d WHERE rn > 1;   -- rn = 1 is the keeper; delete rn > 1\n```",
+          },
           {
             q: "Write a query to find the Nth highest salary (using a window function, not just LIMIT/TOP).",
+            answer:
+              "```sql\nWITH ranked AS (\n  SELECT salary,\n         DENSE_RANK() OVER (ORDER BY salary DESC) AS rnk\n  FROM employees\n)\nSELECT MIN(salary) AS nth_highest\nFROM ranked\nWHERE rnk = @N;\n```\n`DENSE_RANK` so ties collapse to one level (the Nth-highest *distinct* salary). Use `ROW_NUMBER` instead if you want the Nth physical row regardless of ties.",
           },
           {
             q: "Write a query to find employees who earn more than their manager (self join).",
+            answer:
+              "One alias for the employee, one for the manager:\n```sql\nSELECT e.id, e.name, e.salary, m.name AS manager, m.salary AS mgr_salary\nFROM employees e\nJOIN employees m ON e.manager_id = m.id\nWHERE e.salary > m.salary;\n```\nAn INNER JOIN naturally drops the CEO (no manager row). Use LEFT JOIN if you needed to list them too.",
           },
           {
             q: "Write a query using a window function to compute a running total of transactions per user, ordered by date.",
+            answer:
+              "```sql\nSELECT\n  user_id,\n  txn_date,\n  amount,\n  SUM(amount) OVER (\n    PARTITION BY user_id\n    ORDER BY txn_date, id\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS running_total\nFROM transactions\nORDER BY user_id, txn_date, id;\n```\n`PARTITION BY user_id` restarts the total per user; the explicit `ROWS` frame avoids the `RANGE` default that would lump same-date rows together; adding `id` to the ORDER BY makes ties deterministic.",
           },
           {
             q: "Write a query to find users who have never placed an order (left join + IS NULL).",
+            answer:
+              "```sql\nSELECT u.id, u.name\nFROM users u\nLEFT JOIN orders o ON o.user_id = u.id\nWHERE o.id IS NULL;\n```\nThe LEFT JOIN keeps every user; `o.id IS NULL` is the anti-join filter. `NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)` is equivalent and often optimizes as well or better. Avoid `NOT IN` if `user_id` can be NULL — it returns no rows.",
           },
           {
             q: "Design and normalize (to 3NF) a schema for a wallet + transactions system (users, wallets, transactions, transaction_status). Justify your table/column choices.",
+            answer:
+              "```sql\nusers (\n  id            BIGINT PRIMARY KEY,\n  email         VARCHAR(255) NOT NULL UNIQUE,\n  full_name     VARCHAR(200) NOT NULL,\n  created_at    TIMESTAMP NOT NULL DEFAULT now()\n);\n\ntransaction_status (              -- lookup table, not a free-text column\n  code          VARCHAR(20) PRIMARY KEY,   -- 'PENDING','SUCCESS','FAILED','REVERSED'\n  description   VARCHAR(100) NOT NULL\n);\n\nwallets (\n  id            BIGINT PRIMARY KEY,\n  user_id       BIGINT NOT NULL REFERENCES users(id),\n  currency      CHAR(3) NOT NULL,          -- ISO 4217\n  balance_minor BIGINT NOT NULL DEFAULT 0, -- integer minor units, no float\n  created_at    TIMESTAMP NOT NULL DEFAULT now(),\n  UNIQUE (user_id, currency)\n);\n\ntransactions (\n  id              BIGINT PRIMARY KEY,\n  wallet_id       BIGINT NOT NULL REFERENCES wallets(id),\n  direction       CHAR(1) NOT NULL CHECK (direction IN ('C','D')),\n  amount_minor    BIGINT NOT NULL CHECK (amount_minor > 0),\n  status_code     VARCHAR(20) NOT NULL REFERENCES transaction_status(code),\n  idempotency_key VARCHAR(64) NOT NULL,\n  counterparty_wallet_id BIGINT REFERENCES wallets(id),\n  created_at      TIMESTAMP NOT NULL DEFAULT now(),\n  UNIQUE (wallet_id, idempotency_key)\n);\n```\nJustification: status is its own lookup table, so there's no repeated free-text and no transitive dependency on a status string (3NF). Money is stored as integer minor units to avoid float error. `wallets` is unique on `(user_id, currency)` — one wallet per currency per user. `transactions` is append-only; `wallets.balance_minor` is a denormalized cache updated in the same transaction that inserts the ledger row. `idempotency_key` unique per wallet blocks double-posting on retries. For strict double-entry, model each transfer as two rows (debit + credit) sharing a `transfer_id`.",
           },
           {
             q: "Write a recursive CTE for a hierarchical structure (e.g., an org chart or category tree).",
+            answer:
+              "Everyone under a given manager:\n```sql\nWITH RECURSIVE org AS (\n  SELECT id, name, manager_id, 1 AS depth\n  FROM employees\n  WHERE id = @rootId                 -- anchor\n  UNION ALL\n  SELECT e.id, e.name, e.manager_id, o.depth + 1\n  FROM employees e\n  JOIN org o ON e.manager_id = o.id   -- recursive member\n)\nSELECT * FROM org ORDER BY depth, name;\n```\nThe anchor picks the start row(s); the recursive member joins the CTE to itself, adding one level per iteration; it stops when the join returns no new rows. Guard cycles with a depth cap or a visited-path array. (SQL Server: `WITH org AS (...)`, no `RECURSIVE` keyword.)",
           },
           {
             q: "Given a slow query and its execution plan, identify the missing index and rewrite the query.",
+            answer:
+              "Say the plan shows a **Clustered Index Scan** on `transactions` with predicate `user_id = @u AND created_at BETWEEN @a AND @b` plus a Sort for `ORDER BY created_at` — the whole table is scanned and sorted.\n\nDiagnosis: no index supports the `user_id` equality + `created_at` range, and none provides the sort order.\n\nFix — a composite, order-matching, covering index:\n```sql\nCREATE INDEX ix_txn_user_created\n  ON transactions (user_id, created_at)\n  INCLUDE (amount, status);\n```\nNow it's an index **seek** on `user_id`, a range scan on `created_at` (already ordered, so the Sort disappears), and `amount`/`status` come from the index (no key lookup). Also keep predicates SARGable — don't wrap `created_at` in `CAST`/`CONVERT`; compare to typed parameters.",
           },
           {
             q: "Write a stored procedure that transfers money between two accounts safely inside a transaction, handling rollback on failure.",
+            answer:
+              "```sql\nCREATE PROCEDURE transfer_funds\n  @from_id BIGINT, @to_id BIGINT, @amount DECIMAL(19,4), @idem_key VARCHAR(64)\nAS\nBEGIN\n  SET NOCOUNT ON;\n  SET XACT_ABORT ON;                 -- any error => auto rollback\n\n  IF @amount <= 0 THROW 50001, 'Amount must be positive', 1;\n\n  BEGIN TRY\n    BEGIN TRAN;\n\n    -- idempotency: replayed key => no-op\n    IF EXISTS (SELECT 1 FROM transfers WHERE idempotency_key = @idem_key)\n    BEGIN COMMIT TRAN; RETURN; END;\n\n    -- lock both rows in a fixed order to avoid deadlocks\n    DECLARE @lo BIGINT = IIF(@from_id < @to_id, @from_id, @to_id);\n    DECLARE @hi BIGINT = IIF(@from_id < @to_id, @to_id, @from_id);\n    SELECT id FROM accounts WITH (UPDLOCK, ROWLOCK) WHERE id IN (@lo, @hi);\n\n    IF (SELECT balance FROM accounts WHERE id = @from_id) < @amount\n      THROW 50002, 'Insufficient funds', 1;\n\n    UPDATE accounts SET balance = balance - @amount WHERE id = @from_id;\n    UPDATE accounts SET balance = balance + @amount WHERE id = @to_id;\n\n    INSERT INTO transfers (from_id, to_id, amount, idempotency_key, created_at)\n    VALUES (@from_id, @to_id, @amount, @idem_key, SYSUTCDATETIME());\n\n    COMMIT TRAN;\n  END TRY\n  BEGIN CATCH\n    IF XACT_STATE() <> 0 ROLLBACK TRAN;\n    THROW;                           -- bubble the error to the caller\n  END CATCH\nEND;\n```\nKey points: one transaction (atomic), `XACT_ABORT` + TRY/CATCH for guaranteed rollback, deadlock-safe lock ordering, an explicit insufficient-funds check, and an idempotency key so a retried call can't double-transfer.",
           },
           {
             q: "Given a transactions table, write a query to detect potentially duplicate/fraudulent transactions within a short time window (same user, same amount, within N minutes).",
+            answer:
+              "Self-join on same user + same amount inside a time window:\n```sql\nSELECT a.id, b.id AS dup_of, a.user_id, a.amount, a.created_at\nFROM transactions a\nJOIN transactions b\n  ON b.user_id = a.user_id\n AND b.amount  = a.amount\n AND b.id <> a.id\n AND b.created_at BETWEEN a.created_at AND DATEADD(MINUTE, @n, a.created_at)\nORDER BY a.user_id, a.created_at;\n```\nOr with `LAG` to compare each row to the previous same-(user, amount) row:\n```sql\nSELECT * FROM (\n  SELECT t.*,\n         LAG(created_at) OVER (PARTITION BY user_id, amount ORDER BY created_at) AS prev_at\n  FROM transactions t\n) x\nWHERE DATEDIFF(SECOND, prev_at, created_at) <= @n * 60;\n```\nIndex `(user_id, amount, created_at)` makes it cheap; add merchant/device for a tighter fraud signal.",
           },
-          { q: "Write a query to find the top 3 highest-spending users per month." },
+          {
+            q: "Write a query to find the top 3 highest-spending users per month.",
+            answer:
+              "```sql\nWITH monthly AS (\n  SELECT user_id,\n         DATE_TRUNC('month', created_at) AS mth,\n         SUM(amount) AS spent\n  FROM transactions\n  WHERE direction = 'D'\n  GROUP BY user_id, DATE_TRUNC('month', created_at)\n),\nranked AS (\n  SELECT *,\n         ROW_NUMBER() OVER (PARTITION BY mth ORDER BY spent DESC) AS rn\n  FROM monthly\n)\nSELECT mth, user_id, spent\nFROM ranked\nWHERE rn <= 3\nORDER BY mth, spent DESC;\n```\nAggregate to (user, month) first, then rank within each month. Use `RANK()` instead of `ROW_NUMBER()` to include ties for 3rd. (SQL Server: `DATEFROMPARTS(YEAR(created_at), MONTH(created_at), 1)`.)",
+          },
           {
             q: "Write a query to pivot transaction data (rows to columns) — e.g., monthly totals per category as columns.",
+            answer:
+              "Conditional aggregation is portable and clear:\n```sql\nSELECT\n  DATE_TRUNC('month', created_at) AS mth,\n  SUM(CASE WHEN category = 'food'   THEN amount ELSE 0 END) AS food,\n  SUM(CASE WHEN category = 'travel' THEN amount ELSE 0 END) AS travel,\n  SUM(CASE WHEN category = 'bills'  THEN amount ELSE 0 END) AS bills\nFROM transactions\nGROUP BY DATE_TRUNC('month', created_at)\nORDER BY mth;\n```\nSQL Server also has a `PIVOT` operator, but the category list is still hard-coded. For a truly dynamic set of categories, build the SQL string dynamically or pivot in the reporting layer.",
           },
           {
             q: "Write a query to calculate month-over-month percentage growth in transaction volume.",
+            answer:
+              "```sql\nWITH monthly AS (\n  SELECT DATE_TRUNC('month', created_at) AS mth, SUM(amount) AS vol\n  FROM transactions\n  GROUP BY DATE_TRUNC('month', created_at)\n)\nSELECT\n  mth,\n  vol,\n  LAG(vol) OVER (ORDER BY mth) AS prev_vol,\n  ROUND(\n    100.0 * (vol - LAG(vol) OVER (ORDER BY mth))\n          / NULLIF(LAG(vol) OVER (ORDER BY mth), 0)\n  , 2) AS mom_pct\nFROM monthly\nORDER BY mth;\n```\n`LAG` pulls the previous month's volume; `NULLIF(prev, 0)` avoids divide-by-zero; the first month yields NULL growth, which is correct.",
           },
           {
             q: "Given two tables (internal ledger vs external payment provider export), write a query to find mismatched/missing records for reconciliation.",
+            answer:
+              "Full outer join on the business key, then flag rows missing on either side or with differing values:\n```sql\nSELECT\n  COALESCE(l.txn_ref, p.txn_ref) AS txn_ref,\n  l.amount AS ledger_amount,\n  p.amount AS provider_amount,\n  CASE\n    WHEN p.txn_ref IS NULL       THEN 'MISSING_IN_PROVIDER'\n    WHEN l.txn_ref IS NULL       THEN 'MISSING_IN_LEDGER'\n    WHEN l.amount <> p.amount    THEN 'AMOUNT_MISMATCH'\n    WHEN l.status <> p.status    THEN 'STATUS_MISMATCH'\n  END AS issue\nFROM internal_ledger l\nFULL OUTER JOIN provider_export p ON p.txn_ref = l.txn_ref\nWHERE p.txn_ref IS NULL\n   OR l.txn_ref IS NULL\n   OR l.amount <> p.amount\n   OR l.status <> p.status;\n```\nMySQL has no FULL OUTER JOIN — emulate with `LEFT JOIN ... UNION ... RIGHT JOIN`. Compare money as exact decimals/minor units, and normalize timezone and rounding before comparing.",
           },
           {
             q: "Write a query to implement keyset pagination on a transactions table ordered by created_at + id.",
+            answer:
+              "```sql\n-- first page\nSELECT id, user_id, amount, created_at\nFROM transactions\nORDER BY created_at DESC, id DESC\nFETCH FIRST 20 ROWS ONLY;\n\n-- next page: pass the last row's (created_at, id) as @lastTs, @lastId\nSELECT id, user_id, amount, created_at\nFROM transactions\nWHERE (created_at, id) < (@lastTs, @lastId)\nORDER BY created_at DESC, id DESC\nFETCH FIRST 20 ROWS ONLY;\n```\nThe row-value comparison `(created_at, id) < (@lastTs, @lastId)` is a correct strict 'before this row' boundary, including the `id` tie-break. Needs an index on `(created_at DESC, id DESC)`. Constant time at any depth and stable under inserts. (SQL Server doesn't support row-value `<` — expand to `created_at < @lastTs OR (created_at = @lastTs AND id < @lastId)`.)",
           },
           {
             q: "Design indexes for a `transactions` table that's queried heavily by `user_id + date range` and occasionally by `status`. Justify your index choices.",
+            answer:
+              "```sql\n-- workhorse: equality on user_id, range + sort on created_at, covers the list view\nCREATE INDEX ix_txn_user_created\n  ON transactions (user_id, created_at DESC)\n  INCLUDE (amount, status, counterparty_id);\n\n-- occasional status-only queries (e.g. a 'pending' worker) — only if selective\nCREATE INDEX ix_txn_status_created\n  ON transactions (status, created_at)\n  WHERE status IN ('PENDING','FAILED');   -- filtered/partial: small, hot\n```\nReasoning: `user_id` first (equality, high selectivity, always present), `created_at` second (range + ORDER BY, so no sort). INCLUDE the columns the list view needs so it's covering — no key lookups. Add a `status` index only if that query is frequent and `status` is selective, and make it a **filtered/partial index** on the few interesting statuses so it stays small and write-cheap. Don't broadly index low-cardinality `status` — it won't help and slows every insert. Every extra index is maintained on each write, so keep the set minimal.",
           },
         ],
       },

@@ -75,24 +75,80 @@ function useReviewed() {
   return { reviewed, toggle, reset };
 }
 
-// Render inline `code` spans without pulling in a markdown lib.
+// Render inline `code` and **bold** spans without pulling in a markdown lib.
 function InlineText({ text }: { text: string }) {
-  const parts = text.split(/(`[^`]+`)/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
   return (
     <>
-      {parts.map((part, i) =>
-        part.startsWith("`") && part.endsWith("`") ? (
-          <code
-            key={i}
-            className="rounded bg-secondary px-1 py-0.5 font-mono text-[0.85em] text-foreground"
-          >
-            {part.slice(1, -1)}
-          </code>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
-      )}
+      {parts.map((part, i) => {
+        if (part.startsWith("`") && part.endsWith("`")) {
+          return (
+            <code
+              key={i}
+              className="rounded bg-secondary px-1 py-0.5 font-mono text-[0.85em] text-foreground"
+            >
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return (
+            <strong key={i} className="font-semibold text-foreground">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
     </>
+  );
+}
+
+// Lightweight markdown for worked answers: ```fenced code blocks, blank-line
+// paragraphs, `- ` bullet lists, plus the inline formatting above.
+function AnswerBody({ text }: { text: string }) {
+  const segments = text.split(/```[^\n]*\n([\s\S]*?)```/g);
+  return (
+    <div className="space-y-2.5 text-[0.8125rem] leading-relaxed text-muted-foreground">
+      {segments.map((seg, i) => {
+        // Odd indices are the captured contents of a fenced code block.
+        if (i % 2 === 1) {
+          return (
+            <pre
+              key={i}
+              className="overflow-x-auto rounded-md border border-border bg-background p-3 text-xs leading-relaxed"
+            >
+              <code className="font-mono text-foreground">{seg.replace(/\n$/, "")}</code>
+            </pre>
+          );
+        }
+        const blocks = seg.split(/\n{2,}/).filter((b) => b.trim().length > 0);
+        return blocks.map((block, bi) => {
+          const lines = block.split("\n");
+          if (lines.every((l) => l.trimStart().startsWith("- "))) {
+            return (
+              <ul key={`${i}-${bi}`} className="list-disc space-y-1 pl-5">
+                {lines.map((l, li) => (
+                  <li key={li}>
+                    <InlineText text={l.trimStart().slice(2)} />
+                  </li>
+                ))}
+              </ul>
+            );
+          }
+          return (
+            <p key={`${i}-${bi}`}>
+              {lines.map((l, li) => (
+                <span key={li}>
+                  {li > 0 && <br />}
+                  <InlineText text={l} />
+                </span>
+              ))}
+            </p>
+          );
+        });
+      })}
+    </div>
   );
 }
 
@@ -171,21 +227,25 @@ function CategoryPanel({
                 >
                   {isReviewed && <Check className="h-3.5 w-3.5" />}
                 </button>
-                <div
-                  className={cn(
-                    "min-w-0 flex-1 text-sm",
-                    isReviewed &&
-                      "text-muted-foreground line-through decoration-muted-foreground/40",
-                  )}
-                >
-                  <p>
+                <div className="min-w-0 flex-1 text-sm">
+                  <p
+                    className={cn(
+                      isReviewed &&
+                        "text-muted-foreground line-through decoration-muted-foreground/40",
+                    )}
+                  >
                     <span className="mr-1.5 tabular-nums text-muted-foreground">
                       {idx + 1}.
                     </span>
                     <InlineText text={q.q} />
                   </p>
                   {q.followups && q.followups.length > 0 && (
-                    <ul className="mt-1.5 space-y-1 border-l-2 border-border pl-3">
+                    <ul
+                      className={cn(
+                        "mt-1.5 space-y-1 border-l-2 border-border pl-3",
+                        isReviewed && "opacity-60",
+                      )}
+                    >
                       {q.followups.map((f, fi) => (
                         <li
                           key={fi}
@@ -195,6 +255,17 @@ function CategoryPanel({
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {q.answer && (
+                    <details className="group/ans mt-2 rounded-lg border border-border bg-secondary/40">
+                      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground [&::-webkit-details-marker]:hidden">
+                        <ChevronRight className="h-3.5 w-3.5 transition-transform group-open/ans:rotate-90" />
+                        Answer
+                      </summary>
+                      <div className="border-t border-border px-3 py-2.5">
+                        <AnswerBody text={q.answer} />
+                      </div>
+                    </details>
                   )}
                 </div>
               </li>
