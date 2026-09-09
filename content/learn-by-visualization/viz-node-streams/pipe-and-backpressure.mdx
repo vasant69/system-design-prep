@@ -1,0 +1,99 @@
+---
+slug: "pipe-and-backpressure"
+title: "pipe, pipeline & Backpressure"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 5
+difficulty: "advanced"
+readingTime: 6
+prerequisites: ["streams"]
+tags: ["nodejs", "streams", "backpressure", "pipe", "pipeline", "memory"]
+englishDefinition: "Backpressure is what keeps a fast producer from overwhelming a slow consumer. When a Writable's internal buffer fills past its highWaterMark, its write() returns false, and a well-behaved producer pauses until the drain event. src.pipe(dest) wires this automatically. pipeline() does the same but also propagates errors across every stage and destroys all streams on failure, which plain pipe() does not."
+interviewFrequency: "high"
+companies: ["Razorpay", "Swiggy", "Groww", "Flipkart", "Zoho"]
+---
+
+**pipe, pipeline & Backpressure – Complete Summary**
+
+Backpressure wo mechanism hai jo fast producer ko slow consumer par data dump karne se rokta hai. Har Writable ka ek internal buffer hota hai jiska target size `highWaterMark` hai (default 16 KB, ya objectMode mein 16 objects). Jab `dest.write(chunk)` ke baad buffer bhar jaata hai, `write()` **`false`** return karta hai — matlab "ab ruk jao". Achha producer tab tak pause karta hai jab tak Writable `drain` event na de. `src.pipe(dest)` ye pause/resume dance apne aap karta hai. `pipeline(src, ...transforms, dest)` wahi karta hai plus har stage ka error ek jagah propagate karta hai aur failure pe saari streams `destroy` kar deta hai — jo plain `pipe()` nahi karta.
+
+## Visual
+
+```text
+   FAST tap (Readable)                        SLOW drain (Writable, e.g. disk)
+   ┌───────────┐  chunk   ┌──────── buffer ────────┐   ┌───────────┐
+   │  read     │ ───────▶ │ ▓▓▓▓▓▓░░░░  16 KB HWM   │──▶│  write    │
+   │  1 GB/s   │          │      (queued bytes)     │   │  10 MB/s  │
+   └───────────┘          └────────────────────────┘   └───────────┘
+        ▲                            │
+        │   write() === false  ◀─────┘   buffer full -> "PAUSE upstream"
+        │
+   src.pause()   ── producer stops reading ──   buffer drains
+        │
+        │   'drain' event  ◀── buffered bytes back under HWM
+        ▼
+   src.resume()  ── producer reads again ──   (cycle repeats)
+
+   pipe():      pause/resume  yes    forwards errors  NO    cleans up  NO
+   pipeline():  pause/resume  yes    forwards errors  yes   destroys all  yes
+
+   NO backpressure  ->  buffer grows unbounded  ->  RAM ▇█  ->  OOM
+```
+
+## Code
+
+```js
+const { pipeline } = require("node:stream/promises");
+const fs = require("node:fs");
+const zlib = require("node:zlib");
+
+// --- Manual backpressure: exactly what pipe does for you ---
+function copyWithBackpressure(src, dest) {
+  src.on("data", (chunk) => {
+    const ok = dest.write(chunk); // false = dest buffer is full
+    if (!ok) {
+      src.pause(); // stop reading
+      dest.once("drain", () => src.resume()); // resume when buffer empties
+    }
+  });
+  src.on("end", () => dest.end());
+}
+
+// --- The right way: pipeline does backpressure + errors + cleanup ---
+await pipeline(
+  fs.createReadStream("big.log"), // fast source
+  zlib.createGzip(), // transform
+  fs.createWriteStream("big.log.gz"), // slow sink
+);
+// throws if ANY stage errors; all three streams are destroyed on failure
+console.log("compressed — memory stayed flat");
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Slow consumer ke bharne par fast producer ko rokne ka flow-control; `pipe`/`pipeline` isko automate karte hain. |
+| Kab/kaise hota hai | `dest.write()` buffer `highWaterMark` cross karne par `false` deta hai; producer pause karta, phir `drain` event pe resume. |
+| Kyun useful hai | Buffer unbounded nahi badhta — memory bounded rehti hai chahe producer consumer se 100x tez ho. |
+| Interview trap | `write()` ka `false` ignore karo to data phir bhi accept hota hai par internal buffer mein queue hoke RAM khaata hai; aur `pipe` errors forward nahi karta, `pipeline` karta hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: write() ka return ignore — fast src, slow dest -> buffer unbounded
+src.on("data", (chunk) => {
+  dest.write(chunk); // aksar `false` deta hai, par hum kabhi pause nahi karte
+});
+// -> dest ka internal queue GBs tak badhta hai -> memory blow up / OOM
+```
+
+```js
+// Sahi: pipeline — backpressure + error propagation + auto cleanup
+const { pipeline } = require("node:stream/promises");
+await pipeline(src, dest);
+// slow dest apne aap src ko pause/resume karwata hai; koi stage fail ho
+// to error throw hota hai aur dono streams destroy ho jaate hain
+```
+
+**Ek line mein:** Backpressure = "buffer bhar gaya, ruk jao" ka signal jo consumer se producer tak jaata hai; `pipe` isko handle karta hai aur `pipeline` iske saath error-propagation plus cleanup bhi deta hai.

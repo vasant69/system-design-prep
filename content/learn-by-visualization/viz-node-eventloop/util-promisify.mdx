@@ -1,0 +1,109 @@
+---
+slug: "util-promisify"
+title: "util.promisify"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 7
+difficulty: "intermediate"
+readingTime: 4
+prerequisites: ["error-first-callbacks"]
+tags: ["nodejs", "promises", "async-await", "util", "callbacks", "interop"]
+englishDefinition: "util.promisify(fn) takes a function that follows Node's error-first callback style and returns a new function that returns a Promise, so it can be used with await. The original must call its callback as callback(err, value). For the file system the built-in fs.promises already provides this, so you rarely promisify fs by hand. Functions with several success values can be adapted with the util.promisify.custom symbol."
+interviewFrequency: "medium"
+companies: ["Freshworks", "Zoho", "Swiggy", "Groww", "HCL"]
+---
+
+**util.promisify – Complete Summary**
+
+`util.promisify(fn)` ek error-first callback function leta hai aur ek naya function deta hai jo Promise return karta hai — matlab ab tum use `await` kar sakte ho. Shart: original function apne callback ko `callback(err, value)` shape mein call kare. `fs` ke liye built-in `fs.promises` (ya `require("fs/promises")`) pehle se ye kaam kiya hua hai, isliye `fs` ko haath se promisify karne ki zaroorat nahi. Jo functions ek se zyada success values dete hain (jaise `dns.lookup`), unke liye `util.promisify.custom` symbol se custom behaviour define hota hai, warna wo values ek object mein aa jaati hain.
+
+## Visual
+
+```text
+   BEFORE  (error-first callback)
+   ─────────────────────────────
+   fs.readFile(path, "utf8", (err, data) => {
+     if (err) ...            // manual branch
+     else use(data);
+   });
+
+              │
+              ▼   util.promisify( fs.readFile )
+   ┌─────────────────────────────────────────────┐
+   │  wrapper(path, "utf8"):                      │
+   │    return new Promise((resolve, reject) =>   │
+   │      fs.readFile(path, "utf8", (err, d) =>   │
+   │        err ? reject(err) : resolve(d)        │
+   │      )                                       │
+   │    )                                         │
+   └─────────────────────────────────────────────┘
+              │
+              ▼
+
+   AFTER  (promise-returning, await-able)
+   ─────────────────────────────────────
+   const readFile = util.promisify(fs.readFile);
+   try {
+     const data = await readFile(path, "utf8");   // err ──▶ throw
+     use(data);
+   } catch (err) { ... }
+```
+
+## Code
+
+```js
+// NOTE: fs ke liye seedha require("fs/promises") use karo;
+// ye demo sirf promisify ka mechanism dikhane ke liye hai.
+const util = require("util");
+const fs = require("fs");
+const dns = require("dns");
+
+// 1) error-first fn -> promise-returning fn
+const readFile = util.promisify(fs.readFile);
+
+async function loadConfig() {
+  const data = await readFile("config.json", "utf8"); // reject -> throw
+  return JSON.parse(data);
+}
+
+// 2) multi-value callback: dns.lookup callback (err, address, family) deta hai
+const lookup = util.promisify(dns.lookup);
+lookup("example.com").then((r) => console.log(r.address, r.family));
+// promisify khud { address, family } object resolve karta hai
+
+// 3) apna callback API bhi chalega, bas (err, value) shape ho
+function getUser(id, cb) {
+  setTimeout(() => (id > 0 ? cb(null, { id }) : cb(new Error("bad id"))), 10);
+}
+const getUserAsync = util.promisify(getUser);
+getUserAsync(1).then((u) => console.log(u)); // { id: 1 }
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | `util.promisify(fn)` ek error-first callback fn ko Promise-return karne wale fn mein badal deta hai. |
+| Kab/kaise hota hai | `fn(...args, (err, value))` shape zaroori; wrapper `err` pe `reject`, warna `value` se `resolve` karta hai. |
+| Kyun useful hai | Purani callback APIs ko `async/await` + `try/catch` ke saath use kar sakte ho — no callback nesting. |
+| Interview trap | `fs` ko manually promisify karna — built-in `fs.promises` already hai; aur non-standard callback (value pehle, err baad) pe promisify galat result deta hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: callback API ko "bas await kar do" - ye Promise return nahi karta
+const fs = require("fs");
+const data = await fs.readFile("f.txt", "utf8");
+console.log(data); // undefined - fs.readFile ka return value hi undefined hai
+```
+
+```js
+// Sahi: pehle promisify (ya fs/promises use karo), phir await
+const util = require("util");
+const fs = require("fs");
+const readFile = util.promisify(fs.readFile); // ya: require("fs/promises").readFile
+const data = await readFile("f.txt", "utf8");
+console.log(data.length); // asli file content
+```
+
+**Ek line mein:** `util.promisify` error-first callback function ko Promise-return karne wale function mein lapet deta hai taaki tum `await` kar sako — aur `fs` ke liye pehle se banaya `fs.promises` use karo.

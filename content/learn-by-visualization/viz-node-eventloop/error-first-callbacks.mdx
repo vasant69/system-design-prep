@@ -1,0 +1,114 @@
+---
+slug: "error-first-callbacks"
+title: "Error-First Callbacks"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 6
+difficulty: "beginner"
+readingTime: 4
+prerequisites: []
+tags: ["nodejs", "callbacks", "error-handling", "async", "conventions"]
+englishDefinition: "The error-first (or errback) convention is Node's standard callback shape: callback(err, data). The first argument is an Error object when something failed, or null on success, and the real result follows. Callers must check err first and return early. It exists because a try/catch around an asynchronous call cannot catch an error thrown later from a different call stack, so errors are passed as data instead."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Wipro", "Accenture", "Cognizant"]
+---
+
+**Error-First Callbacks – Complete Summary**
+
+Node ki callback style ka standard: callback ka pehla argument hamesha error hota hai — `callback(err, data)`. Fail hua to `err` ek `Error` object, success pe `err` `null` (ya `undefined`), aur asli result uske baad ke arguments mein. Rule: pehle `err` check karo aur turant `return` karo, warna neeche `data` ko valid maan ke use karoge jabki wo `undefined` hai. Ye convention isliye hai kyunki async callback ek alag stack se call hota hai — uske aas-paas lagaya `try/catch` us error ko pakad hi nahi sakta, isliye error ko data ki tarah pass kiya jaata hai. Callback ke andar `throw` mat karo; error ko agle callback tak pahunchao.
+
+## Visual
+
+```text
+   fs.readFile(path, (err, data) => { ... })
+                        │
+                        ▼
+              ┌───────────────────┐
+              │   err truthy?     │
+              └────┬─────────┬────┘
+              YES  │         │  NO  (err null/undefined)
+                   ▼         ▼
+        ┌──────────────┐   ┌──────────────────────┐
+        │ handle error │   │ data valid, use it   │
+        │ log / retry  │   │ JSON.parse(data) ... │
+        │ then RETURN  │   └──────────────────────┘
+        └──────────────┘
+        ✗ return karna zaroori — warna neeche data undefined pe crash
+
+   KYUN try/catch KAAM NAHI KARTA
+   ─────────────────────────────
+   try {                           ── stack #1
+     fs.readFile(p, cb)  ────────┐
+   } catch (e) { /* nothing */ }  │
+   ── stack #1 khatam ──          │  (poll phase, baad mein)
+                                  ▼
+   cb(err, data)   ── naya stack #2 — try/catch yahan tak nahi pahunchta
+```
+
+## Code
+
+```js
+const fs = require("fs");
+
+// Error-first callback: (err, data) - err PEHLE check karo
+fs.readFile("/etc/config.json", "utf8", (err, data) => {
+  if (err) {
+    // err ek Error object hai: err.code (e.g. 'ENOENT'), err.message
+    console.error("read failed:", err.code);
+    return; // return na kiya to neeche crash
+  }
+
+  // yahan aaye matlab err null hai, data bharosemand hai
+  const config = JSON.parse(data);
+  console.log("port:", config.port);
+});
+
+// Apna error-first function banao:
+function divide(a, b, cb) {
+  if (b === 0) return cb(new Error("divide by zero")); // err slot bhara
+  cb(null, a / b); // success: err = null, phir result
+}
+
+divide(10, 2, (err, result) => {
+  if (err) return console.error(err.message);
+  console.log("result:", result); // result: 5
+});
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Node ki callback convention: `callback(err, data)` — pehla arg error, baaki asli result. |
+| Kab/kaise hota hai | Fail pe `err` ek `Error` object, success pe `err` `null`; caller pehle `err` check karke `return` kare. |
+| Kyun useful hai | Async boundary ke paar `try/catch` kaam nahi karta, isliye error ko data ki tarah pass karna hi reliable tarika hai. |
+| Interview trap | `if (err)` ke baad `return` bhoolna — non-error path bhi chal jaata hai `data` `undefined` ke saath aur baad mein crash. |
+
+## Wrong vs Right
+
+```js
+// Galat: async call ke around try/catch - error kabhi pakda nahi jaata
+try {
+  fs.readFile("nope.json", "utf8", (err, data) => {
+    const obj = JSON.parse(data); // err ignore -> data undefined -> yahan throw
+    console.log(obj);
+  });
+} catch (e) {
+  console.log("caught:", e.message); // kabhi nahi chalta
+}
+// Result: uncaught exception, process crash
+```
+
+```js
+// Sahi: err ko callback ke andar, sabse pehle handle karo
+fs.readFile("nope.json", "utf8", (err, data) => {
+  if (err) {
+    console.error("caught:", err.code); // 'ENOENT'
+    return;
+  }
+  console.log(JSON.parse(data));
+});
+// Result: error clean handle, koi crash nahi
+```
+
+**Ek line mein:** Node callbacks `(err, data)` shape follow karte hain — hamesha `err` pehle check karke `return` karo, kyunki async error ko `try/catch` nahi, sirf callback ka `err` slot pakad sakta hai.

@@ -69,6 +69,7 @@ import {
   Brackets,
   Parentheses,
   Split,
+  Eye,
   type LucideIcon,
 } from "lucide-react";
 
@@ -86,6 +87,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Component,
   Hexagon,
   Braces,
+  Eye,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -166,4 +168,10 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   functions: Parentheses,
   "control-flow": Split,
   "async-and-modules": RefreshCw,
+  "viz-js-core": Braces,
+  "viz-js-functions": Parentheses,
+  "viz-js-async": RefreshCw,
+  "viz-node-runtime": Hexagon,
+  "viz-node-eventloop": Workflow,
+  "viz-node-streams": Waves,
 };

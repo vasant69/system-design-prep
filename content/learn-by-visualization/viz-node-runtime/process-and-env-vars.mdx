@@ -1,0 +1,97 @@
+---
+slug: "process-and-env-vars"
+title: "process & Environment Variables"
+section: "learn-by-visualization"
+module: "viz-node-runtime"
+order: 4
+difficulty: "beginner"
+readingTime: 5
+prerequisites: ["what-is-nodejs"]
+tags: ["nodejs", "process", "env", "config", "cli"]
+englishDefinition: "process is a global object that represents the currently running Node.js process. It exposes command-line arguments via process.argv, environment variables via process.env, the working directory via process.cwd(), the process id via process.pid, standard streams, and lifecycle events such as exit and uncaughtException. process.env is the standard place to read configuration and secrets so they are not hardcoded into source."
+interviewFrequency: "high"
+companies: ["Infosys", "Accenture", "Razorpay", "PhonePe", "Flipkart"]
+---
+
+**process & Environment Variables – Complete Summary**
+
+`process` ek global object hai jo abhi chal rahe Node process ko represent karta hai. Isse tumhe milta hai: `process.argv` (command-line arguments), `process.env` (environment variables — config aur secrets yahin se padho), `process.cwd()` (working directory), `process.pid`, standard streams (`stdin`/`stdout`/`stderr`), aur lifecycle events (`exit`, `uncaughtException`, `SIGINT`). Rule: URLs, DB passwords, API keys code mein hardcode mat karo — `process.env.X` se inject karo taaki har environment (dev/staging/prod) apni values de sake.
+
+## Visual
+
+```text
+                    ┌─────────────────────────────────┐
+   node app.js  ──▶ │        NODE PROCESS  (pid)       │
+   PORT=8080        │                                 │
+   API_KEY=xyz      │  process.argv  ──▶ ["node",     │
+                    │                     "app.js",   │
+                    │                     "--watch"]  │
+                    │  process.env   ──▶ { PORT:8080, │
+                    │                      API_KEY:.. }│
+                    │  process.cwd() ──▶ "/srv/app"   │
+                    │  process.pid   ──▶ 48213        │
+   stdin  ─────────▶│  stdio ports    stdout ────────▶│─▶ terminal
+                    │                 stderr ────────▶│─▶ logs
+                    │  events: 'exit' 'SIGINT'        │
+                    │          'uncaughtException'    │
+                    │  process.exit(1) ──▶ stop now   │
+                    └─────────────────────────────────┘
+
+   argv index:  0 = node binary   1 = script path   2..n = your args
+```
+
+## Code
+
+```js
+// 1. CLI args — everything after the script path
+// run:  node app.js build --env=prod
+const args = process.argv.slice(2); // ["build", "--env=prod"]
+const command = args[0]; // "build"
+
+// 2. Config from env, with a safe default (never hardcode secrets)
+const PORT = process.env.PORT ?? 3000;
+const API_KEY = process.env.API_KEY;
+if (!API_KEY) {
+  console.error("API_KEY missing"); // fail fast on misconfig
+  process.exit(1); // non-zero = error (CI / shell sees the failure)
+}
+
+// 3. Process info
+console.log(`pid ${process.pid}, node ${process.version}, cwd ${process.cwd()}`);
+
+// 4. Lifecycle hooks — flush logs / close DB before shutdown
+process.on("SIGINT", () => {
+  console.log("Ctrl+C -> cleaning up");
+  process.exit(0);
+});
+process.on("exit", (code) => console.log(`bye, code ${code}`));
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Global object = chal rahe Node process ka handle: args, env, cwd, pid, stdio, lifecycle events. |
+| Kab/kaise hota hai | Process start pe Node `argv`/`env` ko OS se populate karta hai; events runtime pe fire hote hain (`SIGINT`, `exit`, `uncaughtException`). |
+| Kyun useful hai | Config/secrets ko code se bahar rakhna, CLI args parse karna, graceful shutdown, exit codes se CI ko pass/fail batana. |
+| Interview trap | `process.env.PORT` hamesha string hoti hai (`"8080"`, number nahi) — compare/maths se pehle `Number(...)` karo. |
+
+## Wrong vs Right
+
+```js
+// Galat: secret code mein hardcode + env value ko number maan lena
+const API_KEY = "sk_live_abcd1234"; // repo mein leak, rotate karna nightmare
+const port = process.env.PORT;
+if (port > 1024) startServer(port); // "8080" > 1024 -> string compare, buggy
+```
+
+```js
+// Sahi: env se inject karo, type cast karo, missing pe fail fast
+const API_KEY = process.env.API_KEY;
+if (!API_KEY) throw new Error("Set API_KEY in the environment");
+
+const port = Number(process.env.PORT ?? 3000); // ab real number
+if (Number.isInteger(port)) startServer(port);
+```
+
+**Ek line mein:** `process` chal rahe Node instance ka control-panel hai — args, env vars, streams aur shutdown hooks — aur config/secrets hamesha `process.env` se aane chahiye, source se nahi.

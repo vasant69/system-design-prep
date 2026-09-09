@@ -1,0 +1,112 @@
+---
+slug: "async-error-handling"
+title: "Async Error Handling"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 8
+difficulty: "intermediate"
+readingTime: 5
+prerequisites: ["error-first-callbacks"]
+tags: ["nodejs", "error-handling", "async-await", "promises", "unhandledrejection"]
+englishDefinition: "With async/await a rejected promise throws at the await point, so try/catch works normally, but only if you actually await inside the try. Raw promise chains need .catch(). Fire-and-forget promises need their own .catch() or they become unhandled rejections. process.on('unhandledRejection') and process.on('uncaughtException') are last-resort logging hooks before a clean exit, not a way to keep running."
+interviewFrequency: "high"
+companies: ["Flipkart", "Razorpay", "Zomato", "PhonePe", "Cognizant"]
+---
+
+**Async Error Handling – Complete Summary**
+
+`async/await` ke saath jab promise reject hota hai to wo `await` wali line pe `throw` karta hai — isliye normal `try/catch` chal jaata hai, bashart ki tum `try` ke andar sach mein `await` karo. Bina `await` ke promise `try` block ke baahar reject hota hai aur `catch` use dekh hi nahi paata. Raw promise chains ke liye `.catch()` lagao. Fire-and-forget promise (jise tum await nahi karte) ka apna `.catch()` hona chahiye, warna wo "unhandled rejection" ban jaata hai. `process.on("unhandledRejection")` aur `process.on("uncaughtException")` sirf last-resort hooks hain — log karke saaf exit karne ke liye, chalte rehne ke liye nahi.
+
+## Visual
+
+```text
+   CONTAINED ✓                          ESCAPES ✗
+   ──────────                           ─────────
+   try {                               try {
+     const x = await risky();            const p = risky();   // no await
+   } catch (e) {                       } catch (e) { }         // p reject baad mein
+     handle(e);  // await ──▶ throw    }                       // ──▶ unhandledRejection
+   }                                   // catch already nikal chuka
+
+   ────────────────────────────────────────────────────────────
+
+   risky().then(use)            ── reject ──▶ koi catch nahi ──▶ unhandled ✗
+   risky().then(use).catch(h)   ── reject ──▶ h(err)                       ✓
+
+   doAsync();                   ── fire-and-forget, reject ──▶ unhandled   ✗
+   doAsync().catch(log);        ── contained                              ✓
+
+   ────────────────────────────────────────────────────────────
+   LAST RESORT  (recover nahi — sirf log + exit):
+   process.on("unhandledRejection", (err) => { log(err); process.exit(1); });
+   process.on("uncaughtException",  (err) => { log(err); process.exit(1); });
+```
+
+## Code
+
+```js
+// 1) await + try/catch: kaam karta hai, kyunki reject await pe throw karta hai
+async function loadUser(id) {
+  try {
+    const res = await fetch(`/api/users/${id}`); // network reject -> throw
+    if (!res.ok) throw new Error(`HTTP ${res.status}`); // manual throw
+    return await res.json();
+  } catch (err) {
+    console.error("loadUser failed:", err.message);
+    return null; // ya: throw err;  (caller ko aage bhejo)
+  }
+}
+
+// 2) parallel: ek reject Promise.all ko turant reject karta hai
+async function loadAll(ids) {
+  try {
+    return await Promise.all(ids.map(loadUser)); // koi ek fail -> poora catch
+  } catch {
+    // sab chahiye chahe kuchh fail ho -> allSettled
+    const settled = await Promise.allSettled(ids.map(loadUser));
+    return settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  }
+}
+
+// 3) fire-and-forget: apna .catch do
+loadUser(1);                          // reject hua to unhandledRejection
+loadUser(1).catch((e) => console.error(e)); // contained
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Async errors handle karne ke tarike: `try/catch` with `await`, `.catch()` for chains, process-level hooks last resort. |
+| Kab/kaise hota hai | Rejected promise `await` line pe `throw` karta hai; isliye `try` ke andar `await` hona zaroori, warna `catch` miss ho jaata hai. |
+| Kyun useful hai | Ek predictable jagah error pakadna; `Promise.allSettled` se partial failures ko survive karna. |
+| Interview trap | `try` ke andar `return somePromise` bina `await` — rejection `try` ke baahar hoti hai, `catch` kabhi nahi chalta. |
+
+## Wrong vs Right
+
+```js
+// Galat: try ke andar await nahi - rejection catch se bahar nikal jaati hai
+async function getData() {
+  try {
+    return fetchJson("/api/data"); // no await -> promise return, reject baad mein
+  } catch (err) {
+    console.error("never runs");
+    return null;
+  }
+}
+// caller ko rejection milti hai / unhandledRejection
+```
+
+```js
+// Sahi: try ke andar await karo - ab reject yahin throw hoke catch mein aata hai
+async function getData() {
+  try {
+    return await fetchJson("/api/data"); // await -> reject yahan throw
+  } catch (err) {
+    console.error("getData failed:", err.message);
+    return null; // ya rethrow
+  }
+}
+```
+
+**Ek line mein:** Rejected promise `await` pe throw karta hai isliye `try/catch` tabhi kaam karta hai jab tum `try` ke andar `await` karo — raw chains ko `.catch()` do, aur `unhandledRejection`/`uncaughtException` sirf log-and-exit ke liye rakho.

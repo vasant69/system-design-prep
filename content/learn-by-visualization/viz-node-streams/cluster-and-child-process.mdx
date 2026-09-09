@@ -1,0 +1,101 @@
+---
+slug: "cluster-and-child-process"
+title: "cluster & child_process"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 7
+difficulty: "advanced"
+readingTime: 6
+prerequisites: []
+tags: ["nodejs", "cluster", "child-process", "scaling", "multi-core"]
+englishDefinition: "child_process runs separate OS processes from Node — spawn streams a long-running command, exec buffers a shell command's output, and fork starts another Node script with a message channel. cluster builds on fork to run one worker process per CPU core, all sharing a single listening port so the OS load-balances incoming connections. Both give true parallelism through processes, unlike worker threads which share one process."
+interviewFrequency: "medium"
+companies: ["Flipkart", "Swiggy", "PhonePe", "Zoho", "HCL"]
+---
+
+**cluster & child_process – Complete Summary**
+
+Node ka ek process ek hi CPU core use karta hai. `child_process` alag **OS processes** banata hai: `spawn` ek command ko stream karta hai (bada/lamba output), `exec` ek shell command chala ke output buffer karta hai (chhota output), `fork` ek aur **Node** script start karta hai plus ek built-in message channel deta hai. `cluster` isi `fork` ke upar bana hai — ye ek **master** process rakhta hai jo N worker processes fork karta hai (usually core count jitne), aur sabhi workers **ek hi port** pe listen karte hain; naye connections OS/master round-robin se baant deta hai. Worker threads se farak: cluster/child = alag memory, alag process, IPC sirf message-copy; worker_threads = ek process, lighter, `SharedArrayBuffer` se shared memory.
+
+## Visual
+
+```text
+   child_process — teen tarike:
+     spawn("ffmpeg", [...])   ──▶ new process, stdout/stderr as STREAMS (big output)
+     exec("ls -la | wc -l")   ──▶ new process, whole output BUFFERED in callback
+     fork("./worker.js")      ──▶ new NODE process + IPC channel (.send / 'message')
+
+   cluster — ek port, N processes:
+        ┌─────────── MASTER (no request handling) ───────────┐
+        │  cluster.fork() x 4    listens: :3000 (shared)      │
+        └───┬───────────┬───────────┬───────────┬────────────┘
+            ▼           ▼           ▼           ▼
+        worker 1     worker 2     worker 3     worker 4      each = full Node process
+         core 0       core 1       core 2       core 3        own memory + event loop
+            ▲           ▲           ▲           ▲
+            └─── OS / master round-robins new TCP connections ───┘
+
+   cluster/child_process = parallel PROCESSES (isolated memory, message IPC)
+   worker_threads        = parallel THREADS in ONE process (SharedArrayBuffer possible)
+```
+
+## Code
+
+```js
+// cluster: use every core, all workers share port 3000
+const cluster = require("node:cluster");
+const http = require("node:http");
+const os = require("node:os");
+
+if (cluster.isPrimary) {
+  const cpus = os.cpus().length;
+  for (let i = 0; i < cpus; i++) cluster.fork(); // one worker per core
+
+  cluster.on("exit", (worker) => {
+    console.log(`worker ${worker.process.pid} died, restarting`);
+    cluster.fork(); // keep the pool full
+  });
+} else {
+  // Each worker runs this — same code, separate process
+  http
+    .createServer((req, res) => res.end(`handled by pid ${process.pid}`))
+    .listen(3000); // OS load-balances connections across workers
+}
+
+// child_process.fork: offload a job to another Node process
+const { fork } = require("node:child_process");
+const child = fork("./report-builder.js");
+child.send({ month: "2026-08" });
+child.on("message", (pdfPath) => console.log("done:", pdfPath));
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | `child_process` = alag OS processes (`spawn`/`exec`/`fork`). `cluster` = `fork` ke N Node workers, ek shared port pe. |
+| Kab/kaise hota hai | `cluster.fork()` master se worker banata hai; workers `server.listen(sameport)` karte hain; master handle master ko distribute karta hai. |
+| Kyun useful hai | Ek Node process ek core tak simit hai — cluster se saare cores use hote hain; ek worker crash ho to baaki serve karte rehte hain (master use restart kar deta hai). |
+| Interview trap | Cluster workers memory share nahi karte — in-memory session/cache har worker mein alag. Sticky sessions ya bahar ka store (Redis) chahiye. Aur cluster CPU-bound single request ko fast nahi karta, sirf throughput badhata hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: 8-core box pe ek hi Node process — 7 cores idle, throughput capped
+const http = require("node:http");
+http.createServer(handler).listen(3000);
+// Traffic badhe to ye ek process saturate ho jaata hai, baaki cores khali
+```
+
+```js
+// Sahi: cluster (ya PM2 -i max) se ek worker per core, ek hi port
+const cluster = require("node:cluster");
+if (cluster.isPrimary) {
+  require("node:os").cpus().forEach(() => cluster.fork());
+} else {
+  require("node:http").createServer(handler).listen(3000);
+}
+// Ab 8 workers parallel; shared state Redis/DB mein rakho, process memory mein nahi
+```
+
+**Ek line mein:** `child_process` alag OS processes chalata hai aur `cluster` unhi processes ko ek shared port ke peeche N-per-core forks mein multiply karta hai taaki ek Node app saare cores use kare.

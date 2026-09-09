@@ -1,0 +1,95 @@
+---
+slug: "event-emitter"
+title: "EventEmitter"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 2
+difficulty: "beginner"
+readingTime: 4
+prerequisites: []
+tags: ["nodejs", "events", "eventemitter", "observer-pattern", "streams"]
+englishDefinition: "EventEmitter is Node's built-in implementation of the observer pattern. An object registers listener functions with on() or once(), and later calls emit('name', ...args) to run every listener for that name synchronously, in registration order. It is the backbone of streams, HTTP servers, sockets, and the process object. Node warns when more than ten listeners are added for one event, as a probable memory leak."
+interviewFrequency: "high"
+companies: ["Infosys", "Zoho", "Swiggy", "PhonePe", "HCL"]
+---
+
+**EventEmitter – Complete Summary**
+
+EventEmitter Node ka built-in observer pattern hai: ek object jispe tum `emitter.on('event', fn)` se listeners register karte ho, aur baad mein `emitter.emit('event', data)` se saare registered listeners ko **synchronously**, registration order mein call karte ho. `once('event', fn)` listener ko first call ke baad khud remove kar deta hai; `off()` / `removeListener()` manually hataata hai. `emit` blocking hai — agli line tab chalti hai jab saare listeners return kar dein. HTTP server, streams, sockets, `process` — sab isi pattern par bane hain. Agar ek hi event pe 10 se zyada listeners add ho jaayen to Node `MaxListenersExceededWarning` deta hai (probable leak ka hint).
+
+## Visual
+
+```text
+                     EventEmitter   ("order:new" channel)
+                    ┌───────────────────────────────────┐
+     emitter.on ───▶│  listeners["order:new"] = [       │
+     emitter.on ───▶│     fn A   sendEmail              │
+   emitter.once ───▶│     fn B   chargeCard    (once)   │
+     emitter.on ───▶│     fn C   writeAudit             │
+                    │  ]                                │
+                    └───────────────────────────────────┘
+                                   │
+   emitter.emit("order:new", o) ───┘   runs A ▶ B ▶ C   (sync, in order)
+                                   ▼
+       A(o) ─▶ B(o) ─▶ C(o) ─▶ emit() returns ─▶ next line runs
+                 │
+                 └─ B was `once` → auto-removed; next emit runs only A, C
+
+   listeners count > 10  ─▶  MaxListenersExceededWarning   (probable leak)
+```
+
+## Code
+
+```js
+const { EventEmitter } = require("node:events");
+
+class OrderService extends EventEmitter {}
+const orders = new OrderService();
+
+// Register listeners — they run in the order they were added
+orders.on("new", (order) => console.log("1) email for", order.id));
+orders.once("new", (order) => console.log("2) charge card (once)", order.id));
+orders.on("new", (order) => console.log("3) audit log", order.id));
+
+console.log("before emit");
+orders.emit("new", { id: 42 }); // runs all three, synchronously, right now
+console.log("after emit"); // prints only after every listener returned
+orders.emit("new", { id: 43 }); // "2) charge card" is gone — it was `once`
+
+// Output:
+// before emit
+// 1) email for 42
+// 2) charge card (once) 42
+// 3) audit log 42
+// after emit
+// 1) email for 43
+// 3) audit log 43
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Observer pattern ka Node built-in: `on`/`once` se subscribe, `emit` se us event ke saare listeners call. |
+| Kab/kaise hota hai | `emit('x', ...args)` us event ke listeners ko **synchronously**, registration order mein chalata hai, phir return karta hai. |
+| Kyun useful hai | Loose coupling — emitter ko nahi pata kaun sun raha hai; streams, HTTP servers, sockets sab isi API pe bane hain. |
+| Interview trap | `emit` async nahi hai — listener ke andar heavy sync kaam poore event loop ko block karta hai; aur `error` event pe koi listener na ho to process crash ho jaata hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: `error` event emit kiya par uska listener nahi lagaya
+const bus = new EventEmitter();
+bus.emit("error", new Error("db down"));
+// -> unhandled 'error' event: Node isko throw kar deta hai -> process crash + exit
+```
+
+```js
+// Sahi: har long-lived emitter pe `error` ka listener rakho
+const bus = new EventEmitter();
+bus.on("error", (err) => console.error("handled:", err.message));
+bus.emit("error", new Error("db down"));
+// -> "handled: db down", process zinda rehta hai
+```
+
+**Ek line mein:** EventEmitter ek hub hai jahan `on` se listeners jude rehte hain aur `emit` un sabko synchronously chalata hai — pura Node (streams, servers, sockets) isi ek pattern par khada hai.

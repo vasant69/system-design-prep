@@ -1,0 +1,96 @@
+---
+slug: "settimeout-vs-setimmediate"
+title: "setTimeout vs setImmediate"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 4
+difficulty: "intermediate"
+readingTime: 4
+prerequisites: ["event-loop-phases"]
+tags: ["nodejs", "event-loop", "settimeout", "setimmediate", "timers", "check-phase"]
+englishDefinition: "setImmediate runs its callback in the event loop's check phase, right after the poll phase. setTimeout(fn, 0) runs in the timers phase at the start of the next loop iteration, and the 0 is clamped to a 1 millisecond minimum. Called from the main module their relative order is not guaranteed, but inside any I/O callback setImmediate always runs first, because that tick is already past the timers phase."
+interviewFrequency: "high"
+companies: ["Paytm", "Groww", "Zerodha", "Freshworks", "BrowserStack"]
+---
+
+**setTimeout vs setImmediate – Complete Summary**
+
+Dono kaam ko "jaldi se jaldi baad mein" schedule karte hain, par alag phases mein. `setImmediate` check phase mein chalta hai — poll ke turant baad. `setTimeout(fn, 0)` timers phase mein chalta hai, jo agle loop iteration ki shuruaat mein aata hai; aur `0` ko internally 1 millisecond minimum pe clamp kar diya jaata hai. Main module se dono ka aapasi order fixed nahi — kabhi timer pehle, kabhi immediate, machine load pe depend. Lekin kisi bhi I/O callback ke andar (jaise `fs.readFile` callback, jo poll phase mein hai), `setImmediate` hamesha pehle, kyunki us tick ke liye timers phase nikal chuka hai.
+
+## Visual
+
+```text
+   EVENT LOOP TICK   (──▶ direction of travel)
+
+   ┌── TIMERS ───────┐   setTimeout / setInterval   ◀── "0" yahan (min 1ms)
+   │                 │
+   │   PENDING CB    │
+   │                 │
+   │   POLL ─────────┤   I/O callbacks (fs.readFile done)  ◀── tum yahan ho
+   │                 │      jab koi I/O callback chal raha hai
+   │   CHECK ────────┤   setImmediate   ◀── poll ke turant baad, SAME tick
+   │                 │
+   │   CLOSE CB      │
+   └────────┬────────┘
+            └──▶ loop wraps back to TIMERS (next tick)
+
+   MAIN MODULE SE               I/O CALLBACK KE ANDAR SE (poll phase)
+   ─────────────                ────────────────────────────────────
+   setTimeout(0) ─┐             setImmediate  ──▶ runs THIS tick (check)
+   setImmediate  ─┴─ race       setTimeout(0) ──▶ runs NEXT tick (timers)
+   (order varies)               to: setImmediate ALWAYS first here
+```
+
+## Code
+
+```js
+const fs = require("fs");
+
+// 1) Main module se: order guaranteed NAHI
+setTimeout(() => console.log("main: timeout"), 0);
+setImmediate(() => console.log("main: immediate"));
+// Output: kabhi "timeout" pehle, kabhi "immediate" - run-to-run vary
+
+// 2) I/O callback ke andar se: order guaranteed
+fs.readFile(__filename, () => {
+  setTimeout(() => console.log("io: timeout"), 0);
+  setImmediate(() => console.log("io: immediate"));
+
+  // Output HAMESHA:
+  // io: immediate
+  // io: timeout
+  // callback poll phase mein hai -> agla phase CHECK (setImmediate);
+  // setTimeout ke liye poora loop ghoom ke timers tak wapas aana padta hai
+});
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | `setImmediate` = check phase; `setTimeout(fn, 0)` = timers phase, aur `0` clamp hoke 1ms ban jaata hai. |
+| Kab/kaise hota hai | Main module se order non-deterministic; I/O callback ke andar `setImmediate` hamesha pehle. |
+| Kyun useful hai | I/O ke turant baad kuchh defer karna ho to `setImmediate` predictable hai — bina 1ms timer overhead ke. |
+| Interview trap | `setImmediate` ka naam jhooth bolta hai — wo `setTimeout(0)` se "zyada immediate" nahi, sirf check phase mein pinned hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: I/O ke baad kaam ko "turant" chalane ke liye setTimeout(0)
+const fs = require("fs");
+fs.readFile("data.json", (err, buf) => {
+  if (err) throw err;
+  setTimeout(() => handle(buf), 0); // ek poora loop iteration ka wait
+});
+```
+
+```js
+// Sahi: I/O callback ke andar se defer karna ho to setImmediate
+const fs = require("fs");
+fs.readFile("data.json", (err, buf) => {
+  if (err) throw err;
+  setImmediate(() => handle(buf)); // check phase - usi tick mein, jaldi
+});
+```
+
+**Ek line mein:** `setImmediate` check phase mein pinned hai aur I/O callbacks ke andar `setTimeout(fn, 0)` se hamesha pehle chalta hai; main module se dono ka order ek race hai.

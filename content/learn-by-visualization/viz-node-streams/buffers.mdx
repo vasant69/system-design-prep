@@ -1,0 +1,94 @@
+---
+slug: "buffers"
+title: "Buffers & Binary Data"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 3
+difficulty: "intermediate"
+readingTime: 5
+prerequisites: []
+tags: ["nodejs", "buffer", "binary", "encoding", "typedarray", "streams"]
+englishDefinition: "A Buffer is a fixed-length chunk of raw bytes stored outside the V8 heap, used for binary data such as file contents, network packets, and image bytes. It is a subclass of Uint8Array. You create one with Buffer.from or Buffer.alloc and convert to or from text with an explicit encoding like utf8, hex, or base64. Every chunk a stream emits is a Buffer unless an encoding is set."
+interviewFrequency: "medium"
+companies: ["TCS", "Wipro", "Groww", "Flipkart", "Accenture"]
+---
+
+**Buffers & Binary Data – Complete Summary**
+
+Buffer fixed-length raw bytes ka block hai jo V8 heap ke bahar allocate hota hai — file content, TCP packets, image bytes jaisa binary data isme aata hai. Technically ye `Uint8Array` ka subclass hai, isliye har element `0` se `255` ka ek byte. `Buffer.from('hi', 'utf8')` string ko bytes mein encode karta hai; `buf.toString('utf8')` wapas decode. Encoding hamesha explicit socho — same bytes `hex`, `base64`, `latin1` mein alag dikhte hain. Multi-byte characters (emoji, rupee sign, Hindi) 2 se 4 bytes lete hain, isliye ek random byte offset pe buffer slice karna character ko todh sakta hai. Streams ki har `data` chunk default Buffer hi hoti hai jab tak encoding set na ho.
+
+## Visual
+
+```text
+   "Hi₹"   =  3 characters
+      │  Buffer.from("Hi₹", "utf8")     encode: chars -> bytes
+      ▼
+   ┌────┬────┬────┬────┬────┐
+   │ 48 │ 69 │ E2 │ 82 │ B9 │   5 BYTES (hex)     '₹' alone is 3 bytes
+   └────┴────┴────┴────┴────┘
+     H    i    └───── ₹ ─────┘
+      │  buf.toString("utf8")    ->  "Hi₹"
+      │  buf.toString("hex")     ->  "4869e282b9"
+      │  buf.toString("base64")  ->  "SGnigrk="
+      ▼
+   buf.subarray(0, 4).toString("utf8")  ->  "Hi" + replacement char (₹ cut mid-byte)
+
+   Memory:   V8 heap [ JS objects, GC-managed ]     OFF-heap [ Buffer bytes ]
+                                                       ^ fixed size, stable address
+```
+
+## Code
+
+```js
+// 1. Create
+const a = Buffer.from("Hi₹", "utf8"); // from a string (encode)
+const b = Buffer.alloc(4); // 4 zeroed bytes -> 00 00 00 00
+const c = Buffer.from([0x48, 0x69]); // from raw byte values -> "Hi"
+
+console.log(a.length); // 5  -> BYTES, not characters (₹ takes 3 bytes)
+console.log("Hi₹".length); // 3  -> string length is in code units
+
+// 2. Convert out — the encoding is always explicit
+console.log(a.toString("utf8")); // "Hi₹"
+console.log(a.toString("hex")); // "4869e282b9"
+console.log(a.toString("base64")); // "SGnigrk="
+
+// 3. It is a Uint8Array underneath
+console.log(a[0]); // 72  (0x48, the byte for 'H')
+a[0] = 0x68; // mutate a single byte
+console.log(a.toString()); // "hi₹"
+
+// 4. Danger: slicing on a byte boundary can split a character
+console.log(a.subarray(0, 4).toString("utf8")); // "Hi" + U+FFFD replacement char
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Fixed-length raw byte block, V8 heap ke bahar; `Uint8Array` ka subclass. |
+| Kab/kaise hota hai | `Buffer.from` / `Buffer.alloc` se banta hai; file, socket aur stream I/O bytes isi form mein deta hai. |
+| Kyun useful hai | Binary data (files, packets, images, crypto) ko efficiently handle karo bina string round-trip mein corrupt kiye. |
+| Interview trap | `.length` bytes deta hai, characters nahi; multi-byte char ke beech slice karne se replacement char (`U+FFFD`) aata hai aur original bytes lost ho jaate hain. |
+
+## Wrong vs Right
+
+```js
+// Galat: binary file ko string maankar concat kiya
+let data = "";
+readable.on("data", (chunk) => {
+  data += chunk;
+}); // Buffer -> string coerce, utf8 assume
+readable.on("end", () => fs.writeFileSync("out.png", data));
+// -> invalid utf8 sequences replacement char ban gaye -> image bytes corrupt
+```
+
+```js
+// Sahi: Buffers ko Buffers hi rakho, end pe ek baar concat karo
+const chunks = [];
+readable.on("data", (chunk) => chunks.push(chunk)); // stays a Buffer
+readable.on("end", () => fs.writeFileSync("out.png", Buffer.concat(chunks)));
+// -> bytes bilkul intact
+```
+
+**Ek line mein:** Buffer raw bytes ka fixed block hai (heap ke bahar) — text se convert karte waqt encoding hamesha explicit do, aur byte-count ko character-count mat samjho.

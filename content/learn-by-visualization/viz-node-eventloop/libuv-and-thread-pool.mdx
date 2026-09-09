@@ -1,0 +1,108 @@
+---
+slug: "libuv-and-thread-pool"
+title: "libuv & the Thread Pool"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 2
+difficulty: "advanced"
+readingTime: 5
+prerequisites: []
+tags: ["nodejs", "libuv", "thread-pool", "async", "fs", "crypto"]
+englishDefinition: "libuv is the C library that gives Node its event loop and a small pool of background threads, four by default and set via UV_THREADPOOL_SIZE. File system calls, several crypto functions, zlib, and dns.lookup run on that pool; when a job finishes its callback is queued back on the event loop. Network sockets do not use the pool, they rely on the operating system's own async I/O. Knowing what uses the pool explains why heavy file or crypto work can starve otherwise-fast requests."
+interviewFrequency: "high"
+companies: ["Zomato", "Freshworks", "Zoho", "Postman", "Groww"]
+---
+
+**libuv & the Thread Pool – Complete Summary**
+
+libuv wo C library hai jo Node ko event loop deti hai aur saath mein ek chhota background thread pool — default 4 threads, `UV_THREADPOOL_SIZE` env var se badha sakte ho. Jo kaam OS async handle nahi kar sakta wo is pool pe chalta hai: `fs` file operations, kuchh `crypto` functions (`pbkdf2`, `scrypt`, `randomBytes`), `zlib`, aur `dns.lookup`. Job khatam hone pe uska callback wapas event loop ki poll queue mein jaata hai. Network I/O (TCP, HTTP sockets) pool use nahi karta — wo seedha OS ke epoll/kqueue/IOCP se hota hai. Isliye agar 5 bade file reads ek saath aaye aur pool size 4 hai, to 5th ko ek thread free hone ka wait karna padta hai.
+
+## Visual
+
+```text
+   YOUR JS  (single thread)
+   ─────────────────────────
+      fs.readFile(a, cb1)
+      fs.readFile(b, cb2)
+      crypto.pbkdf2(..., cb3)
+      https.get(url, cb4)   ──▶ network: pool NAHI
+
+           │  jobs dispatch
+           ▼
+   ┌─────────────────┐        ┌───────────────────────────────┐
+   │   EVENT LOOP    │──job──▶ │  libuv THREAD POOL (size 4)   │
+   │   (libuv)       │        │   [T1] readFile a             │
+   │                 │        │   [T2] readFile b             │
+   │                 │        │   [T3] pbkdf2                 │
+   │                 │◀─done──│   [T4] (free)   [5th] WAITING │
+   └────────┬────────┘ result └───────────────────────────────┘
+            │  callback poll queue mein
+            ▼
+      cb1 / cb2 / cb3   poll phase mein chalte hain
+
+   https.get ──▶ OS kernel async (epoll / kqueue / IOCP) ──▶ cb4
+                (thread pool bypass)
+```
+
+## Code
+
+```js
+// Thread pool default 4 -> 5 concurrent pbkdf2 mein 5th late aata hai
+const crypto = require("crypto");
+
+const start = Date.now();
+function hash(label) {
+  crypto.pbkdf2("secret", "salt", 100000, 64, "sha512", () => {
+    console.log(label, "done at", Date.now() - start, "ms");
+  });
+}
+
+for (let i = 1; i <= 5; i++) hash("job" + i);
+
+// Output (default UV_THREADPOOL_SIZE = 4), approx:
+// job1 done at 190 ms
+// job2 done at 190 ms
+// job3 done at 195 ms
+// job4 done at 195 ms
+// job5 done at 380 ms   <-- 5th ne ek thread free hone ka wait kiya
+//
+// launch: UV_THREADPOOL_SIZE=8 node app.js -> paanchon ~190 ms pe saath
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | libuv = Node ka event loop + ek 4-thread (default) background pool I/O aur kuchh CPU kaam ke liye. |
+| Kab/kaise hota hai | `fs`, `crypto` (pbkdf2/scrypt/randomBytes), `zlib`, `dns.lookup` pool pe; job done hone pe callback poll queue mein wapas. |
+| Kyun useful hai | Blocking-jaisa kaam background threads pe hota hai to main thread free rehta hai; size tune karke throughput badha sakte ho. |
+| Interview trap | Network sockets pool use NAHI karte — wo OS async hai; aur sirf `dns.lookup` pool pe hai, `dns.resolve` nahi. |
+
+## Wrong vs Right
+
+```js
+// Galat: 100 files ek saath, pool size default 4 - baaki 96 queue mein atke
+const fs = require("fs");
+for (const f of hundredFiles) {
+  fs.readFile(f, () => process.stdout.write("."));
+}
+// 4 ke batches mein slowly complete; ek slow disk read poore batch ko rok deta hai
+```
+
+```js
+// Sahi: launch pe pool size set karo (UV_THREADPOOL_SIZE=8 node app.js),
+// aur concurrency ko explicitly cap karo
+const { readFile } = require("fs/promises");
+
+async function readAll(files, limit = 8) {
+  const out = [];
+  for (let i = 0; i < files.length; i += limit) {
+    const batch = files.slice(i, i + limit);
+    out.push(...(await Promise.all(batch.map((f) => readFile(f)))));
+  }
+  return out;
+}
+// pool ke jitni concurrency: koi single read poore batch ko block nahi karta
+```
+
+**Ek line mein:** libuv Node ko event loop plus ek chhota (default 4) thread pool deti hai jise `fs`, `crypto`, `zlib` aur `dns.lookup` use karte hain — network I/O nahi — isliye heavy file/crypto load un threads ke liye aapas mein compete karta hai.

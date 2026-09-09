@@ -1,0 +1,99 @@
+---
+slug: "worker-threads"
+title: "Worker Threads"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 6
+difficulty: "advanced"
+readingTime: 6
+prerequisites: []
+tags: ["nodejs", "worker-threads", "cpu-bound", "concurrency", "parallelism"]
+englishDefinition: "Worker threads let Node run JavaScript on real OS threads for CPU-bound work like hashing, parsing, compression, or image processing. Each worker has its own V8 isolate, event loop, and memory, so it does not block the main thread. They communicate by copying messages via postMessage, or by sharing a SharedArrayBuffer. They are not meant for I/O, which the main thread already handles asynchronously."
+interviewFrequency: "high"
+companies: ["Flipkart", "PhonePe", "Groww", "Freshworks", "Cognizant"]
+---
+
+**Worker Threads – Complete Summary**
+
+Worker threads Node ko CPU-bound JS ko real OS threads pe chalane dete hain — password hashing, huge JSON parse, image resize, compression. Har worker ka apna V8 isolate, apna event loop, apni memory — isliye uska heavy loop main thread ko block nahi karta. Baat-cheet: `worker.postMessage(x)` / `parentPort.on('message', ...)` — by default message **structured-clone se COPY** hota hai (shared nahi). Genuinely shared memory chahiye to `SharedArrayBuffer` pass karo (zero-copy, par `Atomics` se manual sync). Workers I/O ke liye nahi hain — file aur network already async hai; workers sirf tab jab profiler bataye ki ek sync computation event loop ko rok raha hai.
+
+## Visual
+
+```text
+   Single thread only:                With a worker:
+   ┌── main event loop ──┐            ┌── main loop ──┐   ┌── worker loop ──┐
+   │ req -> hash() 400ms │            │ req           │   │                 │
+   │  ▓▓▓▓▓▓▓▓ BLOCKED    │            │  postMessage ─┼──▶│ hash() 400ms    │
+   │ other reqs wait     │            │ serves others │   │  ▓▓▓▓▓▓▓▓        │
+   └─────────────────────┘            │  ◀── message ──┼───│ postMessage(res)│
+                                      └───────────────┘   └─────────────────┘
+                                         own V8 isolate + heap PER worker
+
+   Passing data:
+     postMessage(obj)   -> structured clone (COPY) -> parentPort 'message'
+     SharedArrayBuffer  -> same bytes, no copy -> Atomics for sync
+     transferList       -> move ownership (ArrayBuffer); sender loses access
+
+   Use for: CPU (hash, parse, sharp, zlib sync)   NOT for: fs / http (already async)
+```
+
+## Code
+
+```js
+// main.js — offload a CPU-heavy hash so the server keeps responding
+const { Worker } = require("node:worker_threads");
+
+function hashInWorker(password) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker("./hash-worker.js", { workerData: password });
+    w.once("message", resolve); // result posted back (as a copy)
+    w.once("error", reject);
+    w.once("exit", (code) => {
+      if (code !== 0) reject(new Error("worker stopped, exit " + code));
+    });
+  });
+}
+
+// The event loop stays free while the worker burns CPU on another core
+app.post("/signup", async (req, res) => {
+  const hash = await hashInWorker(req.body.password);
+  res.json({ ok: true, hash });
+});
+
+// hash-worker.js
+const { workerData, parentPort } = require("node:worker_threads");
+const crypto = require("node:crypto");
+const key = crypto.pbkdf2Sync(workerData, "salt", 200000, 64, "sha512");
+parentPort.postMessage(key.toString("hex"));
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | CPU-bound JS ke liye real OS threads; har worker apna V8 isolate + event loop + heap. |
+| Kab/kaise hota hai | `new Worker(file)` ek thread banata hai; `postMessage` se data copy hoke jaata hai, `SharedArrayBuffer` se share hota hai. |
+| Kyun useful hai | Heavy sync computation ko main event loop se hataao — server responsive rehta hai, multi-core use hota hai. |
+| Interview trap | I/O ke liye workers mat lagao — wo pehle se async hai. Aur objects share nahi hote by default; `postMessage` ek structured-clone COPY hai, jo bade payloads pe mehenga hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: CPU-heavy kaam main thread pe — poora server freeze
+app.post("/report", (req, res) => {
+  const pdf = renderHugePdfSync(req.body); // 3s of pure CPU
+  res.send(pdf); // in 3s baaki saare requests, timers, health-check block
+});
+```
+
+```js
+// Sahi: worker pool pe offload — event loop free, dusre requests chalte rahein
+const Piscina = require("piscina");
+const pool = new Piscina({ filename: "./render-worker.js" });
+app.post("/report", async (req, res) => {
+  const pdf = await pool.run(req.body); // runs on another thread
+  res.send(pdf);
+});
+```
+
+**Ek line mein:** Worker threads CPU-bound JS ko alag OS thread (apna V8 isolate) pe chalate hain taaki main event loop block na ho — I/O ke liye nahi, sirf heavy computation ke liye.

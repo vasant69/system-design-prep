@@ -1,0 +1,119 @@
+---
+slug: "event-loop-phases"
+title: "The Event Loop Phases"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 1
+difficulty: "advanced"
+readingTime: 6
+prerequisites: []
+tags: ["nodejs", "event-loop", "libuv", "async", "phases", "microtasks"]
+englishDefinition: "Node's event loop runs each iteration through a fixed sequence of phases handled by libuv: timers, pending callbacks, poll, check, and close callbacks. Each phase has its own queue and the loop finishes one phase before moving to the next. Between every phase, and after each callback in modern Node, it drains the process.nextTick queue and then the Promise microtask queue. This ordering is what decides when setTimeout, setImmediate, and promise callbacks actually run."
+interviewFrequency: "very-high"
+companies: ["PhonePe", "Razorpay", "Flipkart", "Swiggy", "Groww"]
+---
+
+**The Event Loop Phases – Complete Summary**
+
+Node ka event loop ek hi thread pe chalta hai aur har chakkar (tick) mein fixed phases se guzarta hai: timers, pending callbacks, poll, check, aur close. Har phase ki apni callback queue hoti hai; loop ek phase ki queue nipta ke hi agle phase pe jaata hai. Har phase ke beech Node pehle poori `process.nextTick` queue, phir poori Promise microtask queue drain karta hai — isliye ye do queues kisi bhi timer ya `setImmediate` callback se pehle chalti hain. `setTimeout` timers phase mein aata hai, `setImmediate` check phase mein, aur file-read jaisa I/O poll phase mein. Ek phase ka slow sync callback poore loop ko rok deta hai, kyunki thread ek hi hai.
+
+## Visual
+
+```text
+        ONE EVENT LOOP TICK  (har phase ki apni queue)
+
+   ┌─▶  1. TIMERS         setTimeout / setInterval  (time pura ho chuka)
+   │       │
+   │       ▼
+   │    2. PENDING CB     kuchh deferred system I/O callbacks (e.g. TCP errors)
+   │       │
+   │       ▼
+   │    3. POLL           naye I/O events; fs.readFile / socket data callbacks;
+   │       │              kuchh na ho to yahin wait/block karta hai
+   │       ▼
+   │    4. CHECK          setImmediate callbacks
+   │       │
+   │       ▼
+   │    5. CLOSE CB       'close' events  (socket.on('close', ...))
+   │       │
+   └───────┘   loop wraps back to TIMERS
+
+   BETWEEN every phase  (aur Node 11+ mein har callback ke baad):
+   ┌───────────────────────────────────────────────┐
+   │  a) process.nextTick queue   ──▶ poori drain   │
+   │  b) Promise microtask queue  ──▶ poori drain   │
+   └───────────────────────────────────────────────┘
+   tabhi agla phase / agli callback shuru hoti hai
+```
+
+## Code
+
+```js
+// Har phase apni queue nipta ke agle phase pe jaata hai.
+// Microtasks (nextTick, promise) har phase ke beech chalte hain.
+const fs = require("fs");
+
+console.log("1: sync start");
+
+process.nextTick(() => console.log("2: nextTick - phases se pehle"));
+Promise.resolve().then(() => console.log("3: promise microtask - nextTick ke baad"));
+
+setTimeout(() => console.log("4: TIMERS phase"), 0);
+
+fs.readFile(__filename, () => {
+  // hum ab POLL phase ke andar hain
+  console.log("5: POLL phase - file read callback");
+
+  setTimeout(() => console.log("7: TIMERS phase (agla tick)"), 0);
+  setImmediate(() => console.log("6: CHECK phase - poll ke turant baad"));
+  // I/O callback ke andar: setImmediate hamesha setTimeout(0) se pehle
+});
+
+console.log("1b: sync end");
+
+// Output:
+// 1: sync start
+// 1b: sync end
+// 2: nextTick - phases se pehle
+// 3: promise microtask - nextTick ke baad
+// 4: TIMERS phase
+// 5: POLL phase - file read callback
+// 6: CHECK phase - poll ke turant baad
+// 7: TIMERS phase (agla tick)
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | libuv ka loop jo har tick mein fixed phases se guzarta hai: timers, pending callbacks, poll, check, close. |
+| Kab/kaise hota hai | Har phase apni queue nipta ke agle pe jaata hai; do phases ke beech `process.nextTick` phir Promise microtasks poore drain hote hain. |
+| Kyun useful hai | Isse pata chalta hai kaunsa callback pehle chalega — `setTimeout` vs `setImmediate` vs promise vs I/O — aur kyun ek slow phase baaki sab ko rok deta hai. |
+| Interview trap | Microtasks har phase ke beech chalte hain, sirf poore loop ke end pe nahi — Node 11+ mein har macrotask callback ke baad bhi. |
+
+## Wrong vs Right
+
+```js
+// Galat: setTimeout(fn, 0) ko "abhi turant chalega" samajhna
+const start = Date.now();
+setTimeout(() => console.log("fired after", Date.now() - start, "ms"), 0);
+for (let i = 0; i < 3e9; i++) {}   // ~3s sync CPU kaam - loop block
+// Output: fired after ~3000 ms
+// timers phase tab aata hai jab stack khali ho; "0" = jaldi se jaldi, "abhi" nahi
+```
+
+```js
+// Sahi: bhaari kaam ko chunks mein todo, har chunk ke baad loop ko control do
+const start = Date.now();
+setTimeout(() => console.log("fired after", Date.now() - start, "ms"), 0);
+
+let done = 0;
+function chunk() {
+  for (let i = 0; i < 5e6; i++) {}          // chhota tukda
+  if (++done < 200) setImmediate(chunk);    // loop ko saans lene do
+}
+setImmediate(chunk);
+// Output: fired after ~1-4 ms  (loop timers phase ko service kar paata hai)
+```
+
+**Ek line mein:** Node ka event loop har tick mein timers, pending, poll, check, close phases se guzarta hai, aur har phase ke beech `process.nextTick` phir promise microtasks drain hote hain — isliye har callback ka timing uske phase se decide hota hai.

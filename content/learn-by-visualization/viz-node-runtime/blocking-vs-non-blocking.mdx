@@ -1,0 +1,102 @@
+---
+slug: "blocking-vs-non-blocking"
+title: "Blocking vs Non-Blocking I/O"
+section: "learn-by-visualization"
+module: "viz-node-runtime"
+order: 7
+difficulty: "beginner"
+readingTime: 5
+prerequisites: []
+tags: ["nodejs", "blocking", "non-blocking", "async", "io", "fs"]
+englishDefinition: "A blocking call stops the single main thread until it finishes, so nothing else — no other request, timer, or callback — can run meanwhile. A non-blocking call starts the work, returns immediately, and delivers the result later via a callback or promise while the event loop keeps serving others. Node's *Sync suffixed APIs (readFileSync, execSync) block; the plain callback and promise versions do not. Sync is fine only at startup or in CLI scripts."
+interviewFrequency: "very-high"
+companies: ["TCS", "Infosys", "Wipro", "Freshworks", "Zoho"]
+---
+
+**Blocking vs Non-Blocking I/O – Complete Summary**
+
+Node ka JS ek thread pe chalta hai, isliye **blocking** call ka matlab: wo call jab tak khatam nahi hoti, main thread kuch aur nahi kar sakta — na koi doosri request, na timer, na callback. `fs.readFileSync('big.log')` disk se poori file padhte waqt sabko rok deta hai. **Non-blocking** call kaam **shuru** karti hai, turant return ho jaati hai, aur result baad mein callback ya promise se deti hai — is beech event loop baaki clients ko serve karta rehta hai. Node ke `*Sync` APIs (`readFileSync`, `execSync`, `crypto.*Sync`) block karti hain; plain callback aur `fs.promises` versions nahi. Sync sirf **startup pe** (config load) ya **CLI scripts** mein theek hai — request handlers mein kabhi nahi.
+
+## Visual
+
+```text
+   BLOCKING  (fs.readFileSync)                NON-BLOCKING  (fs.readFile)
+   ──────────────────────────                 ───────────────────────────
+   t0  req A -> readFileSync ─┐               t0  req A -> readFile(cb)  ── kicks off, returns
+       ▓▓▓▓▓ disk 40ms ▓▓▓▓▓  │  main thread  t0  req B -> handled now
+       (req B, C, timers wait)│  is FROZEN    t1  req C -> handled now
+   t1  req A done, res sent   ┘               t2  disk done -> A's cb queued -> res sent
+   t1  NOW req B starts...                    => A, B, C overlap; loop never idle-waits
+
+   Throughput under load:
+     Sync 40ms/op   -> ~25 requests/sec  (serialised, one at a time)
+     Async 40ms wait -> hundreds/sec     (waits overlap, CPU free between)
+
+   Safe to use Sync:  startup config, build scripts, one-shot CLI tools
+   Never use Sync in:  HTTP handlers, timers, anything on the hot path
+```
+
+## Code
+
+```js
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+
+// BLOCKING: nothing else in the process runs during the disk read
+function handleBlocking(req, res) {
+  const data = fs.readFileSync("./big.json", "utf8"); // main thread frozen here
+  res.end(data);
+}
+
+// NON-BLOCKING (callback): read is offloaded to libuv, thread stays free
+function handleCallback(req, res) {
+  fs.readFile("./big.json", "utf8", (err, data) => {
+    if (err) return res.statusCode = 500, res.end("error");
+    res.end(data); // runs later, when the disk result is ready
+  });
+  // function returns immediately; event loop serves other requests meanwhile
+}
+
+// NON-BLOCKING (promise): same thing, nicer syntax
+async function handlePromise(req, res) {
+  try {
+    res.end(await fsp.readFile("./big.json", "utf8"));
+  } catch {
+    res.statusCode = 500;
+    res.end("error");
+  }
+}
+
+// OK: blocking at startup, before the server accepts traffic
+const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Blocking = call khatam hone tak main thread rukta hai. Non-blocking = call turant return, result baad mein callback/promise se. |
+| Kab/kaise hota hai | `*Sync` APIs block karti hain (thread pe hi kaam). Async versions kaam libuv/OS ko dete hain aur callback ko event loop queue karta hai. |
+| Kyun useful hai | Non-blocking se ek thread par kai requests ke waits overlap ho jaate hain — throughput 10-100x, server responsive. |
+| Interview trap | Blocking call sirf us ek request ko slow nahi karta — poore server ko (saari requests, timers, health checks) us duration ke liye rok deta hai. `JSON.parse` bhi bade payload pe sync-block hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: har request pe readFileSync — server ek-ek karke serve karta hai
+app.get("/data", (req, res) => {
+  const rows = fs.readFileSync("./data.json", "utf8"); // 30ms disk, thread frozen
+  res.json(JSON.parse(rows));
+});
+// 100 concurrent clients => ~3s ka backlog, saare ek doosre ke peeche
+```
+
+```js
+// Sahi: async read — waits overlap, event loop free rehta hai
+app.get("/data", async (req, res) => {
+  const rows = await fs.promises.readFile("./data.json", "utf8");
+  res.json(JSON.parse(rows)); // (bahut bade file pe stream/worker use karo)
+});
+```
+
+**Ek line mein:** Blocking call Node ke single thread ko ruka deta hai taaki koi aur kaam na chale, jabki non-blocking call turant lautkar event loop ko doosre clients serve karne deti hai aur result baad mein callback/promise se aata hai.

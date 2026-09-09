@@ -1,0 +1,96 @@
+---
+slug: "module-wrapper-and-globals"
+title: "The Module Wrapper & Globals"
+section: "learn-by-visualization"
+module: "viz-node-runtime"
+order: 3
+difficulty: "beginner"
+readingTime: 5
+prerequisites: ["what-is-nodejs"]
+tags: ["nodejs", "commonjs", "module-wrapper", "require", "scope"]
+englishDefinition: "Before running a CommonJS file, Node wraps its entire source in a function that takes exports, require, module, __filename and __dirname as parameters. That is why those five identifiers appear to be globals in every file even though they are actually function arguments. It also means top-level var, let and function declarations are scoped to that wrapper, not to the real global object, so files do not leak variables into each other."
+interviewFrequency: "medium"
+companies: ["TCS", "Wipro", "HCL", "Freshworks", "Zomato"]
+---
+
+**The Module Wrapper & Globals – Complete Summary**
+
+Har CommonJS file run karne se pehle Node uske poore code ko ek function ke andar lapet deta hai jiske 5 parameters hote hain: `exports`, `require`, `module`, `__filename`, `__dirname`. Isi wajah se ye "globals" jaise dikhte hain — asal mein ye function arguments hain jo Node har file ke liye alag-alag pass karta hai. Side-effect: file ke top-level `var`/`let`/`function` us wrapper ke andar scoped hote hain, real global object pe nahi — isliye do files ek doosre ke variables nahi dekh sakti, aur naming clashes nahi hoti. Truly global sirf `global`/`globalThis` pe rakha hua hi hota hai.
+
+## Visual
+
+```text
+   You write  math.js:                Node runs this instead:
+
+   ┌───────────────────────┐   ──▶   (function (exports, require,
+   │ const PI = 3.14;      │                  module, __filename, __dirname) {
+   │ function area(r) {    │            const PI = 3.14;
+   │   return PI * r * r;  │            function area(r) {
+   │ }                     │              return PI * r * r;
+   │ module.exports = area;│            }
+   └───────────────────────┘            module.exports = area;
+                                     }).call(thisArg, module.exports,
+                                             require, module,
+                                             "/app/math.js", "/app");
+
+   so inside every file:
+     exports  ─── shortcut, starts as ──▶ module.exports  (same object)
+     require  ─── this file's loader (resolves relative to __dirname)
+     module   ─── { id, exports, loaded, parent, children, path }
+     __filename / __dirname ─── absolute path of THIS file / its folder
+
+   PI, area  ──▶ trapped inside the wrapper  (NOT on global)
+```
+
+## Code
+
+```js
+// Proof that the "globals" are really wrapper parameters:
+console.log(typeof require);   // "function"
+console.log(typeof module);    // "object"
+console.log(__filename);       // /abs/path/to/this-file.js
+console.log(__dirname);        // /abs/path/to
+
+// exports is just a reference to module.exports (same object at start):
+console.log(exports === module.exports); // true
+
+// Top-level vars are module-scoped, NOT global:
+var secret = 42;
+console.log(global.secret); // undefined  <- it's on the wrapper, not global
+
+// The wrapper source itself is inspectable:
+console.log(require("node:module").wrapper[0]);
+// (function (exports, require, module, __filename, __dirname) {
+
+// This is why `exports = something` breaks the export but
+// `module.exports = something` works — see Wrong vs Right below.
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Node har CJS file ko ek function `(exports, require, module, __filename, __dirname) { ... }` mein wrap karke chalata hai. |
+| Kab/kaise hota hai | Compile se pehle Node source string ke aage-peeche wrapper jod deta hai, phir us function ko per-file arguments ke saath call karta hai. |
+| Kyun useful hai | Har file ka apna private scope; `require`/`module` deta hai bina real globals banaye; top-level vars leak nahi karte. |
+| Interview trap | `exports = fn` kaam nahi karta — wo sirf local parameter reassign karta hai. `module.exports = fn` chahiye. |
+
+## Wrong vs Right
+
+```js
+// Galat: pura export replace karne ke liye `exports` ko reassign karna
+exports = function add(a, b) { return a + b; };
+// require("./add") -> {}   (module.exports abhi bhi original {} hai;
+// tumne sirf local `exports` parameter ko naye fn pe point kiya)
+```
+
+```js
+// Sahi: module.exports set karo (ya exports pe property add karo)
+module.exports = function add(a, b) { return a + b; };
+// require("./add") -> [Function: add]   ✓
+
+// property-style bhi theek hai:
+exports.subtract = (a, b) => a - b; // module.exports.subtract set hota hai
+```
+
+**Ek line mein:** Node har file ko ek 5-argument wrapper function mein lapet deta hai, isliye `require`/`module`/`__dirname` "globals" lagte hain aur tumhare top-level variables kabhi doosri file mein leak nahi hote.

@@ -1,0 +1,96 @@
+---
+slug: "single-threaded-model"
+title: "The Single-Threaded Model"
+section: "learn-by-visualization"
+module: "viz-node-runtime"
+order: 6
+difficulty: "intermediate"
+readingTime: 6
+prerequisites: []
+tags: ["nodejs", "single-threaded", "event-loop", "concurrency", "libuv"]
+englishDefinition: "Node runs your JavaScript on a single main thread with one event loop, so two lines of your code never execute in parallel. Concurrency comes from not waiting: slow I/O is handed to the OS or libuv's thread pool, the main thread moves on, and a callback runs later when the result is ready. This scales to thousands of connections cheaply, but a CPU-heavy function blocks everything until it finishes."
+interviewFrequency: "very-high"
+companies: ["Swiggy", "Zomato", "PhonePe", "Razorpay", "Cognizant"]
+---
+
+**The Single-Threaded Model – Complete Summary**
+
+Tumhara JavaScript **ek hi main thread** pe chalta hai, ek event loop ke saath — do JS statements kabhi truly parallel nahi chalti. Phir Node hazaaron connections kaise sambhalta hai? **Wait na karke.** Jab `db.query()` ya `fs.readFile()` hota hai, wo kaam OS ya libuv ke **thread pool** (default 4) ko de diya jaata hai; main thread turant free hokar agla event handle karta hai; result ready hone pe uska **callback** queue hota hai aur loop use uthata hai. "Waiting" free hai, isliye ek thread bhi kaafi hai — thread-per-request model ke bina. Catch: agar koi callback **CPU-heavy** kaam kare (bada `JSON.parse`, sync hashing, image resize), to poora loop ruk jaata hai — us case mein `worker_threads` ya offload chahiye.
+
+## Visual
+
+```text
+   Thread-per-request server           Node single-threaded event loop
+   ─────────────────────────           ──────────────────────────────
+   req1 -> thread1 (waits on DB)       req1 -> start DB call ─┐  main thread
+   req2 -> thread2 (waits on DB)       req2 -> start DB call ─┤  never blocks
+   req3 -> thread3 (waits on DB)       req3 -> start DB call ─┘  on the wait
+   ...10k reqs = 10k threads           main loop: handle whatever is READY
+   (RAM + context-switch cost)              DB done -> callback queued -> run
+
+   THE ONE RULE:
+     main thread doing async I/O   ──▶  scales, stays responsive
+     main thread doing CPU work    ──▶  everything else FREEZES until done
+                                        (timers, other requests, health checks)
+
+   Other threads DO exist in the process (you don't schedule them):
+     libuv thread pool (4)  -> fs, crypto pbkdf2/scrypt, zlib, dns.lookup
+     + V8 GC / compiler threads
+```
+
+## Code
+
+```js
+const http = require("node:http");
+const crypto = require("node:crypto");
+
+http
+  .createServer((req, res) => {
+    if (req.url === "/fast") {
+      // Async I/O: main thread starts it and moves on immediately
+      setTimeout(() => res.end("fast done"), 50);
+      return;
+    }
+    if (req.url === "/blocking") {
+      // CPU-bound + SYNC: this runs ON the main thread.
+      // For ~1-2s, NO other request, timer, or callback can run.
+      const hash = crypto.pbkdf2Sync("pw", "salt", 1_000_000, 64, "sha512");
+      res.end(hash.toString("hex"));
+    }
+  })
+  .listen(3000);
+
+// While /blocking is crunching, requests to /fast just sit and wait.
+// Fix: crypto.pbkdf2 (async -> libuv pool) OR a worker thread.
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Ek main thread + ek event loop tumhara saara JS chalata hai; parallelism I/O ko OS/libuv ko dene se aata hai, JS ke parallel run se nahi. |
+| Kab/kaise hota hai | Async call -> OS/thread-pool ko offload -> main thread aage badhta hai -> result par callback queue -> event loop use run karta hai. |
+| Kyun useful hai | No thread-per-connection: kam RAM, no lock/race bugs in your code, ek process hazaaron idle-ish connections handle karta hai. |
+| Interview trap | "Node multithreaded hai" ya "Node single-threaded hai" dono adhoore — sahi: **JS single-threaded, I/O offloaded**. Aur ek CPU-heavy sync function poore server ko block kar deta hai, sirf us ek request ko nahi. |
+
+## Wrong vs Right
+
+```js
+// Galat: request handler mein CPU-heavy sync kaam — poora event loop stall
+app.get("/report", (req, res) => {
+  const rows = parseHugeCsvSync(req.query.file); // 800ms pure CPU
+  res.json(summarize(rows));
+  // In 800ms: koi doosri request, koi setInterval, koi health check nahi chala
+});
+```
+
+```js
+// Sahi: CPU work ko worker thread pe bhejo; main thread orchestrate karta rahe
+const pool = new (require("piscina"))({ filename: "./csv-worker.js" });
+app.get("/report", async (req, res) => {
+  const summary = await pool.run({ file: req.query.file }); // another core
+  res.json(summary); // event loop free rehta hai poore time
+});
+```
+
+**Ek line mein:** Node ka JavaScript ek single thread pe chalta hai aur concurrency slow I/O ko OS/libuv ko offload karke deta hai — isliye ek CPU-bound sync function poore server ko rok deta hai jab tak khatam na ho.

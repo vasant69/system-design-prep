@@ -1,0 +1,100 @@
+---
+slug: "streams"
+title: "Streams (Readable, Writable, Transform)"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 4
+difficulty: "intermediate"
+readingTime: 6
+prerequisites: ["buffers"]
+tags: ["nodejs", "streams", "readable", "writable", "transform", "memory"]
+englishDefinition: "Streams process data in small chunks over time instead of loading everything into memory at once. Node has four base types: Readable (a source you read chunks from), Writable (a sink you write chunks to), Duplex (both), and Transform (a Duplex that maps input chunks to output chunks, like gzip). They are EventEmitters that emit data, end, and error, and they keep memory flat regardless of total data size."
+interviewFrequency: "high"
+companies: ["Infosys", "Freshworks", "Zomato", "PhonePe", "HCL"]
+---
+
+**Streams (Readable, Writable, Transform) – Complete Summary**
+
+Stream data ko time ke saath chhote chunks mein process karta hai — poori file ya response memory mein load karne ke bajaye. Chaar base types: **Readable** (source — file, HTTP request, socket), **Writable** (sink — file, HTTP response), **Duplex** (dono, jaise TCP socket), aur **Transform** (Duplex jo har input chunk ko output chunk mein badalta hai — gzip, encrypt, CSV-parse). Sab EventEmitter hain: `data` (naya chunk), `end` (source khatam), `error`. Memory constant rehti hai chahe 10 KB ho ya 10 GB, aur processing pehle chunk se hi shuru ho jaati hai. `objectMode: true` se chunks Buffer ke bajaye koi bhi JS value ho sakte hain.
+
+## Visual
+
+```text
+   WITHOUT streams:  read WHOLE 2 GB file -> RAM -> write             crash risk
+   ┌──────────────────────── 2 GB resident in memory ─────────────────────────┐
+
+   WITH streams:  ~64 KB chunk at a time, memory stays flat            safe
+
+   Readable              Transform              Writable
+   (source)              (map each chunk)       (sink)
+   ┌─────────┐  chunk    ┌───────────┐  chunk   ┌─────────┐
+   │  file   │ ────────▶ │   gzip    │ ────────▶│  file   │
+   │ .read() │  64 KB    │_transform │  ~20 KB  │ .write()│
+   └─────────┘           └───────────┘          └─────────┘
+      │  emits:  'data' (per chunk)  ▸  'end' (done)  ▸  'error' (any stage)
+      │
+   modes:  binary      -> chunk is a Buffer
+           objectMode  -> chunk is any JS value:  { id: 1 }, { id: 2 }, ...
+
+   RAM:  streaming ▁▁▁▁▁▁▁▁▁▁ flat      buffer-everything ▁▃▅▇█▇▅ then OOM
+```
+
+## Code
+
+```js
+const fs = require("node:fs");
+const { Transform } = require("node:stream");
+
+// Readable: the source — 64 KB chunks, never the whole file at once
+const src = fs.createReadStream("big.log"); // emits Buffer chunks
+
+// Transform: map every chunk (here: uppercase the text)
+const shout = new Transform({
+  transform(chunk, _enc, done) {
+    this.push(chunk.toString("utf8").toUpperCase()); // push an output chunk
+    done(); // signal "ready for the next input chunk"
+  },
+});
+
+// Writable: the sink
+const dest = fs.createWriteStream("big.LOUD.log");
+
+src.on("error", (e) => console.error("read failed", e));
+src.pipe(shout).pipe(dest);
+dest.on("finish", () => console.log("done — memory stayed flat"));
+
+// Manual consumption instead of pipe:
+// src.on("data", (chunk) => console.log("got", chunk.length, "bytes"));
+// src.on("end", () => console.log("no more data"));
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Data ko chunks mein process karne ka abstraction: Readable, Writable, Duplex, Transform. |
+| Kab/kaise hota hai | Source `data` events emit karta hai (Buffer ya object chunks), `end` pe khatam; Transform beech mein har chunk map karta hai. |
+| Kyun useful hai | Memory flat rehti hai chahe data kitna bhi bada ho; pehle chunk se hi kaam shuru, poore payload ka wait nahi. |
+| Interview trap | `data` listener lagate hi Readable "flowing" mode mein aa jaata hai; slow consumer pe backpressure `pipe`/`pipeline` handle karte hain, manual `on('data')` nahi. |
+
+## Wrong vs Right
+
+```js
+// Galat: poori file memory mein — bade file pe process OOM crash
+const fs = require("node:fs");
+const data = fs.readFileSync("500mb.csv", "utf8"); // 500 MB RAM spike + blocks loop
+const rows = data.split("\n").map(parseRow);
+fs.writeFileSync("out.json", JSON.stringify(rows));
+```
+
+```js
+// Sahi: stream + transform — constant memory, koi bhi input size
+const { pipeline } = require("node:stream/promises");
+await pipeline(
+  fs.createReadStream("500mb.csv"),
+  parseCsvToJsonLines(), // Transform, ek row at a time
+  fs.createWriteStream("out.jsonl"),
+);
+```
+
+**Ek line mein:** Stream data ko chunk-by-chunk bahaata hai taaki memory input-size se independent rahe — Readable source deta hai, Writable consume karta hai, Transform beech mein badalta hai.

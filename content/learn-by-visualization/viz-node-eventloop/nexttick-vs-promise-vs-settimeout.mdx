@@ -1,0 +1,120 @@
+---
+slug: "nexttick-vs-promise-vs-settimeout"
+title: "nextTick vs Promise vs setTimeout"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 3
+difficulty: "advanced"
+readingTime: 5
+prerequisites: ["event-loop-phases"]
+tags: ["nodejs", "event-loop", "process-nexttick", "promises", "microtasks", "settimeout"]
+englishDefinition: "When the call stack empties, Node runs pending work in a strict priority order: first the entire process.nextTick queue, then the entire Promise microtask queue, and only then does the event loop move on to macrotasks such as setTimeout and setImmediate. Both microtask queues also refill and re-drain, so scheduling more nextTicks from inside a nextTick keeps delaying the loop. This ordering is the single most common Node interview output puzzle."
+interviewFrequency: "very-high"
+companies: ["Flipkart", "PhonePe", "Swiggy", "Razorpay", "Meesho"]
+---
+
+**nextTick vs Promise vs setTimeout – Complete Summary**
+
+Jab stack khali hota hai, Node ek strict priority order follow karta hai. Pehle poori `process.nextTick` queue chalti hai (isme jo naye nextTick add hote hain wo bhi isi baari mein), phir poori Promise microtask queue (`.then`, `await` continuation, `queueMicrotask`), aur uske baad hi event loop macrotasks pe jaata hai — `setTimeout`, `setInterval`, `setImmediate`, I/O. Matlab: sync code, phir nextTick, phir promise, phir timer. Agar recursion se nextTick ya promise queue kabhi khali na ho, to loop I/O tak pahunch hi nahi paata — is starvation ki wajah se nextTick recursion khatarnak hai.
+
+## Visual
+
+```text
+   STACK khali hote hi, is priority order mein:
+
+   ┌────────────────────────────────────────────────────────┐
+   │ LANE 1  process.nextTick queue      (highest priority)  │
+   │         ──▶ poori drain, refills included               │
+   ├────────────────────────────────────────────────────────┤
+   │ LANE 2  Promise microtask queue                         │
+   │         .then / await / queueMicrotask ──▶ poori drain  │
+   ├────────────────────────────────────────────────────────┤
+   │ LANE 3  Macrotasks: timers (setTimeout), check          │
+   │         (setImmediate), poll I/O ──▶ ek baari mein 1    │
+   └────────────────────────────────────────────────────────┘
+        then loop wraps: LANE 1 & LANE 2 phir se drain
+
+   EXAMPLE
+   ───────
+   console.log("A")                        // sync
+   setTimeout(() => log("B"), 0)           // LANE 3
+   Promise.resolve().then(() => log("C"))  // LANE 2
+   process.nextTick(() => log("D"))        // LANE 1
+   console.log("E")                        // sync
+
+   PRINT:  A  E  D  C  B
+           └sync┘ │  │  └ timer (macrotask)
+                  │  └ promise microtask
+                  └ nextTick (promise se bhi pehle)
+```
+
+## Code
+
+```js
+// Priority order ka full demo - output neeche comments mein exact
+console.log("1 sync");
+
+setTimeout(() => console.log("2 setTimeout(0)"), 0);
+
+Promise.resolve().then(() => {
+  console.log("3 promise.then");
+  process.nextTick(() => console.log("4 nextTick inside promise"));
+});
+
+process.nextTick(() => {
+  console.log("5 nextTick");
+  Promise.resolve().then(() => console.log("6 promise inside nextTick"));
+});
+
+queueMicrotask(() => console.log("7 queueMicrotask"));
+
+console.log("8 sync end");
+
+// Output:
+// 1 sync
+// 8 sync end
+// 5 nextTick                  <- LANE 1: nextTick queue pehle, poori
+// 3 promise.then              <- LANE 2: promise microtask queue
+// 7 queueMicrotask            <- LANE 2: same queue as .then
+// 6 promise inside nextTick   <- LANE 2: isi drain mein add hua
+// 4 nextTick inside promise   <- LANE 1 refill: promise drain ke baad dobara
+// 2 setTimeout(0)             <- LANE 3: macrotask, sabse aakhir
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Stack khali hone pe kaam ka fixed priority: nextTick queue, phir promise microtasks, phir macrotasks (timers/immediate/I-O). |
+| Kab/kaise hota hai | nextTick aur promise queues har baari poori drain hoti hain (refills samet); macrotask ek baari mein sirf ek chalta hai. |
+| Kyun useful hai | Output predict kar sakte ho; jaante ho ki `await` ke baad ka code kisi bhi `setTimeout` se pehle chalega. |
+| Interview trap | `process.nextTick` promise `.then` se bhi pehle chalti hai — dono microtask jaise lagte hain, par nextTick ki priority upar hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: nextTick ko "thoda baad mein chala" samajh ke recursion mein use karna
+let n = 0;
+function loop() {
+  if (n++ > 1e6) return;
+  process.nextTick(loop); // har call se nextTick queue phir bhar jaati hai
+}
+loop();
+setTimeout(() => console.log("timer"), 0);
+// Output: "timer" bahut der baad / kabhi nahi - nextTick queue khali hi nahi hoti,
+// event loop timers phase tak pahunch hi nahi paata (I/O starvation)
+```
+
+```js
+// Sahi: yield karna hai to setImmediate - har iteration loop ko saans deta hai
+let n = 0;
+function loop() {
+  if (n++ > 1e6) return;
+  setImmediate(loop); // check phase - har tick ke baad loop aage badhta hai
+}
+loop();
+setTimeout(() => console.log("timer"), 0);
+// Output: "timer" jaldi print hota hai - loop timers/poll ko service karta rehta hai
+```
+
+**Ek line mein:** Priority hamesha yeh hai — sync code, phir `process.nextTick`, phir Promise microtasks, phir `setTimeout`/`setImmediate` jaise macrotasks — aur pehli do queues poori drain hoti hain isliye unme recursion baaki sab ko rok sakta hai.

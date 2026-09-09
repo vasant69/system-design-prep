@@ -1,0 +1,90 @@
+---
+slug: "npm-and-package-json"
+title: "npm, package.json & semver"
+section: "learn-by-visualization"
+module: "viz-node-streams"
+order: 1
+difficulty: "beginner"
+readingTime: 5
+prerequisites: []
+tags: ["nodejs", "npm", "package-json", "semver", "dependencies", "npm-ci"]
+englishDefinition: "npm is Node's package manager. package.json is the project manifest that declares scripts and dependency version ranges using semver. package-lock.json records the exact resolved tree so installs are reproducible. npm install reads the manifest and may update the lockfile, while npm ci wipes node_modules and installs strictly from the lockfile, which is what CI should use."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Razorpay", "Freshworks", "Cognizant"]
+---
+
+**npm, package.json & semver – Complete Summary**
+
+`package.json` project ka manifest hai — naam, version, `scripts`, aur do dependency buckets: `dependencies` (runtime pe chahiye) aur `devDependencies` (sirf build/test/lint time). Version ke aage semver range likhte ho: `^1.4.2` matlab "same major, koi bhi newer minor/patch", `~1.4.2` matlab "same minor, patch update OK", aur plain `1.4.2` matlab exact pin. `npm install` range solve karke actual versions `package-lock.json` mein likhta hai — wahi lockfile poori nested tree ko byte-exact reproduce karta hai. `npm ci` `node_modules` delete karke sirf lockfile se install karta hai (fast, deterministic) — CI/CD mein isko use karo, `npm install` ko nahi. `npx` ek package ko bina permanently install kiye ek baar run karta hai.
+
+## Visual
+
+```text
+   package.json                package-lock.json           node_modules/
+   (what you WANT)              (what you GOT, exact)       (actual files)
+   ┌────────────────────┐      ┌──────────────────────┐    ┌───────────────┐
+   │ "express": "^4.18" │──┐   │ express 4.19.0       │    │ express/      │
+   │ "lodash":  "~4.17" │  │   │  └ body-parser 1.20  │───▶│ lodash/       │
+   │ devDeps:           │  │   │ lodash  4.17.21      │    │ body-parser/  │
+   │   "jest": "^29"    │  │   │ jest    29.7.0       │    │ jest/  ...    │
+   └────────────────────┘  │   └──────────────────────┘    └───────────────┘
+                           │
+        npm install  ──────┘  range ─▶ resolve newest match ─▶ WRITE lock
+        npm ci       ─────────────────▶ read lock ONLY ─▶ exact tree, always
+
+   semver   MAJOR . MINOR . PATCH
+            ^1.4.2  ▶  from 1.4.2 up to (not incl) 2.0.0   minor+patch float
+            ~1.4.2  ▶  from 1.4.2 up to (not incl) 1.5.0   patch only
+             1.4.2  ▶  exactly 1.4.2, nothing floats
+```
+
+## Code
+
+```js
+// How a semver RANGE decides which published version you actually get.
+// Pretend the registry has: 4.17.1, 4.18.0, 4.18.2, 4.19.0, 5.0.0
+const semver = require("semver"); // npm ships this; `npm i semver` to try locally
+
+const available = ["4.17.1", "4.18.0", "4.18.2", "4.19.0", "5.0.0"];
+
+// "^4.18.2" -> newest that keeps the same MAJOR (4)
+console.log(semver.maxSatisfying(available, "^4.18.2")); // "4.19.0"
+
+// "~4.18.2" -> newest that keeps the same MINOR (4.18)
+console.log(semver.maxSatisfying(available, "~4.18.2")); // "4.18.2"
+
+// "4.18.2" -> exact pin, nothing floats
+console.log(semver.maxSatisfying(available, "4.18.2")); // "4.18.2"
+
+// This resolution runs on `npm install` and the winner is frozen into
+// package-lock.json. `npm ci` skips resolution and installs the lock
+// verbatim -> every machine and CI run gets the identical tree.
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | `package.json` = manifest (scripts + dependency ranges); `package-lock.json` = exact resolved tree; npm = the installer. |
+| Kab/kaise hota hai | `npm install` ranges resolve karke lockfile likhta/update karta hai; `npm ci` `node_modules` wipe karke sirf lockfile se install karta hai. |
+| Kyun useful hai | Semver ranges se safe auto-updates milte hain; lockfile se har machine aur CI pe byte-exact same tree — "works on my machine" bug khatam. |
+| Interview trap | `^0.2.3` sirf `>=0.2.3 <0.3.0` allow karta hai — `0.x` versions mein har minor bump breaking maana jaata hai, isliye `0.3.0` install nahi hoga. |
+
+## Wrong vs Right
+
+```js
+// Galat: CI pipeline mein `npm install` — lockfile silently update ho sakta hai
+// package.json: "axios": "^1.6.0"
+// npm install  -> aaj 1.6.2 resolve hua, kal koi maintainer 1.7.0 publish karta hai
+//              -> CI ab untested transitive code khinch laata hai, build flaky
+```
+
+```js
+// Sahi: CI mein `npm ci` — sirf package-lock.json se, exact versions, har baar same
+// npm ci
+//  - node_modules delete karke fresh install
+//  - agar package.json aur lockfile mismatch karein to turant fail (no silent drift)
+//  - koi range resolution nahi -> fully reproducible build
+```
+
+**Ek line mein:** `package.json` batata hai tum kaunsi version *range* chahte ho aur `package-lock.json` batata hai actually kaunsi versions install hui — CI mein `npm ci` se hamesha wahi lockfile-wali exact tree milti hai.

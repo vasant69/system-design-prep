@@ -1,0 +1,109 @@
+---
+slug: "process-nexttick"
+title: "process.nextTick"
+section: "learn-by-visualization"
+module: "viz-node-eventloop"
+order: 5
+difficulty: "intermediate"
+readingTime: 4
+prerequisites: ["event-loop-phases"]
+tags: ["nodejs", "event-loop", "process-nexttick", "microtasks", "async"]
+englishDefinition: "process.nextTick(cb) schedules cb to run immediately after the current operation finishes, before the event loop continues to its next phase and before any Promise microtasks. It is not technically part of the event loop but a separate queue drained after every operation. It is useful for deferring work to just after the current function returns, and dangerous in recursion because an always-full nextTick queue starves I/O and timers."
+interviewFrequency: "medium"
+companies: ["Razorpay", "PhonePe", "Dream11", "Zoho", "Chargebee"]
+---
+
+**process.nextTick – Complete Summary**
+
+`process.nextTick(cb)` `cb` ko current operation khatam hote hi chala deta hai — event loop ke agle phase pe jaane se pehle, aur Promise microtasks se bhi pehle. Technically ye event loop ka hissa nahi; ye ek alag queue hai jo har operation ke baad drain hoti hai. Use tab karo jab function ko pehle return karne dena ho phir callback fire karna ho (consistent async behaviour), ya caller ko event listeners attach karne ka mauka dena ho. Khatra: recursion mein `nextTick` se `nextTick` call karte raho to queue kabhi khali nahi hoti aur I/O, timers — sab bhookhe reh jaate hain.
+
+## Visual
+
+```text
+   CURRENT OPERATION  (jo function abhi chal raha hai)
+   ──────────────────────────────────────────────────
+      doStuff();
+      process.nextTick(cb);   ── cb ko queue kiya
+      more();                 ── ye pehle chalega (sync)
+   ── function return ──┐
+                        ▼
+   ┌───────────────────────────────────┐
+   │ process.nextTick queue  ──▶ DRAIN │  ◀── yahan cb chalta hai
+   │ (jo naye add hue wo bhi)          │
+   └───────────────┬───────────────────┘
+                   ▼
+   ┌───────────────────────────────────┐
+   │ Promise microtask queue ──▶ DRAIN │
+   └───────────────┬───────────────────┘
+                   ▼
+        event loop ka agla phase (timers / poll / check ...)
+
+   PRIORITY:  sync  ▶  nextTick  ▶  promise.then  ▶  setTimeout / I/O
+```
+
+## Code
+
+```js
+// nextTick current operation ke turant baad, promise se bhi pehle chalti hai
+console.log("A: start");
+
+Promise.resolve().then(() => console.log("B: promise.then"));
+process.nextTick(() => console.log("C: nextTick"));
+setTimeout(() => console.log("D: setTimeout"), 0);
+
+console.log("E: end");
+
+// Output:
+// A: start
+// E: end
+// C: nextTick        <- current operation ke baad, sabse pehle
+// B: promise.then    <- phir promise microtasks
+// D: setTimeout      <- phir event loop phases
+
+// Classic use: callback ko HAMESHA async banao (kabhi sync kabhi async = bug)
+const cache = { port: 3000 };
+function getConfig(cb) {
+  // bina nextTick ke: cache-hit pe cb sync chalta, miss pe async -> inconsistent
+  process.nextTick(cb, null, cache); // ab hamesha caller ke return ke baad
+}
+getConfig((err, cfg) => console.log("F: config", cfg.port));
+console.log("G: after getConfig call"); // "G" print hoga "F" se pehle
+// ...
+// G: after getConfig call
+// F: config 3000
+```
+
+## Point vs Short baat
+
+| Point | Short baat |
+|---|---|
+| Kya hai | Ek queue jo current operation ke turant baad chalti hai — event loop ke phases aur Promise microtasks se bhi pehle. |
+| Kab/kaise hota hai | `process.nextTick(cb)` call karo; `cb` tab chalega jab abhi wala JS stack khali ho, agla phase shuru hone se pehle. |
+| Kyun useful hai | Callback ko consistently async banane, ya caller ko listeners lagane ka mauka dene ke liye defer karna. |
+| Interview trap | Recursive `process.nextTick` event loop ko starve karta hai — `setImmediate` recursion nahi karta kyunki wo har tick loop ko chhod deta hai. |
+
+## Wrong vs Right
+
+```js
+// Galat: bhaari kaam ko "background" mein karne ke liye nextTick recursion
+let items = veryLongArray;
+function work() {
+  if (!items.length) return;
+  processOne(items.shift());
+  process.nextTick(work); // I/O, timers - sab block, queue khali hi nahi hoti
+}
+work();
+```
+
+```js
+// Sahi: setImmediate se yield karo - har chunk ke baad loop saans le
+let items = veryLongArray;
+function work() {
+  if (!items.length) return;
+  processOne(items.shift());
+  setImmediate(work); // check phase - beech mein timers/poll/I-O service hote hain
+}
+work();
+```
+
+**Ek line mein:** `process.nextTick` current operation ke turant baad, Promise microtasks aur har event-loop phase se pehle chalta hai — deferring ke liye badhiya, recursion ke liye zeher.

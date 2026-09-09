@@ -633,6 +633,58 @@ export const sectionsConfig: SectionConfig[] = [
     ],
   },
   {
+    slug: "learn-by-visualization",
+    title: "Learn by Visualization",
+    description:
+      "JavaScript and Node.js taught as pictures — an ASCII diagram, one commented code sample, a Point/Short baat table, and a wrong-vs-right snippet for every concept. Built for night-before-interview fast revision, in Hinglish.",
+    icon: "Eye",
+    enabled: true,
+    modules: [
+      {
+        id: "viz-js-core",
+        title: "JavaScript Core, Visualized",
+        description:
+          "The engine-level ideas everything else rests on, drawn out step by step: var/let/const, hoisting and the TDZ, scope chain, closures, value vs reference, coercion, this, and the prototype chain.",
+        order: 1,
+      },
+      {
+        id: "viz-js-functions",
+        title: "Functions, Objects & Arrays, Visualized",
+        description:
+          "Functions as values and the data you push through them: arrow vs regular, call/apply/bind, higher-order functions, currying, map/filter/reduce, destructuring/spread/rest, and shallow vs deep copy.",
+        order: 2,
+      },
+      {
+        id: "viz-js-async",
+        title: "Async JavaScript, Visualized",
+        description:
+          "How non-blocking JavaScript actually runs: sync vs async, callbacks and callback hell, promises, async/await, the promise combinators, the event loop with its task queues, and debounce vs throttle.",
+        order: 3,
+      },
+      {
+        id: "viz-node-runtime",
+        title: "Node.js Runtime, Visualized",
+        description:
+          "What Node is and how it runs your file: V8 + libuv, Node vs browser, the module wrapper and globals, process and env vars, CommonJS vs ESM, the single-threaded model, and blocking vs non-blocking I/O.",
+        order: 4,
+      },
+      {
+        id: "viz-node-eventloop",
+        title: "Node Event Loop & Async, Visualized",
+        description:
+          "The most-asked Node topic, phase by phase: the event loop phases, libuv's thread pool, nextTick vs promise vs setTimeout ordering, setTimeout vs setImmediate, error-first callbacks, util.promisify, and async error handling.",
+        order: 5,
+      },
+      {
+        id: "viz-node-streams",
+        title: "Modules, Streams & Scaling, Visualized",
+        description:
+          "The daily-driver APIs, pictured: npm and package.json, EventEmitter, buffers, readable/writable/transform streams, pipe and backpressure, worker threads, and cluster vs child_process.",
+        order: 6,
+      },
+    ],
+  },
+  {
     slug: "angular-practical",
     title: "Angular Practical",
     description:
