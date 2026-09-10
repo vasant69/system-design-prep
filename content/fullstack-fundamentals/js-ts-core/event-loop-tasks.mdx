@@ -1,0 +1,139 @@
+---
+slug: "event-loop-tasks"
+title: "Event Loop, Call Stack & Microtasks vs Macrotasks"
+section: "fullstack-fundamentals"
+module: "js-ts-core"
+order: 5
+difficulty: "advanced"
+readingTime: 9
+prerequisites: []
+tags: ["javascript", "event-loop", "microtasks", "concurrency"]
+englishDefinition: "JavaScript runs on a single thread with one call stack. The event loop is the mechanism that, whenever the stack is empty, pulls the next queued callback and runs it. Promise callbacks go on a high-priority microtask queue that is fully drained after each task, before timers and I/O callbacks on the macrotask queue."
+interviewFrequency: "very-high"
+companies: ["Postman", "Zoho", "Freshworks", "TCS"]
+---
+
+## 1. Concept Overview
+
+Ek thread, ek **call stack**. Function call ek frame push karta hai; return use pop karta hai. Jab tak ek frame stack par hai, aur kuch nahi chalta — JavaScript khud ko interrupt nahi karta.
+
+Async work (timer fire hona, ek HTTP response, ek click) turant nahi chalta. Uska callback ek queue par rakha jaata hai, aur **event loop** use stack par tabhi le jaata hai jab stack khaali ho.
+
+Do queue tiers hain:
+
+- **Macrotask queue** (task queue) — `setTimeout`, `setInterval`, `setImmediate` (Node), I/O, UI events, `MessageChannel`.
+- **Microtask queue** — `Promise.then/catch/finally` callbacks, `queueMicrotask`, `await` continuations, `MutationObserver`.
+
+Rule: har **ek** macrotask ke baad, loop **poori microtask queue drain** karta hai (un microtasks ko bhi jo un microtasks ne queue kiye) agla macrotask lene ya render karne se pehle. Isliye promises hamesha `setTimeout(…, 0)` se jeet jaate hain.
+
+## 2. Core Syntax
+
+```js
+console.log('1: sync');
+
+setTimeout(() => console.log('2: macrotask'), 0);
+
+Promise.resolve().then(() => console.log('3: microtask'));
+
+queueMicrotask(() => console.log('4: microtask'));
+
+console.log('5: sync');
+
+// Output order:
+// 1: sync
+// 5: sync
+// 3: microtask
+// 4: microtask
+// 2: macrotask
+```
+
+```js
+// await splits a function: everything after await is a microtask continuation
+async function run() {
+  console.log('a');
+  await null;                 // pause; schedule the rest as a microtask
+  console.log('c');           // runs after current sync code + earlier microtasks
+}
+console.log('start');
+run();
+console.log('b');
+// start, a, b, c
+```
+
+```js
+// microtasks queued during draining still run before the next macrotask
+Promise.resolve().then(() => {
+  console.log('m1');
+  Promise.resolve().then(() => console.log('m2 (queued during drain)'));
+});
+setTimeout(() => console.log('timeout'), 0);
+// m1, m2 (queued during drain), timeout
+```
+
+## 3. Working Example
+
+Predict-the-order, interview ka staple.
+
+```js
+console.log('A');
+
+setTimeout(() => console.log('B'), 0);
+
+Promise.resolve()
+  .then(() => console.log('C'))
+  .then(() => console.log('D'));
+
+(async () => {
+  console.log('E');
+  await Promise.resolve();
+  console.log('F');
+})();
+
+queueMicrotask(() => console.log('G'));
+
+console.log('H');
+```
+
+Walk-through:
+
+1. Sync run: `A`, phir timeout(`B`) schedule, phir `.then(C)` microtask queue, phir IIFE `E` log karke `F` microtask schedule, phir `G` microtask queue, phir `H`.
+2. Sync done -> microtasks FIFO order me drain: `C` (uska `.then(D)` ab `D` queue karta hai), `F`, `G`, phir `D`.
+3. Microtasks empty -> agla macrotask: `B`.
+
+**Output: `A E H C F G D B`.**
+
+## 4. Common Mistakes / Interview Traps
+
+- **"`setTimeout(fn, 0)` next chalta hai."** Nahi — har pending microtask (saare promise callbacks) pehle chalte hain. `0` minimum delay hai, priority nahi.
+- **Sochna ki `await x` macrotasks ko yield karta hai.** `await` ke baad ka code ek **microtask** hai, isliye wo kisi bhi `setTimeout` se pehle chalta hai.
+- **Ek lambi synchronous loop "async ko block nahi karti".** Wo sab kuch block karti hai — timers, promises, rendering, clicks — jab tak return na kare.
+- **Chained `.then` sab ek drain me chalte hain.** Har `.then` sirf apne predecessor ke resolve hone ke *baad* agla queue karta hai, isliye sibling microtasks interleave ho sakte hain (upar `C F G D` dekho, `C D F G` nahi).
+- **`.then` ke andar `Promise.resolve().then` `setTimeout` ko starve karta hai.** Ek unbounded microtask chain macrotasks aur rendering ko indefinitely delay kar sakta hai.
+- **Node vs browser differences.** Node me `process.nextTick` doosre microtasks se pehle chalta hai; `setImmediate` vs `setTimeout(…,0)` ordering context par depend karta hai.
+- **Mutated object ka `console.log`** devtools me baad ki value dikha raha ho — event-loop issue nahi, par log ise blame karte hain.
+
+## 5. Practice Task
+
+1. Is snippet ka exact console output run karne se pehle predict karo, aur likh lo:
+
+```js
+console.log('start');
+setTimeout(() => console.log('timeout1'), 0);
+Promise.resolve().then(() => {
+  console.log('promise1');
+  return Promise.resolve();
+}).then(() => console.log('promise2'));
+queueMicrotask(() => console.log('microtask1'));
+(async () => { await null; console.log('async1'); })();
+console.log('end');
+```
+
+2. Run karo aur microtask/macrotask rules se koi differences reconcile karo.
+3. Kahin ek `setTimeout(() => console.log('X'), 0)` add karo taaki `X` **turant `timeout1` ke baad** print ho aur kisi baad ke timer se pehle — phir explain karo ki tum `Promise.then` ko `timeout1` ke baad print kyun nahi kara sakte.
+
+## 6. Self-Check Questions
+
+1. Ek macrotask khatam hone ke baad, agla macrotask lene se pehle loop exactly kitne microtasks chalata hai?
+2. `await` ke baad ka code pehle schedule kiye `setTimeout(fn, 0)` se pehle kyun chalta hai?
+3. 3-second synchronous `while` loop ke dauraan timers, clicks, aur rendering ka kya hota hai?
+4. `p.then(f).then(g)` plus ek alag `queueMicrotask(h)` me, order `f, g, h` ke bajaye `f, h, g` kyun ho sakta hai?

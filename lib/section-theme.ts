@@ -158,6 +158,16 @@ const THEMES: Record<string, SectionTheme> = {
     ring: "ring-purple-500/40",
     progressBar: "bg-purple-400",
   },
+  "fullstack-fundamentals": {
+    gradient: "from-blue-500/20 via-blue-500/5 to-transparent",
+    iconBg: "bg-blue-500/15",
+    iconColor: "text-blue-400",
+    border: "border-blue-500/30",
+    hoverBorder: "hover:border-blue-500/40",
+    text: "text-blue-400",
+    ring: "ring-blue-500/40",
+    progressBar: "bg-blue-400",
+  },
 };
 
 const FALLBACK: SectionTheme = THEMES["system-design"];
@@ -989,6 +999,46 @@ const MODULE_THEMES: Record<string, SectionTheme> = {
     text: "text-cyan-400",
     ring: "ring-cyan-500/40",
     progressBar: "bg-cyan-400",
+  },
+  "frontend-angular": {
+    gradient: "from-red-500/20 via-red-500/5 to-transparent",
+    iconBg: "bg-red-500/15",
+    iconColor: "text-red-400",
+    border: "border-red-500/30",
+    hoverBorder: "hover:border-red-500/40",
+    text: "text-red-400",
+    ring: "ring-red-500/40",
+    progressBar: "bg-red-400",
+  },
+  "js-ts-core": {
+    gradient: "from-yellow-500/20 via-yellow-500/5 to-transparent",
+    iconBg: "bg-yellow-500/15",
+    iconColor: "text-yellow-400",
+    border: "border-yellow-500/30",
+    hoverBorder: "hover:border-yellow-500/40",
+    text: "text-yellow-400",
+    ring: "ring-yellow-500/40",
+    progressBar: "bg-yellow-400",
+  },
+  "dotnet-csharp-backend": {
+    gradient: "from-violet-500/20 via-violet-500/5 to-transparent",
+    iconBg: "bg-violet-500/15",
+    iconColor: "text-violet-400",
+    border: "border-violet-500/30",
+    hoverBorder: "hover:border-violet-500/40",
+    text: "text-violet-400",
+    ring: "ring-violet-500/40",
+    progressBar: "bg-violet-400",
+  },
+  "practice-answer-key": {
+    gradient: "from-emerald-500/20 via-emerald-500/5 to-transparent",
+    iconBg: "bg-emerald-500/15",
+    iconColor: "text-emerald-400",
+    border: "border-emerald-500/30",
+    hoverBorder: "hover:border-emerald-500/40",
+    text: "text-emerald-400",
+    ring: "ring-emerald-500/40",
+    progressBar: "bg-emerald-400",
   },
 };
 

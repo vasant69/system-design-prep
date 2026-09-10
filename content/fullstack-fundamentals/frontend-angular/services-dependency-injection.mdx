@@ -1,0 +1,137 @@
+---
+slug: "services-dependency-injection"
+title: "Services & Dependency Injection"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 3
+difficulty: "intermediate"
+readingTime: 8
+prerequisites: ["component-communication"]
+tags: ["angular", "services", "dependency-injection", "providers"]
+englishDefinition: "A service is a plain class that holds reusable logic or state kept out of components — data access, caching, business rules. Dependency injection is Angular's system for creating those classes and handing them to whoever asks, so components declare what they need instead of constructing it."
+interviewFrequency: "very-high"
+companies: ["Accenture", "Publicis Sapient", "Persistent Systems", "Zoho"]
+---
+
+## 1. Concept Overview
+
+**Service** matlab bas ek class — aksar `@Injectable()` se decorated — jo ek kaam karti hai: API se baat, results cache, calculation, shared state rakhna. Ye sab component se bahar rakhne se component patla rehta hai (render + delegate) aur logic isolation me testable hota hai.
+
+**Dependency injection (DI)** wo tareeka hai jisse service component tak pahunchti hai. `new UserService()` ke bajaye component apne constructor me `private users: UserService` likhta hai (ya `inject(UserService)` use karta hai), aur Angular ka **injector** ek instance de deta hai. Angular decide karta hai *kaunsa* instance, iske hisaab se ki service **kahan provide ki gayi**:
+
+- `providedIn: 'root'` — poore app ke liye ek shared singleton (default, tree-shakable).
+- Component ke `providers` array me provide — us component ke **har instance ke liye naya instance** aur uske children ke liye.
+- Lazy-loaded route me provide — us lazily-loaded area tak scoped ek instance.
+
+DI se milta hai: swappable implementations (real vs mock), jahan sharing chahiye wahan single shared instance, aur jahan isolation chahiye wahan alag instances.
+
+## 2. Core Syntax
+
+```ts
+import { Injectable, inject } from '@angular/core';
+
+@Injectable({ providedIn: 'root' })   // app-wide singleton
+export class LoggerService {
+  log(msg: string) { console.log(`[${new Date().toISOString()}] ${msg}`); }
+}
+
+@Injectable({ providedIn: 'root' })
+export class CartService {
+  // constructor injection
+  constructor(private logger: LoggerService) {}
+  private items: string[] = [];
+
+  add(id: string) { this.items.push(id); this.logger.log(`add ${id}`); }
+  count() { return this.items.length; }
+}
+```
+
+```ts
+import { Component, inject } from '@angular/core';
+
+@Component({
+  selector: 'app-cart-badge',
+  standalone: true,
+  template: `<span>Cart: {{ cart.count() }}</span>`,
+  // no providers here -> uses the root singleton
+})
+export class CartBadgeComponent {
+  cart = inject(CartService);          // function-style injection
+}
+```
+
+```ts
+// Force a fresh, isolated instance for this component subtree:
+@Component({
+  selector: 'app-wizard',
+  standalone: true,
+  providers: [WizardStateService],    // NOT shared with the rest of the app
+  template: `...`,
+})
+export class WizardComponent {
+  state = inject(WizardStateService);
+}
+```
+
+- Provider par `useClass`, `useValue`, `useFactory`, `useExisting` se badal sakte ho ki token kis cheez pe resolve ho.
+- `InjectionToken` non-class values (config objects, strings) inject karne ka tareeka hai.
+
+## 3. Working Example
+
+Do sibling components jo root service ke through state share karte hain.
+
+```ts
+import { Injectable, signal, computed } from '@angular/core';
+
+@Injectable({ providedIn: 'root' })
+export class CounterStore {
+  private _count = signal(0);
+  count = this._count.asReadonly();
+  doubled = computed(() => this._count() * 2);
+
+  increment() { this._count.update(n => n + 1); }
+  reset() { this._count.set(0); }
+}
+```
+
+```ts
+@Component({
+  selector: 'app-controls',
+  standalone: true,
+  template: `<button (click)="store.increment()">+1</button>
+             <button (click)="store.reset()">reset</button>`,
+})
+export class ControlsComponent { store = inject(CounterStore); }
+
+@Component({
+  selector: 'app-readout',
+  standalone: true,
+  template: `<p>{{ store.count() }} (x2 = {{ store.doubled() }})</p>`,
+})
+export class ReadoutComponent { store = inject(CounterStore); }
+```
+
+Dono components `CounterStore` inject karte hain. Kyunki wo `providedIn: 'root'` hai, dono ko **wahi instance** milta hai, isliye `ControlsComponent` me `+1` click karte hi `ReadoutComponent` update ho jaata hai. `CounterStore` ko kisi ek component ke `providers` me daal do, aur ye sharing khatam — dono ko apni copy mil jaati hai.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Galti se service ko component ke `providers` me daal dena**, phir sochna ki do components "state share kyun nahi karte". Wo array matlab *per component naya instance*.
+- **Sochna ki `providedIn: 'root'` services startup par ban jaati hain.** Wo lazy hain — pehli injection par instantiate — aur agar kabhi inject na ho to tree-shake ho jaati hain.
+- **Service constructor me heavy kaam karna.** Constructor creation par chalta hai; explicit `init()` ya lazy getters prefer karo, khaaskar HTTP ke liye.
+- **Circular dependencies** — `A` `B` inject kare aur `B` `A`. `inject(forwardRef(() => B))` se todo ya, behtar, common piece ko `C` me refactor karo.
+- **Har jagah concrete classes inject karna** taaki tests me real cheez use karni pade. Interface-jaise token pe depend karo aur tests me `useClass`/`useValue` se fake do.
+- **Ek hi injector maan lena.** Angular me hierarchy hai (root -> route -> component). Child provider us subtree ke liye parent wale ko *shadow* karta hai.
+
+## 5. Practice Task
+
+- Ek `LoggerService` (`providedIn: 'root'`) likho jisme `log(msg: string)` ISO timestamp prefix kare.
+- Ek `CartService` (`providedIn: 'root'`) likho jo **constructor-inject** kare `LoggerService`, ek private `items: {id: string; qty: number}[]` rakhe, aur `add(id)`, `remove(id)`, `total()` expose kare. Har mutation logger se log ho.
+- `CartService` ko do sibling components me inject karo — ek jo items add kare, ek jo `total()` dikhaye — aur confirm karo ki dono same data dekhte hain.
+- Ab `CartService` ko un dono me se ek component ke `providers` array me move karo. Ek-do line me batao ki exactly kya badla aur kyun.
+
+## 6. Self-Check Questions
+
+1. Kya decide karta hai ki same service inject karne wale do components ko same instance milega ya alag?
+2. `providedIn: 'root'` ko "tree-shakable" kyun kehte hain, aur service actually kab construct hoti hai?
+3. Component ka code badle bina unit test me use fake service implementation kaise use karwaoge?
+4. `NullInjectorError: No provider for XService` dikhta hai. Do alag-alag kaaran batao.

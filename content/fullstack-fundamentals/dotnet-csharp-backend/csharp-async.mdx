@@ -1,0 +1,130 @@
+---
+slug: "csharp-async"
+title: "Async Programming in C#: Task, async/await, Pitfalls"
+section: "fullstack-fundamentals"
+module: "dotnet-csharp-backend"
+order: 5
+difficulty: "advanced"
+readingTime: 9
+prerequisites: ["csharp-oop"]
+tags: ["csharp", "async-await", "task", "concurrency"]
+englishDefinition: "A Task represents an operation that will complete in the future. async marks a method that contains await; await suspends the method until the awaited Task completes, freeing the current thread. Used correctly it raises server throughput for I/O-bound work; used wrongly it causes deadlocks, unobserved exceptions, and thread-pool starvation."
+interviewFrequency: "high"
+companies: ["Publicis Sapient", "Accenture", "Nagarro", "TCS"]
+---
+
+## 1. Concept Overview
+
+**`Task`** ek future-completing operation hai. `Task` (koi result nahi) ya `Task<T>` (ek result). `async` ek method ko mark karta hai jisme `await` hai. `await someTask` method ko us point par suspend karta hai, current thread ko wapas thread pool ko de deta hai, aur `Task` complete hone par continuation schedule karta hai.
+
+Iska point: **I/O-bound work** (DB call, HTTP call, file read) ke dauraan thread block nahi hota, isliye ek server thread us waqt doosri requests serve kar sakta hai — throughput badhta hai. **CPU-bound work** ke liye `await` khud kuch nahi karta; use `Task.Run` se background thread par bhejo (aur ASP.NET me aksar bilkul mat bhejo).
+
+`async` "concurrent" ke barabar nahi hai. Do `await`s ek ke baad ek sequential hain. Concurrency ke liye tasks start karo phir `Task.WhenAll` karo.
+
+## 2. Core Syntax
+
+```csharp
+// an async method returns Task / Task<T> (or ValueTask); never void (except event handlers)
+public async Task<Order> GetOrderAsync(int id, CancellationToken ct)
+{
+    var order = await _db.Orders.FindAsync(new object?[] { id }, ct);   // suspends here
+    if (order is null) throw new NotFoundException(id);
+    return order;
+}
+
+// sequential vs concurrent
+var a = await CallA();          // waits...
+var b = await CallB();          // ...then starts B
+
+var ta = CallA();               // both start now
+var tb = CallB();
+await Task.WhenAll(ta, tb);     // wait for both
+var (ra, rb) = (ta.Result, tb.Result);   // safe: already completed
+
+// bounded concurrency with SemaphoreSlim
+var gate = new SemaphoreSlim(4);
+var tasks = ids.Select(async id =>
+{
+    await gate.WaitAsync(ct);
+    try { return await FetchAsync(id, ct); }
+    finally { gate.Release(); }
+});
+var results = await Task.WhenAll(tasks);
+```
+
+```csharp
+// cancellation flows through
+public async Task ProcessAsync(CancellationToken ct)
+{
+    await foreach (var item in _source.ReadAllAsync(ct))
+    {
+        ct.ThrowIfCancellationRequested();
+        await HandleAsync(item, ct);
+    }
+}
+```
+
+## 3. Working Example
+
+Bounded-concurrency report generator with cancellation.
+
+```csharp
+public class ReportService(IReportSource source) : IReportService
+{
+    public async Task<IReadOnlyList<Report>> GenerateAsync(int[] ids, CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(4);           // at most 4 in flight
+
+        async Task<Report> FetchOne(int id)
+        {
+            await gate.WaitAsync(ct);
+            try   { return await source.FetchAsync(id, ct); }
+            finally { gate.Release(); }
+        }
+
+        var tasks = ids.Select(FetchOne).ToArray();
+        var reports = await Task.WhenAll(tasks);          // aggregates results, propagates first exception
+        return reports;
+    }
+}
+```
+
+`SemaphoreSlim(4)` ek time par 4 concurrent fetches allow karta hai — na sequential (slow), na all-at-once (server/DB overwhelm). `ct` har layer se guzarta hai. `Task.WhenAll` results aggregate karta hai aur agar koi task fail ho to exception surface karta hai.
+
+## 4. Common Mistakes / Interview Traps
+
+- **`async void`.** Sirf event handlers ke liye. Warna: caller await nahi kar sakta, exceptions process crash kar dete hain, testing impossible. Hamesha `async Task`.
+- **`.Result` / `.Wait()` par sync-over-async.** UI / classic ASP.NET SynchronizationContext me ye **deadlock** deta hai: continuation captured context ka intezaar karta hai jo blocked thread hold kar raha hai. Poora call chain async rakho.
+- **`ConfigureAwait(false)` bhoolna library code me.** Library/non-UI code me `await x.ConfigureAwait(false)` context capture avoid karta hai — thoda tez aur deadlock-safe. (ASP.NET Core me koi SynchronizationContext nahi, isliye app code me kam zaroori.)
+- **`CancellationToken` accept karke pass na karna.** Token ko har async call tak forward karo, warna cancellation ka koi asar nahi.
+- **`Task.Run` ASP.NET me I/O ke liye.** Ye ek thread pool thread waste karta hai bina throughput badhaye. `Task.Run` sirf genuine CPU-bound work ke liye, wo bhi soch samajh kar.
+- **`await` inside `lock`.** Compile nahi hoga (`lock` ke andar `await` allowed nahi) — `SemaphoreSlim.WaitAsync` use karo.
+- **Fire-and-forget** (`_ = DoAsync();`) — exceptions unobserved, kaam request ke saath cancel ho sakta hai. Background work ke liye `IHostedService` / channel use karo.
+- **Sequential awaits jab parallel chal sakta tha** — 3 independent calls awaited one by one = 3x latency.
+
+## 5. Practice Task
+
+Ek `IReportService.GenerateAsync(int[] ids, CancellationToken ct)` likho:
+
+- Har report ko ek async `FetchAsync(id, ct)` se fetch kare.
+- Ek time par at most 4 concurrent (`SemaphoreSlim`).
+- Results aggregate kare aur cancellation honour kare.
+- Phir is snippet me teen pitfalls dhundo aur fix karo:
+
+```csharp
+public async void Handle(int[] ids)            // pitfall 1
+{
+    var all = new List<Report>();
+    foreach (var id in ids)
+        all.Add(GetReport(id).Result);         // pitfall 2
+}
+private Task<Report> GetReport(int id)
+    => _http.GetFromJsonAsync<Report>($"/reports/{id}");   // pitfall 3
+```
+
+## 6. Self-Check Questions
+
+1. `async` "concurrent" ke barabar kyun nahi hai? Sequential awaits ko parallel me kaise badloge?
+2. `.Result` / `.Wait()` deadlock kaise aur kahan cause karta hai?
+3. `async void` kab valid hai aur kyun warna avoid karna chahiye?
+4. `CancellationToken` accept karke aage pass na karne se kya hota hai?

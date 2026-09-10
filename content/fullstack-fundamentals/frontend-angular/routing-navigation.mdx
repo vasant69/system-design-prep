@@ -1,0 +1,139 @@
+---
+slug: "routing-navigation"
+title: "Routing & Navigation"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 5
+difficulty: "intermediate"
+readingTime: 8
+prerequisites: ["components-data-binding"]
+tags: ["angular", "router", "navigation", "guards"]
+englishDefinition: "The Angular Router maps URL paths to components and swaps them into a router-outlet without a full page reload. It handles route parameters, query parameters, nested and lazy-loaded routes, and guards that allow or block navigation."
+interviewFrequency: "high"
+companies: ["Cognizant", "Capgemini", "Infosys", "Tech Mahindra"]
+---
+
+## 1. Concept Overview
+
+**Router** URL ko UI me badal deta hai. Tum ek `Routes` array declare karte ho — path -> component — aur `<router-outlet>` wahan rakhte ho jahan matched component render hona chahiye. Navigate karne se URL aur outlet ka content badalta hai; page kabhi fully reload nahi hota (single-page app).
+
+Core pieces:
+
+- **Route params** (`/users/:id`) — path ka hissa, *kaunsa* resource identify karte hain.
+- **Query params** (`/users?page=2&sort=name`) — optional, filters/pagination/UI state ke liye.
+- **Nested (child) routes** — ek parent component jiske apne `<router-outlet>` me sub-views (tabs, master-detail).
+- **Lazy loading** — `loadComponent` / `loadChildren` taaki feature ka code pehli baar visit par hi download ho.
+- **Guards** — functions jo `boolean | UrlTree | Observable<...>` return karte hain aur route activate/leave hone se pehle chalte hain: `CanActivate`, `CanActivateChild`, `CanDeactivate`, `CanMatch`.
+- **Resolvers** — route activate hone se *pehle* data fetch karte hain taaki component data ready ke saath khule.
+
+## 2. Core Syntax
+
+```ts
+import { Routes } from '@angular/router';
+import { authGuard } from './auth.guard';
+
+export const routes: Routes = [
+  { path: '', redirectTo: 'users', pathMatch: 'full' },
+  { path: 'users', component: UserListComponent },
+  { path: 'users/:id', component: UserDetailComponent },
+  {
+    path: 'admin',
+    canActivate: [authGuard],
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+  },
+  { path: '**', component: NotFoundComponent },   // wildcard 404, must be last
+];
+```
+
+```ts
+// functional guard (modern style)
+import { CanActivateFn, Router } from '@angular/router';
+import { inject } from '@angular/core';
+
+export const authGuard: CanActivateFn = (route, state) => {
+  const router = inject(Router);
+  return localStorage.getItem('token')
+    ? true
+    : router.createUrlTree(['/login'], { queryParams: { redirect: state.url } });
+};
+```
+
+```html
+<!-- template navigation -->
+<a routerLink="/users" routerLinkActive="active">Users</a>
+<a [routerLink]="['/users', user.id]" [queryParams]="{ tab: 'orders' }">Open</a>
+```
+
+```ts
+// reading params in the component
+private route = inject(ActivatedRoute);
+id$ = this.route.paramMap.pipe(map(p => p.get('id')));       // reactive
+tab$ = this.route.queryParamMap.pipe(map(p => p.get('tab')));
+// one-time snapshot (only safe if the component is recreated per id):
+const id = this.route.snapshot.paramMap.get('id');
+
+// programmatic navigation
+private router = inject(Router);
+this.router.navigate(['/users', id], { queryParams: { tab: 'orders' } });
+```
+
+## 3. Working Example
+
+Ek master-detail area, guarded child aur param subscription ke saath.
+
+```ts
+export const routes: Routes = [
+  {
+    path: 'projects',
+    component: ProjectsShellComponent,     // has its own <router-outlet>
+    children: [
+      { path: '', component: ProjectListComponent },
+      { path: ':id', component: ProjectDetailComponent },
+      { path: ':id/settings', component: ProjectSettingsComponent, canActivate: [ownerGuard] },
+    ],
+  },
+];
+```
+
+```ts
+@Component({ /* ProjectDetailComponent */ })
+export class ProjectDetailComponent {
+  private route = inject(ActivatedRoute);
+  private api = inject(ProjectApi);
+
+  // re-fetch whenever :id changes, even if the component is reused
+  project$ = this.route.paramMap.pipe(
+    map(p => p.get('id')!),
+    switchMap(id => this.api.getById(id)),
+  );
+}
+```
+
+Kyunki detail component `paramMap` ko ek stream ki tarah read karta hai, `/projects/1` se `/projects/2` navigate karne par Angular component instance reuse karta hai aur phir bhi refetch hota hai. `snapshot` read yahan stale data dikhata.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Reuse hone wale component par `snapshot.paramMap` use karna.** Jab sirf param badle, Angular component instance rakh leta hai, isliye snapshot kabhi update nahi hota. `paramMap` par subscribe karo.
+- **Wildcard route last me nahi.** `{ path: '**' }` sab kuch match karta hai; uske baad kuch bhi dead hai.
+- **Empty-path redirect par `pathMatch: 'full'` bhoolna**, jo phir har URL prefix ko match karta hai.
+- **Route params aur query params confuse karna.** Resource ki identity -> path param. Optional view state (page, sort, filters) -> query param, taaki refresh survive kare aur shareable ho.
+- **Guard `false` return kare aur user atak jaaye** bina feedback ke. Bare `false` ke bajaye `UrlTree` return karo (`/login` par redirect).
+- **Lazy routes ke liye `canActivate` vs `canMatch`.** `canActivate` chunk phir bhi download karta hai; `canMatch` match hi block kar sakta hai aur download skip.
+- **`paramMap`/`queryParamMap` se unsubscribe na karna** (ya bas `async` pipe use karo).
+
+## 5. Practice Task
+
+Ek chhote app ke liye router configure karo:
+
+- `/users` -> list, `/users/:id` -> detail, aur `/users/:id` ek `?tab=` query param bhi read kare aur dikhaye.
+- Ek lazy-loaded `/admin` area (`loadChildren` ya `loadComponent`).
+- Ek functional `authGuard` (`CanActivateFn`) jo `/admin` sirf tab allow kare jab `localStorage.getItem('token')` truthy ho; warna `/login` par redirect kare aur attempted URL ko `redirect` query param me pass kare.
+- Ek wildcard `**` route ek `NotFoundComponent` par.
+- `UserDetailComponent` me `:id` **reactively** read karo aur har baar badalne par log karo; prove karo ki `/users/1` -> `/users/2` bina reload ke navigate karne par re-fetch hota hai.
+
+## 6. Self-Check Questions
+
+1. `route.snapshot.paramMap` kab safe hai, aur kab wo chupchaap stale data dega?
+2. Guard ko `false` ke bajaye kya return karna chahiye taaki user ek unchanged screen dekhta na reh jaaye?
+3. In me se kaunsa query param aur kaunsa route param: user id, current page number, active tab? Kyun?
+4. `canMatch` ek lazy route ke liye kya karne deta hai jo `canActivate` nahi kar sakta?

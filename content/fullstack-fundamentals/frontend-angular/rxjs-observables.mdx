@@ -1,0 +1,130 @@
+---
+slug: "rxjs-observables"
+title: "RxJS & Observables"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 4
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["services-dependency-injection"]
+tags: ["angular", "rxjs", "observables", "operators"]
+englishDefinition: "An Observable is a stream of values over time that you subscribe to. RxJS is the library of operators for transforming, combining, and controlling those streams. Angular uses Observables for HTTP, router events, forms, and EventEmitter, so knowing the core operators and how to unsubscribe is unavoidable."
+interviewFrequency: "high"
+companies: ["Publicis Sapient", "Nagarro", "TCS", "HCLTech"]
+---
+
+## 1. Concept Overview
+
+**Observable** ka matlab hai zero ya zyada values *time ke saath* — ek HTTP response, keystrokes, ek WebSocket feed, ek timer. Jab tak subscribe na karo kuch nahi hota; Observable ek blueprint hai, `subscribe()` use start karta hai (by default "cold" hoti hai). Ek subscription `next` values deti hai, phir ya to `complete` ya `error`, aur `unsubscribe()` se tear down hoti hai.
+
+**RxJS operators** pure functions hain jinhe tum `.pipe()` ke andar compose karte ho stream ko reshape karne ke liye: `map`, `filter`, `debounceTime`, `switchMap`, `catchError`, waghera. Har ek *nayi* Observable return karta hai.
+
+**Subjects** aisi Observables hain jo observers bhi hain — tum unme `next()` daal sakte ho. `Subject` ki koi initial value nahi hoti aur sirf current subscribers ko emit karta hai; `BehaviorSubject` ek "current value" rakhta hai aur naye subscribers ko replay karta hai; `ReplaySubject` last N replay karta hai.
+
+Do rules jo log bhool jaate hain: **subscribe karo warna kuch nahi chalta**, aur **kabhi unsubscribe na karo to subscriptions leak hoti hain**.
+
+## 2. Core Syntax
+
+```ts
+import { of, from, fromEvent, interval } from 'rxjs';
+import { map, filter, debounceTime, distinctUntilChanged,
+         switchMap, catchError, takeUntil, take } from 'rxjs';
+
+// creation
+of(1, 2, 3);                          // emits 1,2,3 then completes
+from(fetch('/api'));                  // from a Promise / iterable
+fromEvent(input, 'input');            // DOM events
+interval(1000);                       // 0,1,2,... every second
+
+// transformation pipeline
+source$.pipe(
+  map(x => x * 2),                    // transform each value
+  filter(x => x > 5),                 // drop some values
+  debounceTime(300),                  // wait for a quiet gap
+  distinctUntilChanged(),             // skip repeats
+);
+
+// flattening: switchMap cancels the previous inner Observable
+term$.pipe(
+  switchMap(term => this.api.search(term)),   // ideal for search/autocomplete
+);
+// mergeMap = run all in parallel, concatMap = queue in order, exhaustMap = ignore new while busy
+```
+
+```ts
+// subjects
+const clicks$ = new Subject<void>();
+const user$ = new BehaviorSubject<User | null>(null);   // has a current value
+user$.value;                          // synchronous read
+user$.next(loadedUser);               // push a new value
+```
+
+## 3. Working Example
+
+Ek typeahead search service + component me, sahi teardown ke saath.
+
+```ts
+@Component({
+  selector: 'app-search',
+  standalone: true,
+  template: `
+    <input #box (input)="term$.next(box.value)" placeholder="search" />
+    <ul><li *ngFor="let r of results">{{ r.name }}</li></ul>
+  `,
+})
+export class SearchComponent implements OnInit, OnDestroy {
+  private api = inject(SearchApi);
+  private destroy$ = new Subject<void>();
+  term$ = new Subject<string>();
+  results: Item[] = [];
+
+  ngOnInit() {
+    this.term$.pipe(
+      map(t => t.trim()),
+      filter(t => t.length >= 2),
+      debounceTime(300),
+      distinctUntilChanged(),
+      switchMap(t => this.api.search(t).pipe(
+        catchError(() => of([] as Item[])),   // keep the stream alive on error
+      )),
+      takeUntil(this.destroy$),               // auto-unsubscribe on destroy
+    ).subscribe(list => (this.results = list));
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+}
+```
+
+- `debounceTime + distinctUntilChanged` fizool requests kaat dete hain.
+- `switchMap` naya term aane par in-flight request cancel kar deta hai, isliye results kabhi out of order nahi aate.
+- `catchError` fallback Observable return karta hai, isliye ek failed request stream ko nahi maarta.
+- `takeUntil(this.destroy$)` classic unsubscribe pattern hai (ya `takeUntilDestroyed()` / `async` pipe use karo).
+
+## 4. Common Mistakes / Interview Traps
+
+- **Subscribe karna bhoolna** aur sochna HTTP call fire kyun nahi hua. `http.get()` cold hai; subscriber (ya `async` pipe) ke bina kuch nahi karta.
+- **Kabhi unsubscribe na karna** long-lived streams se (`interval`, `fromEvent`, router events, service ka `Subject`). `async` pipe, `takeUntilDestroyed`, ya `takeUntil(destroy$)` use karo.
+- **`subscribe()` ke andar nested `subscribe()`** flattening operator ke bajaye. Isse cancellation aur error propagation khatam — `switchMap`/`mergeMap`/`concatMap` use karo.
+- **Search ke liye `mergeMap` use karna.** Parallel requests race karti hain; ek slow purani response nayi ko overwrite kar sakti hai. `switchMap` purani cancel karta hai.
+- **`Subject` value synchronously read karna.** Plain `Subject` me `.value` nahi hota; sirf `BehaviorSubject` me.
+- **`map` me side effects karna.** `map` pure hona chahiye; logging/side effects ke liye `tap` use karo.
+- **`take(1)` vs `first()`** — `first()` error deta hai agar stream bina value ke complete ho jaaye; `take(1)` bas complete ho jaata hai.
+
+## 5. Practice Task
+
+Ek search box pipeline banao **bina** Angular HTTP ke — API fake karo:
+
+- `searchApi(term: string)` return kare `of(['result for ' + term]).pipe(delay(200))`.
+- Input ke `keyup` par ek stream banao: input value lo -> `map` se trimmed string -> `debounceTime(300)` -> `distinctUntilChanged` -> `switchMap` se `searchApi` me -> array render karo.
+- Component destroy par sahi se unsubscribe karo (`takeUntil` ek `destroy$` `Subject` ke saath, ya `takeUntilDestroyed`).
+- Tezi se type karo, phir dheere. Ek comment me batao ki tez type karne par `switchMap` ne `mergeMap` se alag kya kiya.
+
+## 6. Self-Check Questions
+
+1. `HttpClient.get()` call subscribe karne se pehle execute kyun nahi hoti, aur `.subscribe()` khud call kiye bina subscribe karne ke do tareeke batao.
+2. Kaunsa flattening operator lene ke liye: (a) autocomplete, (b) form edits order me save, (c) "submit" button jo double-clicks ignore kare? Har ek ka kyun?
+3. `Subject`, `BehaviorSubject`, aur `ReplaySubject` me practical farak kya hai?
+4. Teen concrete situations do jahan missing `unsubscribe` se asli bug aata hai, sirf wasted memory nahi.

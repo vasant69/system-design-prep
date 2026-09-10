@@ -1,0 +1,125 @@
+---
+slug: "component-communication"
+title: "Component Communication: @Input, @Output, EventEmitter"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 2
+difficulty: "beginner"
+readingTime: 7
+prerequisites: ["components-data-binding"]
+tags: ["angular", "input", "output", "eventemitter"]
+englishDefinition: "Parent and child components talk through a fixed contract: @Input properties let a parent push data down into a child, and @Output properties (backed by an EventEmitter) let a child send events up. Data flows one way in each direction; the child never reaches into the parent directly."
+interviewFrequency: "very-high"
+companies: ["Cognizant", "Capgemini", "Nagarro", "Freshworks"]
+---
+
+## 1. Concept Overview
+
+Components ek tree banate hain, aur ek parent aur uske direct child ke beech baat karne ka sahi tareeka hai **inputs aur outputs ka contract**.
+
+- **`@Input()`** ek class property ko parent ke template se settable banata hai: `<app-child [name]="value">`. Data **neeche** jaata hai.
+- **`@Output()`** ek property (ek `EventEmitter`) ko mark karta hai jispe parent subscribe kar sakta hai: `<app-child (saved)="onSaved($event)">`. Events **upar** jaate hain.
+
+Child emit karta hai; parent ko mutate nahi karta. Parent apni state ka owner hai aur decide karta hai ki child ke event ka kya karna hai. Yahi one-way discipline bade component tree ko predictable banati hai — "ye value kisne badli?" ka jawab hamesha owner dekh kar mil jaata hai.
+
+Direct parent/child jodi se aage kuch bhi (siblings, door ke components, app-wide state) ke liye **shared service** use hota hai, inputs/outputs ki chain nahi.
+
+## 2. Core Syntax
+
+```ts
+import { Component, Input, Output, EventEmitter } from '@angular/core';
+
+@Component({
+  selector: 'app-task-item',
+  standalone: true,
+  template: `
+    <li [class.done]="task.done">
+      {{ task.title }}
+      <button (click)="toggle.emit(task.id)">toggle</button>
+      <button (click)="remove.emit(task.id)">x</button>
+    </li>
+  `,
+})
+export class TaskItemComponent {
+  @Input({ required: true }) task!: Task;   // parent MUST bind [task]
+  @Input() highlight = false;               // optional, has a default
+
+  @Output() toggle = new EventEmitter<number>();
+  @Output() remove = new EventEmitter<number>();
+}
+```
+
+```ts
+// parent template
+// <app-task-item
+//   *ngFor="let t of tasks"
+//   [task]="t"
+//   [highlight]="t.id === selectedId"
+//   (toggle)="onToggle($event)"
+//   (remove)="onRemove($event)">
+// </app-task-item>
+```
+
+- `@Input({ required: true })` — parent bind karna bhool jaaye to Angular build time par error deta hai.
+- `EventEmitter<T>` — generic `T` wahi payload type hai jo parent ko `$event` me milta hai.
+- Setter input, `@Input() set task(v: Task) { ... }`, value aate hi react karne deta hai.
+- Modern Angular me `input()` / `output()` signal-based functions bhi hain; decorator form abhi bhi codebases me sabse common hai, isliye dono aane chahiye.
+
+## 3. Working Example
+
+Ek reusable quantity stepper jo parent cart ke andar use karta hai.
+
+```ts
+import { Component, Input, Output, EventEmitter } from '@angular/core';
+
+@Component({
+  selector: 'app-qty-stepper',
+  standalone: true,
+  template: `
+    <button (click)="dec()" [disabled]="value <= min">-</button>
+    <span>{{ value }}</span>
+    <button (click)="inc()" [disabled]="value >= max">+</button>
+  `,
+})
+export class QtyStepperComponent {
+  @Input() value = 1;
+  @Input() min = 1;
+  @Input() max = 99;
+  @Output() valueChange = new EventEmitter<number>();
+
+  inc() { this.valueChange.emit(this.value + 1); }
+  dec() { this.valueChange.emit(this.value - 1); }
+}
+
+// Because the output is named `valueChange`, the parent can write:
+//   <app-qty-stepper [(value)]="line.qty"></app-qty-stepper>
+// and get two-way binding for free.
+```
+
+Child kabhi `this.value = ...` nahi likhta — wo intended nayi value emit karta hai aur parent ko source of truth update karne deta hai. Isse parent ka `line.qty` single owner bana rehta hai.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Child se `@Input` object ko mutate karna.** `this.task.done = true` chupke se parent ka object badal deta hai, one-way flow todta hai, aur `OnPush` ko fail karta hai. Iske bajaye event emit karo.
+- **`ngOnChanges` deep changes par fire hoga, ye maan lena.** Wo sirf tab fire hota hai jab **bound reference** badle. Same object ki property mutate karne se trigger nahi hota.
+- **Two-way ke liye `Change` suffix bhoolna.** `[(foo)]` ko literally `fooChange` naam ka output chahiye. Koi aur naam banana-in-a-box todta hai.
+- **`@Output` ko data ke liye use karna, event ke liye nahi.** Outputs "kuch hua" ke liye hain, state continuously expose karne ke liye nahi. Parent ko child ki state chahiye to lift up karo ya service share karo.
+- **`EventEmitter` ko non-DOM, cross-service messaging ke liye.** `EventEmitter` ek Angular component-output primitive hai. Service-to-service ya app-wide events ke liye plain RxJS `Subject` use karo.
+- **Sibling communication me common parent har event relay kare.** Do tightly-coupled siblings ke liye theek; usse aage shared service saaf hai.
+
+## 5. Practice Task
+
+Ek `ProductCardComponent` aur ek parent `CatalogComponent` banao:
+
+- `ProductCardComponent` me `@Input({ required: true }) product` (`{ id: string; name: string; price: number }`) aur `@Input() disabled = false`.
+- Usme `@Output() addToCart = new EventEmitter<string>()`; "Add" button click par `product.id` emit hota hai. `disabled` true ho to button hidden.
+- `CatalogComponent` ek `products` array aur khaali `cart: string[]` rakhta hai. `*ngFor` se ek card per product render karta hai, aur `addToCart` par id ko `cart` me push karke cart count dikhata hai.
+- Ek product ko `disabled` banao aur confirm karo ki uska button gaayab hai.
+- Shared service **nahi**, aur child ke andar `product` mutate **nahi**.
+
+## 6. Self-Check Questions
+
+1. Child ko `@Input` object mutate karne ke bajaye event kyun emit karna chahiye?
+2. Custom component par `[(rating)]` kaam kare, iske liye exact naming condition kya hai?
+3. `ngOnChanges` kab notice nahi karta ki data "badla", aur fix kya hai?
+4. `@Output` `EventEmitter` use karta hai. Plain RxJS `Subject` kahan use karoge, aur kyun?

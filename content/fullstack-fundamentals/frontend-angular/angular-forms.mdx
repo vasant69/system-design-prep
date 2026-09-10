@@ -1,0 +1,139 @@
+---
+slug: "angular-forms"
+title: "Forms: Template-driven vs Reactive"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 6
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["component-communication"]
+tags: ["angular", "forms", "reactive-forms", "validation"]
+englishDefinition: "Angular offers two ways to build forms. Template-driven forms declare controls and validators in the HTML with directives like ngModel and are quick for simple cases. Reactive forms define a FormGroup/FormControl tree in the component class, giving explicit, synchronous, testable control over structure and validation."
+interviewFrequency: "high"
+companies: ["Accenture", "Publicis Sapient", "HCLTech", "Persistent Systems"]
+---
+
+## 1. Concept Overview
+
+Dono approaches wahi runtime model banate hain — `FormControl`, `FormGroup`, `FormArray` ka tree — bas tum use alag-alag taraf se banate ho.
+
+- **Template-driven** — tum `<input ngModel name="email" required email>` likhte ho aur Angular template se implicitly control tree banata hai. State template me rehti hai; component ko mushkil se pata hota hai. Login screens aur chhoti forms ke liye acha. Nature se async (model ek tick baad settle hota hai).
+- **Reactive** — tum class me `new FormGroup({ email: new FormControl('', [Validators.required, Validators.email]) })` likhte ho aur `[formGroup]` / `formControlName` se bind karte ho. Structure explicit hai, updates synchronous hain, aur tum validation ko zero DOM ke saath unit-test kar sakte ho.
+
+Rule of thumb: dynamic fields, cross-field validation, conditional controls, ya jise test karna hai -> **reactive**. Teen-field form jo kabhi shape nahi badalta -> template-driven theek hai.
+
+## 2. Core Syntax
+
+```ts
+// Reactive: build the model in the class
+import { FormBuilder, Validators, ReactiveFormsModule } from '@angular/forms';
+
+@Component({
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  template: `
+    <form [formGroup]="form" (ngSubmit)="submit()">
+      <input formControlName="name" />
+      <small *ngIf="form.controls.name.touched && form.controls.name.errors?.['required']">
+        Name is required
+      </small>
+      <input formControlName="email" />
+      <button [disabled]="form.invalid">Save</button>
+    </form>
+  `,
+})
+export class EmployeeFormComponent {
+  private fb = inject(FormBuilder);
+  form = this.fb.group({
+    name: ['', [Validators.required, Validators.minLength(3)]],
+    email: ['', [Validators.required, Validators.email]],
+    age: [null as number | null, [Validators.required, Validators.min(18)]],
+  });
+
+  submit() {
+    if (this.form.invalid) { this.form.markAllAsTouched(); return; }
+    console.log(this.form.getRawValue());
+  }
+}
+```
+
+```html
+<!-- Template-driven: directives in the HTML -->
+<form #f="ngForm" (ngSubmit)="onSubmit(f)">
+  <input name="name" [(ngModel)]="model.name" required minlength="3" #name="ngModel" />
+  <small *ngIf="name.touched && name.errors?.['minlength']">Too short</small>
+  <button [disabled]="f.invalid">Save</button>
+</form>
+```
+
+Common API: `value` / `getRawValue()` (disabled controls bhi), `valid`/`invalid`, `touched`/`dirty`, `errors`, `setValue` (poora object) vs `patchValue` (partial), `valueChanges` (ek Observable), `statusChanges`, `reset()`.
+
+## 3. Working Example
+
+Reactive form ek cross-field validator aur ek dynamic list ke saath.
+
+```ts
+export class SignupComponent {
+  private fb = inject(FormBuilder);
+
+  form = this.fb.group(
+    {
+      password: ['', [Validators.required, Validators.minLength(8)]],
+      confirm: ['', Validators.required],
+      phones: this.fb.array([ this.fb.control('', Validators.required) ]),
+    },
+    { validators: [matchPasswords] },   // group-level (cross-field) validator
+  );
+
+  get phones() { return this.form.get('phones') as FormArray; }
+  addPhone() { this.phones.push(this.fb.control('', Validators.required)); }
+  removePhone(i: number) { this.phones.removeAt(i); }
+}
+
+function matchPasswords(group: AbstractControl): ValidationErrors | null {
+  const p = group.get('password')?.value;
+  const c = group.get('confirm')?.value;
+  return p === c ? null : { mismatch: true };
+}
+```
+
+```html
+<div formArrayName="phones">
+  <div *ngFor="let ctrl of phones.controls; let i = index">
+    <input [formControlName]="i" />
+    <button type="button" (click)="removePhone(i)">remove</button>
+  </div>
+</div>
+<button type="button" (click)="addPhone()">add phone</button>
+<small *ngIf="form.errors?.['mismatch'] && form.get('confirm')?.touched">Passwords differ</small>
+```
+
+`FormArray` runtime par grow/shrink hota hai, aur `matchPasswords` do controls ko saath validate karta hai — dono template-driven form me awkward hain.
+
+## 4. Common Mistakes / Interview Traps
+
+- **`setValue` vs `patchValue`.** `setValue` ko *har* control ki value chahiye warna throw karta hai; `patchValue` bas jo subset pass karo wo update karta hai.
+- **`form.value` read karna aur disabled controls miss karna.** Disabled controls `value` se excluded hain; `getRawValue()` use karo.
+- **Errors turant dikhana.** Error messages ko `touched` (blurred) ya `dirty` (changed) par gate karo, sirf `invalid` par nahi, taaki fresh form har jagah laal na dikhe.
+- **Single control par cross-field validation.** "Passwords must match" ek **group** validator hai, control validator nahi.
+- **Module import bhoolna.** Reactive ke liye `ReactiveFormsModule`, template-driven ke liye `FormsModule`; galat use se `formGroup` / `ngModel` template errors.
+- **Async validators bina debounce.** Har keystroke par "username taken" check API ko hammer karta hai — debounce karo aur `updateOn: 'blur'` use karo.
+- **`updateOn: 'change'` default** har keystroke par re-validate karta hai; `'blur'` ya `'submit'` aksar behtar UX aur sasta hai.
+
+## 5. Practice Task
+
+**Same** "add employee" form do baar banao:
+
+- Fields: `name` (required, minlength 3), `email` (required, valid email), `age` (required, min 18).
+- Version A: **template-driven** (`ngModel`, `#f="ngForm"`).
+- Version B: **reactive** (`FormBuilder`, `Validators`).
+- Dono me har field ka error message sirf us field ke `touched` hone ke baad dikhao, aur form invalid hone tak submit button disable rakho.
+- Submit par model object log karo.
+- Phir do concrete lines likho: reactive version me kya do cheezein sach me aasaan hain (testing aur dynamic behaviour socho).
+
+## 6. Self-Check Questions
+
+1. Har approach me form model ka source of truth kahan rehta hai?
+2. "confirm password must equal password" confirm field par validator ke bajaye group validator kyun hai?
+3. `setValue`, `patchValue` me farak kya hai, aur `form.value` me wo field kyun miss ho sakti hai jo screen par dikh rahi hai?
+4. Tumhe "username already taken" check chahiye. Kaunsa validator type, kaunsi `updateOn` setting, aur server ko hammer karne se bachne ke liye kya add karoge?

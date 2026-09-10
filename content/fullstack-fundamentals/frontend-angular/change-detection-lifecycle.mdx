@@ -1,0 +1,118 @@
+---
+slug: "change-detection-lifecycle"
+title: "Change Detection & Lifecycle Hooks"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 7
+difficulty: "advanced"
+readingTime: 9
+prerequisites: ["components-data-binding"]
+tags: ["angular", "change-detection", "lifecycle", "onpush"]
+englishDefinition: "Change detection is the process by which Angular re-evaluates template bindings and updates the DOM after something might have changed. Lifecycle hooks are named methods (ngOnInit, ngOnChanges, ngAfterViewInit, ngOnDestroy, and others) Angular calls at defined points in a component's life so you can run setup, react to input changes, and clean up."
+interviewFrequency: "high"
+companies: ["Nagarro", "Publicis Sapient", "TCS", "Cognizant"]
+---
+
+## 1. Concept Overview
+
+**Change detection (CD)** DOM ko component state ke saath sync rakhta hai. By default Angular har us async event ke baad CD chalata hai jo kuch badal sakta tha — ek click, ek HTTP response, ek `setTimeout` — component tree ko root se ghoomta hai, har template expression re-evaluate karta hai, aur jahan value alag ho wahan DOM patch karta hai. Ye Zone.js ke browser async APIs ko monkey-patch karne se trigger hota hai.
+
+`ChangeDetectionStrategy.OnPush` Angular ko batata hai: is component ko sirf tab re-check karo jab (a) uske kisi `@Input` ka **reference** badle, (b) uske *andar* koi event fire ho, (c) uska use kiya hua `async` pipe / signal emit kare, ya (d) tum manually `markForCheck()` call karo. Ye tree ke bade hisson ko prune kar deta hai aur main performance lever hai. Signals Angular ko fine-grained updates ki taraf le jaate hain jo tree walk hi skip kar dete hain.
+
+**Lifecycle hooks** known moments par code chalane dete hain: inputs set hone ke baad, view initialize hone ke baad, har CD pass par, aur destruction par.
+
+## 2. Core Syntax
+
+```ts
+import { Component, Input, OnChanges, OnInit, DoCheck,
+         AfterViewInit, OnDestroy, SimpleChanges,
+         ChangeDetectionStrategy, ChangeDetectorRef, inject } from '@angular/core';
+
+@Component({
+  selector: 'app-widget',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `<p>{{ label }} — ticks: {{ ticks }}</p>`,
+})
+export class WidgetComponent implements OnChanges, OnInit, DoCheck, AfterViewInit, OnDestroy {
+  @Input() label = '';
+  ticks = 0;
+  private cdr = inject(ChangeDetectorRef);
+  private timer?: any;
+
+  ngOnChanges(c: SimpleChanges) {
+    // runs BEFORE ngOnInit on first call, then on every bound-input change
+    // c['label'] = { previousValue, currentValue, firstChange }
+  }
+  ngOnInit()        { /* one-time setup, inputs are available */ }
+  ngDoCheck()       { /* every CD pass — keep it cheap or empty */ }
+  ngAfterViewInit() { /* @ViewChild refs are ready; changing bindings here needs care */ }
+  ngOnDestroy()     { clearInterval(this.timer); /* unsubscribe, remove listeners */ }
+}
+```
+
+Creation par hook order: `ngOnChanges` -> `ngOnInit` -> `ngDoCheck` -> `ngAfterContentInit` -> `ngAfterContentChecked` -> `ngAfterViewInit` -> `ngAfterViewChecked`. Phir `ngDoCheck` + `*Checked` hooks har CD pass par repeat hote hain. `ngOnDestroy` ek baar, last me.
+
+```ts
+// Manually nudging OnPush components:
+this.cdr.markForCheck();   // "re-check me on the next CD pass" (use with async data)
+this.cdr.detectChanges();  // "run CD on me now" (rare)
+```
+
+## 3. Working Example
+
+Ek `OnPush` component jo async source se feed hota hai, plus ek hook log.
+
+```ts
+@Component({
+  selector: 'app-clock',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `<h3>{{ label }}</h3><time>{{ now | date:'mediumTime' }}</time>`,
+})
+export class ClockComponent implements OnChanges, OnDestroy {
+  @Input() label = 'Clock';
+  now = new Date();
+  private id = setInterval(() => {
+    this.now = new Date();
+    this.cdr.markForCheck();       // WITHOUT this, OnPush never re-renders the tick
+  }, 1000);
+  private cdr = inject(ChangeDetectorRef);
+
+  ngOnChanges(c: SimpleChanges) {
+    console.log('label changed', c['label']?.previousValue, '->', c['label']?.currentValue);
+  }
+  ngOnDestroy() { clearInterval(this.id); }
+}
+```
+
+- `setInterval` `this.now` mutate karta hai, par `OnPush` ke saath Angular watch nahi kar raha, isliye `markForCheck()` hi DOM update karwata hai.
+- `async` pipe tumhare liye `markForCheck()` call kar deta — isiliye wo `OnPush` ke saath "bas kaam kar jaata hai".
+- Parent se `label` badalna `ngOnChanges` re-run karta hai aur component re-check hota hai (input reference badli).
+
+## 4. Common Mistakes / Interview Traps
+
+- **Object mutation par `ngOnChanges` expect karna.** Wo sirf tab fire hota hai jab **bound input reference** badle. Parent me `this.user.name = 'x'` trigger nahi karta; `this.user = { ...this.user, name: 'x' }` karta hai.
+- **`ngOnInit` vs constructor.** Constructor inputs bind hone se pehle chalta hai; `ngOnInit` baad me. `@Input` values `ngOnInit` me read karo, constructor me nahi.
+- **`ngDoCheck` / `ngAfterViewChecked` me heavy logic.** Ye har CD pass par chalte hain, per second kai baar. Trivial rakho warna performance gir jaati hai.
+- **`ExpressionChangedAfterItHasBeenCheckedError`.** Tumne `ngAfterViewInit`/`ngAfterViewChecked` me ek bound value Angular ke check karne ke baad badli (dev-mode only). Change ko pehle karo, ya `Promise.resolve().then(...)` se defer karo, ya `markForCheck` use karo.
+- **`OnPush` component update nahi hota** service se mutation ke baad. Kyunki tumne replace ke bajaye mutate kiya, ya `markForCheck()` / `async` pipe bhool gaye.
+- **`ngOnDestroy` cleanup bhoolna.** Component me banaye intervals, subscriptions, aur DOM listeners wahin tear down hone chahiye.
+- **Templates me function calls** — default CD ke saath aur bhi bura, kyunki har pass par chalte hain.
+
+## 5. Practice Task
+
+Ek `ClockComponent` banao `ChangeDetectionStrategy.OnPush` ke saath:
+
+- Wo current time dikhaye, har second update, ya to signal se ya `Observable` + `async` pipe se (tumhari choice).
+- Usme ek `@Input() label` ho aur ek child element usse dikhaye.
+- `ngOnChanges`, `ngOnInit`, `ngDoCheck`, `ngAfterViewInit`, aur `ngOnDestroy` implement karo aur unse `console.log` karo.
+- Parent se 3 second baad `label` change karo aur note karo kaunse hooks fire hote hain.
+- Ek comment me jawab do: agar tum plain `setInterval` use karte jo ek field mutate kare (koi signal nahi, koi `async` pipe nahi, koi `markForCheck` nahi), to `OnPush` ke under displayed time update hoga? Kyun ya kyun nahi?
+
+## 6. Self-Check Questions
+
+1. `OnPush` ke under har wo condition list karo jisse component re-check hota hai.
+2. Constructor me `@Input` value reliably kyun nahi read kar sakte, aur sahi hook kaunsa hai?
+3. `ngOnChanges` kab fire nahi hota jabki child jo data render karta hai wo effectively badal gaya?
+4. `ExpressionChangedAfterItHasBeenCheckedError` kis wajah se aata hai, aur wo dev-mode only kyun hai?

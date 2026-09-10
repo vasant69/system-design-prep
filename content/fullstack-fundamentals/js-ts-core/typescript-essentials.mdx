@@ -1,0 +1,135 @@
+---
+slug: "typescript-essentials"
+title: "TypeScript Essentials: interfaces vs types, generics, unions"
+section: "fullstack-fundamentals"
+module: "js-ts-core"
+order: 7
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: []
+tags: ["typescript", "interfaces", "generics", "union-types"]
+englishDefinition: "TypeScript adds a static type layer over JavaScript that is erased at compile time. The essentials for interviews are: how interfaces and type aliases differ, generics for reusable typed code, and union and intersection types for modelling 'either/or' and 'both' shapes, including discriminated unions for safe narrowing."
+interviewFrequency: "high"
+companies: ["Postman", "Publicis Sapient", "Nagarro", "Freshworks"]
+---
+
+## 1. Concept Overview
+
+TypeScript compile time par types check karta hai aur plain JavaScript emit karta hai — **types runtime par exist nahi karte**. Interview me sabse zyada aane wale pieces:
+
+- **`interface` vs `type`** — dono object shapes describe karte hain. `interface` *reopen* ho sakta hai (declaration merging) aur public object/class contracts ke liye idiomatic hai. `type` ek alias hai jo unions, intersections, tuples, primitives, aur mapped/conditional types bhi name kar sakta hai. Objects ke liye `interface` jo doosre implement/extend karenge; jab union ya computed type chahiye to `type`.
+- **Generics** — `Box<T>` ek type ko parameterise karta hai taaki ek definition kai concrete types ke liye kaam kare aur relationship bani rahe (`identity<T>(x: T): T`). Constraints (`<T extends { id: string }>`) `T` ko limit karti hain.
+- **Union `A | B`** — ek value jo kai types me se ek hai; type-specific members use karne se pehle *narrow* karna padta hai.
+- **Intersection `A & B`** — ek value jo saare members ek saath satisfy kare (shape merge).
+- **Discriminated union** — object types ka union jo ek literal "tag" field share karta hai (`kind: 'a' | 'b'`), jisse `switch (x.kind)` exhaustively narrow karta hai.
+
+## 2. Core Syntax
+
+```ts
+// interface vs type for an object
+interface User { id: string; name: string; }
+type UserT = { id: string; name: string };
+
+interface User { email?: string; }          // OK: merges into User
+// type UserT = { ... }                      // ERROR: duplicate identifier
+
+// type can do things interface cannot
+type Id = string | number;                  // union alias
+type Point = [number, number];              // tuple
+type Nullable<T> = T | null;                // generic alias
+
+// generics
+function first<T>(arr: T[]): T | undefined { return arr[0]; }
+const n = first([1, 2, 3]);                 // n: number | undefined
+
+interface Repo<T> {
+  getById(id: string): Promise<T | null>;
+  getAll(): Promise<T[]>;
+  save(entity: T): Promise<void>;
+}
+
+// constrained generic
+function pluck<T, K extends keyof T>(obj: T, key: K): T[K] { return obj[key]; }
+
+// union + narrowing
+function len(x: string | string[]): number {
+  return typeof x === 'string' ? x.length : x.length;   // both branches valid after narrowing
+}
+
+// intersection
+type WithTimestamps = { createdAt: Date; updatedAt: Date };
+type Article = { title: string } & WithTimestamps;
+```
+
+```ts
+// discriminated union — the interview favourite
+type Shape =
+  | { kind: 'circle'; radius: number }
+  | { kind: 'rect'; w: number; h: number };
+
+function area(s: Shape): number {
+  switch (s.kind) {
+    case 'circle': return Math.PI * s.radius ** 2;
+    case 'rect':   return s.w * s.h;
+    default:       { const _exhaustive: never = s; return _exhaustive; }
+  }
+}
+```
+
+## 3. Working Example
+
+Ek generic `Result<T>` type ek type-safe `unwrap` ke saath.
+
+```ts
+type Result<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
+
+function ok<T>(value: T): Result<T> { return { ok: true, value }; }
+function err<T>(error: string): Result<T> { return { ok: false, error }; }
+
+function unwrap<T>(r: Result<T>): T {
+  if (r.ok) {
+    return r.value;         // narrowed to { ok: true; value: T }
+  }
+  throw new Error(r.error); // narrowed to { ok: false; error: string }
+}
+
+function parseAge(input: string): Result<number> {
+  const n = Number(input);
+  return Number.isInteger(n) && n >= 0 ? ok(n) : err(`not a valid age: ${input}`);
+}
+
+const r = parseAge('42');
+if (r.ok) console.log(r.value + 1);   // r.value is number here
+console.log(unwrap(parseAge('42')));  // 42
+// unwrap(parseAge('abc'))            // throws "not a valid age: abc"
+```
+
+`ok` discriminant TypeScript ko har branch ke andar narrow karne deta hai, isliye `r.value` sirf tab reachable hai jab wo actually exist karta hai — koi non-null assertion nahi, koi runtime shape checks bikhre hue nahi.
+
+## 4. Common Mistakes / Interview Traps
+
+- **"`interface` aur `type` interchangeable hain."** Plain objects ke liye zyaadatar, par sirf `interface` cleanly merge/`implements` karta hai, aur sirf `type` unions/tuples/conditionals name karta hai. Use ke hisaab se choose karo.
+- **Errors chup karane ke liye `any` use karna.** Wo checking ko transitively disable karta hai. `unknown` (narrowing force karta hai) ya proper type prefer karo.
+- **`as` casts ko fix maan lena.** `x as Foo` compiler ko checking rokne ko kehta hai; wo convert ya validate nahi karta. Galat cast ek runtime bug hai bina warning ke.
+- **Runtime par types expect karna.** Koi `instanceof MyInterface` nahi, koi reflection nahi. External data ko runtime checks (ya schema library) se validate karo aur types ko *validated* shape describe karne do.
+- **Bina discriminant ke unions.** Do similar object shapes ka `A | B` narrow karna painful hai. Ek literal `kind`/`type` tag add karo.
+- **Zyada generic code.** `function f<T>(x: T): T` useful hai; `function f<T, U, V>(...)` unrelated params ke saath aksar bas obfuscation hai.
+- **`enum` surprises.** Numeric enums bidirectional hain aur runtime code emit karte hain; string literals ka union aksar simpler hai.
+- **`interface` ka `type` union ko extend karna** — allowed nahi; `extends` ko object type chahiye.
+
+## 5. Practice Task
+
+1. `type Result<T>` ko discriminated union ke roop me define karo: `{ ok: true; value: T }` ya `{ ok: false; error: string }`.
+2. Ek generic `unwrap<T>(r: Result<T>): T` likho jo `ok` par value return kare aur warna `new Error(r.error)` throw kare — **koi** `as` cast nahi aur koi `!` nahi.
+3. Ek `interface Repository<T>` likho jisme `getById(id: string): Promise<T | null>`, `getAll(): Promise<T[]>`, aur `save(entity: T): Promise<void>`. `T = User` ke liye ek fake in-memory implementation do.
+4. Ek function `mapResult<T, U>(r: Result<T>, fn: (v: T) => U): Result<U>` add karo.
+5. Ek comment me, ek situation batao jahan tum `type` use karoge aur specifically `interface` nahi, aur ek jahan ulta sahi hai.
+
+## 6. Self-Check Questions
+
+1. Do cheezein batao jo `type` express kar sakta hai par `interface` nahi, aur ek jo `interface` karta hai par `type` nahi.
+2. `any` aur `unknown` me farak kya hai, aur `unknown` aksar safer kyun hai?
+3. Ek union ko "discriminated" kya banata hai, aur wo `switch` narrowing ke liye kyun matter karta hai?
+4. `const x = data as User` koi runtime validation karta hai? Agar `data` actually `User` na ho to consequences kya hain?

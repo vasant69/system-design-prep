@@ -1,0 +1,158 @@
+---
+slug: "web-api-design"
+title: "Web API Design: Controllers, DTOs, AutoMapper, Middleware"
+section: "fullstack-fundamentals"
+module: "dotnet-csharp-backend"
+order: 3
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["di-service-lifetimes"]
+tags: ["dotnet", "web-api", "dto", "middleware"]
+englishDefinition: "An ASP.NET Core Web API exposes HTTP endpoints through controllers. DTOs are request/response shapes kept separate from database entities. AutoMapper reduces hand-written mapping between them. Middleware is the ordered request/response pipeline where cross-cutting concerns — logging, error handling, auth — live."
+interviewFrequency: "high"
+companies: ["TCS", "Cognizant", "Capgemini", "Tech Mahindra"]
+---
+
+## 1. Concept Overview
+
+**Controller** ek class hai (`ControllerBase` se derived, `[ApiController]` se decorated) jiske action methods HTTP verbs + routes se map hote hain. Action model binding se request read karta hai, ek service call karta hai, aur ek `IActionResult` / typed result return karta hai correct status code ke saath.
+
+**DTO (Data Transfer Object)** — API ke andar/bahar jaane wali shape, jaan-boojh kar database entity se alag. Alag read DTO (`ProductDto`) aur write DTO (`CreateProductRequest`). Entity kabhi directly expose mat karo — wo over-posting, tight coupling, aur accidental data leaks deta hai.
+
+**AutoMapper** — ek library jo entity aur DTO ke beech ki repetitive property copying kam karti hai ek convention + config se. Chhote projects me manual mapping bhi bilkul theek hai.
+
+**Middleware** — ordered pipeline jisme har request hoke guzarti hai (exception handling -> HTTPS redirect -> auth -> routing -> endpoint) aur response ulta wapas aati hai. Cross-cutting concerns yahan rehte hain; order matter karta hai.
+
+## 2. Core Syntax
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]              // -> api/products
+public class ProductsController(IProductService service) : ControllerBase
+{
+    [HttpGet]                                          // GET api/products
+    public async Task<ActionResult<IEnumerable<ProductDto>>> GetAll()
+        => Ok(await service.GetAllAsync());
+
+    [HttpGet("{id:int}")]                              // GET api/products/5
+    public async Task<ActionResult<ProductDto>> Get(int id)
+    {
+        var dto = await service.GetAsync(id);
+        return dto is null ? NotFound() : Ok(dto);
+    }
+
+    [HttpPost]                                         // POST api/products
+    public async Task<ActionResult<ProductDto>> Create(CreateProductRequest req)
+    {
+        // [ApiController] auto-returns 400 if req is invalid (DataAnnotations)
+        var created = await service.CreateAsync(req);
+        return CreatedAtAction(nameof(Get), new { id = created.Id }, created);  // 201 + Location
+    }
+
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(int id, UpdateProductRequest req)
+    {
+        var ok = await service.UpdateAsync(id, req);
+        return ok ? NoContent() : NotFound();          // 204 / 404
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id)
+        => await service.DeleteAsync(id) ? NoContent() : NotFound();
+}
+```
+
+```csharp
+// DTOs — note: no navigation properties, no EF attributes
+public record ProductDto(int Id, string Name, decimal Price, string CategoryName);
+public record CreateProductRequest(
+    [property: Required, StringLength(120)] string Name,
+    [property: Range(0.01, 1_000_000)] decimal Price,
+    [property: Required] int CategoryId);
+
+// AutoMapper profile
+public class ProductProfile : Profile
+{
+    public ProductProfile()
+    {
+        CreateMap<Product, ProductDto>()
+            .ForCtorParam("CategoryName", o => o.MapFrom(s => s.Category.Name));
+        CreateMap<CreateProductRequest, Product>();
+    }
+}
+// Program.cs: builder.Services.AddAutoMapper(typeof(ProductProfile).Assembly);
+```
+
+```csharp
+// Custom middleware: log method + path + elapsed ms
+public class RequestTimingMiddleware(RequestDelegate next, ILogger<RequestTimingMiddleware> log)
+{
+    public async Task Invoke(HttpContext ctx)
+    {
+        var sw = Stopwatch.StartNew();
+        await next(ctx);                               // call the rest of the pipeline
+        log.LogInformation("{Method} {Path} -> {Status} in {Ms}ms",
+            ctx.Request.Method, ctx.Request.Path, ctx.Response.StatusCode, sw.ElapsedMilliseconds);
+    }
+}
+// Program.cs order matters:
+// app.UseExceptionHandler(...); app.UseHttpsRedirection(); app.UseMiddleware<RequestTimingMiddleware>();
+// app.UseAuthentication(); app.UseAuthorization(); app.MapControllers();
+```
+
+## 3. Working Example
+
+Ek slice: create + get, DTOs aur mapping ke saath.
+
+```csharp
+public class ProductService(AppDbContext db, IMapper mapper) : IProductService
+{
+    public async Task<ProductDto?> GetAsync(int id)
+    {
+        var product = await db.Products
+            .Include(p => p.Category)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        return product is null ? null : mapper.Map<ProductDto>(product);
+    }
+
+    public async Task<ProductDto> CreateAsync(CreateProductRequest req)
+    {
+        var entity = mapper.Map<Product>(req);         // request -> entity
+        db.Products.Add(entity);
+        await db.SaveChangesAsync();
+        await db.Entry(entity).Reference(p => p.Category).LoadAsync();
+        return mapper.Map<ProductDto>(entity);         // entity -> response
+    }
+}
+```
+
+Controller sirf HTTP jaanta hai; service business + persistence jaanta hai; DTOs boundary define karte hain. `Product` entity kabhi wire par nahi jaati.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Entities ko directly return/accept karna.** Over-posting (client `IsAdmin` set kar de), circular JSON (navigation properties), aur schema-as-API coupling. DTOs use karo.
+- **Galat status codes.** Create par `200` (should be `201` + `Location`), delete/update par `200` with empty body (should be `204`), missing resource par `200` with `null` (should be `404`).
+- **Middleware order galat.** `UseAuthorization` `UseAuthentication` ke baad; exception handler pipeline me jaldi; `UseCors` routing/auth ke sahi jagah. Galat order = silent auth bypass ya missing headers.
+- **Controllers me business logic.** Controller thin hona chahiye: bind, delegate, return. Rules service me.
+- **AutoMapper "magic" par bharosa** bina `AssertConfigurationIsValid()` ke — silent null/unmapped fields production me pakde jaate hain. Chhote projects me manual mapping saaf aur debuggable hai.
+- **Middleware me `next` call bhoolna** -> pipeline ruk jaata hai, request hang.
+- **Model validation manually likhna** jab `[ApiController]` + DataAnnotations automatic `400` (ProblemDetails) deta hai.
+- **Exceptions ko `catch` karke `500` string return karna** har action me — ek global exception handler middleware use karo.
+
+## 5. Practice Task
+
+Ek `ProductsController` banao GET (list + by id), POST, PUT, DELETE ke saath:
+
+- Alag `ProductDto` (read) aur `CreateProductRequest` (write) use karo — entity kabhi expose mat karo.
+- AutoMapper se map karo (ek `Profile` class).
+- Ek middleware add karo jo har request ke liye method + path + elapsed ms log kare.
+- Correct status codes return karo (200 / 201 with Location / 204 / 404).
+- `[ApiController]` + DataAnnotations se model validation on karo (invalid POST -> automatic 400).
+- `Program.cs` me middleware order likho aur ek comment me batao `UseAuthorization` ke pehle `UseAuthentication` kyun aana chahiye.
+
+## 6. Self-Check Questions
+
+1. Entity ko directly API se return karne ke teen concrete problems batao.
+2. POST-create par kaunsa status code aur kaunsa response header aana chahiye, aur kyun?
+3. `UseAuthentication` aur `UseAuthorization` ka order kyun matter karta hai?
+4. AutoMapper kab worth hai aur kab manual mapping behtar hai?

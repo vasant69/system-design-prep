@@ -1,0 +1,140 @@
+---
+slug: "di-service-lifetimes"
+title: "Dependency Injection & Service Lifetimes"
+section: "fullstack-fundamentals"
+module: "dotnet-csharp-backend"
+order: 2
+difficulty: "intermediate"
+readingTime: 8
+prerequisites: ["csharp-oop"]
+tags: ["dotnet", "dependency-injection", "service-lifetimes", "di-container"]
+englishDefinition: "ASP.NET Core has a built-in DI container. You register services against an interface with a lifetime — Transient (new instance every time), Scoped (one per HTTP request), or Singleton (one for the app) — and the container constructs them and injects them into constructors. Choosing the wrong lifetime causes captive dependencies and shared-state bugs."
+interviewFrequency: "very-high"
+companies: ["Accenture", "Cognizant", "Publicis Sapient", "TCS"]
+---
+
+## 1. Concept Overview
+
+ASP.NET Core ke andar ek **DI container** built-in hai. Tum `Program.cs` me services register karte ho — aksar ek interface ke against — aur controllers/services unhe constructor me maangte hain. Container graph resolve karta hai aur instances supply karta hai.
+
+Har registration ka ek **lifetime** hota hai:
+
+- **Transient** — har baar jab maanga jaaye, naya instance. Stateless, sasta-banne wale services ke liye.
+- **Scoped** — per HTTP request ek instance, us request ke poore graph me shared. `DbContext` ka default. Web me "unit of work" ke liye ideal.
+- **Singleton** — poore app ke liye ek instance, sab requests me shared, first resolve par bana (ya jo instance tum register karo). Thread-safe hona zaroori hai.
+
+Galat lifetime choose karna do classic bugs deta hai: **captive dependency** (Singleton ek Scoped ko hold kar leta hai aur use zinda rakh leta hai) aur unexpected shared mutable state.
+
+## 2. Core Syntax
+
+```csharp
+// Program.cs — registration
+builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
+builder.Services.AddTransient<IEmailSender, SmtpEmailSender>();
+
+builder.Services.AddDbContext<AppDbContext>(o =>
+    o.UseSqlServer(cs));                 // registered as Scoped by default
+
+// interface + implementation
+public interface IClock { DateTime UtcNow { get; } }
+public sealed class SystemClock : IClock { public DateTime UtcNow => DateTime.UtcNow; }
+```
+
+```csharp
+// consumption — constructor injection
+public class OrdersController : ControllerBase
+{
+    private readonly IUnitOfWork _uow;
+    private readonly IClock _clock;
+
+    public OrdersController(IUnitOfWork uow, IClock clock)   // container fills these
+    {
+        _uow = uow;
+        _clock = clock;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create(CreateOrderRequest req)
+    {
+        var order = new Order { CreatedAt = _clock.UtcNow };
+        await _uow.Orders.AddAsync(order);
+        await _uow.SaveChangesAsync();
+        return CreatedAtAction(nameof(Get), new { id = order.Id }, null);
+    }
+}
+```
+
+```csharp
+// resolving a scoped service from a singleton / background service — the safe pattern
+public class Worker(IServiceScopeFactory scopeFactory) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        // ... use db within this scope, then dispose
+    }
+}
+```
+
+## 3. Working Example
+
+Teen lifetimes ka observable farak.
+
+```csharp
+public interface IRequestId { Guid Value { get; } }
+public sealed class RequestId : IRequestId { public Guid Value { get; } = Guid.NewGuid(); }
+
+builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddScoped<IRequestId, RequestId>();
+builder.Services.AddTransient<IStamp, Stamp>();
+
+public sealed class Stamp(IClock clock, IRequestId reqId) : IStamp
+{
+    public string Describe() =>
+        $"clock={clock.GetHashCode()} req={reqId.Value} stamp={GetHashCode()}";
+}
+
+[ApiController, Route("demo")]
+public class DemoController(IStamp a, IStamp b, IRequestId reqId) : ControllerBase
+{
+    [HttpGet]
+    public string[] Get() => new[]
+    {
+        a.Describe(),           // stamp hash: X, req: R1
+        b.Describe(),           // stamp hash: Y (different!), req: R1 (same)
+        $"controller req={reqId.Value}",   // R1 — same as inside the stamps
+    };
+}
+```
+
+Ek request ke andar: dono `IStamp` alag (Transient), par unke andar ka `IRequestId` same hai (Scoped), aur `IClock` har request me same (Singleton). Doosri request par `IRequestId` badal jaata hai, `IClock` wahi rehta hai.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Captive dependency.** Singleton me Scoped ya Transient inject karna use effectively singleton bana deta hai — `DbContext` ko ek singleton ne hold kiya to wo poore app ki life tak zinda, thread-unsafe, stale. Dev mode me container scope validation isse pakadta hai.
+- **`DbContext` ko singleton banana.** `DbContext` thread-safe nahi hai aur change tracker badhta rehta hai. Hamesha Scoped.
+- **Background service / singleton se Scoped resolve karna** without `IServiceScopeFactory.CreateScope()`. Ye "Cannot resolve scoped service from root provider" deta hai ya silently leak.
+- **Transient ko heavy/stateful maan lena.** Har injection point naya instance — agar ek request me 5 jagah maanga to 5 bane. Expensive constructor + Transient = bura.
+- **Interface ke bajaye concrete class register karna**, phir tests me mock nahi kar paana.
+- **`AddSingleton(new Thing())`** jab `Thing` ko khud dependencies chahiye — factory overload (`AddSingleton<IX>(sp => ...)`) use karo taaki DI graph resolve ho.
+- **Lifetime aur thread-safety confuse karna.** Singleton concurrent requests dekhta hai — uski mutable state locked ya immutable honi chahiye.
+
+## 5. Practice Task
+
+Teen services set up karo:
+
+- `IClock` — **Singleton** — `DateTime UtcNow`.
+- `IRequestContext` with a `Guid RequestId` property — **Scoped**.
+- `IEmailSender` — **Transient**.
+- Teeno ko ek controller me aur ek doosre service me inject karo; unke hash codes (aur `RequestId`) log karo.
+- Endpoint ko do baar hit karo aur explain karo: kaunse instances shared hain aur kaunse alag, dono ek request ke andar aur do requests ke beech.
+- Phir describe karo: agar tum Scoped `IRequestContext` ko Singleton `IClock` me inject karo to kya toota hai, aur ASP.NET Core startup par kya karta hai.
+
+## 6. Self-Check Questions
+
+1. Transient, Scoped, aur Singleton me ek line me farak batao, ek typical use ke saath.
+2. Captive dependency kya hai, aur ek concrete jodi batao jo ise cause karti hai.
+3. `DbContext` Scoped kyun hona chahiye, Singleton kyun nahi?
+4. Ek `BackgroundService` (singleton) se `DbContext` (scoped) ko sahi tareeke se kaise use karoge?

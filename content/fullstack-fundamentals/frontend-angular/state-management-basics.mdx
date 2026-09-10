@@ -1,0 +1,134 @@
+---
+slug: "state-management-basics"
+title: "State Management Basics: Services vs NgRx"
+section: "fullstack-fundamentals"
+module: "frontend-angular"
+order: 8
+difficulty: "advanced"
+readingTime: 8
+prerequisites: ["services-dependency-injection", "rxjs-observables"]
+tags: ["angular", "state-management", "ngrx", "redux"]
+englishDefinition: "State management is how an app stores data that outlives a single component and shares it consistently. A plain service holding a BehaviorSubject or signals covers most apps. NgRx adds a single immutable store, actions, reducers, selectors, and effects — a strict Redux pattern that pays off only when app-wide state and team size make the discipline worth the boilerplate."
+interviewFrequency: "medium"
+companies: ["Publicis Sapient", "Nagarro", "Persistent Systems", "HCLTech"]
+---
+
+## 1. Concept Overview
+
+Zyada state ek **service** me theek rehti hai: ek class jisme `signal` ya `BehaviorSubject` ho, mutation methods hon, aur derived values `computed` ya RxJS operators se aayein. Components use inject karke read/write karte hain. Ye simple, testable, aur apps ke bade majority ke liye kaafi hai.
+
+**NgRx** Redux pattern thopta hai:
+
+- **Store** — poore app ke liye ek immutable state object.
+- **Actions** — plain objects jo batate hain "kya hua" (`[Cart] Add Item`).
+- **Reducers** — pure functions `(state, action) => newState`.
+- **Selectors** — memoized functions state ka slice read karne ke liye.
+- **Effects** — side effects (HTTP) handle karte hain — actions par sunte hain aur naye actions dispatch karte hain.
+
+Tum khareedte ho: single source of truth, time-travel debugging, strict unidirectional flow, aur har change ke liye predictable jagah. Tum dete ho: kaafi boilerplate, indirection, aur learning curve. NgRx tab lo jab kai features state share karte hon, kai developers use touch karte hon, ya "kisne kab badla" recurring debugging question ho — by default nahi.
+
+## 2. Core Syntax
+
+```ts
+// Service-as-store (signals) — the default choice
+import { Injectable, signal, computed } from '@angular/core';
+
+@Injectable({ providedIn: 'root' })
+export class CartStore {
+  private _items = signal<CartLine[]>([]);
+  readonly items = this._items.asReadonly();
+  readonly count = computed(() => this._items().reduce((n, l) => n + l.qty, 0));
+  readonly total = computed(() => this._items().reduce((s, l) => s + l.qty * l.price, 0));
+
+  add(line: CartLine) {
+    this._items.update(list => [...list, line]);   // immutable update
+  }
+  clear() { this._items.set([]); }
+}
+```
+
+```ts
+// NgRx equivalent — actions / reducer / selector
+export const addItem = createAction('[Cart] Add Item', props<{ line: CartLine }>());
+
+export const cartReducer = createReducer(
+  { items: [] as CartLine[] },
+  on(addItem, (state, { line }) => ({ ...state, items: [...state.items, line] })),
+);
+
+export const selectCount = createSelector(
+  (s: AppState) => s.cart.items,
+  items => items.reduce((n, l) => n + l.qty, 0),
+);
+
+// in a component:
+count = this.store.selectSignal(selectCount);
+this.store.dispatch(addItem({ line }));
+```
+
+## 3. Working Example
+
+Ek todo store as a plain service, do components se consume hota hua.
+
+```ts
+@Injectable({ providedIn: 'root' })
+export class TodoStore {
+  private _todos = signal<Todo[]>([]);
+  readonly todos = this._todos.asReadonly();
+  readonly remaining = computed(() => this._todos().filter(t => !t.done).length);
+
+  add(title: string) {
+    this._todos.update(list => [...list, { id: crypto.randomUUID(), title, done: false }]);
+  }
+  toggle(id: string) {
+    this._todos.update(list =>
+      list.map(t => (t.id === id ? { ...t, done: !t.done } : t)));
+  }
+}
+```
+
+```ts
+@Component({
+  selector: 'app-todo-input',
+  template: `<input #b (keyup.enter)="store.add(b.value); b.value=''" />`,
+})
+export class TodoInputComponent { store = inject(TodoStore); }
+
+@Component({
+  selector: 'app-todo-list',
+  template: `
+    <p>{{ store.remaining() }} left</p>
+    <li *ngFor="let t of store.todos()" (click)="store.toggle(t.id)"
+        [class.done]="t.done">{{ t.title }}</li>`,
+})
+export class TodoListComponent { store = inject(TodoStore); }
+```
+
+Dono components wahi `TodoStore` singleton dekhte hain, updates immutable hain, aur `remaining` derived hai — NgRx ki zaroorat nahi. Agar ye app 15 feature areas tak badh jaaye jo sab todos, projects, aur auth touch karein, 6 developers ke saath, tab NgRx ka trade worth hota hai.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Reflex me NgRx uthana.** Ek CRUD app ke liye jisme mutthi bhar screens hain, ye zyaadatar overhead hai. Interviewers sunna chahte hain ki wo *kab* pay off karta hai, ye nahi ki wo hamesha "best practice" hai.
+- **State mutate karna** kisi bhi approach me. Signals, `BehaviorSubject`, aur NgRx reducers sab change detection aur memoized selectors ke kaam karne ke liye immutable updates assume karte hain.
+- **Business logic components me.** Store ka point yahi hai ki components dumb rahein — wo dispatch/call aur render karte hain.
+- **`BehaviorSubject` publicly expose karna.** `asObservable()` (ya signals ke liye `asReadonly()`) expose karo taaki sirf store `next`/`set` call kar sake.
+- **NgRx effects jo wahi action dispatch karein jisne unhe trigger kiya** -> infinite loop.
+- **Selectors har render par recompute** kyunki input slice har baar naya array hai (upstream mutation memoization todti hai).
+- **Derived data store karna.** `total` ko `computed`/selector se compute karo; use store karke sync me rakhne ki koshish mat karo.
+
+## 5. Practice Task
+
+Ek `TodoStore` as a plain `providedIn: 'root'` service implement karo (NgRx nahi):
+
+- State: `todos` read-only expose (signal ya `BehaviorSubject` + `asObservable`).
+- Methods: `addTodo(title)`, `toggleTodo(id)`, `removeTodo(id)` — sab **immutable** updates.
+- Derived: `remaining` (not-done ka count) `computed` ya mapped Observable se.
+- Do components isse wire karo: ek todos add karne ke liye, ek list karke toggle karne ke liye.
+- Phir ek chhota paragraph likho: team size, features ki sankhya, aur debugging pain ke hisaab se, kis point par isse NgRx par migrate karoge, aur do specific cheezein batao jo NgRx add karega jo tumhare service me nahi hai.
+
+## 6. Self-Check Questions
+
+1. NgRx kaunse concrete problems solve karta hai jo shared service nahi karta, aur cost kya hai?
+2. Signal store aur NgRx reducer dono me updates immutable kyun hone chahiye?
+3. Consumers ko tumhare store ke `BehaviorSubject` me directly values push karne se kaise rokoge?
+4. `cartTotal` state me store hona chahiye ya derived? Kyun?

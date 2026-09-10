@@ -1,0 +1,131 @@
+---
+slug: "prototypes-inheritance"
+title: "Prototypes & Inheritance"
+section: "fullstack-fundamentals"
+module: "js-ts-core"
+order: 4
+difficulty: "intermediate"
+readingTime: 8
+prerequisites: ["this-keyword-binding"]
+tags: ["javascript", "prototype", "inheritance", "classes"]
+englishDefinition: "Every JavaScript object has a hidden link to another object called its prototype. When you read a property that an object does not have, the engine follows that link chain until it finds the property or reaches null. Constructor functions and the class syntax are two ways to set up that chain for inheritance."
+interviewFrequency: "high"
+companies: ["Freshworks", "Postman", "Zoho", "Publicis Sapient"]
+---
+
+## 1. Concept Overview
+
+JavaScript inheritance **prototypal** hai: objects doosre objects ko delegate karte hain. Har object ka ek internal `[[Prototype]]` hota hai (`Object.getPrototypeOf(obj)` ya legacy `__proto__` se readable). Object par jo property read miss ho jaaye wo **prototype chain** upar walk karti hai jab tak property mile ya `null` aa jaaye.
+
+- **Constructor function** `function Foo() {}` ka ek `Foo.prototype` object hota hai. `new Foo()` ek object banata hai jiska `[[Prototype]]` `Foo.prototype` hai, isliye shared methods `Foo.prototype` par jaate hain (ek copy, saare instances delegate karte hain).
+- **`class`** usi machinery par syntax hai: methods `Class.prototype` par jaate hain, `extends` chain set karta hai, `super` upar call karta hai. Koi naya inheritance model nahi.
+- `instanceof` check karta hai ki ek constructor ka `.prototype` object ki chain me kahin aata hai ya nahi.
+
+Writes hamesha object par khud hote hain (wo upar nahi jaate); sirf reads delegate karte hain. Isiliye ek inherited array ko ek instance par mutate karne se wo "leak" dikhta hai agar array prototype par ho.
+
+## 2. Core Syntax
+
+```js
+// class syntax
+class Animal {
+  constructor(name) { this.name = name; }
+  speak() { return `${this.name} makes a sound`; }
+}
+class Dog extends Animal {
+  constructor(name) { super(name); }          // must call super before using `this`
+  speak() { return `${super.speak()} — woof`; }   // super method call
+}
+const d = new Dog('Rex');
+d.speak();                        // "Rex makes a sound — woof"
+d instanceof Dog;                 // true
+d instanceof Animal;              // true
+Object.getPrototypeOf(d) === Dog.prototype;   // true
+
+// equivalent with constructor functions
+function AnimalF(name) { this.name = name; }
+AnimalF.prototype.speak = function () { return `${this.name} makes a sound`; };
+
+function DogF(name) { AnimalF.call(this, name); }        // "super constructor"
+DogF.prototype = Object.create(AnimalF.prototype);        // link the chain
+DogF.prototype.constructor = DogF;                        // fix constructor pointer
+DogF.prototype.speak = function () {
+  return `${AnimalF.prototype.speak.call(this)} — woof`;  // "super method"
+};
+```
+
+```js
+// checking own vs inherited
+d.hasOwnProperty('name');              // true  -> instance property
+d.hasOwnProperty('speak');             // false -> lives on the prototype
+'speak' in d;                          // true  -> `in` walks the chain
+```
+
+## 3. Working Example
+
+Ek `Stack` aur ek `BoundedStack` jo size limit kare, dono tareeke se.
+
+```js
+// class version
+class Stack {
+  #items = [];
+  push(x) { this.#items.push(x); }
+  pop() { return this.#items.pop(); }
+  get size() { return this.#items.length; }
+}
+class BoundedStack extends Stack {
+  constructor(max) { super(); this.max = max; }
+  push(x) {
+    if (this.size >= this.max) throw new Error('stack full');
+    super.push(x);
+  }
+}
+const b = new BoundedStack(2);
+b.push(1); b.push(2);
+try { b.push(3); } catch (e) { console.log(e.message); }   // "stack full"
+b instanceof Stack;               // true
+b.constructor === BoundedStack;   // true
+```
+
+```js
+// constructor-function version
+function StackF() { this.items = []; }
+StackF.prototype.push = function (x) { this.items.push(x); };
+StackF.prototype.pop  = function () { return this.items.pop(); };
+
+function BoundedStackF(max) { StackF.call(this); this.max = max; }
+BoundedStackF.prototype = Object.create(StackF.prototype);
+BoundedStackF.prototype.constructor = BoundedStackF;
+BoundedStackF.prototype.push = function (x) {
+  if (this.items.length >= this.max) throw new Error('stack full');
+  StackF.prototype.push.call(this, x);
+};
+```
+
+Dono wahi chain banate hain: instance -> `BoundedStack.prototype` -> `Stack.prototype` -> `Object.prototype` -> `null`.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Reference-type state prototype par daalna.** `Foo.prototype.tags = []` har instance shared karta hai — ek `push` sabko dikhta hai. Instance state constructor / class fields me rehni chahiye.
+- **Subclass constructor me `super()` bhoolna**, ya use se pehle `this` use karna -> `ReferenceError`.
+- **`Child.prototype = Parent.prototype`** karna `Object.create(Parent.prototype)` ke bajaye. Ab child prototype edit karna parent ka bhi edit karta hai.
+- **`constructor` khona** `Child.prototype = Object.create(...)` ke baad — use wapas set karo warna `x.constructor` `Parent` par point karta hai.
+- **`__proto__` vs `prototype`.** `prototype` constructor *functions* ki property hai; `__proto__` (behtar: `Object.getPrototypeOf`) *instances* par link hai.
+- **`instanceof` realms ke aar-paar jhoot bolta hai** (iframes) aur `Symbol.hasInstance` se fool ho sakta hai; aur wo chain check karta hai, "kisne construct kiya" nahi.
+- **Prototype par arrow functions as methods** — apna `this` nahi, toh `this.name` galat.
+
+## 5. Practice Task
+
+`Queue` aur `PriorityQueue extends Queue` **do baar** implement karo:
+
+- `Queue`: `enqueue(x)`, `dequeue()`, `size` getter, ek array se backed.
+- `PriorityQueue`: `enqueue(x, priority)` aise insert kare ki `dequeue()` hamesha highest-priority item return kare; `dequeue`/`size` inherited ya override jaisa chahiye.
+- Version A: ES6 `class` / `extends` / `super`.
+- Version B: constructor functions + prototype link ke liye `Object.create`, `constructor` fixed up.
+- Dono ke liye verify: `pq instanceof Queue` `true` hai, `pq.constructor === PriorityQueue` `true` hai, aur do `PriorityQueue` instances apna internal array share **nahi** karte.
+
+## 6. Self-Check Questions
+
+1. Jab tum `obj.foo` read karo aur `obj` me apna `foo` na ho, to exactly kya hota hai?
+2. `Child.prototype = Object.create(Parent.prototype)` kaam kyun karta hai par `Child.prototype = Parent.prototype` bugs deta hai?
+3. Instance-specific array/object state kahan rehni chahiye, aur prototype par daalne se kya toot ta hai?
+4. `instanceof` asal me kya check karta hai, aur ek case batao jahan wo misleading jawab de.

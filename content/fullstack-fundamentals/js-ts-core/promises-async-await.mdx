@@ -1,0 +1,131 @@
+---
+slug: "promises-async-await"
+title: "Promises & Async/Await"
+section: "fullstack-fundamentals"
+module: "js-ts-core"
+order: 6
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["event-loop-tasks"]
+tags: ["javascript", "promises", "async-await", "error-handling"]
+englishDefinition: "A Promise is an object representing a value that will be available later, in one of three states: pending, fulfilled, or rejected. async/await is syntax that lets you write promise-based code in a sequential style; await pauses the async function until the promise settles, and try/catch handles rejections."
+interviewFrequency: "very-high"
+companies: ["Zoho", "Postman", "Freshworks", "Cognizant"]
+---
+
+## 1. Concept Overview
+
+**Promise** ek future value ka placeholder hai. Wo **pending** se shuru hoti hai aur exactly ek baar settle hoti hai — ya to **fulfilled** (ek value ke saath) ya **rejected** (ek reason ke saath) — aur phir kabhi nahi badalti. Tum react karte ho `.then(onFulfilled)`, `.catch(onRejected)`, `.finally(onSettled)` se, har ek ek **nayi** promise return karta hai isliye calls chain hoti hain.
+
+**`async`/`await`** isi par sugar hai. Ek `async` function hamesha ek promise return karta hai. `await p` function ko tab tak suspend karta hai jab tak `p` settle na ho, phir uski value ke saath resume karta hai (ya uska rejection reason throw karta hai, jise `try/catch` catch kar sakta hai). `await` aur resume ke beech me event loop free hota hai — `await` ke baad ka code ek microtask continuation hai.
+
+**Combinators**: `Promise.all` (sab succeed, ya pehli failure par reject), `Promise.allSettled` (sabke liye wait, kabhi reject nahi), `Promise.race` (pehla jo settle ho, value ya error), `Promise.any` (pehla jo fulfil ho, sab fail hone par hi reject).
+
+## 2. Core Syntax
+
+```js
+// creating
+const p = new Promise((resolve, reject) => {
+  setTimeout(() => resolve(42), 100);     // call resolve OR reject, once
+});
+
+// consuming — then/catch/finally
+p.then(v => v * 2)
+ .then(v => console.log(v))               // 84
+ .catch(err => console.error(err))        // handles any rejection above
+ .finally(() => console.log('done'));     // runs regardless
+
+// async/await equivalent
+async function work() {
+  try {
+    const v = await p;                    // unwraps 42, or throws on reject
+    return v * 2;
+  } catch (err) {
+    console.error(err);
+    throw err;                            // rethrow if the caller should know
+  } finally {
+    console.log('done');
+  }
+}
+
+// combinators
+await Promise.all([a(), b(), c()]);       // [ra, rb, rc] — rejects if any reject
+await Promise.allSettled([a(), b()]);     // [{status,value}|{status,reason}, ...]
+await Promise.race([fetchData(), timeout(3000)]);  // whichever settles first
+```
+
+```js
+// sequential vs parallel — a very common mistake
+// SLOW: each await waits for the previous
+const u = await getUser();
+const o = await getOrders();      // did not need to wait for getUser
+
+// FAST: start both, then await
+const [u2, o2] = await Promise.all([getUser(), getOrders()]);
+```
+
+## 3. Working Example
+
+`fetchWithRetry` — rejection par retry, per-attempt timeout ke saath.
+
+```js
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
+function timeout(ms) {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms));
+}
+
+async function fetchWithRetry(fn, retries = 3, delayMs = 500, perTryMs = 2000) {
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await Promise.race([fn(), timeout(perTryMs)]);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await delay(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
+// usage: a function that fails twice then succeeds
+let calls = 0;
+const flaky = () => (++calls < 3
+  ? Promise.reject(new Error(`fail ${calls}`))
+  : Promise.resolve('ok'));
+
+fetchWithRetry(flaky).then(console.log);   // "ok" after 2 retries
+```
+
+Real call aur `timeout` ke beech `Promise.race` ek bounded per-attempt wait deta hai; `for` loop plus `await delay` retries ko space karta hai; `lastErr` rethrow hota hai taaki caller ko final failure dikhe.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Independent work ke liye sequential awaits.** Do unrelated `await`s latency double kar dete hain. `Promise.all` use karo.
+- **Function ke andar promise `return` ya `await` bhoolna**, isse errors unhandled rejections ban jaate hain aur `finally`/callers jaldi chal jaate hain.
+- **`forEach` ke andar `await`.** `arr.forEach(async ...)` wait nahi karta — `forEach` returned promises ignore karta hai. `for...of` loop ya `Promise.all(arr.map(...))` use karo.
+- **Promise chain par missing `.catch` / `try`** -> `UnhandledPromiseRejection`.
+- **`Promise.all` pehli failure par reject** aur baaki results kho dena. Jab har outcome chahiye to `allSettled` use karo.
+- **Promise banaya par kabhi settle nahi kiya** (`resolve` call bhool gaye) — awaiting code hamesha ke liye hang.
+- **`new Promise` ko `async` ke saath mix karna** (`return new Promise(async (resolve) => { await ... })`) — "explicit promise construction antipattern"; executor ke errors swallow ho jaate hain.
+- **Sochna ki `await` code ko synchronous bana deta hai.** Wo *is* function ko suspend karta hai; baaki program chalta rehta hai.
+
+## 5. Practice Task
+
+`fetchWithRetry(fn, retries, delayMs)` likho:
+
+- Promise-returning `fn()` call kare. Fulfilment par, uski value ke saath resolve.
+- Rejection par, `delayMs` wait kare, phir retry, `retries` total attempts tak. Last failure ke baad, **last** error ke saath reject.
+- Ek `timeout(ms)` helper add karo aur `Promise.race` use karo taaki har individual attempt reject ho jaaye agar wo `ms` se zyada le.
+- Ek `fn` se demonstrate karo jo apni pehli do calls par reject kare aur teesri par resolve — wrapper ultimately resolve hona chahiye.
+- Bonus: delay ko exponential banao (`delayMs * 2 ** (attempt - 1)`).
+
+Koi library nahi. Sirf `Promise`, `setTimeout`, `async/await`.
+
+## 6. Self-Check Questions
+
+1. Ek promise kitni baar settle ho sakti hai, aur uske teen states kya hain?
+2. `const a = await x(); const b = await y();` (jahan `x` aur `y` independent hain) ko parallel me chalane ke liye rewrite karo, aur batao kitni latency bachi.
+3. `[1,2,3].forEach(async n => { await save(n); })` saves ke liye wait kyun nahi karta, aur iske bajaye kya use karte ho?
+4. `Promise.allSettled` ko `Promise.all` par kab, aur `Promise.any` ko `Promise.race` par kab lete ho?

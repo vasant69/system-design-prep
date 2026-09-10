@@ -1,0 +1,143 @@
+---
+slug: "ef-core-basics"
+title: "Entity Framework Core Basics"
+section: "fullstack-fundamentals"
+module: "dotnet-csharp-backend"
+order: 4
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["di-service-lifetimes"]
+tags: ["dotnet", "ef-core", "dbcontext", "linq", "migrations"]
+englishDefinition: "EF Core is an object-relational mapper for .NET. A DbContext represents a session with the database and exposes DbSet properties you query with LINQ; EF translates the LINQ to SQL, tracks changes to loaded entities, and writes them back on SaveChanges. Migrations version your schema as code."
+interviewFrequency: "high"
+companies: ["Cognizant", "Accenture", "Persistent Systems", "TCS"]
+---
+
+## 1. Concept Overview
+
+**EF Core** ek ORM hai — C# classes (entities) ko relational tables se map karta hai taaki tum SQL ke bajaye LINQ likh sako.
+
+- **`DbContext`** — database ke saath ek session. `DbSet<T>` properties expose karta hai (har ek roughly ek table). Ek change tracker rakhta hai jo loaded entities ke edits yaad rakhta hai. Web me **Scoped** (per request).
+- **LINQ query** — `db.Books.Where(b => b.Year > 2000).ToListAsync()`. EF ise SQL me translate karta hai aur database par chalata hai (`IQueryable`), tab tak nahi jab tak tum enumerate na karo (`ToList`, `First`, `foreach`).
+- **Change tracking** — tumne jo entities query ki (bina `AsNoTracking()`), unke changes `SaveChanges()` par ek `UPDATE`/`INSERT`/`DELETE` ban jaate hain.
+- **Migrations** — `dotnet ef migrations add X` schema ke changes ko C# code ke roop me generate karta hai; `dotnet ef database update` apply karta hai. Schema version-controlled rehta hai.
+
+## 2. Core Syntax
+
+```csharp
+// entities
+public class Author
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<Book> Books { get; set; } = new();     // navigation (one-to-many)
+}
+public class Book
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public int Year { get; set; }
+    public int AuthorId { get; set; }                   // FK
+    public Author Author { get; set; } = null!;
+}
+
+// DbContext
+public class LibraryContext(DbContextOptions<LibraryContext> options) : DbContext(options)
+{
+    public DbSet<Author> Authors => Set<Author>();
+    public DbSet<Book> Books => Set<Book>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Book>().Property(x => x.Title).HasMaxLength(200).IsRequired();
+        b.Entity<Book>().HasOne(x => x.Author).WithMany(a => a.Books).HasForeignKey(x => x.AuthorId);
+    }
+}
+// Program.cs: builder.Services.AddDbContext<LibraryContext>(o => o.UseSqlServer(cs));
+```
+
+```csharp
+// LINQ queries
+var recent = await db.Books
+    .Where(b => b.AuthorId == authorId)
+    .OrderByDescending(b => b.Year)
+    .ToListAsync();
+
+var prolific = await db.Authors
+    .Where(a => a.Books.Count > 3)
+    .Select(a => a.Name)
+    .ToListAsync();
+
+// projection — only the columns you need, no tracking, no full entity
+var list = await db.Books
+    .Select(b => new BookListItemDto(b.Title, b.Author.Name))
+    .ToListAsync();
+
+// write path — change tracking
+var book = await db.Books.FindAsync(id);
+book!.Year = 2024;                      // tracked
+await db.SaveChangesAsync();            // generates UPDATE Books SET Year=... WHERE Id=...
+```
+
+```bash
+# migrations (CLI)
+dotnet ef migrations add InitialCreate
+dotnet ef database update
+dotnet ef migrations remove          # undo the last (unapplied) migration
+```
+
+## 3. Working Example
+
+Ek query slice, N+1 problem aur uska fix dikhata hua.
+
+```csharp
+// BAD: N+1 — one query for authors, then one per author for books
+var authors = await db.Authors.ToListAsync();
+foreach (var a in authors)
+{
+    // lazy load or explicit access triggers a separate SELECT per author
+    Console.WriteLine($"{a.Name}: {a.Books.Count}");   // 1 + N queries
+}
+
+// FIX 1: eager load with Include -> one query (a JOIN)
+var withBooks = await db.Authors
+    .Include(a => a.Books)
+    .ToListAsync();
+
+// FIX 2 (best for read-only lists): project to a DTO -> minimal SELECT, no tracking
+var summary = await db.Authors
+    .Select(a => new AuthorSummaryDto(a.Name, a.Books.Count))
+    .ToListAsync();
+```
+
+`Include` tab use karo jab tumhe entities chahiye. `Select` projection read-only screens ke liye behtar hai — kam columns, no change-tracker overhead, no accidental lazy loads.
+
+## 4. Common Mistakes / Interview Traps
+
+- **N+1 queries.** Loop me navigation property access karna ek query per iteration deta hai. `Include` ya projection use karo. Ye sabse common EF interview topic hai.
+- **`IEnumerable` par jaldi switch karna.** `db.Books.ToList().Where(...)` poora table memory me leke phir filter karta hai. Filter ko `IQueryable` par rakho taaki SQL me jaaye.
+- **Read-only queries par `AsNoTracking()` na lagana.** Change tracker har entity snapshot karta hai — bade list reads par memory + CPU waste.
+- **`DbContext` ko share/long-lived rakhna.** Wo Scoped hai, thread-safe nahi. Kabhi singleton nahi, kabhi `static` nahi.
+- **`SaveChanges` ko `await` na karna** — silent race / connection issues. Async use karo aur await karo.
+- **Migration ko production DB par bina review kiye apply karna.** Generated `Up()` dekho — accidental column drop = data loss.
+- **Client-side evaluation.** Ek C# method jise EF SQL me translate nahi kar sakta, `Where` me use karna — newer EF isse exception deta hai, purana chupchaap sab rows fetch kar leta tha.
+- **`Find` vs `FirstOrDefault`.** `Find` pehle local change-tracker cache dekhta hai; `First` hamesha DB hit karta hai.
+
+## 5. Practice Task
+
+`Author` aur `Book` (one-to-many) diye gaye:
+
+- Ek `DbContext` likho, initial migration create karo (`dotnet ef migrations add`).
+- LINQ likho:
+  - ek diye gaye author ki saari books, year se sorted.
+  - wo authors jinki 3 se zyada books hain.
+  - ek projection `BookListItemDto` (title + author name) me — full entities load kiye bina.
+- Apne code me ek aisi query pehchaano jo N+1 trigger karti, aur use `Include` ya projection se fix karo.
+- Ek comment me: `AsNoTracking()` in me se kaunsi queries par lagana chahiye aur kyun.
+
+## 6. Self-Check Questions
+
+1. N+1 query problem kya hai, aur do alag tareeke ise fix karne ke?
+2. `IQueryable` aur `IEnumerable` par filter karne me kya farak hai jab data DB me ho?
+3. `AsNoTracking()` kya karta hai aur kab use karna chahiye?
+4. `DbContext` ko kabhi singleton kyun nahi banana chahiye?

@@ -70,6 +70,7 @@ import {
   Parentheses,
   Split,
   Eye,
+  Dumbbell,
   type LucideIcon,
 } from "lucide-react";
 
@@ -88,6 +89,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Hexagon,
   Braces,
   Eye,
+  Dumbbell,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -174,4 +176,8 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "viz-node-runtime": Hexagon,
   "viz-node-eventloop": Workflow,
   "viz-node-streams": Waves,
+  "frontend-angular": Component,
+  "js-ts-core": Braces,
+  "dotnet-csharp-backend": Server,
+  "practice-answer-key": ListChecks,
 };

@@ -764,4 +764,42 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "fullstack-fundamentals",
+    title: "Full-Stack Fundamentals",
+    description:
+      "Angular, JavaScript/TypeScript core, and .NET Core/C# — the fundamentals a full-stack developer needs to clear the coding round without AI assistance. Every topic runs the same six beats: concept, core syntax, one worked example, common mistakes and interview traps, a practice task you solve yourself, and self-check questions. A final answer key gives solution hints, not full code.",
+    icon: "Dumbbell",
+    enabled: true,
+    modules: [
+      {
+        id: "frontend-angular",
+        title: "Angular / Frontend",
+        description:
+          "Components and the four data bindings, @Input/@Output/EventEmitter communication, services and dependency injection, RxJS and Observables, routing and guards, template-driven vs reactive forms, change detection and lifecycle hooks, and services-vs-NgRx state management.",
+        order: 1,
+      },
+      {
+        id: "js-ts-core",
+        title: "JavaScript / TypeScript Core",
+        description:
+          "Closures and scope, the this keyword and call/apply/bind, hoisting, prototypes and inheritance, the event loop with microtasks vs macrotasks, promises and async/await, and the TypeScript type-system essentials — interfaces vs types, generics, and union/intersection types.",
+        order: 2,
+      },
+      {
+        id: "dotnet-csharp-backend",
+        title: ".NET Core / C# Backend",
+        description:
+          "OOP in C# with real examples, dependency injection and Transient/Scoped/Singleton lifetimes, Web API design with controllers/DTOs/AutoMapper/middleware, EF Core basics — DbContext, LINQ, migrations — async programming and its common pitfalls, and JWT authentication.",
+        order: 3,
+      },
+      {
+        id: "practice-answer-key",
+        title: "Answer Key & Solution Hints",
+        description:
+          "Brief solution approaches — the shape of the answer, not full spoon-fed code — for every practice task across all three modules, so you can self-check after attempting them.",
+        order: 4,
+      },
+    ],
+  },
 ];

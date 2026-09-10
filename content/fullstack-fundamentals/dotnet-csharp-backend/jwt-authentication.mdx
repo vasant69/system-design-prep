@@ -1,0 +1,144 @@
+---
+slug: "jwt-authentication"
+title: "JWT Authentication Basics"
+section: "fullstack-fundamentals"
+module: "dotnet-csharp-backend"
+order: 6
+difficulty: "intermediate"
+readingTime: 8
+prerequisites: ["web-api-design"]
+tags: ["dotnet", "jwt", "authentication", "security"]
+englishDefinition: "A JSON Web Token is a signed, base64url-encoded string with three parts — header, payload (claims), signature. The server issues it on login; the client sends it on each request in the Authorization header; the API validates the signature and claims on every request without a database lookup, which makes auth stateless."
+interviewFrequency: "medium"
+companies: ["Cognizant", "Publicis Sapient", "Tech Mahindra", "Nagarro"]
+---
+
+## 1. Concept Overview
+
+**JWT** ek signed token hai jiske teen dot-separated parts hain: **header** (algorithm), **payload** (claims — `sub`, `name`, `role`, `exp`, ...), aur **signature** (server ki secret/private key se banaya).
+
+Flow:
+
+1. Client `/auth/login` par credentials bhejta hai.
+2. Server verify karta hai, ek JWT sign karke return karta hai (short expiry).
+3. Client har request par `Authorization: Bearer <token>` header bhejta hai.
+4. API har request par signature aur claims (`exp`, `iss`, `aud`) validate karta hai — **koi DB lookup nahi**. Isliye auth stateless hai aur horizontally scale karta hai.
+
+Payload **encrypted nahi** hai — bas base64url encoded. Koi bhi use decode kar sakta hai. Isliye usme secrets mat daalo. Trust signature se aata hai: agar signature valid hai, payload tamper-free hai.
+
+## 2. Core Syntax
+
+```csharp
+// Program.cs — configure JWT bearer auth
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,                     // checks exp
+            ValidateIssuerSigningKey = true,             // checks signature
+            ValidIssuer = cfg["Jwt:Issuer"],
+            ValidAudience = cfg["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(cfg["Jwt:Key"]!)),
+            ClockSkew = TimeSpan.FromSeconds(30),        // default is 5 min — tighten it
+        };
+    });
+
+builder.Services.AddAuthorization();
+// pipeline: app.UseAuthentication(); app.UseAuthorization();
+```
+
+```csharp
+// issuing a token on login
+private string CreateToken(User user)
+{
+    var claims = new[]
+    {
+        new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+        new Claim(JwtRegisteredClaimNames.Name, user.Username),
+        new Claim(ClaimTypes.Role, user.Role),                      // -> [Authorize(Roles=...)]
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+    };
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_cfg["Jwt:Key"]!));
+    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var token = new JwtSecurityToken(
+        issuer: _cfg["Jwt:Issuer"], audience: _cfg["Jwt:Audience"],
+        claims: claims, expires: DateTime.UtcNow.AddMinutes(15),
+        signingCredentials: creds);
+    return new JwtSecurityTokenHandler().WriteToken(token);
+}
+```
+
+```csharp
+// protecting endpoints
+[Authorize]                                   // any authenticated user
+[HttpGet("me")] public IActionResult Me() => Ok(User.Identity!.Name);
+
+[Authorize(Roles = "admin")]                  // role claim must contain "admin"
+[HttpGet("admin/stats")] public IActionResult Stats() => Ok(...);
+
+[AllowAnonymous]                              // opt out on a specific action
+[HttpPost("auth/login")] public IActionResult Login(LoginRequest r) => ...;
+```
+
+## 3. Working Example
+
+Login endpoint + a protected admin route.
+
+```csharp
+[ApiController, Route("auth")]
+public class AuthController(IUserStore users, ITokenService tokens) : ControllerBase
+{
+    [AllowAnonymous, HttpPost("login")]
+    public async Task<IActionResult> Login(LoginRequest req)
+    {
+        var user = await users.FindByUsernameAsync(req.Username);
+        // constant-time hash verification; never reveal which part failed
+        if (user is null || !PasswordHasher.Verify(req.Password, user.PasswordHash))
+            return Unauthorized(new { message = "invalid credentials" });
+
+        return Ok(new { token = tokens.Create(user), expiresIn = 900 });
+    }
+}
+
+[ApiController, Route("admin")]
+[Authorize(Roles = "admin")]
+public class AdminController : ControllerBase
+{
+    [HttpGet("stats")]
+    public IActionResult Stats() => Ok(new { users = 1234, uptime = "5d" });
+}
+```
+
+Password hash `Verify` constant-time hai aur error message generic — attacker ko ye nahi pata chalta ki username galat tha ya password. Token 15 min me expire hota hai; lambi sessions ke liye ek alag refresh-token mechanism (DB-backed, revocable) chahiye.
+
+## 4. Common Mistakes / Interview Traps
+
+- **Payload me sensitive data.** JWT encrypted nahi hai. Password, full PAN, card number, internal flags — kuch bhi secret payload me nahi.
+- **`ValidateIssuerSigningKey` / `ValidateLifetime` off karna** "abhi ke liye". Ab koi bhi token forge kar sakta hai ya expired token chalega.
+- **`alg: none` accept karna** ya algorithm ko token ke header se lena. Server side par expected algorithm fix karo.
+- **Long-lived access tokens** (days). Access token short (5-15 min); revocation ke liye refresh token (server store, rotate on use).
+- **Token ko `localStorage` me store karna** — XSS se churaya ja sakta hai. `HttpOnly` `Secure` `SameSite` cookie safer hai (par CSRF ka dhyaan).
+- **Logout par "token invalidate" expect karna.** Stateless JWT server-side revoke nahi hota — client discard karta hai; instant revocation chahiye to short expiry + refresh-token blacklist.
+- **Weak signing key** (chhoti string). HMAC key kam se kam 256-bit random; production me environment/secret manager se, appsettings me nahi.
+- **Authentication aur authorization ko ek maan lena.** Authentication = "tum kaun ho" (valid token). Authorization = "tumhe allowed hai" (`[Authorize(Roles=...)]`, policies).
+
+## 5. Practice Task
+
+`POST /auth/login` implement karo:
+
+- Ek username/password validate kare (ek user hardcode karo, password ek real algorithm — jaise PBKDF2/bcrypt — se hash karo).
+- Ek signed JWT return kare `sub`, `name`, ek `role` claim, aur 15-min expiry ke saath.
+- `AddAuthentication().AddJwtBearer(...)` configure karo issuer, audience, aur signing-key validation ke saath.
+- `GET /admin/stats` endpoint ko `[Authorize(Roles = "admin")]` se protect karo.
+- Phir list karo: payload me kya kabhi nahi jaana chahiye aur kyun, aur "logout" JWT me kaise handle karoge jab token server-side revoke nahi hota.
+
+## 6. Self-Check Questions
+
+1. JWT payload me PAN ya password kyun nahi daalna chahiye? Token ka trust kis cheez se aata hai?
+2. Access token aur refresh token me kya farak hai, aur access token itna short-lived kyun rakhte hain?
+3. `ValidateLifetime` ya `ValidateIssuerSigningKey` off karne se kya security hole khulta hai?
+4. Stateless JWT ke saath "instant logout / revoke a user right now" kaise achieve karoge?
