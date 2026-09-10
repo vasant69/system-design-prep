@@ -802,4 +802,28 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "angular-wiring",
+    title: "Angular Wiring",
+    description:
+      "How Angular code actually flows across files — bootstrap → module → component → template → events → change detection. Five complete end-to-end examples, simplest to most complex, each with every relevant file's code and a numbered plain-language flow trace from app load (or a click) to the final UI update. Built to grow wiring intuition, not to re-teach syntax.",
+    icon: "Cable",
+    enabled: true,
+    modules: [
+      {
+        id: "wiring-walkthroughs",
+        title: "The Five Wiring Walkthroughs",
+        description:
+          "Bootstrap wiring, parent-child @Input/@Output, service + dependency injection, Router navigation, and Observable + async pipe — each traced step by step, with the full code for every file involved and a one-line wiring summary.",
+        order: 1,
+      },
+      {
+        id: "wiring-answer-key",
+        title: "Answer Key & Self-Check Hints",
+        description:
+          "Hint-level answers to every self-check question across all five walkthroughs — enough to confirm you traced the flow correctly, not full explanations.",
+        order: 2,
+      },
+    ],
+  },
 ];

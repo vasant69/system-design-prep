@@ -71,6 +71,7 @@ import {
   Split,
   Eye,
   Dumbbell,
+  Cable,
   type LucideIcon,
 } from "lucide-react";
 
@@ -90,6 +91,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Braces,
   Eye,
   Dumbbell,
+  Cable,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -180,4 +182,6 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "js-ts-core": Braces,
   "dotnet-csharp-backend": Server,
   "practice-answer-key": ListChecks,
+  "wiring-walkthroughs": Workflow,
+  "wiring-answer-key": ListChecks,
 };

@@ -1,0 +1,128 @@
+---
+slug: "service-di-wiring"
+title: "Service + Dependency Injection Wiring"
+section: "angular-wiring"
+module: "wiring-walkthroughs"
+order: 3
+difficulty: "intermediate"
+readingTime: 9
+prerequisites: ["parent-child-wiring"]
+tags: ["angular", "services", "dependency-injection", "wiring", "singleton"]
+englishDefinition: "How Angular creates a service instance and hands it to a component that asks for it in its constructor. This example traces a shared CounterService injected into two sibling components, showing why both see the same state and where the single instance actually lives."
+interviewFrequency: "very-high"
+companies: ["Accenture", "Publicis Sapient", "Persistent Systems", "Zoho"]
+---
+
+Ek `CounterService` jo state rakhta hai, aur do sibling components (`ControlsComponent`, `DisplayComponent`) jo use inject karte hain. Trace karna hai: **Angular service ka instance kab aur kahan banata hai**, aur dono components ko **wahi ek instance** kyun milta hai.
+
+## Files
+
+```ts
+// app/counter.service.ts  — the SERVICE
+import { Injectable } from '@angular/core';
+
+@Injectable({ providedIn: 'root' })   // "register this in the app-wide injector"
+export class CounterService {
+  private _count = 0;
+
+  get count() { return this._count; }
+  increment() { this._count++; }
+  reset() { this._count = 0; }
+}
+```
+
+```ts
+// app/controls.component.ts  — writes to the service
+import { Component } from '@angular/core';
+import { CounterService } from './counter.service';
+
+@Component({
+  selector: 'app-controls',
+  templateUrl: './controls.component.html',
+})
+export class ControlsComponent {
+  // Angular sees this parameter and injects a CounterService instance
+  constructor(public counter: CounterService) {}
+}
+```
+
+```html
+<!-- app/controls.component.html -->
+<button (click)="counter.increment()">+1</button>
+<button (click)="counter.reset()">reset</button>
+```
+
+```ts
+// app/display.component.ts  — reads from the service
+import { Component } from '@angular/core';
+import { CounterService } from './counter.service';
+
+@Component({
+  selector: 'app-display',
+  templateUrl: './display.component.html',
+})
+export class DisplayComponent {
+  constructor(public counter: CounterService) {}
+}
+```
+
+```html
+<!-- app/display.component.html -->
+<p>Count is: {{ counter.count }}</p>
+```
+
+```html
+<!-- app/app.component.html  — both siblings on the page -->
+<app-controls></app-controls>
+<app-display></app-display>
+```
+
+```ts
+// app/app.module.ts
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { AppComponent } from './app.component';
+import { ControlsComponent } from './controls.component';
+import { DisplayComponent } from './display.component';
+
+@NgModule({
+  declarations: [AppComponent, ControlsComponent, DisplayComponent],
+  imports: [BrowserModule],
+  // note: CounterService is NOT listed here — providedIn: 'root' handles it
+  bootstrap: [AppComponent],
+})
+export class AppModule {}
+```
+
+## Step-by-Step Flow Trace
+
+**Wiring / creation phase:**
+
+1. App boot hota hai. Angular ek **root injector** banata hai — ek registry jo jaanta hai "kaunsa token maangne par kya dena hai".
+2. `CounterService` par `@Injectable({ providedIn: 'root' })` likha hai. Ye Angular ko compile/boot time par bata deta hai: "is class ko root injector me register kar do." Par abhi instance nahi banta — registration aur creation alag hain.
+3. `AppComponent` render hota hai, uske template me `<app-controls>` aur `<app-display>` hain.
+4. Angular `ControlsComponent` banane lagta hai. Uske constructor ko dekhta hai: `constructor(public counter: CounterService)`. Parameter ka type `CounterService` hai — Angular ke liye ye ek "token" hai.
+5. Angular root injector se `CounterService` maangta hai. Injector dekhta hai: "registered hai, par instance abhi bana nahi." Isliye ab wo `new CounterService()` karta hai (`_count = 0`), use cache me rakhta hai, aur `ControlsComponent` ke constructor ko de deta hai.
+6. `ControlsComponent` ka instance ban jaata hai, uska `this.counter` us naye service instance ko point karta hai.
+7. Ab Angular `DisplayComponent` banata hai. Uska constructor bhi `CounterService` maangta hai.
+8. Angular phir root injector se maangta hai. Is baar injector ke paas **already ek cached instance hai** (step 5 se), isliye wo wahi return karta hai — `new` dobara nahi hota.
+9. Nateeja: `ControlsComponent.counter` aur `DisplayComponent.counter` **exactly same object** hain.
+10. Dono templates render hote hain. `DisplayComponent` "Count is: 0" dikhata hai.
+
+**Interaction phase:**
+
+11. User `ControlsComponent` me "+1" click karta hai.
+12. `counter.increment()` chalta hai — shared service instance ka `_count` `0` se `1` ho jaata hai.
+13. Method return hone ke baad Angular change detection chalata hai — poore component tree par, kyunki click ek app-wide event tha.
+14. `DisplayComponent` ka template re-check hota hai. `{{ counter.count }}` ab `1` return karta hai (purana `0`). Angular text node update kar deta hai.
+15. Screen par "Count is: 1" — bina `ControlsComponent` aur `DisplayComponent` ke beech kisi `@Input`/`@Output` ke. Connection sirf shared service ke through hai.
+
+## One-Line Wiring Summary
+
+Angular constructor parameter ke **type** ko ek token ki tarah padhta hai, root injector se us token ka (lazy-banaya, phir cached) instance nikaalta hai, aur wahi ek instance har maangne wale component ko de deta hai — isiliye siblings bina direct connection ke same state share karte hain.
+
+## Self-Check Questions
+
+1. `@Injectable({ providedIn: 'root' })` ki jagah agar `CounterService` ko `ControlsComponent` ke `@Component` decorator me `providers: [CounterService]` likh do, to `DisplayComponent` ko wahi instance milega ya alag? Kyun?
+2. Service ka instance exactly kis step par pehli baar `new` hota hai — boot par, ya kisi aur cheez par?
+3. `DisplayComponent` me koi `@Input` nahi hai, phir bhi `+1` click karne par uska number badal jaata hai. Us update ko trigger kya karta hai?

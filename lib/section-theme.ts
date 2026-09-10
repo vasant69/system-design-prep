@@ -168,6 +168,16 @@ const THEMES: Record<string, SectionTheme> = {
     ring: "ring-blue-500/40",
     progressBar: "bg-blue-400",
   },
+  "angular-wiring": {
+    gradient: "from-pink-500/20 via-pink-500/5 to-transparent",
+    iconBg: "bg-pink-500/15",
+    iconColor: "text-pink-400",
+    border: "border-pink-500/30",
+    hoverBorder: "hover:border-pink-500/40",
+    text: "text-pink-400",
+    ring: "ring-pink-500/40",
+    progressBar: "bg-pink-400",
+  },
 };
 
 const FALLBACK: SectionTheme = THEMES["system-design"];
@@ -1031,6 +1041,26 @@ const MODULE_THEMES: Record<string, SectionTheme> = {
     progressBar: "bg-violet-400",
   },
   "practice-answer-key": {
+    gradient: "from-emerald-500/20 via-emerald-500/5 to-transparent",
+    iconBg: "bg-emerald-500/15",
+    iconColor: "text-emerald-400",
+    border: "border-emerald-500/30",
+    hoverBorder: "hover:border-emerald-500/40",
+    text: "text-emerald-400",
+    ring: "ring-emerald-500/40",
+    progressBar: "bg-emerald-400",
+  },
+  "wiring-walkthroughs": {
+    gradient: "from-sky-500/20 via-sky-500/5 to-transparent",
+    iconBg: "bg-sky-500/15",
+    iconColor: "text-sky-400",
+    border: "border-sky-500/30",
+    hoverBorder: "hover:border-sky-500/40",
+    text: "text-sky-400",
+    ring: "ring-sky-500/40",
+    progressBar: "bg-sky-400",
+  },
+  "wiring-answer-key": {
     gradient: "from-emerald-500/20 via-emerald-500/5 to-transparent",
     iconBg: "bg-emerald-500/15",
     iconColor: "text-emerald-400",

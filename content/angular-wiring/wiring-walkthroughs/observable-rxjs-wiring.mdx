@@ -1,0 +1,125 @@
+---
+slug: "observable-rxjs-wiring"
+title: "Observable / RxJS Wiring"
+section: "angular-wiring"
+module: "wiring-walkthroughs"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+prerequisites: ["service-di-wiring"]
+tags: ["angular", "rxjs", "observable", "async-pipe", "httpclient", "wiring"]
+englishDefinition: "How data flows from an async source through an Observable into the template. This example traces a service returning an Observable (via HttpClient), a component exposing it, and the async pipe subscribing, unwrapping values, updating the view, and unsubscribing automatically."
+interviewFrequency: "high"
+companies: ["Publicis Sapient", "Nagarro", "TCS", "HCLTech"]
+---
+
+Ek `UserService` jo `HttpClient` se ek Observable return karta hai, ek `UserListComponent` jo use expose karta hai, aur template me **`async` pipe** jo subscribe karke data dikhata hai. Trace karna hai: source se lekar screen tak ka poora async rasta, aur cleanup.
+
+## Files
+
+```ts
+// app/user.service.ts  — the SOURCE
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+
+export interface User { id: number; name: string; }
+
+@Injectable({ providedIn: 'root' })
+export class UserService {
+  constructor(private http: HttpClient) {}
+
+  getUsers(): Observable<User[]> {
+    // returns a COLD observable — no HTTP call happens yet
+    return this.http.get<User[]>('https://jsonplaceholder.typicode.com/users');
+  }
+}
+```
+
+```ts
+// app/user-list.component.ts  — the CONSUMER
+import { Component, OnInit } from '@angular/core';
+import { Observable } from 'rxjs';
+import { User, UserService } from './user.service';
+
+@Component({
+  selector: 'app-user-list',
+  templateUrl: './user-list.component.html',
+})
+export class UserListComponent implements OnInit {
+  users$!: Observable<User[]>;   // the $ suffix is a convention for "this is a stream"
+
+  constructor(private userService: UserService) {}
+
+  ngOnInit(): void {
+    // just assign the observable — still no HTTP call yet
+    this.users$ = this.userService.getUsers();
+  }
+}
+```
+
+```html
+<!-- app/user-list.component.html -->
+<h2>Users</h2>
+
+<!-- the async pipe subscribes, unwraps, and re-renders on each emission -->
+<ul *ngIf="users$ | async as users; else loading">
+  <li *ngFor="let user of users">{{ user.name }}</li>
+</ul>
+
+<ng-template #loading>
+  <p>Loading users...</p>
+</ng-template>
+```
+
+```ts
+// app/app.module.ts  — HttpClientModule must be imported for HttpClient to work
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { HttpClientModule } from '@angular/common/http';
+import { AppComponent } from './app.component';
+import { UserListComponent } from './user-list.component';
+
+@NgModule({
+  declarations: [AppComponent, UserListComponent],
+  imports: [BrowserModule, HttpClientModule],   // <-- provides HttpClient
+  bootstrap: [AppComponent],
+})
+export class AppModule {}
+```
+
+## Step-by-Step Flow Trace
+
+**Wiring phase:**
+
+1. App boot hota hai. `AppModule` `HttpClientModule` import karta hai — isse `HttpClient` DI ke through inject hone layak ban jaata hai.
+2. `AppComponent` render hota hai, template me `<app-user-list>` hai. Angular `UserListComponent` banata hai.
+3. `UserListComponent` ka constructor `UserService` maangta hai. Angular root injector se `UserService` ka instance deta hai. Uske bante waqt `UserService` ka constructor `HttpClient` maangta hai — Angular wo bhi inject kar deta hai.
+4. Angular `ngOnInit()` call karta hai. Usme `this.users$ = this.userService.getUsers()` chalta hai.
+5. `getUsers()` `this.http.get(...)` ka return karta hai. **Ye ek Observable object hai, koi HTTP call abhi tak nahi hui** — `HttpClient` observables "cold" hoti hain, subscribe hone tak kuch nahi karti. `users$` ab is Observable ko point karta hai.
+
+**Template subscribe phase:**
+
+6. `UserListComponent` ka template render hota hai. `users$ | async` — yahan `async` pipe chalti hai.
+7. `async` pipe **`users$.subscribe(...)`** call karti hai. Ab jaake HTTP request browser se bahar jaati hai.
+8. Response abhi nahi aaya, isliye `async` pipe ki current value `null` hai. `*ngIf="... as users"` `null` ko falsy maanta hai, isliye `#loading` template dikhta hai: "Loading users...".
+9. Kuch waqt baad HTTP response aata hai (`User[]` array). RxJS Observable ek `next` value emit karti hai.
+10. `async` pipe ke subscription callback ko wo array milta hai. Pipe apni internal value ko us array par set karti hai, aur component ke change detector ko `markForCheck()` se "mujhe re-check karo" batati hai.
+11. Change detection chalta hai. `users$ | async` ab array return karta hai (null nahi). `*ngIf` ab truthy hai, `as users` us array ko bind karta hai.
+12. `*ngFor` array par ghoomta hai, har user ke liye ek `<li>{{ user.name }}</li>` banata hai. Screen par user list.
+13. `HttpClient` ki observable ek value emit karke **complete** ho jaati hai (ek hi response).
+
+**Cleanup phase:**
+
+14. User kisi aur page par navigate karta hai. Angular `UserListComponent` ko destroy karta hai.
+15. `async` pipe ka `ngOnDestroy` chalta hai, jo **automatically `unsubscribe()`** kar deta hai. Koi leak nahi — tumhe manually `Subscription` rakh kar `ngOnDestroy` me unsubscribe nahi karna pada.
+
+## One-Line Wiring Summary
+
+Service ek cold `Observable` return karta hai (kuch nahi hota), component use `users$` me rakhta hai, aur template ka `async` pipe hi wo cheez hai jo subscribe karti hai, har emitted value par view re-render karti hai, aur component destroy hone par khud unsubscribe kar deti hai.
+
+## Self-Check Questions
+
+1. `ngOnInit` me `this.users$ = this.userService.getUsers()` likhna — kya isse HTTP call turant chali jaati hai? Call actually kis step par jaati hai?
+2. Template se `| async` hata do aur seedhe `users$` ko `*ngFor` me daal do — kya dikhega?
+3. Agar tum `async` pipe ki jagah `ngOnInit` me `this.userService.getUsers().subscribe(...)` karo, to component destroy hone par cleanup ke liye tumhe kya extra karna padega jo `async` pipe free me karta hai?
