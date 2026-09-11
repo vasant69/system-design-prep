@@ -178,6 +178,16 @@ const THEMES: Record<string, SectionTheme> = {
     ring: "ring-pink-500/40",
     progressBar: "bg-pink-400",
   },
+  "dotnet-wiring": {
+    gradient: "from-lime-500/20 via-lime-500/5 to-transparent",
+    iconBg: "bg-lime-500/15",
+    iconColor: "text-lime-400",
+    border: "border-lime-500/30",
+    hoverBorder: "hover:border-lime-500/40",
+    text: "text-lime-400",
+    ring: "ring-lime-500/40",
+    progressBar: "bg-lime-400",
+  },
 };
 
 const FALLBACK: SectionTheme = THEMES["system-design"];
@@ -1061,6 +1071,26 @@ const MODULE_THEMES: Record<string, SectionTheme> = {
     progressBar: "bg-sky-400",
   },
   "wiring-answer-key": {
+    gradient: "from-emerald-500/20 via-emerald-500/5 to-transparent",
+    iconBg: "bg-emerald-500/15",
+    iconColor: "text-emerald-400",
+    border: "border-emerald-500/30",
+    hoverBorder: "hover:border-emerald-500/40",
+    text: "text-emerald-400",
+    ring: "ring-emerald-500/40",
+    progressBar: "bg-emerald-400",
+  },
+  "dotnet-wiring-walkthroughs": {
+    gradient: "from-indigo-500/20 via-indigo-500/5 to-transparent",
+    iconBg: "bg-indigo-500/15",
+    iconColor: "text-indigo-400",
+    border: "border-indigo-500/30",
+    hoverBorder: "hover:border-indigo-500/40",
+    text: "text-indigo-400",
+    ring: "ring-indigo-500/40",
+    progressBar: "bg-indigo-400",
+  },
+  "dotnet-wiring-answer-key": {
     gradient: "from-emerald-500/20 via-emerald-500/5 to-transparent",
     iconBg: "bg-emerald-500/15",
     iconColor: "text-emerald-400",

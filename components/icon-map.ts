@@ -92,6 +92,7 @@ export const sectionIconMap: Record<string, LucideIcon> = {
   Eye,
   Dumbbell,
   Cable,
+  Waypoints,
 };
 
 export const moduleIconMap: Record<string, LucideIcon> = {
@@ -184,4 +185,6 @@ export const moduleIconMap: Record<string, LucideIcon> = {
   "practice-answer-key": ListChecks,
   "wiring-walkthroughs": Workflow,
   "wiring-answer-key": ListChecks,
+  "dotnet-wiring-walkthroughs": Workflow,
+  "dotnet-wiring-answer-key": ListChecks,
 };

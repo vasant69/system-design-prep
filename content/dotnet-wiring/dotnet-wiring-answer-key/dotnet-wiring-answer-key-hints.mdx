@@ -1,0 +1,56 @@
+---
+slug: "dotnet-wiring-answer-key-hints"
+title: "Answer Key & Self-Check Hints"
+section: "dotnet-wiring"
+module: "dotnet-wiring-answer-key"
+order: 1
+difficulty: "beginner"
+readingTime: 7
+prerequisites: []
+tags: ["dotnet", "wiring", "self-check", "answer-key"]
+englishDefinition: "Hint-level answers to every self-check question across all five .NET Core wiring walkthroughs. Just enough to confirm you traced the request flow correctly — the point is to check your own reasoning, not to read a full explanation."
+interviewFrequency: "low"
+companies: []
+---
+
+Har walkthrough ke Self-Check Questions attempt karne ke baad yahan aa kar apna jawab match karo. Ye **hints** hain — poora explanation nahi.
+
+---
+
+## 1. Basic Request Wiring
+
+1. **`AddControllers()` vs `MapControllers()`** — `AddControllers` DI me controller infrastructure **register** karta hai (recipe). `MapControllers` pipeline me wo **stage** add karta hai jo actually routes match aur actions execute karti hai. `AddControllers` hata do: startup par DI error (routing services missing). `MapControllers` hata do: app chalta hai par har controller route `404` deta hai — kabhi match hi nahi hota.
+2. **`[controller]` token** — Controller class ke naam se "Controller" suffix hata kar resolve hota hai: `ProductsController` -> `Products` -> route `api/products`. Route match **routing stage** par hota hai, jo `MapControllers()` ke andar `UseHttpsRedirection` ke **baad** aata hai — controller instantiate hone se **pehle**.
+3. **Instance count** — Har request ke liye **ek naya** instance banta hai (per request, per action-invocation bhi kaha ja sakta hai kyunki ek request = ek action call yahan). Request khatam hone ke baad instance garbage-collect hone layak ho jaata hai — koi explicit "destroy" step nahi, GC apne hisaab se saaf karta hai.
+
+---
+
+## 2. Dependency Injection Wiring
+
+1. **`AddSingleton` vs `AddTransient`** — `AddSingleton` ke saath dono requests me `servedBy` **same** Guid hoga (poore app ke liye ek instance). `AddTransient` ke saath agar controller do constructor parameters me `IGreetingService` maange, to **ek hi request** me **do alag** instances banenge — Transient har maang par naya deta hai, chahe wahi request ho.
+2. **"Key"** — Constructor parameter ka **type** (yahan `IGreetingService`). Framework constructor reflect karke har parameter type ko DI registry me lookup karta hai.
+3. **Instance kab banta hai** — Na startup par, na `Program.cs` chalte waqt. Pehli baar tab jab request scope se koi is service ko actually maange — is example me jab `GreetingController` ka instance banane ke liye uska constructor resolve hota hai.
+
+---
+
+## 3. Controller → Service → Repository Wiring
+
+1. **LINQ likhna = SQL chalna?** — Galat. `_db.Products.Where(...)` sirf ek `IQueryable` (expression tree) banata hai — deferred. SQL tab translate aur execute hoti hai jab enumerate karo: `.ToListAsync()` (ya `FirstOrDefaultAsync`, `foreach`, waghera) call hone par.
+2. **DTO kyun** — (a) Over-posting/leak rokna — entity ke extra/sensitive fields (jaise `IsActive`, internal flags) client tak nahi jaate. (b) API contract ko DB schema se decouple karna — entity/column badalne se API automatically nahi toot ta; DTO ek stable, intentional boundary hai.
+3. **`AppDbContext` Singleton** — `DbContext` thread-safe nahi hai aur ek hi instance sab requests me share hoga — concurrent requests same context par simultaneously operate karke race conditions/crashes denge, aur change tracker hamesha ke liye badhta rahega (memory leak). Ye classic "captive dependency" hai (Scoped/short-lived cheez ko lambi life wale container me phaans dena).
+
+---
+
+## 4. Middleware & Filter Wiring
+
+1. **`await _next(context)` bhool jaao** — Pipeline wahin **short-circuit** ho jaata hai; middleware ke baad wale saare stages (routing, controller, action) kabhi nahi chalte. `"MIDDLEWARE after"` log bhi kabhi nahi chalega, kyunki wo line `_next` call ke **baad** hai jo execute hi nahi hua. Client ko empty/default response milta hai.
+2. **A-before, B-before, endpoint, B-after, A-after** — Middleware ek "onion" hai: har middleware apne se **andar** wale sab kuch (aage ke middlewares + endpoint) ek function call (`_next`) ki tarah wrap karta hai. Isliye jo pehle registered (A) wo sabse bahar hai — sabse pehle andar jaata hai, sabse aakhir me bahar aata hai (LIFO on the way out, FIFO on the way in).
+3. **Sirf filter kya kar sakta hai** — Filter ko routed **action ka naam**, **model-bound parameters**, aur `ModelState` (validation result) dikhte hain — middleware ko sirf raw `HttpContext` dikhta hai, wo nahi jaanta konsa specific action/parameters match hue. Isliye "is action ke input ko log/audit karo" ya "action ka return value wrap karo" jaisa kaam sirf filter (ya result filter) kar sakta hai.
+
+---
+
+## 5. Authentication & Authorization Wiring
+
+1. **Order palat do (`UseAuthorization` pehle)** — Authorization stage ko us waqt tak `HttpContext.User` populate nahi mila hoga (authentication abhi chala hi nahi), isliye har request — valid token ho ya na ho — anonymous/unauthenticated dikhegi. `[Authorize]` wale saare endpoints galat tarike se `401` denge, chahe token bilkul sahi ho.
+2. **Constructor chalta hai?** — Nahi. Jawab `UseAuthorization` stage se aata hai: wo `User.Identity.IsAuthenticated` false dekh kar khud response par `401` likh deta hai aur pipeline ko **wahin rok deta hai** — request `MapControllers` endpoint stage tak pahunchti hi nahi, isliye controller instantiate nahi hota.
+3. **Reject decision kahan** — Dono cases me `UseAuthentication` stage `HttpContext.User` ko unauthenticated bana deta hai (missing: kuch mila hi nahi; invalid signature: validation fail hui — dono outcome same hai us stage ke liye). Actual `401` response **`UseAuthorization`** stage likhta hai, jab wo authenticated flag check karta hai — authentication stage khud koi response nahi likhta, wo sirf `User` set/na-set karta hai.

@@ -1,0 +1,157 @@
+---
+slug: "controller-service-repository-wiring"
+title: "Controller → Service → Repository Wiring"
+section: "dotnet-wiring"
+module: "dotnet-wiring-walkthroughs"
+order: 3
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["di-request-wiring"]
+tags: ["dotnet", "ef-core", "repository", "dto", "linq", "wiring"]
+englishDefinition: "The full layered request-to-database-and-back flow. This example traces a controller calling a service, the service calling a repository that uses an EF Core DbContext, a LINQ query translating to SQL, rows coming back as entities, and the entities mapped to a DTO before the response is serialized."
+interviewFrequency: "high"
+companies: ["Cognizant", "Accenture", "Persistent Systems", "Capgemini"]
+---
+
+Ek layered example: `ProductsController` -> `IProductService` -> `IProductRepository` -> `AppDbContext` (EF Core) -> SQL -> wapas entity -> DTO -> JSON. Trace karna hai poora request-to-database-and-back rasta.
+
+## Files
+
+```csharp
+// Data/Product.cs  — the ENTITY (maps to a DB table)
+public class Product
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+    public bool IsActive { get; set; }
+}
+
+// Data/AppDbContext.cs
+using Microsoft.EntityFrameworkCore;
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+    public DbSet<Product> Products => Set<Product>();
+}
+```
+
+```csharp
+// Dtos/ProductDto.cs  — the shape sent to the client (never the entity)
+public record ProductDto(int Id, string Name, decimal Price);
+```
+
+```csharp
+// Repositories/IProductRepository.cs
+public interface IProductRepository
+{
+    Task<List<Product>> GetActiveAsync();
+}
+
+// Repositories/ProductRepository.cs  — the ONLY layer that touches EF Core
+using Microsoft.EntityFrameworkCore;
+
+public class ProductRepository : IProductRepository
+{
+    private readonly AppDbContext _db;
+    public ProductRepository(AppDbContext db) => _db = db;
+
+    public Task<List<Product>> GetActiveAsync() =>
+        _db.Products
+           .Where(p => p.IsActive)          // LINQ -> becomes SQL WHERE
+           .OrderBy(p => p.Name)
+           .AsNoTracking()                  // read-only, skip change tracking
+           .ToListAsync();                  // <-- query actually runs HERE
+}
+```
+
+```csharp
+// Services/IProductService.cs
+public interface IProductService
+{
+    Task<IReadOnlyList<ProductDto>> GetActiveProductsAsync();
+}
+
+// Services/ProductService.cs  — business logic + mapping, no EF Core here
+public class ProductService : IProductService
+{
+    private readonly IProductRepository _repo;
+    public ProductService(IProductRepository repo) => _repo = repo;
+
+    public async Task<IReadOnlyList<ProductDto>> GetActiveProductsAsync()
+    {
+        var products = await _repo.GetActiveAsync();
+        return products
+            .Select(p => new ProductDto(p.Id, p.Name, p.Price))   // entity -> DTO
+            .ToList();
+    }
+}
+```
+
+```csharp
+// Controllers/ProductsController.cs  — HTTP only, delegates everything
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    private readonly IProductService _service;
+    public ProductsController(IProductService service) => _service = service;
+
+    [HttpGet]
+    public async Task<ActionResult<IReadOnlyList<ProductDto>>> GetActive()
+        => Ok(await _service.GetActiveProductsAsync());
+}
+```
+
+```csharp
+// Program.cs  — wire every layer into the DI container
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddDbContext<AppDbContext>(o =>
+    o.UseSqlServer(builder.Configuration.GetConnectionString("Default")));  // registered Scoped
+builder.Services.AddScoped<IProductRepository, ProductRepository>();
+builder.Services.AddScoped<IProductService, ProductService>();
+
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+```
+
+## Step-by-Step Flow Trace
+
+**Startup:** `Program.cs` `AppDbContext`, `IProductRepository`, aur `IProductService` — teeno ko **Scoped** register karta hai. Koi instance nahi banta.
+
+**Per request (`GET /api/products`):**
+
+1. Request aati hai. Framework is request ke liye ek DI scope banata hai.
+2. Routing `ProductsController.GetActive` se match karti hai.
+3. Framework `ProductsController` banane ke liye uske constructor ko dekhta hai: chahiye `IProductService`.
+4. Scope se `IProductService` maanga jaata hai. `ProductService` banane ke liye uska constructor dekha jaata hai: chahiye `IProductRepository`.
+5. Scope se `IProductRepository` maanga jaata hai. `ProductRepository` ke constructor ko chahiye `AppDbContext`.
+6. Scope se `AppDbContext` maanga jaata hai. Ye is scope me pehli maang hai, isliye framework ek naya `AppDbContext` banata hai (connection string ke saath) aur scope me cache karta hai.
+7. Ab chain ulta wapas assemble hoti hai: `AppDbContext` -> `ProductRepository` ko milta hai -> `ProductRepository` -> `ProductService` ko milta hai -> `ProductService` -> `ProductsController` ko milta hai. Poora object graph tayaar.
+8. Framework `GetActive()` call karta hai.
+9. `GetActive()` `_service.GetActiveProductsAsync()` await karta hai.
+10. `ProductService.GetActiveProductsAsync()` `_repo.GetActiveAsync()` await karta hai.
+11. `ProductRepository.GetActiveAsync()` ek LINQ query **build** karta hai: `_db.Products.Where(...).OrderBy(...).AsNoTracking()`. Ye abhi tak sirf ek `IQueryable` hai — **koi SQL nahi chali**.
+12. `.ToListAsync()` par EF Core us `IQueryable` ko **SQL me translate** karta hai (`SELECT Id, Name, Price, IsActive FROM Products WHERE IsActive = 1 ORDER BY Name`), connection kholta hai, query chalata hai.
+13. Database rows return karta hai. EF Core har row ko ek `Product` entity object me materialize karta hai. `AsNoTracking()` ki wajah se ye entities change tracker me nahi jaati (tez, kam memory).
+14. `List<Product>` `ProductRepository` se `ProductService` ko wapas milta hai.
+15. `ProductService` `.Select(p => new ProductDto(...))` se har entity ko ek `ProductDto` me map karta hai — sirf wo 3 fields jo client ko chahiye (`IsActive` bahar nahi jaata).
+16. `IReadOnlyList<ProductDto>` `ProductService` se `ProductsController` ko wapas milta hai.
+17. Controller `Ok(dtos)` return karta hai. JSON formatter DTO list ko serialize karta hai, status `200`.
+18. Response pipeline se wapas jaata hai. Request khatam hone par framework scope dispose karta hai — `AppDbContext.Dispose()` chalta hai, DB connection pool me wapas chali jaati hai.
+
+## One-Line Wiring Summary
+
+Controller sirf HTTP jaanta hai aur service ko call karta hai; service business logic + entity-to-DTO mapping karta hai aur repository ko call karta hai; repository akela EF Core `DbContext` ko chhoo kar LINQ ko SQL me badalta hai — DI ek hi request scope me poore graph ko (aur ek shared `DbContext` ko) wire karta hai.
+
+## Self-Check Questions
+
+1. LINQ query (`_db.Products.Where(...)`) likhne se database hit hota hai — sach ya galat? SQL actually kis line par chalta hai?
+2. `ProductDto` kyun return karte hain seedha `Product` entity ke bajaye? Kam se kam do concrete reasons.
+3. Agar `IProductService` `Scoped` hai par `AppDbContext` `Singleton` register kar diya jaaye, to kya toot sakta hai aur kyun?

@@ -1,0 +1,140 @@
+---
+slug: "auth-wiring"
+title: "Authentication & Authorization Wiring"
+section: "dotnet-wiring"
+module: "dotnet-wiring-walkthroughs"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["middleware-filter-wiring"]
+tags: ["dotnet", "jwt", "authentication", "authorization", "wiring", "security"]
+englishDefinition: "How a JWT-protected request flows through validation before it ever reaches a controller action. This example traces the authentication and authorization middleware, a protected [Authorize] endpoint, the accepted path with a valid token, and the rejected path when the token is missing or invalid — showing exactly where in the pipeline each outcome is decided."
+interviewFrequency: "medium"
+companies: ["Cognizant", "Publicis Sapient", "Tech Mahindra", "Nagarro"]
+---
+
+JWT bearer authentication set up karke ek endpoint ko `[Authorize]` se protect karte hain. Trace karna hai **do paths**: ek valid token ke saath (controller tak pahunchta hai), aur ek missing/invalid token ke saath (controller tak **kabhi nahi** pahunchta).
+
+## Files
+
+```csharp
+// Program.cs
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllers();
+
+var jwtKey = builder.Configuration["Jwt:Key"]!;
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)   // "use JWT bearer scheme by default"
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,                     // checks `exp`
+            ValidateIssuerSigningKey = true,              // checks the signature
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+        };
+    });
+
+builder.Services.AddAuthorization();   // enables [Authorize] evaluation
+
+var app = builder.Build();
+
+// ORDER MATTERS: authentication before authorization, both before endpoints
+app.UseAuthentication();   // stage: "who are you?" -> populates HttpContext.User
+app.UseAuthorization();    // stage: "are you allowed?" -> checks [Authorize] rules
+app.MapControllers();
+
+app.Run();
+```
+
+```csharp
+// Controllers/AuthController.cs  — issues the token (this endpoint is public)
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+
+[ApiController]
+[Route("api/[controller]")]
+public class AuthController : ControllerBase
+{
+    private readonly IConfiguration _cfg;
+    public AuthController(IConfiguration cfg) => _cfg = cfg;
+
+    [HttpPost("login")]
+    public IActionResult Login(LoginRequest req)
+    {
+        if (req.Username != "asha" || req.Password != "correct-password")
+            return Unauthorized(new { message = "invalid credentials" });   // 401, no token
+
+        var claims = new[] { new Claim(ClaimTypes.Name, req.Username) };
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_cfg["Jwt:Key"]!));
+        var token = new JwtSecurityToken(
+            issuer: _cfg["Jwt:Issuer"], audience: _cfg["Jwt:Audience"],
+            claims: claims, expires: DateTime.UtcNow.AddMinutes(15),
+            signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
+
+        return Ok(new { token = new JwtSecurityTokenHandler().WriteToken(token) });
+    }
+}
+
+public record LoginRequest(string Username, string Password);
+```
+
+```csharp
+// Controllers/ProfileController.cs  — the PROTECTED endpoint
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize]                             // every action here requires a valid, authenticated user
+public class ProfileController : ControllerBase
+{
+    [HttpGet("me")]
+    public IActionResult Me()
+        => Ok(new { user = User.Identity!.Name });   // User is populated by auth middleware
+}
+```
+
+## Step-by-Step Flow Trace
+
+**Path A — valid token:**
+
+1. Client pehle `POST /api/auth/login` karta hai sahi credentials ke saath. Us route par `[Authorize]` nahi hai, isliye auth middleware kuch check nahi karta — request seedhe `AuthController.Login` tak pahunchti hai, token ban kar client ko milta hai.
+2. Client ab `GET /api/profile/me` karta hai, header `Authorization: Bearer <token>` ke saath.
+3. Request pipeline me enter karti hai. `UseAuthentication` stage chalta hai: wo `Authorization` header dhoondhta hai, JWT nikalta hai, aur `Program.cs` me diye `TokenValidationParameters` ke against validate karta hai — signature, issuer, audience, expiry.
+4. Token valid hai. Middleware token ke claims se ek `ClaimsPrincipal` banata hai aur `HttpContext.User` par set kar deta hai. **Abhi tak koi "allow/deny" decision nahi hui** — sirf "ye request kaun hai" pata chala.
+5. `UseAuthorization` stage chalta hai. Routing ne pehle hi match kar diya tha ki target `ProfileController.Me` hai (jispe `[Authorize]` hai). Authorization middleware dekhta hai: `HttpContext.User.Identity.IsAuthenticated` — step 4 ki wajah se `true`. Koi extra role/policy requirement nahi, isliye **allow**.
+6. Request `MapControllers` endpoint stage tak pahunchti hai. `ProfileController` ka instance banta hai, `Me()` chalta hai.
+7. `Me()` `User.Identity!.Name` padhta hai — wahi `ClaimsPrincipal` jo step 4 me set hua tha, ab controller ke andar `User` property se available hai.
+8. `Ok(...)` return, JSON serialize, `200` response.
+
+**Path B — missing / invalid token:**
+
+9. Client `GET /api/profile/me` bhejta hai **bina** `Authorization` header ke.
+10. `UseAuthentication` chalta hai: koi token nahi milta. `HttpContext.User` ek "anonymous" (unauthenticated) principal ban jaata hai — koi error abhi nahi throw hota, request aage badhti hai.
+11. `UseAuthorization` chalta hai. `ProfileController.Me` par `[Authorize]` hai; authorization service check karta hai `User.Identity.IsAuthenticated` — `false`.
+12. Authorization **fail** hota hai. Pipeline yahin **short-circuit** ho jaata hai — Middleware seedhe response par status `401 Unauthorized` likh deta hai aur pipeline yahin ruk jaata hai.
+13. **`ProfileController` ka instance kabhi nahi banta. `Me()` kabhi nahi chalta.** Response client ko `401` ke saath wapas chala jaata hai.
+14. (Agar token diya hota par galat signature/expired hota, to step 10 khud reject kar deta — `HttpContext.User` unauthenticated set hota, aur wahi step 11-13 ka rasta chalta. Framework ye baat differentiate nahi karta client ko batane ke liye by default — 'no token' aur 'bad token' dono `401` dete hain.)
+
+## One-Line Wiring Summary
+
+`UseAuthentication` pehle chalta hai aur "ye request kaun hai" tay karke `HttpContext.User` bhar deta hai; `UseAuthorization` uske baad chalta hai aur `[Authorize]` ke rules ke against check karke ya to endpoint ko aage jaane deta hai ya `401`/`403` par pipeline short-circuit kar deta hai — controller ka koi mauka hi nahi milta reject hui request par.
+
+## Self-Check Questions
+
+1. `app.UseAuthentication()` aur `app.UseAuthorization()` ka order palat do (`UseAuthorization` pehle). Valid token wali request par kya hoga aur kyun?
+2. `[Authorize]` wali request reject hoti hai to `ProfileController` ka constructor chalta hai ya nahi? Us decision ka jawab kis step se aata hai?
+3. Ek missing token aur ek expired-signature token — dono client ko `401` dete hain. In dono cases me pipeline ke andar exactly kahan (kis step) reject decision liya gaya?

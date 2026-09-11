@@ -1,0 +1,117 @@
+---
+slug: "di-request-wiring"
+title: "Dependency Injection Wiring"
+section: "dotnet-wiring"
+module: "dotnet-wiring-walkthroughs"
+order: 2
+difficulty: "beginner"
+readingTime: 9
+prerequisites: ["basic-request-wiring"]
+tags: ["dotnet", "dependency-injection", "service-lifetimes", "wiring"]
+englishDefinition: "How ASP.NET Core creates a service instance and hands it to a controller that asks for it in its constructor. This example traces a service registered in Program.cs, injected into a controller, and consumed by an action — showing where the instance comes from and how the lifetime (Scoped/Transient/Singleton) decides whether it is shared."
+interviewFrequency: "very-high"
+companies: ["Accenture", "Cognizant", "Publicis Sapient", "TCS"]
+---
+
+Ek `IGreetingService` jo `Program.cs` me register hai, aur ek `GreetingController` jo use constructor me inject karta hai. Trace karna hai: **.NET service ka instance kab aur kahan banata hai**, aur lifetime (`Scoped` / `Transient` / `Singleton`) se kya farak padta hai.
+
+## Files
+
+```csharp
+// Services/IGreetingService.cs
+public interface IGreetingService
+{
+    string Greet(string name);
+    Guid InstanceId { get; }        // so we can SEE which instance we got
+}
+
+// Services/GreetingService.cs
+public class GreetingService : IGreetingService
+{
+    public Guid InstanceId { get; } = Guid.NewGuid();   // set once, at construction
+    public string Greet(string name) => $"Hello, {name}!";
+}
+```
+
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+// REGISTER: "when someone asks for IGreetingService, give them a GreetingService"
+builder.Services.AddScoped<IGreetingService, GreetingService>();
+// AddScoped    -> one instance per HTTP request
+// AddTransient -> a new instance every time it is asked for
+// AddSingleton -> one instance for the whole application
+
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+```
+
+```csharp
+// Controllers/GreetingController.cs
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class GreetingController : ControllerBase
+{
+    private readonly IGreetingService _greeting;
+
+    // The framework sees this constructor parameter and injects an instance
+    public GreetingController(IGreetingService greeting)
+    {
+        _greeting = greeting;
+    }
+
+    // GET api/greeting/Asha
+    [HttpGet("{name}")]
+    public IActionResult Get(string name)
+    {
+        return Ok(new
+        {
+            message = _greeting.Greet(name),
+            servedBy = _greeting.InstanceId,
+        });
+    }
+}
+```
+
+## Step-by-Step Flow Trace
+
+**Startup phase:**
+
+1. `Program.cs` chalta hai. `builder.Services.AddScoped<IGreetingService, GreetingService>()` DI container ke registry me ek entry daalta hai: token `IGreetingService` -> implementation `GreetingService`, lifetime `Scoped`. **Koi instance abhi nahi banta** — sirf ye mapping yaad rakhi jaati hai.
+2. `builder.Build()` root service provider banata hai aur registry lock ho jaati hai.
+3. `app.Run()` Kestrel start karta hai.
+
+**Per-request phase:**
+
+4. Client `GET /api/greeting/Asha` bhejta hai. Framework is request ke liye ek **DI scope** banata hai — ek chhota child container jo "scoped" instances is request bhar ke liye rakhega.
+5. Routing `GreetingController.Get` action se match karti hai.
+6. Framework `GreetingController` ka instance banane lagta hai. Uske **constructor ko reflect** karke dekhta hai: ek parameter, type `IGreetingService`.
+7. Framework current request scope se `IGreetingService` maangta hai. Scope apni registry me dekhta hai: registered hai, lifetime `Scoped`, aur is scope me abhi tak koi instance nahi bana.
+8. Isliye scope `new GreetingService()` karta hai — uska constructor chalta hai, `InstanceId` ek naya `Guid` ban jaata hai. Scope us instance ko cache karta hai (is request ke liye).
+9. Framework us instance ko `GreetingController` ke constructor me pass karta hai. `_greeting` ab us instance ko point karta hai.
+10. Framework `Get("Asha")` call karta hai (`name` route se bind hua).
+11. `_greeting.Greet("Asha")` chalta hai -> `"Hello, Asha!"`. `_greeting.InstanceId` wahi Guid deta hai jo step 8 me bana.
+12. `Ok(...)` ek `OkObjectResult` return karta hai, JSON serialize hota hai, response bhej diya jaata hai.
+13. Request khatam. Framework request scope ko **dispose** kar deta hai. Us scope ka `GreetingService` instance (aur agar wo `IDisposable` hota to `Dispose()`) release ho jaata hai.
+
+**Agli request:**
+
+14. Client dobara `GET /api/greeting/Ravi` bhejta hai. Naya request = naya DI scope.
+15. Framework phir `GreetingController` + `IGreetingService` maangta hai. Ye ek **naya scope** hai, isliye step 7 me koi cached instance nahi milta -> phir se `new GreetingService()` -> ek **alag** `InstanceId`.
+16. Response me `servedBy` Guid pehli request se alag hota hai. (`AddSingleton` hota to dono requests me same Guid; `AddTransient` hota to agar controller do jagah `IGreetingService` maangta to ek hi request me do alag instances.)
+
+## One-Line Wiring Summary
+
+`Program.cs` ek token-to-implementation mapping (+ lifetime) register karta hai; har request par framework ek DI scope banata hai, controller ke constructor parameters ke **type** dekh kar us scope se instances resolve karta hai (lazily bana kar, phir lifetime ke hisaab se cache kar ke), aur constructor me inject kar deta hai.
+
+## Self-Check Questions
+
+1. `AddScoped` ko `AddSingleton` me badal do — do alag requests ke response me `servedBy` (InstanceId) same hoga ya alag? Aur `AddTransient` ke saath agar controller `IGreetingService` ko **do** constructor parameters me maange to ek request me kitne instances banenge?
+2. Framework ko kaise pata chalta hai ki `GreetingController` ke constructor me kaunsa object pass karna hai? Kis cheez ko wo "key" ki tarah use karta hai?
+3. `GreetingService` ka instance exactly kis step par pehli baar `new` hota hai — startup par, request aane par, ya kisi aur point par?

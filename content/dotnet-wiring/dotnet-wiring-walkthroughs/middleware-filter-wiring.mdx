@@ -1,0 +1,152 @@
+---
+slug: "middleware-filter-wiring"
+title: "Middleware & Filter Wiring"
+section: "dotnet-wiring"
+module: "dotnet-wiring-walkthroughs"
+order: 4
+difficulty: "intermediate"
+readingTime: 11
+prerequisites: ["basic-request-wiring"]
+tags: ["dotnet", "middleware", "action-filter", "pipeline", "order", "wiring"]
+englishDefinition: "How custom middleware and an action filter execute relative to the controller action, and in exactly what order. This example traces a request-logging middleware and a timing action filter around a single endpoint, showing the nested before/after execution the pipeline produces."
+interviewFrequency: "high"
+companies: ["Publicis Sapient", "Nagarro", "Accenture", "TCS"]
+---
+
+Ek custom `RequestLoggingMiddleware` aur ek `TimingActionFilter` — dono ek hi endpoint ke aas-paas. Trace karna hai ki ye **kis exact order me** chalte hain controller action ke relative.
+
+## Files
+
+```csharp
+// Middleware/RequestLoggingMiddleware.cs
+public class RequestLoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestLoggingMiddleware> _log;
+
+    public RequestLoggingMiddleware(RequestDelegate next, ILogger<RequestLoggingMiddleware> log)
+    {
+        _next = next;
+        _log = log;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        _log.LogInformation("MIDDLEWARE  before -> {Method} {Path}",
+            context.Request.Method, context.Request.Path);
+
+        await _next(context);          // <-- hand control to the REST of the pipeline
+
+        _log.LogInformation("MIDDLEWARE  after  -> status {Status}",
+            context.Response.StatusCode);
+    }
+}
+```
+
+```csharp
+// Filters/TimingActionFilter.cs
+using Microsoft.AspNetCore.Mvc.Filters;
+using System.Diagnostics;
+
+public class TimingActionFilter : IActionFilter
+{
+    private readonly ILogger<TimingActionFilter> _log;
+    private Stopwatch _sw = new();
+
+    public TimingActionFilter(ILogger<TimingActionFilter> log) => _log = log;
+
+    public void OnActionExecuting(ActionExecutingContext context)   // runs BEFORE the action
+    {
+        _sw = Stopwatch.StartNew();
+        _log.LogInformation("FILTER      OnActionExecuting -> {Action}",
+            context.ActionDescriptor.DisplayName);
+    }
+
+    public void OnActionExecuted(ActionExecutedContext context)     // runs AFTER the action
+    {
+        _sw.Stop();
+        _log.LogInformation("FILTER      OnActionExecuted  -> {Ms} ms", _sw.ElapsedMilliseconds);
+    }
+}
+```
+
+```csharp
+// Controllers/DemoController.cs
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+[ServiceFilter(typeof(TimingActionFilter))]   // attach the filter to this controller
+public class DemoController : ControllerBase
+{
+    private readonly ILogger<DemoController> _log;
+    public DemoController(ILogger<DemoController> log) => _log = log;
+
+    [HttpGet]
+    public IActionResult Get()
+    {
+        _log.LogInformation("ACTION      inside Get()");
+        return Ok(new { ok = true });
+    }
+}
+```
+
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddScoped<TimingActionFilter>();   // ServiceFilter needs it in DI
+
+var app = builder.Build();
+
+// pipeline order — top to bottom = outer to inner
+app.UseMiddleware<RequestLoggingMiddleware>();      // stage A
+app.UseRouting();                                   // stage B (match endpoint)
+app.UseAuthorization();                             // stage C
+app.MapControllers();                               // stage D (run the matched endpoint)
+
+app.Run();
+```
+
+## Step-by-Step Flow Trace
+
+Request: `GET /api/demo`. Console output ka order **exactly** ye hoga:
+
+```text
+MIDDLEWARE  before -> GET /api/demo
+FILTER      OnActionExecuting -> DemoController.Get
+ACTION      inside Get()
+FILTER      OnActionExecuted  -> 0 ms
+MIDDLEWARE  after  -> status 200
+```
+
+Kyun, step by step:
+
+1. Request Kestrel se pipeline me enter karti hai. Pehla stage `RequestLoggingMiddleware` hai.
+2. Middleware ka `InvokeAsync` chalta hai. `"MIDDLEWARE before"` log hota hai.
+3. Middleware `await _next(context)` call karta hai — ye control ko **agle** pipeline stage ko de deta hai. Middleware yahin **paused** hai; uska baad wala code abhi nahi chala.
+4. `UseRouting` chalta hai: request path ko dekh kar decide karta hai ki endpoint `DemoController.Get` hai. Abhi run nahi kiya, sirf match kiya.
+5. `UseAuthorization` chalta hai: koi `[Authorize]` nahi, isliye allow karke aage badhta hai.
+6. `MapControllers` ka endpoint execution stage chalta hai. Ab MVC ka apna andar ka pipeline shuru hota hai (filters + action).
+7. Framework `DemoController` ka instance banata hai (constructor me `ILogger` inject).
+8. **Action filter** run hota hai: `TimingActionFilter.OnActionExecuting`. `"FILTER OnActionExecuting"` log, stopwatch start.
+9. Model binding chalta hai (yahan koi parameter nahi).
+10. Framework `Get()` action method call karta hai. `"ACTION inside Get()"` log. Method `Ok(...)` return karta hai.
+11. **Action filter** ka doosra half: `TimingActionFilter.OnActionExecuted`. `"FILTER OnActionExecuted"` log, elapsed time.
+12. `IActionResult` execute hota hai: JSON serialize, status `200` set.
+13. MVC endpoint stage return karta hai. Control `UseAuthorization` -> `UseRouting` se **ulta** wapas jaata hai (in stages ka koi "after" code nahi).
+14. Control wapas `RequestLoggingMiddleware` ke us line par pahunchta hai jahan `await _next(...)` tha (step 3). Ab middleware ka **baad wala** code chalta hai: `"MIDDLEWARE after -> status 200"` log.
+15. Middleware return karta hai. Kestrel final response client ko bhej deta hai.
+
+**Mental model:** middleware ek pyaaz (onion) hai — har layer `await _next()` se andar jaati hai aur wapas aane par apna "after" code chalati hai. Action filters usi onion ke **andar wale core** ke aas-paas ek aur chhoti wrapping hain, sirf MVC endpoint stage ke andar. Isliye order hamesha: middleware-before -> filter-before -> action -> filter-after -> middleware-after.
+
+## One-Line Wiring Summary
+
+Middleware `await _next()` ke around apna before/after code chalata hai (outer onion), action filter `OnActionExecuting`/`OnActionExecuted` se action ke around chalta hai (inner wrapping, sirf MVC stage me) — isliye execution hamesha bahar-se-andar-se-bahar nested hota hai.
+
+## Self-Check Questions
+
+1. `RequestLoggingMiddleware` me `await _next(context)` line hata do (bhool jaao). Request ka kya hoga, aur `"MIDDLEWARE after"` log kabhi chalega?
+2. Do middlewares hain: `A` (pehle registered) aur `B` (baad me). Request par `A-before`, `B-before`, endpoint, phir `B-after`, phir `A-after` — ye order kyun aur kis mechanism se banta hai?
+3. Ek action filter aur ek middleware dono "har request par kuch log karo" ke liye use ho sakte hain. Ek concrete kaam batao jo **sirf** action filter kar sakta hai middleware nahi (hint: use kya cheez dikhti hai jo middleware ko nahi).

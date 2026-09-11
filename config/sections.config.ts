@@ -826,4 +826,28 @@ export const sectionsConfig: SectionConfig[] = [
       },
     ],
   },
+  {
+    slug: "dotnet-wiring",
+    title: ".NET Core Wiring",
+    description:
+      "How an HTTP request actually flows through an ASP.NET Core Web API across files — Program.cs → middleware pipeline → routing → controller → service → EF Core → response. Five complete end-to-end examples, simplest to most complex, each with every relevant file's code and a numbered plain-language flow trace from the incoming request to the response sent back. Built to grow wiring intuition, not to re-teach C#.",
+    icon: "Waypoints",
+    enabled: true,
+    modules: [
+      {
+        id: "dotnet-wiring-walkthroughs",
+        title: "The Five Wiring Walkthroughs",
+        description:
+          "Basic request wiring, dependency injection, Controller → Service → Repository/EF Core, custom middleware + action filter ordering, and JWT authentication/authorization — each traced step by step, with the full code for every file involved and a one-line wiring summary.",
+        order: 1,
+      },
+      {
+        id: "dotnet-wiring-answer-key",
+        title: "Answer Key & Self-Check Hints",
+        description:
+          "Hint-level answers to every self-check question across all five walkthroughs — enough to confirm you traced the request flow correctly, not full explanations.",
+        order: 2,
+      },
+    ],
+  },
 ];

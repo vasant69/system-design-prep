@@ -1,0 +1,91 @@
+---
+slug: "basic-request-wiring"
+title: "Basic Request Wiring"
+section: "dotnet-wiring"
+module: "dotnet-wiring-walkthroughs"
+order: 1
+difficulty: "beginner"
+readingTime: 9
+prerequisites: []
+tags: ["dotnet", "aspnetcore", "webapi", "program-cs", "routing", "wiring"]
+englishDefinition: "The starting point of every ASP.NET Core Web API: how Program.cs builds and starts the host, how an incoming HTTP request travels through the middleware pipeline, hits routing, gets matched to a controller action, and how the action's return value becomes the HTTP response. This example traces a single GET endpoint end to end."
+interviewFrequency: "high"
+companies: ["TCS", "Infosys", "Accenture", "Cognizant"]
+---
+
+Ye pehla wiring hai — ek `Program.cs` aur ek controller, koi service nahi, koi database nahi. Maqsad: client se request bhejne se lekar JSON response wapas jaane tak ka poora rasta dekhna.
+
+## Files
+
+```csharp
+// Program.cs  — the app's entry point (minimal hosting model, .NET 6+)
+var builder = WebApplication.CreateBuilder(args);
+
+// 1. REGISTER services into the DI container (nothing runs yet)
+builder.Services.AddControllers();          // enables [ApiController] classes + routing to them
+
+var app = builder.Build();                   // build the app + the DI container
+
+// 2. BUILD the middleware pipeline — ORDER matters, each app.Use... is a stage
+app.UseHttpsRedirection();                   // stage: redirect http -> https
+app.MapControllers();                        // stage: routing + endpoint execution (controllers)
+
+// 3. START Kestrel and block, listening for requests
+app.Run();
+```
+
+```csharp
+// Controllers/ProductsController.cs
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]                              // opt-in: auto model validation, [FromBody] inference, etc.
+[Route("api/[controller]")]                 // route prefix -> "api/products"
+public class ProductsController : ControllerBase
+{
+    // GET api/products
+    [HttpGet]
+    public IActionResult GetAll()
+    {
+        var products = new[]
+        {
+            new { Id = 1, Name = "Keyboard" },
+            new { Id = 2, Name = "Mouse" },
+        };
+        return Ok(products);                 // 200 + JSON body
+    }
+}
+```
+
+## Step-by-Step Flow Trace
+
+**Startup phase (runs once, before any request):**
+
+1. Process starts, `Program.cs` ke top-level statements chalte hain.
+2. `WebApplication.CreateBuilder(args)` ek builder banata hai — config (appsettings.json, env vars), logging, aur ek khaali DI container set up karta hai.
+3. `builder.Services.AddControllers()` DI container me controller-related services (routing, model binding, JSON formatters) **register** karta hai. Abhi kuch instantiate nahi hua — ye sirf ek recipe list hai.
+4. `builder.Build()` `WebApplication` object banata hai aur DI container ko "lock" kar deta hai (ab naye services add nahi kar sakte).
+5. `app.UseHttpsRedirection()` aur `app.MapControllers()` **middleware pipeline** define karte hain — ek ordered chain of stages. `MapControllers()` routing + controller-execution stage add karta hai, jo pipeline ke **end** me baithta hai.
+6. `app.Run()` Kestrel (built-in web server) start karta hai. Kestrel ek port par listen karne lagta hai aur thread block ho jaata hai — app ab requests ke intezaar me hai.
+
+**Per-request phase (runs for every HTTP request):**
+
+7. Client `GET /api/products` bhejta hai. Kestrel raw bytes receive karke ek `HttpContext` object banata hai (request headers, path, method, ek khaali response).
+8. `HttpContext` pipeline ke **pehle** middleware me enter karta hai: `UseHttpsRedirection`. Request already HTTPS par hai, isliye ye kuch nahi karta aur `next()` call karke agle stage ko de deta hai.
+9. Request routing stage (`MapControllers` ka hissa) me pahunchta hai. Router request ka method (`GET`) aur path (`/api/products`) dekhta hai.
+10. Router registered endpoints me match dhoondhta hai. `ProductsController` par `[Route("api/[controller]")]` = `api/products` aur method par `[HttpGet]` (koi extra path nahi) = `GET api/products`. Match mila.
+11. Framework `ProductsController` ka ek **naya instance** banata hai (har request ke liye naya). Constructor me koi parameter nahi, isliye seedha `new ProductsController()`.
+12. Model binding chalta hai — is action me koi parameter nahi, isliye kuch bind nahi hota.
+13. Framework `GetAll()` method call karta hai. Method ek anonymous-object array banata hai aur `Ok(products)` return karta hai — yani ek `OkObjectResult` (status 200 + payload).
+14. Framework us `IActionResult` ko "execute" karta hai: JSON formatter `products` ko JSON string me serialize karta hai, `Content-Type: application/json` header set karta hai, status code `200` likhta hai.
+15. Response middleware pipeline se **ulta** wapas jaata hai (stage 8 wale `UseHttpsRedirection` ke through, jo response par kuch nahi karta).
+16. Kestrel final HTTP response bytes client ko bhej deta hai. Controller instance ab garbage collect hone layak hai.
+
+## One-Line Wiring Summary
+
+`Program.cs` DI container aur middleware pipeline ko build karke Kestrel start karta hai; har request pipeline se guzarti hai, routing use method + path se ek controller action se match karti hai, framework controller ka naya instance banakar action call karta hai, aur action ka return value serialize hokar HTTP response ban jaata hai.
+
+## Self-Check Questions
+
+1. `Program.cs` me `builder.Services.AddControllers()` aur `app.MapControllers()` — dono zaroori hain. Har ek ka kaam kya hai, aur ek ko hata do to kya hoga?
+2. `[Route("api/[controller]")]` me `[controller]` token kis string me resolve hota hai, aur kaunse step par route match hota hai?
+3. Ek hi request me `ProductsController` ka instance kitni baar banta hai — ek baar, har action call par, ya app lifetime me ek hi baar? Aur wo instance kab destroy hota hai?
